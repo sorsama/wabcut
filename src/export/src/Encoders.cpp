@@ -8,6 +8,16 @@
 #include <optional>
 #include <thread>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 namespace wabcut::exporter {
 
 namespace {
@@ -216,8 +226,57 @@ void setExportThreadLimit(int threads) {
     g_threadLimit = std::clamp(threads, 0, 256);
 }
 
+namespace {
+thread_local int t_threadLimit = 0; // ScopedExportThreadLimit: 0 = none
+} // namespace
+
 int exportThreadLimit() {
-    return g_threadLimit.load();
+    const int global = g_threadLimit.load();
+    if (t_threadLimit <= 0) {
+        return global;
+    }
+    return global > 0 ? std::min(global, t_threadLimit) : t_threadLimit;
+}
+
+ScopedExportThreadLimit::ScopedExportThreadLimit(int threads) : m_previous(t_threadLimit) {
+    t_threadLimit = std::clamp(threads, 0, 256);
+}
+
+ScopedExportThreadLimit::~ScopedExportThreadLimit() {
+    t_threadLimit = m_previous;
+}
+
+namespace {
+thread_local bool t_backgroundMode = false; // ScopedExportBackgroundMode
+} // namespace
+
+ScopedExportBackgroundMode::ScopedExportBackgroundMode() : m_previous(t_backgroundMode) {
+    t_backgroundMode = true;
+}
+
+ScopedExportBackgroundMode::~ScopedExportBackgroundMode() {
+    t_backgroundMode = m_previous;
+}
+
+bool exportBackgroundMode() {
+    return t_backgroundMode;
+}
+
+BackgroundThreadMode::BackgroundThreadMode(bool on) {
+#ifdef _WIN32
+    // THREAD_MODE_BACKGROUND_BEGIN lowers the CPU, I/O and memory priority of the calling thread only.
+    m_active = on && SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) != 0;
+#else
+    (void)on;
+#endif
+}
+
+BackgroundThreadMode::~BackgroundThreadMode() {
+#ifdef _WIN32
+    if (m_active) {
+        SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
+    }
+#endif
 }
 
 int threadLimitForPercent(int percent) {

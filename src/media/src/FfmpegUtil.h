@@ -153,6 +153,9 @@ ColorInfo colorInfoFrom(AVColorSpace space, AVColorRange range, AVColorPrimaries
                         AVColorTransferCharacteristic transfer, AVChromaLocation chroma);
 /// Display orientation from the stream's display matrix (identity when absent).
 Orientation orientationOf(const AVCodecParameters* par);
+/// 0.7 (VR / 360 video): the projection and eye layout the stream's spherical and stereo side data (Spherical Video V1 / V2,
+/// Matroska Projection) describe; a flat picture when it has none or one Wabcut does not draw.
+VrFormat vrFormatOf(const AVCodecParameters* par);
 VideoStreamInfo describeVideoStream(AVFormatContext* fmt, AVStream* stream);
 AudioStreamInfo describeAudioStream(const AVFormatContext* fmt, const AVStream* stream);
 

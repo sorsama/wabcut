@@ -6,6 +6,7 @@
 #include <wabcut/model/Nesting.h>
 #include <wabcut/model/SubmixOps.h>
 #include <wabcut/model/Timecode.h>
+#include <wabcut/model/TrackGroups.h>
 
 #include <algorithm>
 #include <functional>
@@ -103,6 +104,9 @@ void visitIds(ProjectState& s, F&& f) {
     for (Redaction& r : s.redactions) {
         f(r.id.value);
         f(r.media.value);
+        if (r.sound.isValid()) { // 0.7: the sound asset that replaces the bleep tone
+            f(r.sound.value);
+        }
         for (ClipId& c : r.exceptions) {
             f(c.value);
         }
@@ -157,6 +161,12 @@ void visitIds(ProjectState& s, F&& f) {
                 f(cue.speaker.value);
             }
         }
+        for (TrackGroup& group : seq->trackGroups) { // 0.7 (card 124)
+            f(group.id.value);
+            for (TrackId& member : group.members) {
+                f(member.value);
+            }
+        }
         visitEffects(seq->effects, f);
         visitEffects(seq->audioEffects, f);
         for (auto* list : {&seq->videoTracks, &seq->audioTracks, &seq->submixTracks}) {
@@ -202,6 +212,14 @@ void visitIds(ProjectState& s, F&& f) {
                             content.audition = std::make_shared<const Audition>(std::move(a));
                             c.setContent(std::move(content));
                         }
+                    }
+                    if (const RenderedNest* rendered = c.renderedNest()) {
+                        // 0.7 (card 069): the nest a rendered clip came from (Restore Unrendered) is a sequence id too.
+                        ClipContent content = c.content();
+                        std::uint64_t nest = rendered->sequence.value;
+                        f(nest);
+                        content.renderedNest->sequence.value = nest;
+                        c.setContent(std::move(content));
                     }
                     if (!c.effects().empty()) {
                         ClipContent content = c.content();
@@ -348,7 +366,7 @@ bool sequenceHeaderEq(const Sequence& a, const Sequence& b) {
            a.markIn == b.markIn && a.markOut == b.markOut &&
            a.workArea == b.workArea && a.effects == b.effects && a.audioEffects == b.audioEffects &&
            a.masterVolume == b.masterVolume && a.beatGrid == b.beatGrid && a.derivedFrom == b.derivedFrom &&
-           a.multicam == b.multicam &&
+           a.multicam == b.multicam && a.trackGroups == b.trackGroups &&
            std::equal(a.submixTracks.begin(), a.submixTracks.end(), b.submixTracks.begin(), b.submixTracks.end(),
                       [](const TrackPtr& x, const TrackPtr& y) { return x == y || (x && y && *x == *y); });
 }
@@ -371,14 +389,15 @@ void copySequenceHeader(const Sequence& from, Sequence& to) {
     to.beatGrid = from.beatGrid;
     to.derivedFrom = from.derivedFrom;
     to.multicam = from.multicam;
+    to.trackGroups = from.trackGroups; // 0.7 (card 124); tidySequence drops members the merge left out
     to.submixTracks = from.submixTracks; // p02 audio: the submix buses go with the sequence's settings
 }
 
 bool trackHeaderEq(const Track& a, const Track& b) {
     return a.kind == b.kind && a.name == b.name && a.enabled == b.enabled && a.locked == b.locked &&
            a.syncLocked == b.syncLocked && a.muted == b.muted && a.solo == b.solo && a.targeted == b.targeted &&
-           a.role == b.role && a.effects == b.effects && a.volume == b.volume && a.pan == b.pan && a.output == b.output &&
-           a.sends == b.sends;
+           a.role == b.role && a.colorIndex == b.colorIndex && a.effects == b.effects && a.volume == b.volume &&
+           a.pan == b.pan && a.output == b.output && a.sends == b.sends;
 }
 
 void copyTrackHeader(const Track& from, Track& to) {
@@ -390,6 +409,7 @@ void copyTrackHeader(const Track& from, Track& to) {
     to.solo = from.solo;
     to.targeted = from.targeted;
     to.role = from.role;
+    to.colorIndex = from.colorIndex;
     to.effects = from.effects;
     to.volume = from.volume;
     to.pan = from.pan;
@@ -657,6 +677,11 @@ SequencePtr tidySequence(const ProjectState& state, SequencePtr seq, std::vector
             changed = true;
         }
     }
+    // 0.7 (card 124): a track group keeps only the tracks the merged sequence has.
+    if (edit::pruneTrackGroups(*out)) {
+        adjustments.push_back("'" + seq->name + "': a track group lost a track the merge removed");
+        changed = true;
+    }
     // p02 audio: outputs and sends that name a submix the merge left out go to the Mix; a loop opens at the Mix.
     if (audioRoutingProblem(*out)) {
         const auto keep = [&](TrackId submix) { return out->findSubmix(submix) != nullptr; };
@@ -722,6 +747,7 @@ std::expected<Created<SequenceId>, Error> copySequenceFrom(const ProjectState& s
     ProjectState mini;
     mini.ids = source.ids;
     auto seq = std::make_shared<Sequence>(*original);
+    seq->createdAt.clear(); // 0.7 (card 144): a copy is a new sequence; the commit that adds it stamps its time
     if (seq->bin.isValid() && state.findBin(seq->bin)) {
         keep.insert(seq->bin.value);
     } else {
@@ -1036,6 +1062,13 @@ std::expected<ProjectImportResult, Error> importProjectItems(const ProjectState&
                 }
                 return !present;
             });
+            if (r.sound.isValid()) { // 0.7: its sound file comes along as an asset
+                const ProjectAsset* sound = source.findAsset(r.sound);
+                if (sound != nullptr && std::none_of(mini.assets.begin(), mini.assets.end(),
+                                                     [&](const ProjectAsset& a) { return a.id == sound->id; })) {
+                    mini.assets.push_back(*sound);
+                }
+            }
             mini.redactions.push_back(std::move(copy));
         }
     }
@@ -1126,6 +1159,7 @@ std::expected<ProjectImportResult, Error> importProjectItems(const ProjectState&
         if (!b.parent.isValid() || !copiedBins.contains(b.parent.value)) {
             b.parent = into;
         }
+        b.nestTarget = false; // 0.7 (card 112): this project's nest bin stays the one it chose
         out.bins.push_back(b.id);
         out.state.bins.push_back(std::move(b));
     }

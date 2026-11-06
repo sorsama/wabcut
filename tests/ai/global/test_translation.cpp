@@ -8,6 +8,7 @@
 #include "EditTestUtil.h"
 #include "GlobalTestUtil.h"
 
+#include <wabcut/ai/SpokenLanguages.h>
 #include <wabcut/ai/edit/TranscriptCommands.h>
 #include <wabcut/ai/translate/CaptionTranslation.h>
 #include <wabcut/ai/translate/Languages.h>
@@ -265,7 +266,9 @@ std::shared_ptr<const Transcript> interview() {
 
 /// The interview with "welcome" bleeped and a translator for each language.
 struct Studio {
-    explicit Studio(bool noCloud = false, std::shared_ptr<ScriptedModel> chat = nullptr) : chatModel(std::move(chat)) {
+    explicit Studio(bool noCloud = false, std::shared_ptr<ScriptedModel> chat = nullptr, TranslateServices::ServiceOpener service = {},
+                    bool routedLocal = false)
+        : chatModel(std::move(chat)) {
         Timeline tl(kPicture);
         tl.linkMatching();
         Redaction r;
@@ -293,7 +296,8 @@ struct Studio {
             return std::make_unique<SharedModel>(chatModel);
         };
         auto services = std::make_shared<command::ServiceBundle>(std::vector<std::shared_ptr<command::CommandServices>>{
-            std::make_shared<ai::edit::TranscriptServices>(transcripts), std::make_shared<TranslateServices>(local, chatOpener),
+            std::make_shared<ai::edit::TranscriptServices>(transcripts),
+            std::make_shared<TranslateServices>(local, chatOpener, std::move(service), routedLocal),
             std::make_shared<command::CaptionServices>(std::make_shared<WordListBreaker>(kThaiWords))});
         h = std::make_unique<CommandHarness>(std::move(tl), command::EnginePolicy{command::CapabilitySet::all(), 1024, services},
                                              ai::edit::editingCommands());
@@ -378,6 +382,67 @@ TEST_CASE("captions.translate refuses the cloud in a no-cloud project and prices
     CHECK(cloud.tracks().size() == 1);
 }
 
+TEST_CASE("captions.translate uses a model on this computer in a no-cloud project", "[ai][global][translate][command][privacy][r07]") {
+    // QA-07: the no-cloud lock stops the cloud only; a routed model on this computer (the local assistant, a custom
+    // provider on localhost) still translates what no OPUS-MT model covers.
+    Studio local(true, std::make_shared<ScriptedModel>("claude-sonnet-5-5"), {}, true);
+    local.h->ok("captions.generateFromTranscript");
+    const auto estimate = local.h->ok("captions.translate", Json{{"languages", Json::array({"ko"})}, {"estimate", true}});
+    REQUIRE(estimate.data.contains("estimate"));
+    CHECK(estimate.data["estimate"]["languages"][0]["model"] == "claude-sonnet-5-5");
+    local.h->ok("captions.translate", Json{{"languages", Json::array({"ko"})}, {"provider", "cloud"}, {"estimate", true}});
+    CHECK(local.chatModel->requests().empty()); // an estimate sends nothing
+}
+
+// r07 (A1): Settings > AI can route caption translation to a translation service (DeepL, Google Cloud Translation): it takes
+// the chat model's place, is priced per character, and the no-cloud lock still refuses it.
+TEST_CASE("captions.translate uses a routed translation service and prices it per character", "[ai][global][translate][command][r07]") {
+    auto deepl = std::make_shared<DictionaryTranslator>(std::map<std::string, std::string>{});
+    ModelSpec spec;
+    spec.id = "deepl-pro";
+    spec.provider = "deepl";
+    spec.api = "deepl";
+    spec.caps.capabilities = {Capability::Translate};
+    PriceRule price;
+    price.perThousandChars = 25'000; // $25 per 1M characters
+    spec.prices = {price};
+    int opened = 0;
+    const auto service = [&]() -> std::expected<TranslateServices::Service, AiError> {
+        ++opened;
+        return TranslateServices::Service{std::make_unique<SharedTranslator>(deepl), spec};
+    };
+    {
+        Studio locked(true, nullptr, service);
+        locked.h->ok("captions.generateFromTranscript");
+        CHECK(locked.h->errorOf("captions.translate", Json{{"languages", Json::array({"ko"})}}) == "EditRejected");
+        CHECK(deepl->sent().empty());
+    }
+    auto chat = std::make_shared<ScriptedModel>("claude-sonnet-5-5");
+    Studio s(false, chat, service);
+    s.h->ok("captions.generateFromTranscript");
+    const auto estimate = s.h->ok("captions.translate", Json{{"languages", Json::array({"ko"})}, {"estimate", true}});
+    REQUIRE(estimate.data.contains("estimate"));
+    const Json ko = estimate.data["estimate"]["languages"][0];
+    CHECK(ko["provider"] == "cloud");
+    CHECK(ko["model"] == "deepl-pro");
+    CHECK(ko["usd"].get<double>() > 0.0);
+    CHECK(ko["priced"] == true);
+    CHECK(deepl->sent().empty()); // an estimate sends nothing
+
+    const auto done = s.h->ok("captions.translate", Json{{"languages", Json::array({"ko"})}});
+    CHECK(chat->requests().empty()); // the service, not the chat model
+    REQUIRE_FALSE(deepl->sent().empty());
+    for (const std::string& text : deepl->sent()) {
+        INFO(text);
+        CHECK(text.find("welcome") == std::string::npos); // the redacted word never leaves
+    }
+    CHECK(done.data["languages"][0]["model"] == "deepl-pro");
+    CHECK(done.data["languages"][0]["provider"] == "cloud");
+    REQUIRE(s.tracks().size() == 2);
+    CHECK(s.tracks()[1].language == "ko");
+    CHECK(opened >= 2);
+}
+
 // Review wave 5, A5-P1-4: what a cloud translator gets of a typed or imported cue over redacted speech. Without a
 // transcript (or with one the cue no longer matches) which word was redacted is unknown, so the whole cue is "[bleep]",
 // as burn-in and sidecars show it; a cue the transcript accounts for keeps its other words.
@@ -440,4 +505,20 @@ TEST_CASE("A redaction never writes source-language words into a translated capt
         }
     }
     CHECK(masked == 1);
+}
+
+TEST_CASE("The languages of the spoken-language picker that the card names have a name and reading rules", "[ai][global][translate][language]") {
+    // Card 073: Indonesian, Hebrew, Ukrainian, Arabic, Polish, Turkish, Icelandic, Finnish, Czech, Slovak, Romanian, Bosnian,
+    // Croatian and Serbian: the translation table names them as the picker does, with limits a caption can be checked against.
+    for (const char* code : {"id", "he", "uk", "ar", "pl", "tr", "is", "fi", "cs", "sk", "ro", "bs", "hr", "sr"}) {
+        INFO(code);
+        const LanguageRules rules = rulesFor(code);
+        CHECK_FALSE(rules.name.empty());
+        CHECK_FALSE(rules.nativeName.empty());
+        CHECK(rules.charsPerSecond > 0.0);
+        CHECK(rules.maxCharsPerLine >= 30);
+        const SpokenLanguage* spoken = findSpokenLanguage(code);
+        REQUIRE(spoken != nullptr);
+        CHECK(spoken->name == rules.name);
+    }
 }

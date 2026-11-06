@@ -43,8 +43,8 @@ public:
     explicit AnalysisCache(std::filesystem::path root);
     /// <user cache>/analysis (see userCacheDir() in ModelStore.h).
     static std::filesystem::path defaultRoot();
-    /// How many entries this process has stored (any root): a lookup that remembers a miss checks again when it
-    /// changes, so a transcript made a moment ago is found.
+    /// How many entries this process has stored or removed (any root): a lookup that remembers an answer checks again
+    /// when it changes, so a transcript made a moment ago is found and one deleted a moment ago is gone.
     static std::uint64_t writeCount();
 
     const std::filesystem::path& root() const { return m_root; }
@@ -66,11 +66,18 @@ public:
     std::optional<Entry> newest(std::uint64_t fingerprint, int streamIndex, std::string_view analyzerId) const;
     /// Removes every entry of a source; returns how many files went.
     std::expected<std::size_t, Error> invalidateSource(std::uint64_t fingerprint);
+    /// Removes every entry of one analyser (any model, any settings) for a source stream - "delete this transcript" -
+    /// and no other analysis of the source; returns how many files went. Counts as a change for writeCount(), so a lookup
+    /// that remembered the entries looks again.
+    std::expected<std::size_t, Error> removeAnalyzer(std::uint64_t fingerprint, int streamIndex, std::string_view analyzerId);
 
     /// Every entry of a source as one document:
     ///   {"schema":"wabcut.analysis-sidecar","version":1,"source":{"fingerprint":"..."},
     ///    "entries":[{"key":{...},"createdAt":"...","payload":{...}}, ...]}
     std::expected<std::string, Error> exportSidecar(std::uint64_t fingerprint) const;
+    /// About how many bytes exportSidecar(fingerprint) takes, from the sizes of the entry files alone: nothing is read or
+    /// parsed (Collect Files' size estimate, card #173). 0 when the source has no entries.
+    std::int64_t sidecarBytesEstimate(std::uint64_t fingerprint) const;
 
 private:
     std::filesystem::path m_root;

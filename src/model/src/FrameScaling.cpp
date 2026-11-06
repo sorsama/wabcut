@@ -71,34 +71,44 @@ std::optional<PictureSize> clipPictureSize(const ProjectState& state, const Clip
         if (!nested || nested->width <= 0 || nested->height <= 0) {
             return std::nullopt;
         }
-        return PictureSize{static_cast<double>(nested->width), static_cast<double>(nested->height)};
+        // The nested frame as it is seen: its pixels times their aspect ratio (square for most sequences).
+        return PictureSize{static_cast<double>(nested->width) * sequencePixelAspect(*nested),
+                           static_cast<double>(nested->height)};
     }
     const MediaItem* item = state.findMedia(clip.media);
     return item ? mediaPictureSize(*item, clip.stream.index) : std::nullopt;
 }
 
-double frameFitScale(PictureSize picture, std::int32_t width, std::int32_t height, bool fill) {
-    if (!(picture.width > 0.0) || !(picture.height > 0.0) || width <= 0 || height <= 0) {
+double frameFitScale(PictureSize picture, double width, double height, bool fill) {
+    if (!(picture.width > 0.0) || !(picture.height > 0.0) || !(width > 0.0) || !(height > 0.0)) {
         return 1.0;
     }
-    const double sx = static_cast<double>(width) / picture.width;
-    const double sy = static_cast<double>(height) / picture.height;
+    const double sx = width / picture.width;
+    const double sy = height / picture.height;
     const double s = fill ? std::max(sx, sy) : std::min(sx, sy);
     return std::isfinite(s) && s > 0.0 ? s : 1.0;
 }
 
-double scaleToFrameFactor(const ProjectState& state, const Clip& clip, std::int32_t width, std::int32_t height) {
+double sequencePixelAspect(const Sequence& sequence) {
+    const double par = sequence.pixelAspect.isValid() ? sequence.pixelAspect.toDouble() : 1.0;
+    return par >= 0.1 && par <= 10.0 ? par : 1.0;
+}
+
+double scaleToFrameFactor(const ProjectState& state, const Clip& clip, std::int32_t width, std::int32_t height,
+                          double pixelAspect) {
     if (!clip.content().scaleToFrame) {
         return 1.0;
     }
-    return scaleToFrameFactor(clip, clipPictureSize(state, clip), width, height);
+    return scaleToFrameFactor(clip, clipPictureSize(state, clip), width, height, pixelAspect);
 }
 
-double scaleToFrameFactor(const Clip& clip, std::optional<PictureSize> picture, std::int32_t width, std::int32_t height) {
+double scaleToFrameFactor(const Clip& clip, std::optional<PictureSize> picture, std::int32_t width, std::int32_t height,
+                          double pixelAspect) {
     if (!clip.content().scaleToFrame || !picture) {
         return 1.0;
     }
-    return frameFitScale(*picture, width, height, false);
+    return frameFitScale(*picture, static_cast<double>(width) * (pixelAspect > 0.0 ? pixelAspect : 1.0),
+                         static_cast<double>(height), false);
 }
 
 } // namespace wabcut
@@ -156,6 +166,29 @@ EditOutcome setScaleToFrameSize(const ProjectState& state, SequenceId sequence, 
     return ed.finish();
 }
 
+EditOutcome setNearestNeighbor(const ProjectState& state, SequenceId sequence, std::span<const ClipId> clips, bool enabled) {
+    const auto seq = detail::findSequence(state, sequence);
+    if (!seq) {
+        return std::unexpected(seq.error());
+    }
+    const auto refs = videoClips(**seq, clips);
+    if (!refs) {
+        return std::unexpected(refs.error());
+    }
+    detail::SequenceEditor ed(state, **seq);
+    for (const detail::ClipRef& ref : *refs) {
+        const Clip& current = ed.track(ref.track).clips[ref.index];
+        if (current.content().nearestNeighbor == enabled) {
+            continue;
+        }
+        Clip& c = ed.mutableClip(ref.track, ref.index);
+        ClipContent content = c.content();
+        content.nearestNeighbor = enabled;
+        c.setContent(std::move(content));
+    }
+    return ed.finish();
+}
+
 EditOutcome setToFrameSize(const ProjectState& state, SequenceId sequence, std::span<const ClipId> clips, FrameFit fit) {
     const auto seq = detail::findSequence(state, sequence);
     if (!seq) {
@@ -172,15 +205,20 @@ EditOutcome setToFrameSize(const ProjectState& state, SequenceId sequence, std::
         if (!picture) {
             continue; // nothing known to fit
         }
-        const double scale = roundedScale(frameFitScale(*picture, (*seq)->width, (*seq)->height, fit == FrameFit::Fill));
+        const double scale = roundedScale(
+            frameFitScale(*picture, (*seq)->width * sequencePixelAspect(**seq), (*seq)->height, fit == FrameFit::Fill));
         const ParamValue wanted(scale);
-        if (!current.content().scaleToFrame && current.properties()[ParamId::Scale] == wanted) {
+        // 0.7 (card #12): a fit is uniform; a clip stretched with Scale Width goes back to Uniform Scale.
+        if (!current.content().scaleToFrame && current.properties()[ParamId::Scale] == wanted &&
+            current.properties().uniformScale() && current.properties().isDefault(ParamId::ScaleWidth)) {
             continue;
         }
         Clip& c = ed.mutableClip(ref.track, ref.index);
         ClipContent content = c.content();
         content.scaleToFrame = false;
         content.properties[ParamId::Scale] = wanted;
+        content.properties[ParamId::UniformScale] = ParamValue(parameterInfo(ParamId::UniformScale).defaultValue);
+        content.properties[ParamId::ScaleWidth] = ParamValue(parameterInfo(ParamId::ScaleWidth).defaultValue);
         c.setContent(std::move(content));
     }
     return ed.finish();
@@ -224,11 +262,12 @@ std::shared_ptr<const ClipContent> scaledClipContent(const MediaItem& item, Stre
     case MediaScaling::SetToFrame:
     case MediaScaling::SetToFill: {
         const double scale = roundedScale(
-            frameFitScale(*picture, sequence.width, sequence.height, item.scaling == MediaScaling::SetToFill));
+            frameFitScale(*picture, sequence.width * sequencePixelAspect(sequence), sequence.height,
+                          item.scaling == MediaScaling::SetToFill));
         if (scale == 1.0) {
             return base; // the picture already matches the frame
         }
-        content.properties[ParamId::Scale] = ParamValue(scale);
+        content.properties[ParamId::Scale] = ParamValue(scale); // a new clip is uniform (the 0.7 defaults)
         break;
     }
     }

@@ -7,6 +7,7 @@
 #include <wabcut/command/Engine.h>
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/EditSession.h>
+#include <wabcut/model/Plural.h>
 #include <wabcut/model/ProjectOps.h>
 
 #include <algorithm>
@@ -282,8 +283,8 @@ PodcastPlan planPodcast(const ProjectState& state, const PodcastOptions& options
     // 1. The multicam source.
     {
         StepPlan& s = add(StepKind::Multicam, "Sync the cameras and microphones",
-                          std::to_string(options.cameras.size()) + " camera(s), " + std::to_string(options.mics.size()) + " microphone(s), synced by " +
-                              options.sync,
+                          counted(static_cast<std::int64_t>(options.cameras.size()), "camera") + ", " +
+                              counted(static_cast<std::int64_t>(options.mics.size()), "microphone") + ", synced by " + options.sync,
                           "multicam.create", true);
         if (context.multicam.isValid()) {
             off(s, "already made");

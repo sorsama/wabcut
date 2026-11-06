@@ -35,6 +35,10 @@ struct LoudnessMeter::Impl {
     double blockPeak = 0.0;        ///< linear, of the block being filled
     std::int64_t blockStart = 0;
     std::vector<PeakBlock> peakBlocks;
+    std::vector<float> series;        ///< 0.7: the short-term loudness once a second
+    std::size_t windowsSinceSeries = 0;
+    std::size_t maxPeakBlocks = kMaxPeakBlocks;
+    double floorDbtp = kPeakBlockFloorDbtp; ///< blocks below it are not kept (it rises when the list is full)
     int channels = 2;
 
     /// The true peak (linear, over every channel) of the frames the last ebur128_add_frames_* call added.
@@ -52,10 +56,30 @@ struct LoudnessMeter::Impl {
     /// The block [blockStart, frames) as kept: its true peak when it reaches the floor.
     std::optional<PeakBlock> blockOf(double peak) const {
         const double db = toDb(peak);
-        if (frames <= blockStart || db < kPeakBlockFloorDbtp) {
+        if (frames <= blockStart || db < floorDbtp) {
             return std::nullopt;
         }
         return PeakBlock{blockStart, frames - blockStart, db};
+    }
+
+    /// Keeps a hot block. Past maxPeakBlocks the quietest quarter goes and the floor rises to the loudest of them, so the
+    /// list always holds every block above the floor (the old cap dropped the newest ones: a clip-level violation in the
+    /// last hours of a stream was never listed, card 166). One pass in a quarter of the cap's blocks: amortised cheap.
+    void keep(const PeakBlock& block) {
+        peakBlocks.push_back(block);
+        if (peakBlocks.size() <= maxPeakBlocks) {
+            return;
+        }
+        std::vector<double> peaks;
+        peaks.reserve(peakBlocks.size());
+        for (const PeakBlock& b : peakBlocks) {
+            peaks.push_back(b.truePeakDbtp);
+        }
+        const auto quarter = peaks.begin() + static_cast<std::ptrdiff_t>(peaks.size() / 4);
+        std::nth_element(peaks.begin(), quarter, peaks.end());
+        const double cut = *quarter;
+        floorDbtp = std::max(floorDbtp, cut);
+        std::erase_if(peakBlocks, [cut](const PeakBlock& b) { return b.truePeakDbtp <= cut; });
     }
 
     ~Impl() {
@@ -77,13 +101,21 @@ struct LoudnessMeter::Impl {
             maxShortTerm = v;
             maxShortTermFrame = std::max<std::int64_t>(0, frames - 30 * w); // the 3 s window ending here
         }
+        // 0.7: the short-term loudness once a second (every 10th window of 100 ms), for the Loudness Radar.
+        if (++windowsSinceSeries >= 10) {
+            windowsSinceSeries = 0;
+            if (series.size() < kMaxSeriesPoints) {
+                const bool known = frames >= w * 30 && ebur128_loudness_shortterm(state, &v) == EBUR128_SUCCESS && std::isfinite(v);
+                series.push_back(known ? static_cast<float>(v) : -std::numeric_limits<float>::infinity());
+            }
+        }
         // 0.6 (#54): the block's true peak.
         if (blockPeak > maxBlockPeak) {
             maxBlockPeak = blockPeak;
             truePeakFrame = blockStart;
         }
-        if (const auto block = blockOf(blockPeak); block && peakBlocks.size() < kMaxPeakBlocks) {
-            peakBlocks.push_back(*block);
+        if (const auto block = blockOf(blockPeak)) {
+            keep(*block);
         }
         blockPeak = 0.0;
         blockStart = frames;
@@ -91,8 +123,9 @@ struct LoudnessMeter::Impl {
     }
 };
 
-LoudnessMeter::LoudnessMeter(int channels, int sampleRate)
+LoudnessMeter::LoudnessMeter(int channels, int sampleRate, std::size_t maxPeakBlocks)
     : m_impl(std::make_unique<Impl>()), m_channels(std::max(channels, 1)), m_sampleRate(std::max(sampleRate, 1)) {
+    m_impl->maxPeakBlocks = std::max<std::size_t>(maxPeakBlocks, 4);
     reset();
 }
 
@@ -110,10 +143,12 @@ void LoudnessMeter::reset() {
     d.state = ebur128_init(static_cast<unsigned>(m_channels), static_cast<unsigned long>(m_sampleRate),
                            EBUR128_MODE_I | EBUR128_MODE_LRA | EBUR128_MODE_TRUE_PEAK | EBUR128_MODE_S);
     if (d.state != nullptr) {
-        static constexpr int kMap[] = {EBUR128_LEFT, EBUR128_RIGHT, EBUR128_CENTER, EBUR128_UNUSED,
+        // L, R, C, LFE (not measured), then the surrounds: 5.1's Ls / Rs, and (0.7) 7.1's four, all weighed +1.5 dB.
+        static constexpr int kMap[] = {EBUR128_LEFT,          EBUR128_RIGHT,          EBUR128_CENTER,
+                                       EBUR128_UNUSED,        EBUR128_LEFT_SURROUND,  EBUR128_RIGHT_SURROUND,
                                        EBUR128_LEFT_SURROUND, EBUR128_RIGHT_SURROUND};
         for (int c = 0; c < m_channels; ++c) {
-            const int role = m_channels == 1 ? EBUR128_DUAL_MONO : (c < 6 ? kMap[c] : EBUR128_UNUSED);
+            const int role = m_channels == 1 ? EBUR128_DUAL_MONO : (c < 8 ? kMap[c] : EBUR128_UNUSED);
             ebur128_set_channel(d.state, static_cast<unsigned>(c), role);
         }
     }
@@ -129,6 +164,9 @@ void LoudnessMeter::reset() {
     d.blockPeak = 0.0;
     d.blockStart = 0;
     d.peakBlocks.clear();
+    d.series.clear();
+    d.windowsSinceSeries = 0;
+    d.floorDbtp = kPeakBlockFloorDbtp;
     d.channels = m_channels;
 }
 
@@ -185,10 +223,12 @@ LoudnessResult LoudnessMeter::result() const {
     r.maxShortTermFrame = d.maxShortTermFrame;
     r.truePeakFrame = d.truePeakFrame;
     r.peakBlocks = d.peakBlocks;
+    r.peakFloorDbtp = d.floorDbtp;
+    r.shortTermSeries = d.series;
     if (d.blockPeak > d.maxBlockPeak) {
         r.truePeakFrame = d.blockStart;
     }
-    if (const auto block = d.blockOf(d.blockPeak); block && r.peakBlocks.size() < kMaxPeakBlocks) {
+    if (const auto block = d.blockOf(d.blockPeak)) { // the block still filling counts as it is (one past the cap at most)
         r.peakBlocks.push_back(*block);
     }
     if (truePeak <= 0.0) {
@@ -235,6 +275,16 @@ double LoudnessMeter::truePeakDbtp() const {
 double LoudnessMeter::maxMomentaryLufs() const { return m_impl->maxMomentary; }
 double LoudnessMeter::maxShortTermLufs() const { return m_impl->maxShortTerm; }
 std::int64_t LoudnessMeter::frames() const { return m_impl->frames; }
+
+double LoudnessMeter::rangeLu() const {
+    double v = 0.0;
+    if (m_impl->state != nullptr && ebur128_loudness_range(m_impl->state, &v) == EBUR128_SUCCESS && std::isfinite(v)) {
+        return v;
+    }
+    return 0.0;
+}
+
+const std::vector<float>& LoudnessMeter::shortTermSeries() const noexcept { return m_impl->series; }
 
 double normalizationGainDb(const LoudnessResult& measured, double targetLufs) noexcept {
     return measured.hasIntegrated() ? targetLufs - measured.integratedLufs : 0.0;

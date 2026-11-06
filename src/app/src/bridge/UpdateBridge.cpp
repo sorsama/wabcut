@@ -252,8 +252,20 @@ bool UpdateBridge::detectInstalledByMsi() const {
 #endif
 }
 
+bool UpdateBridge::isArm64Build() const {
+    if (m_config.nativeArm64)
+        return *m_config.nativeArm64;
+#if defined(_M_ARM64) || defined(__aarch64__)
+    return true;
+#else
+    return false;
+#endif
+}
+
 bool UpdateBridge::canInstall() const {
 #if defined(Q_OS_WIN)
+    if (isArm64Build())
+        return false; // the manifest's installer is the x64 one (Config::nativeArm64)
     if (!m_installedByMsi) {
         m_installedByMsi = detectInstalledByMsi();
     }
@@ -274,6 +286,9 @@ QString UpdateBridge::installHint() const {
     }
     if (m_release->installerUrl.isEmpty()) {
         return tr("This release has no Windows installer yet. Its page has the downloads.");
+    }
+    if (isArm64Build()) {
+        return tr("This is the ARM64 build, and the update check installs the x64 installer only: download the ARM64 installer of the new version from its release page.");
     }
     return tr("This copy of Wabcut was not installed with the installer (a portable copy or a build): download the new version from its release page.");
 #else

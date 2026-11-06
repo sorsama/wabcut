@@ -13,6 +13,12 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/interfaces/catch_interfaces_capture.hpp>
 
+#include <cstdio>
+#include <iterator>
+#ifdef _WIN32
+#include <share.h>
+#endif
+
 using namespace wabcut;
 using namespace wabcut::script;
 using namespace wabcut::script::test;
@@ -271,3 +277,142 @@ TEST_CASE("Installing over an extension runs nothing new until the user enables 
     REQUIRE(m->enable("com.test.a", CapabilitySet::of({Capability::Read})).has_value());
     CHECK(m->host("com.test.a") != nullptr);
 }
+
+// ---- Card 164: an update never takes the working version away before the new one is whole -------------------------------
+
+namespace {
+
+/// A downloaded extension folder with the id of the installed one: main.js says `version`; `extra` is a second script.
+fs::path download(ManagerRig& rig, const std::string& name, const std::string& version, bool extra) {
+    const fs::path source = rig.root / "download" / name;
+    Json mf = manifest("com.test.upd", "Updated", {"Read"});
+    if (extra) {
+        mf["scripts"] = Json::array({"lib/util.js"});
+    }
+    std::map<std::string, std::string> files{{"main.js", "// " + version}};
+    if (extra) {
+        files["lib/util.js"] = "// util " + version;
+    }
+    return writeExtension(source, mf, files);
+}
+
+std::string textOf(const fs::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+std::size_t foldersIn(const fs::path& root) {
+    std::size_t n = 0;
+    std::error_code ec;
+    for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+        n += it->is_directory() ? 1 : 0;
+    }
+    return n;
+}
+
+} // namespace
+
+TEST_CASE("Updating an extension swaps the whole new version in and leaves no staging or old folder", "[script][manager]") {
+    ManagerRig rig;
+    auto m = rig.open();
+    REQUIRE(m->install(download(rig, "v1", "v1", true)).has_value());
+    const fs::path target = rig.paths.userExtensions / "com.test.upd";
+    CHECK(textOf(target / "main.js") == "// v1");
+    CHECK(fs::exists(target / "lib" / "util.js"));
+
+    // v2 has no lib/util.js: nothing of v1 is left behind, and nothing of v2 is missing.
+    REQUIRE(m->install(download(rig, "v2", "v2", false)).has_value());
+    CHECK(textOf(target / "main.js") == "// v2");
+    CHECK_FALSE(fs::exists(target / "lib" / "util.js"));
+    CHECK(foldersIn(rig.paths.userExtensions) == 1); // no "com.test.upd.wabcut-new" / ".wabcut-old"
+    REQUIRE(m->list().size() == 1);
+    CHECK(rig.statusOf(*m, "com.test.upd") != ExtensionStatus::Invalid);
+    CHECK(m->info("com.test.upd")->manifest->name == "Updated");
+}
+
+TEST_CASE("What a crashed update left beside an extension is never listed and the next install cleans it up", "[script][manager]") {
+    ManagerRig rig;
+    auto m = rig.open();
+    REQUIRE(m->install(download(rig, "v1", "v1", false)).has_value());
+    const fs::path target = rig.paths.userExtensions / "com.test.upd";
+    // A crash in the middle of the copy (a manifest only), and in the middle of the swap (the old version aside).
+    writeFile(rig.paths.userExtensions / "com.test.upd.wabcut-new" / "wabcut-extension.json", textOf(target / "wabcut-extension.json"));
+    fs::copy(target, rig.paths.userExtensions / "com.test.upd.wabcut-old", fs::copy_options::recursive);
+    m->rescan();
+    REQUIRE(m->list().size() == 1); // neither is an extension of its own (no "already uses the id" duplicates)
+    CHECK(rig.statusOf(*m, "com.test.upd") != ExtensionStatus::Invalid);
+
+    REQUIRE(m->install(download(rig, "v2", "v2", false)).has_value());
+    CHECK(textOf(target / "main.js") == "// v2");
+    CHECK(foldersIn(rig.paths.userExtensions) == 1);
+
+    // The crash between the two renames: the installed version is only the one waiting aside. The next install brings it
+    // back before it replaces it (the update may fail, and then it is what is installed).
+    fs::rename(target, rig.paths.userExtensions / "com.test.upd.wabcut-old");
+    m->rescan();
+    CHECK(m->list().empty());
+    REQUIRE(m->install(download(rig, "v3", "v3", false)).has_value());
+    CHECK(textOf(target / "main.js") == "// v3");
+    CHECK(foldersIn(rig.paths.userExtensions) == 1);
+}
+
+// Review: an id spelled like the staging or the aside folder is untrusted package input. It used to install "successfully"
+// into a folder that is never listed, and installing the id it looks like cleaned that folder away.
+TEST_CASE("An extension whose id is spelled like an install folder is refused and the extension it looks like is untouched",
+          "[script][manager]") {
+    ManagerRig rig;
+    auto m = rig.open();
+    REQUIRE(m->install(download(rig, "v1", "v1", false)).has_value());
+    const fs::path target = rig.paths.userExtensions / "com.test.upd";
+    for (const char* suffix : {".wabcut-new", ".wabcut-old"}) {
+        INFO(suffix);
+        const std::string id = std::string("com.test.upd") + suffix;
+        const fs::path folder =
+            writeExtension(rig.root / "download" / ("look" + std::string(suffix)), manifest(id, "Lookalike", {"Read"}),
+                           {{"main.js", "// lookalike"}});
+        const auto refused = m->install(folder);
+        REQUIRE_FALSE(refused.has_value());
+        CHECK(refused.error().message.find("reverse-DNS") != std::string::npos);
+        CHECK_FALSE(fs::exists(rig.paths.userExtensions / id)); // nothing was written
+        CHECK(textOf(target / "main.js") == "// v1");
+    }
+    CHECK(foldersIn(rig.paths.userExtensions) == 1);
+    REQUIRE(m->list().size() == 1);
+    CHECK(m->list().front().id == "com.test.upd");
+}
+
+#ifdef _WIN32
+// The update that cannot swap (an antivirus or an editor holds a file of the installed version): the installed version is
+// untouched, still listed and runnable, and says so with an error. Before, remove_all() had already deleted what it could.
+TEST_CASE("An update that cannot replace the installed version leaves it whole and running", "[script][manager]") {
+    ManagerRig rig;
+    auto m = rig.open();
+    REQUIRE(m->install(download(rig, "v1", "v1", true)).has_value());
+    REQUIRE(m->enable("com.test.upd", CapabilitySet::of({Capability::Read})).has_value());
+    REQUIRE(rig.waitFor(*m, [&] { return rig.statusOf(*m, "com.test.upd") == ExtensionStatus::Running; }));
+    const fs::path target = rig.paths.userExtensions / "com.test.upd";
+
+    // A file in the installed folder that something else holds open without sharing (an antivirus scan, a text editor): the
+    // folder cannot be renamed. (Not a script: the manager must still be able to read the extension afterwards.)
+    writeFile(target / "notes.txt", "kept");
+    std::FILE* held = _wfsopen((target / "notes.txt").c_str(), L"rb", _SH_DENYRW);
+    REQUIRE(held != nullptr);
+    const auto failed = m->install(download(rig, "v2", "v2", false));
+    std::fclose(held);
+    REQUIRE_FALSE(failed.has_value());
+    CHECK(failed.error().code == ErrorCode::IoError);
+    CHECK(textOf(target / "main.js") == "// v1");
+    CHECK(textOf(target / "lib" / "util.js") == "// util v1");
+    CHECK(textOf(target / "notes.txt") == "kept");
+    CHECK(fs::exists(target / "wabcut-extension.json"));
+    CHECK(foldersIn(rig.paths.userExtensions) == 1); // the half-written new version is gone
+    // The manager still lists the working version, valid, and it runs again.
+    REQUIRE(m->list().size() == 1);
+    CHECK(m->info("com.test.upd")->loadError.empty());
+    CHECK(rig.waitFor(*m, [&] { return rig.statusOf(*m, "com.test.upd") == ExtensionStatus::Running; }));
+
+    // Once the file is free the same update installs.
+    REQUIRE(m->install(download(rig, "v2", "v2", false)).has_value());
+    CHECK(textOf(target / "main.js") == "// v2");
+}
+#endif

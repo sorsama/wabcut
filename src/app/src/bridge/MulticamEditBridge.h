@@ -14,6 +14,10 @@
 //     clip, in one batch: one undo step); paused, Select switches the cut under the playhead and Cut cuts there.
 //     `target` switches the picture, the sound or both.
 //   * Flatten (the clip menu): multicam.flatten.
+//   * 0.7 (card 009) Sync nudges: the tiles' right-click menu moves an angle's sync by frames (nudgeAngleSync: one
+//     multicam.setSync batch, one undo step "Sync Angle"; when the angle would start before 0 the others move later by the
+//     difference), shows "+2 f" on an angle that is off the offset its sync measured (`syncText`), puts it back
+//     (resetAngleSync) and opens the multicam source sequence (`sourceKey`, SequenceTabs.open).
 //
 // Principle 9: QML sees keys ("c12", "s3", "m7"), 1-based angle numbers, display text and an image.
 
@@ -70,7 +74,10 @@ class MulticamEditBridge : public QObject {
     Q_PROPERTY(QString clip READ clip NOTIFY clipChanged FINAL)
     /// Its multicam source's name.
     Q_PROPERTY(QString sourceName READ sourceName NOTIFY clipChanged FINAL)
-    /// [{ angle (1-based), name, video (in the picture now), audio (heard now), hasVideo, keyText ("1".."9" or "") }].
+    /// Its multicam source sequence's key ("s7", for SequenceTabs.open), or "".
+    Q_PROPERTY(QString sourceKey READ sourceKey NOTIFY clipChanged FINAL)
+    /// [{ angle (1-based), name, video (in the picture now), audio (heard now), hasVideo, keyText ("1".."9" or ""),
+    /// syncFrames (frames off the offset its sync measured; 0 = on it), syncText ("+2 f", "-1 f" or "") }].
     Q_PROPERTY(QVariantList angles READ angles NOTIFY anglesChanged FINAL)
     /// Grid columns (2, 3 or 4) and the visible angle count.
     Q_PROPERTY(int columns READ columns NOTIFY clipChanged FINAL)
@@ -115,6 +122,7 @@ public:
     void setViewOn(bool on);
     QString clip() const;
     QString sourceName() const { return m_sourceName; }
+    QString sourceKey() const;
     QVariantList angles() const;
     int columns() const { return m_columns; }
     QString target() const { return m_target; }
@@ -144,6 +152,13 @@ public:
     Q_INVOKABLE bool cutToAngle(int angle);
     /// Flatten a multicam clip ("c12"; "" = the one under the playhead).
     Q_INVOKABLE QString flatten(const QString& clipKey = {});
+    /// 0.7 (card 009): moves angle `angle` (1-based) of the multicam source under the playhead `frames` later (negative:
+    /// earlier) in its sync - multicam.setSync with offset = current + delta, in one undo step ("Sync Angle"). An angle
+    /// that would start before 0 stays at 0 and every other angle moves later by what is missing, in the same step.
+    /// Returns "" when done, else why not (also shown as `message`).
+    Q_INVOKABLE QString nudgeAngleSync(int angle, int frames);
+    /// 0.7 (card 009): puts angle `angle` back at the offset its sync method measured (one undo step). "" or why not.
+    Q_INVOKABLE QString resetAngleSync(int angle);
     /// Draws the grid now (paused), on the calling thread when synchronous.
     Q_INVOKABLE void refreshGrid();
 

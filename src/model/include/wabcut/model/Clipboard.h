@@ -16,7 +16,9 @@
 // captions). Clips land on the lowest targeted track of their kind plus their copied offset (the copied tracks when no
 // track of that kind is targeted, or the tracks given); missing tracks are added. Media is found in the destination
 // project by id (same file), else by fingerprint, else by path; else the copied media item is added to the project.
-// The report says which.
+// The report says which. The pictures a copied graphic shows (image layers and image fields) or an Image Matte Key names
+// and the LUT files its effects use travel with the clips and are found or added the same way, and the pasted clips refer
+// to them by the destination's ids (0.7, card #93).
 
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/Error.h>
@@ -92,6 +94,7 @@ struct PasteOptions {
 struct PasteReport {
     std::vector<ClipId> pasted;           ///< the new clips, in clipboard order
     std::vector<MediaId> mediaAdded;      ///< media items added to the project for the paste
+    std::vector<AssetId> assetsAdded;     ///< LUT files added to the project for the paste (0.7, card #93)
     std::vector<TrackId> tracksAdded;
     std::vector<std::string> notes;       ///< how media was found ("'A.mov': matched by fingerprint"), what was skipped
 };

@@ -3,7 +3,9 @@
 #include <wabcut/model/Clipboard.h>
 
 #include <wabcut/model/Auditions.h>
+#include <wabcut/model/ClipLock.h>
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/Graphics.h>
 #include <wabcut/model/Nesting.h>
 #include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/ProjectOps.h>
@@ -14,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <map>
 #include <memory>
@@ -76,25 +79,177 @@ std::expected<std::vector<Picked>, Error> pick(const Sequence& seq, std::span<co
     return out;
 }
 
-/// The media items and sequences `seq`'s clips play, nested sequences followed (the closure).
+// ---- What clips refer to besides their source (0.7, card #93) --------------------------------------------------------
+//
+// Ids in a graphic's image layers and image fields (media), in Image Matte Key's "media:<id>" and in a grade's
+// "asset:<id>" (a LUT) belong to the project the clip was copied from. The clipboard carries what they name and a paste
+// maps them into the destination, as merging projects does (Merge.cpp), so a lower third keeps its logo and a graded
+// clip its LUT in another project instead of showing whatever has that id there.
+
+/// Calls f(MediaId&) on the picture of every image layer of `layers` (children too).
+template <class Layers, class F>
+void visitLayerMedia(Layers& layers, F& f) {
+    for (auto& l : layers) {
+        if (l.kind == LayerKind::Image) {
+            f(l.image.media);
+        }
+        visitLayerMedia(l.children, f);
+    }
+}
+
+/// Calls f(MediaId&) on the media of a graphic's image layers and of the image fields of its template instance.
+template <class G, class F>
+void visitGraphicMedia(G& graphic, F&& f) {
+    visitLayerMedia(graphic.layers, f);
+    if (graphic.instance) {
+        for (auto& field : graphic.instance->fields) {
+            if (field.kind == FieldKind::Image) {
+                f(field.value.media);
+            }
+        }
+    }
+}
+
+constexpr std::string_view kMediaReferencePrefix = "media:";
+
+/// The media an effect's data text names ("media:<id>", Image Matte Key's picture); invalid when it names none.
+MediaId mediaOfReference(std::string_view text) {
+    if (!text.starts_with(kMediaReferencePrefix)) {
+        return {};
+    }
+    text.remove_prefix(kMediaReferencePrefix.size());
+    std::uint64_t id = 0;
+    const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), id);
+    return ec == std::errc() && end == text.data() + text.size() ? MediaId{id} : MediaId{};
+}
+
+/// Adds the media and (with `assets`) the assets the data of `stack` names.
+void collectEffectRefs(const EffectStack& stack, std::set<std::uint64_t>& media, std::set<std::uint64_t>* assets) {
+    for (const EffectInstance& e : stack) {
+        for (const EffectData& d : e.data) {
+            const std::string* text = d.text();
+            if (!text) {
+                continue;
+            }
+            if (const MediaId m = mediaOfReference(*text); m.isValid()) {
+                media.insert(m.value);
+            } else if (const AssetId a = assetOfReference(*text); assets && a.isValid()) {
+                assets->insert(a.value);
+            }
+        }
+    }
+}
+
+void collectContentRefs(const ClipContent& content, std::set<std::uint64_t>& media, std::set<std::uint64_t>* assets) {
+    collectEffectRefs(content.effects, media, assets);
+    if (content.graphic) {
+        visitGraphicMedia(*content.graphic, [&](const MediaId& m) {
+            if (m.isValid()) {
+                media.insert(m.value);
+            }
+        });
+    }
+}
+
+/// The media items and sequences `seq`'s clips play, nested sequences followed (the closure) - and with them the media
+/// their graphics and Image Matte Keys show, and (with `assets`) the assets their effects use.
 void collectSources(const ProjectState& state, const Sequence& seq, std::set<std::uint64_t>& media,
-                    std::set<std::uint64_t>& sequences) {
+                    std::set<std::uint64_t>& sequences, std::set<std::uint64_t>* assets = nullptr) {
+    collectEffectRefs(seq.effects, media, assets);
+    collectEffectRefs(seq.audioEffects, media, assets);
     seq.forEachTrack([&](const Track& t) {
+        collectEffectRefs(t.effects, media, assets);
         for (const Clip& c : t.clips) {
             // 0.6: every take of an audition (Auditions.h), the clip's own source first.
             forEachTakeSource(c, [&](MediaId m, SequenceId s) {
                 if (s.isValid()) {
                     if (sequences.insert(s.value).second) {
                         if (const Sequence* nested = state.findSequence(s)) {
-                            collectSources(state, *nested, media, sequences);
+                            collectSources(state, *nested, media, sequences, assets);
                         }
                     }
                 } else if (m.isValid()) {
                     media.insert(m.value);
                 }
             });
+            collectContentRefs(c.content(), media, assets);
+            if (const Audition* audition = c.audition()) {
+                for (const AuditionTake& take : audition->others) {
+                    if (take.content) {
+                        collectContentRefs(*take.content, media, assets);
+                    }
+                }
+            }
         }
     });
+}
+
+using MediaMap = std::unordered_map<std::uint64_t, MediaId>;
+using AssetMap = std::unordered_map<std::uint64_t, AssetId>;
+
+/// The data of `stack` with its media and asset references passed through the maps (ids the maps do not know stay).
+void remapEffectRefs(EffectStack& stack, const MediaMap& media, const AssetMap& assets) {
+    for (EffectInstance& e : stack) {
+        for (EffectData& d : e.data) {
+            const std::string* text = d.text();
+            if (!text) {
+                continue;
+            }
+            std::string next;
+            if (const MediaId m = mediaOfReference(*text); m.isValid()) {
+                if (const auto it = media.find(m.value); it != media.end()) {
+                    next = std::string(kMediaReferencePrefix) + std::to_string(it->second.value);
+                }
+            } else if (const AssetId a = assetOfReference(*text); a.isValid()) {
+                if (const auto it = assets.find(a.value); it != assets.end()) {
+                    next = assetReference(it->second);
+                }
+            }
+            if (!next.empty()) {
+                d.value = std::move(next);
+            }
+        }
+    }
+}
+
+void remapContentRefs(ClipContent& content, const MediaMap& media, const AssetMap& assets) {
+    remapEffectRefs(content.effects, media, assets);
+    if (content.graphic) {
+        Graphic g = *content.graphic;
+        visitGraphicMedia(g, [&](MediaId& m) {
+            if (const auto it = media.find(m.value); it != media.end()) {
+                m = it->second;
+            }
+        });
+        if (!(g == *content.graphic)) {
+            content.graphic = std::make_shared<const Graphic>(std::move(g));
+        }
+    }
+}
+
+/// `clip`'s references (its own and its other takes') passed through the maps; its content block is replaced only when
+/// something changed, so a clip that refers to nothing keeps sharing its block.
+void remapClipRefs(Clip& clip, const MediaMap& media, const AssetMap& assets) {
+    ClipContent block = clip.content();
+    remapContentRefs(block, media, assets);
+    if (block.audition) {
+        Audition a = *block.audition;
+        for (AuditionTake& take : a.others) {
+            if (take.content) {
+                ClipContent takeContent = *take.content;
+                remapContentRefs(takeContent, media, assets);
+                if (!(takeContent == *take.content)) {
+                    take.content = std::make_shared<const ClipContent>(std::move(takeContent));
+                }
+            }
+        }
+        if (!(a == *block.audition)) {
+            block.audition = std::make_shared<const Audition>(std::move(a));
+        }
+    }
+    if (!(block == clip.content())) {
+        clip.setContent(std::move(block));
+    }
 }
 
 bool sameFile(const MediaItem& a, const MediaItem& b) {
@@ -195,8 +350,8 @@ bool effectFits(const EffectInstance& e, const Clip& clip) {
     return d->kind == (clip.stream.kind == StreamKind::Video ? EffectKind::Video : EffectKind::Audio);
 }
 
-constexpr std::array<ParamId, 6> kMotion{ParamId::PositionX, ParamId::PositionY, ParamId::Scale,
-                                        ParamId::Rotation,  ParamId::AnchorX,   ParamId::AnchorY};
+constexpr std::array<ParamId, 8> kMotion{ParamId::PositionX, ParamId::PositionY, ParamId::Scale,    ParamId::Rotation,
+                                        ParamId::AnchorX,   ParamId::AnchorY,   ParamId::ScaleWidth, ParamId::UniformScale};
 
 struct TargetRef {
     TrackId track;
@@ -219,6 +374,9 @@ std::expected<std::vector<TargetRef>, Error> resolveTargets(const Sequence& seq,
         }
         if (loc->track->locked) {
             return std::unexpected(invalidArgument("clip " + std::to_string(id.value) + " is on a locked track"));
+        }
+        if (loc->clip().locked) { // 0.7 (card 064): pasting attributes changes the clip
+            return std::unexpected(invalidArgument(edit::lockedClipMessage(loc->clip())));
         }
         out.push_back({loc->track->id, loc->index});
     }
@@ -365,12 +523,35 @@ std::expected<ClipboardDocument, Error> copyClips(const ProjectState& state, Seq
     // What the clips play.
     std::set<std::uint64_t> media;
     std::set<std::uint64_t> nested;
-    collectSources(state, *clipSeq, media, nested);
+    std::set<std::uint64_t> assets;
+    collectSources(state, *clipSeq, media, nested, &assets);
+    // 0.6 Master Clip Effects of the carried media can use LUTs and mattes of their own (0.7, card #93); those media
+    // may have master effects too.
+    for (std::set<std::uint64_t> todo = media; !todo.empty();) {
+        std::set<std::uint64_t> next;
+        for (const std::uint64_t id : todo) {
+            if (const MediaItem* m = state.findMedia(MediaId{id})) {
+                std::set<std::uint64_t> referenced;
+                collectEffectRefs(m->masterEffects, referenced, &assets);
+                for (const std::uint64_t other : referenced) {
+                    if (media.insert(other).second) {
+                        next.insert(other);
+                    }
+                }
+            }
+        }
+        todo = std::move(next);
+    }
     for (const std::uint64_t id : media) {
         if (const MediaItem* m = state.findMedia(MediaId{id})) {
             auto item = std::make_shared<MediaItem>(*m);
             item->bin = {};
             content.media.push_back(std::move(item));
+        }
+    }
+    for (const std::uint64_t id : assets) { // sorted by id, as the project keeps them
+        if (const ProjectAsset* a = state.findAsset(AssetId{id})) {
+            content.assets.push_back(*a);
         }
     }
     // Their source-anchored redactions travel with them, keyed to the copied item (a subclip's master's and a stem's
@@ -510,8 +691,36 @@ std::expected<PasteResult, Error> pasteClips(const ProjectState& state, Sequence
     ProjectState out = state;
     PasteReport report;
 
+    // Assets (the LUTs the copied effects use, 0.7 card #93): the same file by id, else by path, else added; the pasted
+    // clips' references are mapped to these below.
+    AssetMap assetMap;
+    for (const ProjectAsset& a : document.content.assets) {
+        if (const ProjectAsset* same = out.findAsset(a.id); same && same->kind == a.kind && same->locator.path == a.locator.path) {
+            assetMap.emplace(a.id.value, a.id);
+            continue;
+        }
+        const auto match = std::ranges::find_if(out.assets, [&](const ProjectAsset& o) {
+            return o.kind == a.kind && o.locator.path == a.locator.path;
+        });
+        if (match != out.assets.end()) {
+            assetMap.emplace(a.id.value, match->id);
+            report.notes.push_back("'" + a.name + "': matched by path ('" + match->name + "')");
+            continue;
+        }
+        ProjectAsset copy = a;
+        copy.id = {};
+        auto added = edit::addAsset(out, std::move(copy));
+        if (!added) {
+            return std::unexpected(Error{added.error().code, "cannot add the file '" + a.name + "': " + added.error().message});
+        }
+        out = std::move(added->state);
+        assetMap.emplace(a.id.value, added->id);
+        report.assetsAdded.push_back(added->id);
+        report.notes.push_back("'" + a.name + "': added to the project");
+    }
+
     // Media: the same file by id, else by fingerprint, else by path, else added.
-    std::unordered_map<std::uint64_t, MediaId> mediaMap;
+    MediaMap mediaMap;
     for (const MediaPtr& m : document.content.media) {
         if (const MediaItem* same = out.findMedia(m->id); same && sameFile(*same, *m)) {
             mediaMap.emplace(m->id.value, m->id);
@@ -545,6 +754,12 @@ std::expected<PasteResult, Error> pasteClips(const ProjectState& state, Sequence
         MediaItem item = *m;
         item.id = {};
         item.bin = {};
+        remapEffectRefs(item.masterEffects, {}, assetMap); // its Master Clip Effects' LUTs (the pictures they name: mapped below)
+        // The effect instances are this project's now: ids from its generator. The source project's ids are not below
+        // this one's generator (the structure check refuses the paste) and would be handed out again (review-1 M4).
+        for (EffectInstance& e : item.masterEffects) {
+            e.id = out.ids.allocate<EffectInstanceId>();
+        }
         auto added = edit::addMedia(out, std::move(item));
         if (!added) {
             return std::unexpected(Error{added.error().code, "cannot add the media '" + m->name + "': " + added.error().message});
@@ -553,6 +768,20 @@ std::expected<PasteResult, Error> pasteClips(const ProjectState& state, Sequence
         mediaMap.emplace(m->id.value, added->id);
         report.mediaAdded.push_back(added->id);
         report.notes.push_back("'" + m->name + "': added to the project");
+    }
+    // An Image Matte Key in an added item's Master Clip Effects names another carried item by its id: point it at that item's
+    // place in this project, now that every carried item is in the map (it would name whatever has that id here).
+    for (const MediaId addedId : report.mediaAdded) {
+        for (MediaPtr& slot : out.media) {
+            if (slot->id != addedId || slot->masterEffects.empty()) {
+                continue;
+            }
+            MediaItem copy = *slot;
+            remapEffectRefs(copy.masterEffects, mediaMap, {});
+            if (!(copy.masterEffects == slot->masterEffects)) {
+                slot = std::make_shared<const MediaItem>(std::move(copy));
+            }
+        }
     }
     // The copied media's redactions (copyClips carries them), on the item the paste plays: added unless the same marks
     // already cover it here (same project, same item), so nothing pasted plays unredacted (review wave 5 E5-P2-4).
@@ -600,12 +829,18 @@ std::expected<PasteResult, Error> pasteClips(const ProjectState& state, Sequence
         normalized.derivedFrom.reset();
         std::set<std::uint64_t> media;
         std::set<std::uint64_t> inner;
-        collectSources(document.content, *s, media, inner);
+        std::set<std::uint64_t> assets;
+        collectSources(document.content, *s, media, inner, &assets);
+        // Ids the clipboard did not carry (a picture the copied project itself lacked) cannot differ here.
         const bool sameMedia = std::all_of(media.begin(), media.end(), [&](std::uint64_t id) {
             const auto it = mediaMap.find(id);
-            return it != mediaMap.end() && it->second.value == id;
+            return it != mediaMap.end() ? it->second.value == id : document.content.findMedia(MediaId{id}) == nullptr;
         });
-        (normalized == *s && sameMedia ? nestedOk : nestedOther).insert(s->id.value);
+        const bool sameAssets = std::all_of(assets.begin(), assets.end(), [&](std::uint64_t id) {
+            const auto it = assetMap.find(id);
+            return it != assetMap.end() ? it->second.value == id : document.content.findAsset(AssetId{id}) == nullptr;
+        });
+        (normalized == *s && sameMedia && sameAssets ? nestedOk : nestedOther).insert(s->id.value);
     }
     // A sequence is only the copied one when the ones it plays are too.
     for (auto it = nestedOk.begin(); it != nestedOk.end();) {
@@ -729,6 +964,14 @@ std::expected<PasteResult, Error> pasteClips(const ProjectState& state, Sequence
                 }
                 Clip n = c;
                 n.id = ed.newClipId();
+                n.locked = false; // 0.7 (card 064): a pasted copy of a locked clip is a new, unlocked clip
+                if (n.renderedNest()) {
+                    // 0.7 (card 069): a pasted copy plays the rendered file but cannot be restored: the nest it names is not
+                    // carried, and another project's sequence of that id must never stand in for it.
+                    ClipContent block = n.content();
+                    block.renderedNest.reset();
+                    n.setContent(std::move(block));
+                }
                 n.timelineRange.start = at + c.start();
                 if (c.media.isValid()) {
                     const auto m = mediaMap.find(c.media.value);
@@ -777,6 +1020,8 @@ std::expected<PasteResult, Error> pasteClips(const ProjectState& state, Sequence
                     }
                     n.setContent(std::move(block));
                 }
+                // Card 092: the other takes' effects get this project's instance ids too (the clip's own follow below).
+                ed.renewTakeEffectIds(n);
                 if (c.linkGroup.isValid()) {
                     auto g = groups.find(c.linkGroup.value);
                     if (g == groups.end()) {
@@ -799,6 +1044,7 @@ std::expected<PasteResult, Error> pasteClips(const ProjectState& state, Sequence
                     }
                     n.setEffects(std::move(effects));
                 }
+                remapClipRefs(n, mediaMap, assetMap); // 0.7 (card #93): graphic pictures, mattes and LUTs of the destination
                 if (options.mode == PasteMode::Overwrite) {
                     ed.clearRange(dest, n.timelineRange);
                 }

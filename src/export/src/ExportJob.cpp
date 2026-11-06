@@ -1,5 +1,6 @@
 #include "Delivery.h"
 #include "Encode.h"
+#include "HdrDynamic.h"
 #include "ExportLoudness.h"
 #include "FrameEffects.h"
 #include "MetadataWriter.h"
@@ -10,15 +11,19 @@
 
 #include <wabcut/export/CaptionSidecar.h>
 #include <wabcut/export/ClosedCaptions.h>
+#include <wabcut/export/Encoders.h>
 #include <wabcut/export/ExportJob.h>
+#include <wabcut/export/PreExportCheck.h>
 #include <wabcut/interchange/CaptionFiles.h>
 #include <wabcut/export/RenderedVideoSource.h>
 #include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/Resolve.h>
+#include <wabcut/playback/video/ExternalEffects.h>
 
 #include <wabcut/audio/effects/EffectChain.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <chrono>
 #include <exception>
@@ -105,7 +110,7 @@ public:
                  std::optional<std::vector<std::int64_t>> frames = std::nullopt)
         : m_source(source), m_converter(converter), m_frames(frames.value_or(std::vector<std::int64_t>{})),
           m_frameCount(frames ? static_cast<std::int64_t>(m_frames.size()) : frameCount), m_all(!frames),
-          m_thread([this](std::stop_token stop) { run(stop); }) {}
+          m_background(exportBackgroundMode()), m_thread([this](std::stop_token stop) { run(stop); }) {}
 
     ~ConvertStage() { stop(); }
     ConvertStage(const ConvertStage&) = delete;
@@ -139,6 +144,7 @@ private:
     }
 
     void run(const std::stop_token& stop) {
+        const BackgroundThreadMode mode(m_background); // 0.7: an idle preview render converts at low priority
         std::int64_t requested = 0;
         for (std::int64_t k = 0; k < m_frameCount; ++k) {
             {
@@ -175,6 +181,7 @@ private:
     std::vector<std::int64_t> m_frames;
     std::int64_t m_frameCount;
     bool m_all = true;
+    bool m_background = false; // 0.7: the stage's thread runs in the OS background mode
     std::mutex m_mutex;
     std::condition_variable_any m_changed;
     std::deque<std::expected<detail::FramePtr, Error>> m_queue;
@@ -344,7 +351,8 @@ std::set<MediaId> usedMedia(const ProjectState& project, const Sequence& seq, Ti
     if (video) {
         std::vector<std::size_t> tracks;
         for (std::size_t i = 0; i < seq.videoTracks.size(); ++i) {
-            if (seq.videoTracks[i] && (seq.videoTracks[i]->enabled || seq.multicam)) {
+            // 0.7 (card 106): the eye AND the solo of a video track (only soloed tracks render while any is soloed).
+            if (seq.videoTracks[i] && (videoTrackShown(seq, *seq.videoTracks[i]) || seq.multicam)) {
                 tracks.push_back(i);
             }
         }
@@ -402,6 +410,48 @@ void collectPluginProblems(const ProjectState& project, const Sequence& seq, Tim
                 const TimeRange inside = clip.isRemapped() ? TimeRange{Ticks{}, std::max(nested->duration, nested->contentEnd())}
                                                            : TimeRange::fromStartEnd(clip.sourceIn, clip.sourceOut());
                 collectPluginProblems(project, *nested, inside, depth + 1, out);
+            }
+        }
+    }
+}
+
+/// 0.7: why OpenFX plug-in effects on the export's video will not show as the project asks (the plug-in is missing on this
+/// computer, failed to load): the enabled clips' overlapping `range` on the visible tracks, and through nested clips the
+/// stacks they play.
+void collectVideoPluginProblems(const ProjectState& project, const Sequence& seq, TimeRange range, std::size_t depth,
+                                std::vector<std::string>& out) {
+    constexpr std::size_t kMaxDepth = 64; // as Resolve.h's nesting bound
+    if (depth >= kMaxDepth) {
+        return;
+    }
+    const auto processor = playback::externalEffectProcessor();
+    const auto check = [&](const EffectStack& stack) {
+        for (const EffectInstance& effect : stack) {
+            if (!effect.enabled || !effect.effect.starts_with("plugin.ofx.")) {
+                continue;
+            }
+            std::string problem = processor ? processor->problem(effect) : std::string("OpenFX plug-ins are not available here");
+            if (!problem.empty()) {
+                problem += " - the export does not have this effect";
+                if (std::find(out.begin(), out.end(), problem) == out.end()) {
+                    out.push_back(std::move(problem));
+                }
+            }
+        }
+    };
+    for (const TrackPtr& t : seq.videoTracks) {
+        if (!t || !t->enabled) {
+            continue;
+        }
+        for (const Clip& clip : t->clips) {
+            if (!clip.enabled || !clip.timelineRange.overlaps(range)) {
+                continue;
+            }
+            check(playedEffects(project, clip, EffectKind::Video));
+            if (const Sequence* nested = clip.isNested() ? project.findSequence(clip.sequence) : nullptr) {
+                const TimeRange inside = clip.isRemapped() ? TimeRange{Ticks{}, std::max(nested->duration, nested->contentEnd())}
+                                                           : TimeRange::fromStartEnd(clip.sourceIn, clip.sourceOut());
+                collectVideoPluginProblems(project, *nested, inside, depth + 1, out);
             }
         }
     }
@@ -519,6 +569,41 @@ std::vector<MissingOriginal> missingOriginals(const ProjectState& snapshot, cons
     return out;
 }
 
+std::expected<LoudnessReading, Error> measureExportLoudness(const ProjectState& state, const Sequence& sequence,
+                                                            const ExportSettings& settings,
+                                                            const std::filesystem::path& projectFile,
+                                                            const std::stop_token& stop) {
+    using namespace detail;
+    const auto r = resolve(settings, sequence, state.colorManagement);
+    if (!r) {
+        return std::unexpected(r.error());
+    }
+    // The export's own mix: the sound of the used media only (never the picture's), at the export's layout and rate.
+    auto originals = resolveOriginals(state, usedMedia(state, sequence, r->range, false, true), projectFile);
+    if (!originals) {
+        return std::unexpected(originals.error());
+    }
+    SequencePtr shared;
+    for (const SequencePtr& candidate : originals->project.sequences) {
+        if (candidate && candidate->id == sequence.id) {
+            shared = candidate;
+        }
+    }
+    if (!shared) {
+        return std::unexpected(Error{ErrorCode::NotFound, "There is no such sequence"});
+    }
+    const int channels = exportAudioChannels(settings.audio, sequence.masterFormat);
+    const int mixChannels = isMxf(settings.container) ? mxfMixChannels(channels, sequence.masterFormat) : channels;
+    const auto incidents = std::make_shared<wabcut::audio::RenderIncidents>();
+    const wabcut::audio::ScopedOfflineRender offline(incidents); // the master's plugins are created here
+    OfflineMix mix(originals->project, shared, mixChannels, settings.audio.sampleRate, r->range.start);
+    auto m = measureLoudness(mix, mixChannels, settings.audio.sampleRate, r->audioSamples, LoudnessNormalization{}, stop);
+    if (!m) {
+        return std::unexpected(m.error());
+    }
+    return LoudnessReading{m->integratedLufs, m->truePeakDbtp};
+}
+
 std::string_view exportPhaseName(ExportPhase phase) {
     switch (phase) {
     case ExportPhase::Queued:
@@ -627,7 +712,8 @@ struct ExportJob::Impl {
     }
 
     /// One encode; `rateScale` scales a target-size export's video bitrate (a second attempt that must come out smaller).
-    std::expected<ExportResult, Error> runImpl(const std::stop_token& stop, double rateScale = 1.0);
+    /// `retryOversize`: a target-size encode that ends over its size runs the second attempt itself (and false in it).
+    std::expected<ExportResult, Error> runImpl(const std::stop_token& stop, double rateScale = 1.0, bool retryOversize = true);
 };
 
 ExportJob::ExportJob(ExportRequest request) : m_impl(std::make_unique<Impl>()) {
@@ -650,16 +736,10 @@ std::expected<ExportResult, Error> ExportJob::run(std::stop_token stop) {
     std::expected<ExportResult, Error> result;
     const auto body = [&] {
         try {
+            // I.9: a target-size export that still comes out over its size is encoded once more at the rate that fits
+            // (150: inside runImpl, before the first file is put in place - a cancelled or failed second pass leaves
+            // no new file, or keeps the first as a result with a warning).
             result = m_impl->runImpl(stop);
-            // I.9: a target-size export that still came out over its size is encoded once more at the rate that fits.
-            const VideoSettings& v = m_impl->request.settings.video;
-            if (result && v.enabled && v.rateControl == RateControl::TargetSize && result->bytes > v.targetBytes) {
-                const double scale = (1.0 - kTargetSizeMargin) * static_cast<double>(v.targetBytes) / static_cast<double>(result->bytes);
-                result = m_impl->runImpl(stop, scale);
-                if (result) {
-                    result->attempts = 2;
-                }
-            }
         } catch (const std::exception& e) {
             result = std::unexpected(Error{ErrorCode::Unknown, std::format("Export failed: {}", e.what())});
         }
@@ -681,7 +761,8 @@ std::expected<ExportResult, Error> ExportJob::run(std::stop_token stop) {
     return result;
 }
 
-std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_token& stop, double rateScale) {
+std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_token& stop, double rateScale,
+                                                            bool retryOversize) {
     using namespace detail;
     setPhase(ExportPhase::Preparing);
     const ExportSettings& settings = request.settings;
@@ -821,7 +902,16 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
     AVStream* videoStream = nullptr;
     std::optional<AVMasteringDisplayMetadata> masteringDisplay; // I.9, PQ exports
     std::optional<SmartRenderPlan> smart;                        // 0.2: frames copied, not rendered
+    // 0.7 (HDR10+ / Dolby Vision): the NAL units put into the video packets, what the first pass measured, and how many
+    // access units got theirs. analysisUnits: the share of the progress bar the first pass takes (a third of the frames).
+    std::shared_ptr<detail::NalInjector> dynamicInjector;
+    std::shared_ptr<const detail::Hdr10PlusPlan> hdr10Plan;
+    std::vector<std::uint8_t> dolbyConfig;
+    const auto dynamicWritten = std::make_shared<std::atomic<std::int64_t>>(0);
+    std::int64_t analysisUnits = 0;
+    std::optional<VideoEncodeParams> encodeParams;               // 0.7 (card 049): to open an encoder per re-encoded segment
     if (hasVideo) {
+        collectVideoPluginProblems(*request.snapshot, *sequence, r.range, 0, result.warnings); // 0.7: OpenFX plug-ins
         // I.9: the colour description, and an HDR10 mastering display for PQ (0.2: RGB and JPEG outputs too).
         ColorTags tags = colorTagsFor(r.dynamicRange, settings.video.codec, settings.video.pixelFormat);
         applyOutputSpace(tags, r.outputSpace); // 0.6 (#72): Rec.2020 SDR and P3-D65 tags
@@ -835,12 +925,13 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
         }
         result.videoBitrate = encode.rateControl == RateControl::Bitrate ? encode.bitrate : 0;
         VideoEncodeParams params{encode, r.width, r.height, r.frameRate, muxer.wantsGlobalHeader()};
+        params.sampleAspect = AVRational{r.sampleAspect.num, r.sampleAspect.den}; // 145: the sequence's pixel aspect ratio
         params.primaries = tags.primaries;
         params.transfer = tags.transfer;
         params.matrix = tags.matrix;
         params.range = tags.range;
         // 0.2: copied packets interleave with encoded ones only if the encoder hands each frame back at once.
-        params.noFrameDelay = smartRenderEligible(settings);
+        params.noFrameDelay = smartRenderIntra(settings);
         if (r.dynamicRange == DynamicRange::Pq) {
             params.masteringDisplay = masteringDisplayFor(request.snapshot->colorManagement.peakNits);
         }
@@ -851,6 +942,7 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
             return std::unexpected(choice.error());
         }
         video = std::move(choice->encoder);
+        encodeParams = params;
         result.videoEncoder = video.name;
         result.dynamicRange = r.dynamicRange;
         result.encoderFallbacks = std::move(choice->fallbacks);
@@ -904,6 +996,94 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
         format.sdrConform = r.sdrConform;
         format.tenBit = r.tenBitRender;
         format.alpha = r.alpha;
+        // 0.7 (HDR10+, card "Dolby Vision 8.4 and HDR10+ dynamic metadata"): a first pass renders the range at half size and
+        // measures every frame's light (VideoSourceFormat::frameStats); the shots come from the sequence's edit points where
+        // the brightness jumps. Dolby Vision (a licensed writer) gets the same measurements.
+        if (r.dynamicMetadata != DynamicMetadata::None) {
+            const bool dolby = r.dynamicMetadata != DynamicMetadata::Hdr10Plus;
+            analysisUnits = std::max<std::int64_t>(1, (r.frameCount * 3 + 9) / 10);
+            std::vector<FrameLightStats> stats;
+            if (r.dynamicRange == DynamicRange::Pq) {
+                VideoSourceFormat measure = format;
+                measure.frameStats = true;
+                measure.width = std::max(16, (format.width / 2) & ~1);
+                measure.height = std::max(16, (format.height / 2) & ~1);
+                measure.burnInCaptions.reset(); // the light of the picture, not of the captions drawn over it
+                auto measured = factory(originals->project, *sequence, measure);
+                if (!measured) {
+                    return std::unexpected(measured.error());
+                }
+                IVideoFrameSource& pass = **measured;
+                std::stop_callback stopPass(stop, [&pass] { pass.stop(); });
+                publish(
+                    [&](ExportProgress& p) {
+                        p.phase = ExportPhase::Rendering;
+                        p.analyzing = true;
+                        p.framesDone = 0;
+                        p.framesTotal = analysisUnits + r.frameCount;
+                    },
+                    true);
+                stats.reserve(static_cast<std::size_t>(r.frameCount));
+                std::int64_t requested = 0;
+                for (std::int64_t k = 0; k < r.frameCount; ++k) {
+                    if (stop.stop_requested() || !pausePoint(stop)) {
+                        return cancelled();
+                    }
+                    while (requested < r.frameCount && requested < k + pass.maxInFlight()) {
+                        if (auto ok = pass.request(requested); !ok) {
+                            return std::unexpected(ok.error());
+                        }
+                        ++requested;
+                    }
+                    auto frame = pass.next();
+                    if (!frame) {
+                        return stop.stop_requested() ? cancelled() : std::unexpected(frame.error());
+                    }
+                    const std::optional<FrameLightStats> light = pass.frameStats(k);
+                    if (!light) {
+                        return std::unexpected(Error{ErrorCode::Unsupported, "The video source cannot measure the light of its frames, "
+                                                                             "which the dynamic HDR metadata is built from"});
+                    }
+                    stats.push_back(*light);
+                    publish([&](ExportProgress& p) { p.framesDone = (k + 1) * analysisUnits / r.frameCount; }, false);
+                }
+                pass.stop();
+            }
+            const std::vector<std::int64_t> candidates =
+                detail::shotStartsOf(*request.snapshot, request.sequence, r.range, r.frameRate, r.frameCount);
+            if (dolby) {
+                // The licensed writer builds its RPUs from the same measurements (it may need none: HLG, stats empty).
+                const std::shared_ptr<DolbyVisionWriter> writer = DolbyVisionRegistry::get();
+                if (!writer) {
+                    return std::unexpected(Error{ErrorCode::InvalidArgument, DolbyVisionRegistry::unavailableReason(r.dynamicMetadata)});
+                }
+                auto config = writer->begin(r.dynamicMetadata, stats, candidates);
+                if (!config) {
+                    return std::unexpected(config.error());
+                }
+                dolbyConfig = std::move(*config);
+                struct WriterInjector final : detail::NalInjector {
+                    explicit WriterInjector(std::shared_ptr<DolbyVisionWriter> w) : writer(std::move(w)) {}
+                    std::expected<DolbyVisionWriter::Units, Error> unitsFor(std::int64_t frameIndex) override {
+                        return writer->unitsFor(frameIndex);
+                    }
+                    std::shared_ptr<DolbyVisionWriter> writer;
+                };
+                dynamicInjector = std::make_shared<WriterInjector>(writer);
+                result.dynamicMetadata.kind = r.dynamicMetadata;
+                result.dynamicMetadata.note = writer->name();
+            } else {
+                auto plan = detail::planHdr10Plus(stats, candidates);
+                if (!plan) {
+                    return std::unexpected(plan.error());
+                }
+                hdr10Plan = std::make_shared<const detail::Hdr10PlusPlan>(std::move(*plan));
+                dynamicInjector = std::shared_ptr<detail::NalInjector>(detail::makeHdr10PlusInjector(hdr10Plan));
+                result.dynamicMetadata = hdr10Plan->report;
+                result.dynamicMetadata.written = false; // until the packets carry it
+            }
+            publish([&](ExportProgress& p) { p.analyzing = false; p.framesDone = analysisUnits; }, true);
+        }
         auto src = factory(originals->project, *sequence, format);
         if (!src) {
             return std::unexpected(src.error());
@@ -917,11 +1097,52 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
             return std::unexpected(st.error());
         }
         videoStream = *st;
+        if (dynamicInjector) {
+            if (!dolbyConfig.empty()) { // the Dolby Vision configuration record: MP4 / MOV write 'dvcC' / 'dvvC' from it
+                auto* record = static_cast<std::uint8_t*>(av_malloc(dolbyConfig.size()));
+                if (!record) {
+                    return std::unexpected(Error{ErrorCode::EncoderError, "Cannot set the Dolby Vision configuration"});
+                }
+                std::copy(dolbyConfig.begin(), dolbyConfig.end(), record);
+                // FFmpeg's MP4 muxer writes 'dvcC' / 'dvvC' only with -strict unofficial (movenc.c: the box is Dolby's, not an
+                // ISO one); without it the file would carry RPUs with no declaration.
+                muxer.setFormatOption("strict", "unofficial");
+                if (!av_packet_side_data_add(&videoStream->codecpar->coded_side_data, &videoStream->codecpar->nb_coded_side_data,
+                                             AV_PKT_DATA_DOVI_CONF, record, dolbyConfig.size(), 0)) {
+                    av_free(record);
+                    return std::unexpected(Error{ErrorCode::EncoderError, "Cannot set the Dolby Vision configuration"});
+                }
+            }
+            // The encoder's access units are Annex B (start codes): the muxer turns them into the container's form. The
+            // message goes in front of the first slice of the frame whose pts the packet has.
+            const Rate frameRate = r.frameRate;
+            muxer.setPacketFilter(
+                videoStream,
+                [injector = dynamicInjector, written = dynamicWritten, frameRate](AVPacket* packet,
+                                                                                   AVRational timeBase) -> std::expected<void, Error> {
+                    if (packet->pts == AV_NOPTS_VALUE) {
+                        return {};
+                    }
+                    const std::int64_t frame = av_rescale_q(packet->pts, timeBase, AVRational{frameRate.den, frameRate.num});
+                    auto units = injector->unitsFor(frame);
+                    if (!units) {
+                        return std::unexpected(units.error());
+                    }
+                    if (detail::insertNalUnits(packet, units->before, units->after)) {
+                        ++*written;
+                    }
+                    return {};
+                });
+        }
+        // 0.7 (VR / 360 video): a VR sequence is marked as spherical (MP4, MKV, WebM) so players and YouTube recognise it.
+        if (sequence->vr.isVr()) {
+            muxer.setSpherical(videoStream, sequence->vr);
+        }
         if (masteringDisplay) {
             setHdrStreamMetadata(videoStream, &*masteringDisplay, nullptr); // the light levels follow at the end
         }
         // 0.2: smart rendering - the frames whose packets are copied from preview or source files.
-        if (params.noFrameDelay) {
+        if (smartRenderEligible(settings)) {
             SmartRenderPlan::Inputs in;
             in.project = &originals->project;
             in.snapshot = request.snapshot.get();
@@ -932,6 +1153,15 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
             in.previews = request.previews.get();
             in.projectFile = request.projectFile;
             smart = SmartRenderPlan::build(in, stop);
+            if (smart->longGop()) {
+                // 0.7 (card 049): what was copied and why the rest was encoded again, even when nothing was copied.
+                result.smartRenderCodec = settings.video.codec == VideoCodec::Hevc ? "HEVC" : "H.264";
+                result.smartRenderNotes = smart->notes();
+                for (SmartRenderNote& note : result.smartRenderNotes) {
+                    const Ticks at = r.range.start + framesToTicks(note.firstFrame, r.frameRate, Rounding::Nearest).value_or(Ticks{});
+                    note.firstTimecode = timecodeText(at, r.frameRate, sequence->dropFrame);
+                }
+            }
             if (smart->copiedFrames() == 0) {
                 smart.reset();
             }
@@ -1043,7 +1273,8 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
     publish(
         [&](ExportProgress& p) {
             p.phase = ExportPhase::Rendering;
-            p.framesTotal = framesTotal;
+            p.analyzing = false;
+            p.framesTotal = framesTotal + analysisUnits;
         },
         true);
 
@@ -1084,6 +1315,51 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
         }
         ConvertStage stage(*source, *converter, r.frameCount,
                            smart ? std::optional<std::vector<std::int64_t>>(smart->renderedFrames()) : std::nullopt);
+        // 0.7 (card 049), long-GOP smart rendering: whole GOPs are copied; the frames between them are encoded in segments,
+        // each by an encoder of its own (same settings, so same headers) that starts with an IDR and is drained at the end
+        // of the segment. Every packet of the file is stamped dts = first frame of its segment + its place in the segment
+        // - delay, so decode order counts up by one across copied GOPs and segments alike.
+        const bool gopMode = smart && smart->longGop();
+        SegmentStamp stamp;
+        bool segmentOpen = false;   // frames went to `video` since it was opened
+        bool encoderStale = false;  // `video` was drained: a new one is opened for the next segment
+        std::int64_t gopDelay = 0;
+        std::vector<std::uint8_t> firstHeaders;
+        if (gopMode) {
+            gopDelay = std::max(smart->maxReorder(), encoderReorderDelay(video.ctx.get()));
+            stamp.delay = gopDelay;
+            firstHeaders.assign(video.ctx->extradata, video.ctx->extradata + std::max(0, video.ctx->extradata_size));
+        }
+        const auto endSegment = [&]() -> std::expected<void, Error> {
+            if (!segmentOpen) {
+                return {};
+            }
+            segmentOpen = false;
+            encoderStale = true;
+            if (const int rc = avcodec_send_frame(video.ctx.get(), nullptr); rc < 0) {
+                return std::unexpected(ffmpegError(ErrorCode::EncoderError, "Cannot flush the video encoder", rc));
+            }
+            return drainSegment(video.ctx.get(), packet.get(), muxer, videoStream, true, stamp);
+        };
+        const auto beginSegment = [&](std::int64_t frame) -> std::expected<void, Error> {
+            if (encoderStale) {
+                auto fresh = openVideoEncoder(video.name, *encodeParams, false);
+                if (!fresh) {
+                    return std::unexpected(fresh.error());
+                }
+                const std::vector<std::uint8_t> headers(fresh->ctx->extradata,
+                                                        fresh->ctx->extradata + std::max(0, fresh->ctx->extradata_size));
+                if (headers != firstHeaders) {
+                    return std::unexpected(Error{ErrorCode::EncoderError, "The video encoder wrote other headers the second time"});
+                }
+                video = std::move(*fresh);
+                encoderStale = false;
+            }
+            stamp.start = frame;
+            stamp.index = 0;
+            segmentOpen = true;
+            return {};
+        };
         // P.2 / 0.6 (#73) Embed In Output File: each frame's cc_data (608 on its channel, 708 in its service, padding)
         // as ATSC A/53 caption data on the frame, and / or as a packet of the caption track.
         const bool embedInVideo = closedCaptions && captionPlan->inVideo;
@@ -1094,7 +1370,18 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
             if (stop.stop_requested() || !pausePoint(stop)) {
                 return cancelled();
             }
-            if (const CopyFrame* copy = smart ? smart->copyFor(k) : nullptr) {
+            const CopyFrame* copy = smart ? smart->copyFor(k) : nullptr;
+            if (gopMode && copy && copy->gop >= 0) {
+                const CopyGop& gop = smart->gops()[static_cast<std::size_t>(copy->gop)];
+                if (k == gop.firstFrame) { // the whole GOP goes out with its first frame
+                    if (auto ok = endSegment(); !ok) {
+                        return std::unexpected(ok.error());
+                    }
+                    if (auto ok = copier->copyGop(gop, muxer, videoStream, video.ctx->time_base, gopDelay, stop); !ok) {
+                        return std::unexpected(ok.error());
+                    }
+                }
+            } else if (copy) {
                 auto copied = copier->packet(*copy, k);
                 if (!copied) {
                     return std::unexpected(copied.error());
@@ -1103,6 +1390,11 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
                     return std::unexpected(ok.error());
                 }
             } else {
+                if (gopMode && !segmentOpen) {
+                    if (auto ok = beginSegment(k); !ok) {
+                        return std::unexpected(ok.error());
+                    }
+                }
                 auto converted = stage.next();
                 if (!converted) {
                     return std::unexpected(converted.error());
@@ -1124,12 +1416,24 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
                 if (const int rc = avcodec_send_frame(video.ctx.get(), ready->get()); rc < 0) {
                     return std::unexpected(ffmpegError(ErrorCode::EncoderError, "Video encoding failed", rc));
                 }
-                if (auto ok = drainEncoder(video.ctx.get(), packet.get(), muxer, videoStream, false); !ok) {
+                if (auto ok = gopMode ? drainSegment(video.ctx.get(), packet.get(), muxer, videoStream, false, stamp)
+                                      : drainEncoder(video.ctx.get(), packet.get(), muxer, videoStream, false);
+                    !ok) {
                     return std::unexpected(ok.error());
                 }
             }
             if (captionStream) { // 0.6 (#73): the caption track's packet of frame k
                 if (auto ok = captionWriter.frame(k, closedCaptions->frame(k)); !ok) {
+                    return std::unexpected(ok.error());
+                }
+            }
+            if (subtitles) {
+                // The soft subtitle track (card 146): each cue goes to the muxer as the video reaches its start, so its
+                // packet is interleaved beside the picture it belongs to. Written after the loop, every cue would sit
+                // after all the video and audio (libavformat only holds ~10 s back), in MKV in clusters at the file's tail
+                // with early timestamps: sequential players show them late or never.
+                const auto frameMs = mulDiv(k, std::int64_t{1000} * r.frameRate.den, r.frameRate.num, Rounding::Nearest);
+                if (auto ok = subtitles->writeUntil(cues, frameMs.value_or(0), muxer); !ok) {
                     return std::unexpected(ok.error());
                 }
             }
@@ -1139,19 +1443,25 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
                     return std::unexpected(audioStage->finish().error());
                 }
             }
-            publish([&](ExportProgress& p) { p.framesDone = k + 1; }, false);
+            publish([&](ExportProgress& p) { p.framesDone = analysisUnits + k + 1; }, false);
         }
         if (captionStream) {
             if (auto ok = captionWriter.finish(r.frameCount); !ok) {
                 return std::unexpected(ok.error());
             }
         }
-        if (const int rc = avcodec_send_frame(video.ctx.get(), nullptr); rc < 0) {
-            return std::unexpected(
-                ffmpegError(ErrorCode::EncoderError, "Cannot flush the video encoder", rc));
-        }
-        if (auto ok = drainEncoder(video.ctx.get(), packet.get(), muxer, videoStream, true); !ok) {
-            return std::unexpected(ok.error());
+        if (gopMode) {
+            if (auto ok = endSegment(); !ok) {
+                return std::unexpected(ok.error());
+            }
+        } else {
+            if (const int rc = avcodec_send_frame(video.ctx.get(), nullptr); rc < 0) {
+                return std::unexpected(
+                    ffmpegError(ErrorCode::EncoderError, "Cannot flush the video encoder", rc));
+            }
+            if (auto ok = drainEncoder(video.ctx.get(), packet.get(), muxer, videoStream, true); !ok) {
+                return std::unexpected(ok.error());
+            }
         }
         if (audioStage) {
             audioStage->videoReached(r.audioSamples);
@@ -1179,7 +1489,8 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
     if (stop.stop_requested()) {
         return cancelled();
     }
-    // 0.2: the soft subtitle track (its packets interleave by time with what is written already).
+    // 0.2: the soft subtitle track: the cues that start after the last frame (the video loop wrote the others as the
+    // picture reached them, card 146).
     if (subtitles) {
         if (auto ok = subtitles->write(cues, muxer); !ok) {
             return std::unexpected(ok.error());
@@ -1208,6 +1519,17 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
             setHdrStreamMetadata(videoStream, &*masteringDisplay, &cll);
             result.maxCll = static_cast<int>(cll.MaxCLL);
             result.maxFall = static_cast<int>(cll.MaxFALL);
+        }
+    }
+    if (dynamicInjector) { // 0.7: how many access units carry the metadata
+        const std::int64_t written = dynamicWritten->load();
+        result.dynamicMetadata.frames = written;
+        result.dynamicMetadata.written = written > 0 && written >= r.frameCount;
+        if (!result.dynamicMetadata.written) {
+            result.dynamicMetadata.note = written == 0 ? "The encoder's output is not in a form the metadata can be put into"
+                                                       : "Only some frames carry the metadata";
+            result.warnings.push_back(std::string(r.dynamicMetadata == DynamicMetadata::Hdr10Plus ? "HDR10+" : "Dolby Vision") +
+                                      " metadata was not written to every frame: " + result.dynamicMetadata.note);
         }
     }
     if (auto ok = muxer.finish(); !ok) {
@@ -1248,6 +1570,37 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
             result.warnings.push_back(std::move(warning));
         }
     }
+    // 150, I.9: a target-size export that came out over its size is encoded once more at the rate that fits. The first
+    // file is NOT put in place (nor its sidecars) before the second encode has decided: cancelled, nothing new is
+    // written and an earlier file at the output stays; failed, the first file is the result, with a warning that it
+    // is over its size.
+    if (retryOversize && hasVideo && !images && !mxfAudio && settings.video.rateControl == RateControl::TargetSize) {
+        const auto firstBytes = static_cast<std::int64_t>(std::filesystem::file_size(temp.path, ec));
+        if (!ec && firstBytes > settings.video.targetBytes) {
+            // The first pass' picture source and converter are done: freed before the second one builds its own.
+            stopSourceOnCancel.reset();
+            stopper.source = nullptr;
+            if (source) {
+                source->stop();
+                source.reset();
+            }
+            converter.reset();
+            const double scale = (1.0 - kTargetSizeMargin) * static_cast<double>(settings.video.targetBytes) /
+                                 static_cast<double>(firstBytes);
+            auto second = runImpl(stop, scale, false);
+            if (second) {
+                second->attempts = 2;
+                return second;
+            }
+            if (second.error().code == ErrorCode::Cancelled || stop.stop_requested()) {
+                return second;
+            }
+            result.attempts = 2;
+            result.warnings.push_back(std::format(
+                "The second, smaller encode failed ({}): the file is {:.1f} MB, over the {:.1f} MB target", second.error().message,
+                static_cast<double>(firstBytes) / 1e6, static_cast<double>(settings.video.targetBytes) / 1e6));
+        }
+    }
     std::int64_t imageBytes = 0;
     if (images) {
         // 0.2: the stills into place, numbered from 0 ("<name>000.png", ...), or the single still as the output.
@@ -1267,19 +1620,37 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
         }
         result.imageFiles = r.frameCount;
     } else {
-        std::filesystem::rename(temp.path, output, ec); // replaces an existing output
-        if (ec) {
-            return std::unexpected(
-                Error{ErrorCode::IoError, std::format("Cannot move the export into place at {}: {}",
-                                                      pathToUtf8(output), ec.message())});
-        }
-        temp.keep = true;
-        if (mxfAudio) { // 0.6 (#73): OP-Atom's audio files into place, now that their picture file is
-            auto files = mxfAudio->commitFiles();
+        if (mxfAudio && settings.container == Container::MxfOpAtom) {
+            // 0.6 (#73), 152: OP-Atom's audio files and its picture file go into place as ONE unit - a locked or
+            // unwritable file leaves the earlier export as it was, never a new picture with old or missing audio. The
+            // earlier export's audio files beyond this one's track count are removed (they would pair with it).
+            const bool replacing = std::filesystem::exists(output, ec);
+            auto files = mxfAudio->commitFiles(temp.path, output);
             if (!files) {
-                return std::unexpected(files.error());
+                return std::unexpected(Error{files.error().code, "Cannot move the export into place: " + files.error().message});
             }
+            temp.keep = true;
             result.extraFiles = std::move(*files);
+            if (replacing) {
+                std::vector<std::filesystem::path> notOurs;
+                for (const std::filesystem::path& stale :
+                     removeStaleAudioFiles(output, mxfAudio->tracks(), originals->files, &notOurs)) {
+                    result.warnings.push_back("Removed " + pathToUtf8(stale.filename()) +
+                                              ", an audio file of the earlier export that this one has no track for");
+                }
+                for (const std::filesystem::path& other : notOurs) {
+                    result.warnings.push_back("Left " + pathToUtf8(other.filename()) +
+                                              " where it is: it is not an audio file this program wrote");
+                }
+            }
+        } else {
+            std::filesystem::rename(temp.path, output, ec); // replaces an existing output
+            if (ec) {
+                return std::unexpected(
+                    Error{ErrorCode::IoError, std::format("Cannot move the export into place at {}: {}",
+                                                          pathToUtf8(output), ec.message())});
+            }
+            temp.keep = true;
         }
         if (mxf) {
             result.materialUmid = mxfMaterialUmid(output); // 0.6 (#73): for the export details

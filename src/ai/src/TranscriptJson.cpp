@@ -25,6 +25,9 @@ json segmentToJson(const TranscriptSegment& s) {
     if (s.speakerId) {
         j["speaker"] = *s.speakerId;
     }
+    if (!s.language.empty()) { // 0.7 (card 111): written only for a transcript with mixed languages
+        j["language"] = s.language;
+    }
     return j;
 }
 
@@ -127,6 +130,7 @@ std::expected<Transcript, Error> transcriptFromJson(std::string_view text) {
             if (s.contains("speaker")) {
                 segment.speakerId = s.at("speaker").get<int>();
             }
+            segment.language = s.value("language", std::string{});
             t.segments.push_back(std::move(segment));
         }
         if (auto valid = t.validate(); !valid) {

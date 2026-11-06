@@ -1,6 +1,11 @@
 #include <wabcut/model/EditSession.h>
 
+#include <wabcut/model/ClipLock.h>
+#include <wabcut/model/KeyPins.h>
+
 #include <algorithm>
+#include <chrono>
+#include <ctime>
 #include <unordered_set>
 #include <variant>
 
@@ -9,6 +14,20 @@ namespace wabcut {
 namespace {
 
 constexpr std::size_t kNodeOverhead = 64; // allocation + control block, roughly
+
+/// The system clock as ISO-8601 UTC, "2026-11-04T09:30:00Z".
+std::string nowUtcText() {
+    const std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    std::tm tm{};
+#ifdef _WIN32
+    gmtime_s(&tm, &t);
+#else
+    gmtime_r(&t, &tm);
+#endif
+    char text[32];
+    std::strftime(text, sizeof text, "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return text;
+}
 
 std::size_t sequenceBytes(const Sequence& s) {
     std::size_t bytes = sizeof(Sequence) + kNodeOverhead + s.name.size() + s.markers.size() * sizeof(Marker);
@@ -224,7 +243,9 @@ std::expected<ChangeSet, Error> EditSession::showPreview(std::string_view label,
     // snapshot() stays the committed state: only shown() (what plays) changes. The preview never raises the id
     // high-water mark: it hands out no ids the history would have to skip.
     const ProjectSnapshot before = shown();
-    auto published = std::make_shared<const ProjectState>(next);
+    // 0.7 (card 120): keys pinned to a clip end that moved follow it in the preview as they will in the commit.
+    const std::optional<ProjectState> followedPins = edit::followPinnedKeyframes(*snapshot(), next);
+    auto published = std::make_shared<const ProjectState>(followedPins ? *followedPins : next);
     ChangeSet changes = diff(*before, *published);
     if (m_preview) {
         retire(std::move(m_preview)); // the previous preview
@@ -260,7 +281,30 @@ std::expected<ChangeSet, Error> EditSession::commitFrom(const ProjectState& base
         }
     }
     const ProjectSnapshot current = snapshot();
-    auto published = std::make_shared<const ProjectState>(next);
+    // 0.7 (card 064): a locked clip never changes through an edit, whatever the edit is (the session is the one place every
+    // edit of the app, the commands and the scripts passes). Unlocking is an edit of the flag alone.
+    if (auto locked = edit::lockedClipProblem(*current, next)) {
+        return std::unexpected(std::move(*locked));
+    }
+    // 0.7 (card 144): a sequence this commit adds (an id the base does not have) is stamped with the time it was made,
+    // whichever edit made it (new, duplicate, nest, import...). The edit operations stay pure: no clock in them.
+    std::optional<ProjectState> stamped;
+    for (std::size_t i = 0; i < next.sequences.size(); ++i) {
+        const SequencePtr& added = next.sequences[i];
+        if (!added || !added->createdAt.empty() || base.findSequence(added->id)) {
+            continue;
+        }
+        if (!stamped) {
+            stamped = next;
+        }
+        auto copy = std::make_shared<Sequence>(*added);
+        copy->createdAt = m_options.clock ? m_options.clock() : nowUtcText();
+        stamped->sequences[i] = std::move(copy);
+    }
+    // 0.7 (card 120): keyframes pinned to a clip end follow it when an edit moved that end (edit::followPinnedKeyframes), in the
+    // same undo step, whatever the edit is.
+    std::optional<ProjectState> followedPins = edit::followPinnedKeyframes(*current, stamped ? *stamped : next);
+    auto published = std::make_shared<const ProjectState>(followedPins ? std::move(*followedPins) : stamped ? *stamped : next);
     raiseIdHighWater(*published);
     ChangeSet changes = diff(*current, *published);
 

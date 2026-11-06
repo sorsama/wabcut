@@ -8,16 +8,22 @@
 #include <wabcut/interchange/Docx.h>
 #include <wabcut/model/CaptionOps.h>
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/Graphics.h>
+#include <wabcut/model/GraphicOps.h>
 #include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/Plural.h>
+#include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/Spelling.h>
 #include <wabcut/model/TextFind.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <tuple>
 
@@ -155,6 +161,9 @@ Json styleSchema() {
         {"boxOpacity", num("Box opacity.", 0.0, 1.0)},
         {"boxPadding", num("Box padding, fraction of the font size.", 0.0, 2.0)},
         {"boxRadius", num("Box corner radius, fraction of the font size.", 0.0, 2.0)},
+        {"features", schema::string("OpenType features for the shaper, as CSS font-feature-settings: calt, -liga, ss01, salt=2 (at most "
+                                    "16; \"\" = the font's defaults). Persian and Arabic joining forms and contextual alternates are "
+                                    "on already.")},
         {"placement", schema::enumeration({"bottom", "top", "custom"},
                                           "Bottom or top of the safe area, or at positionX/positionY.")},
         {"safeArea", num("Safe-area inset from each frame edge, fraction of the frame.", 0.0, 0.4)},
@@ -164,8 +173,29 @@ Json styleSchema() {
         {"maxWidth", num("Widest text block, fraction of the frame width.", 0.1, 1.0)},
         {"lineSpacing", num("Line spacing (1 = the font's).", 0.5, 3.0)},
         {"highlight", colorParam("Karaoke: colour of the words already spoken.")},
-        {"animation", schema::enumeration({"none", "pop", "fade", "wordByWord"},
-                                          "Kinetic captions (reserved: drawn as none today).")},
+        {"animation", schema::enumeration({"none", "pop", "fade", "wordByWord", "wordPop", "bounce", "highlightBar",
+                                           "typewriter", "zoom"},
+                                          "Kinetic captions: pop / fade (the whole caption), wordByWord (words appear as "
+                                          "spoken), wordPop (each word pops in), bounce (the spoken word hops), "
+                                          "highlightBar (a bar slides to the spoken word), typewriter (letters appear "
+                                          "one by one), zoom (the spoken word grows). The word looks follow the "
+                                          "transcript's word times (else the cue's time shared by word length).")},
+        {"animationSpeed", num("Seconds one word's transition takes (default 0.15); fade takes a third longer.", 0.05, 1.0)},
+        {"animationEase", schema::enumeration({"smooth", "overshoot", "linear"},
+                                              "The curve of a word's transition (default overshoot: a little past, then settles).")},
+        {"emphasis", schema::enumeration({"none", "keywords", "auto"},
+                                         "Emphasised words are drawn in emphasisColor and emphasisScale larger: keywords "
+                                         "(the words of emphasisWords) or auto (those plus numbers, words in capitals "
+                                         "and words followed by \"!\").")},
+        {"emphasisWords", schema::array(schema::string("A keyword, compared without case."),
+                                        "The keywords (at most 64 words of up to 64 bytes).", 0)},
+        {"emphasisColor", colorParam("Colour of emphasised words.")},
+        {"emphasisScale", num("How much larger an emphasised word is drawn (1 = not larger).", 1.0, 1.5)},
+        {"textCase", schema::enumeration({"asWritten", "lower", "upper"},
+                                         "The case the caption text is drawn and exported in (cue text is not changed).")},
+        {"stripPunctuation", schema::boolean("Draw and export the text without commas, full stops, quotes and the like "
+                                             "(apostrophes and hyphens inside words, and the separators of numbers, stay).")},
+        {"stripAccents", schema::boolean("Draw and export the text without accents: marks on Latin, Greek and Cyrillic letters go, and a few letters fold to plain ones (Polish l-stroke, o-slash, eth, thorn); Thai vowel and tone marks stay.")},
         {"showSpeakers", schema::boolean("Start each cue with its speaker's name in the speaker's colour.")},
         {"allowOverlap", schema::boolean("Cues of the track may overlap (stacked).")},
         {"brand",
@@ -208,6 +238,13 @@ CaptionStyle patchedStyle(ExecutionContext& c, CaptionStyle s, const char* key =
     if (p.contains("fontWeight")) {
         s.fontWeight = p["fontWeight"].get<std::int32_t>();
     }
+    if (p.contains("features")) { // 0.7 (card #138)
+        const auto parsed = parseFontFeatures(p["features"].get<std::string>());
+        if (!parsed) {
+            fail(ErrorCode::InvalidParams, "OpenType features: " + parsed.error(), Json{{"path", base + "features"}});
+        }
+        s.features = toString(*parsed);
+    }
     number("fontSize", s.fontSize);
     color("fill", s.fill);
     number("outlineWidth", s.outlineWidth);
@@ -242,6 +279,27 @@ CaptionStyle patchedStyle(ExecutionContext& c, CaptionStyle s, const char* key =
     color("highlight", s.highlight);
     if (p.contains("animation")) {
         s.animation = *captionAnimationFromString(p["animation"].get<std::string>());
+    }
+    number("animationSpeed", s.animationSpeed);
+    if (p.contains("animationEase")) {
+        s.animationEase = *captionEaseFromString(p["animationEase"].get<std::string>());
+    }
+    if (p.contains("emphasis")) {
+        s.emphasis = *captionEmphasisFromString(p["emphasis"].get<std::string>());
+    }
+    if (p.contains("emphasisWords")) {
+        s.emphasisWords = p["emphasisWords"].get<std::vector<std::string>>();
+    }
+    color("emphasisColor", s.emphasisColor);
+    number("emphasisScale", s.emphasisScale);
+    if (p.contains("textCase")) {
+        s.textCase = *captionTextCaseFromString(p["textCase"].get<std::string>());
+    }
+    if (p.contains("stripPunctuation")) {
+        s.stripPunctuation = p["stripPunctuation"].get<bool>();
+    }
+    if (p.contains("stripAccents")) {
+        s.stripAccents = p["stripAccents"].get<bool>();
     }
     if (p.contains("showSpeakers")) {
         s.showSpeakers = p["showSpeakers"].get<bool>();
@@ -295,6 +353,7 @@ Json captionStyleJson(const CaptionStyle& s) {
                 {"boxOpacity", s.boxOpacity},
                 {"boxPadding", s.boxPadding},
                 {"boxRadius", s.boxRadius},
+                {"features", s.features},
                 {"placement", std::string(toString(s.placement))},
                 {"safeArea", s.safeArea},
                 {"positionX", positionJson(s.positionX)},
@@ -304,6 +363,15 @@ Json captionStyleJson(const CaptionStyle& s) {
                 {"lineSpacing", s.lineSpacing},
                 {"highlight", hexColor(s.highlight)},
                 {"animation", std::string(toString(s.animation))},
+                {"animationSpeed", s.animationSpeed},
+                {"animationEase", std::string(toString(s.animationEase))},
+                {"emphasis", std::string(toString(s.emphasis))},
+                {"emphasisWords", s.emphasisWords},
+                {"emphasisColor", hexColor(s.emphasisColor)},
+                {"emphasisScale", s.emphasisScale},
+                {"textCase", std::string(toString(s.textCase))},
+                {"stripPunctuation", s.stripPunctuation},
+                {"stripAccents", s.stripAccents},
                 {"showSpeakers", s.showSpeakers},
                 {"allowOverlap", s.allowOverlap}};
     if (!s.brand.empty()) {
@@ -320,6 +388,13 @@ CommandOutput projectEdited(ProjectState state, Json data = nullptr) {
     out.state = std::move(state);
     out.data = std::move(data);
     return out;
+}
+
+/// 0.7: two caption preset names are the same ignoring case (ASCII), as the project treats them.
+bool sameCaptionPresetName(std::string_view a, std::string_view b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+               return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+           });
 }
 
 // --- Speakers ----------------------------------------------------------------------------------------------
@@ -607,7 +682,222 @@ std::string clippedUtf8(std::string s, std::size_t max) {
     return s;
 }
 
+
+// --- 0.7 (card 075): captions to graphics -------------------------------------------------------------------------
+
+/// A cue's text as the graphic shows it: lower case applied (upper case is the text's All Caps, which keeps the letters).
+std::string graphicCueText(const CaptionCue& cue, const CaptionStyle& style) {
+    std::string text = cue.text;
+    if (style.textCase == CaptionTextCase::Lower) {
+        for (char& ch : text) {
+            if (ch >= 'A' && ch <= 'Z') {
+                ch = static_cast<char>(ch - 'A' + 'a');
+            }
+        }
+    }
+    return text;
+}
+
+GraphicColor graphicColor(const CaptionRgb& rgb, double alpha = 1.0) {
+    GraphicColor color;
+    color.rgba = {rgb[0], rgb[1], rgb[2], alpha};
+    return color;
+}
+
+/// The graphic of one cue, in the look of the track's caption style (CaptionStyle.h) on a `width` x `height` canvas. The text
+/// is paragraph text in a box as wide as the caption block (the style's maxWidth) and as tall as its lines (boxHeight 0):
+/// the box grows with the text, and a caption at the bottom (or top) of the frame is pinned to the frame's edge, so a longer
+/// text grows upwards (downwards) from the safe margin instead of running off the picture.
+Graphic graphicOfCue(const CaptionCue& cue, const CaptionStyle& style, std::int32_t width, std::int32_t height, const std::string& name) {
+    const double size = std::clamp(style.fontSize * height, 1.0, 2000.0);
+    Graphic graphic;
+    graphic.name = name;
+    graphic.width = width;
+    graphic.height = height;
+
+    GraphicLayer layer;
+    layer.id = 1;
+    layer.name = name;
+    layer.kind = LayerKind::Text;
+
+    TextRun run;
+    run.text = graphicCueText(cue, style);
+    run.style.fontFamily = style.fontFamily;
+    run.style.fontWeight = style.fontWeight;
+    run.style.fontSize = size;
+    run.style.fill = graphicColor(style.fill);
+    run.style.caps = style.textCase == CaptionTextCase::Upper ? TextCaps::AllCaps : TextCaps::Normal;
+    run.style.leading = style.lineSpacing == 1.0 ? 0.0 : 1.2 * size * style.lineSpacing;
+    layer.text.runs = {run};
+    layer.text.align = style.alignment == CaptionAlign::Left    ? TextAlign::Left
+                       : style.alignment == CaptionAlign::Right ? TextAlign::Right
+                                                                : TextAlign::Center;
+    const double boxWidth = std::clamp(style.maxWidth * width, 1.0, static_cast<double>(width));
+    layer.text.boxWidth = boxWidth;
+    layer.text.boxHeight = 0.0; // as tall as the text: the box grows with it
+    if (style.box) {
+        layer.text.background.enabled = true;
+        layer.text.background.color = graphicColor(style.boxColor, style.boxOpacity);
+        layer.text.background.padding = style.boxPadding * size;
+        layer.text.background.radius = style.boxRadius * size;
+    }
+    if (style.outlineWidth > 0.0) {
+        TextStroke stroke;
+        stroke.color = graphicColor(style.outline);
+        stroke.width = ParamValue(style.outlineWidth * size);
+        stroke.position = StrokePosition::Outside;
+        layer.text.strokes = {stroke};
+    }
+    if (style.shadowOpacity > 0.0) {
+        layer.shadow.enabled = true;
+        layer.shadow.color = graphicColor(style.shadowColor);
+        layer.shadow.opacity = style.shadowOpacity;
+        layer.shadow.angle = style.shadowAngle;
+        layer.shadow.distance = style.shadowDistance * size;
+        layer.shadow.softness = style.shadowSoftness * size;
+    }
+
+    // Where the block sits: its centre column at the frame's middle (or the custom position), the text laid out from the
+    // block's left, centre or right edge.
+    const double centreX = style.placement == CaptionPlacement::Custom ? style.positionX.constant() * width : width / 2.0;
+    layer.transform.x = ParamValue(style.alignment == CaptionAlign::Left    ? centreX - boxWidth / 2.0
+                                   : style.alignment == CaptionAlign::Right ? centreX + boxWidth / 2.0
+                                                                            : centreX);
+    // An estimate of the lines, for where the top edge starts before the frame's edge pins it.
+    std::size_t lines = 1;
+    for (const char ch : run.text) {
+        lines += ch == '\n' ? 1 : 0;
+    }
+    const double lineHeight = run.style.leading > 0.0 ? run.style.leading : 1.2 * size;
+    const double estimated = static_cast<double>(lines) * lineHeight;
+    const double margin = style.safeArea * height;
+    if (style.placement == CaptionPlacement::Top) {
+        layer.transform.y = ParamValue(margin);
+        LayerPin pin;
+        pin.target = LayerPin::kVideoFrame;
+        pin.edges = LayerPin::kTop;
+        pin.offsets = {0.0, margin, 0.0, 0.0};
+        layer.pin = pin;
+    } else if (style.placement == CaptionPlacement::Bottom) {
+        layer.transform.y = ParamValue(height - margin - estimated);
+        LayerPin pin;
+        pin.target = LayerPin::kVideoFrame;
+        pin.edges = LayerPin::kBottom;
+        pin.offsets = {0.0, 0.0, 0.0, -margin};
+        layer.pin = pin;
+    } else {
+        layer.transform.y = ParamValue(style.positionY.constant() * height - estimated / 2.0);
+    }
+    graphic.layers = {std::move(layer)};
+    return graphic;
+}
+
+CommandOutput captionsToGraphics(ExecutionContext& c) {
+    const CaptionTrack& source = captionTrackOf(c);
+    const Sequence& seq = c.sequence();
+    const std::optional<Ticks> from = c.optionalTime("from");
+    const std::optional<Ticks> to = c.optionalTime("to");
+    if (from && to && *to <= *from) {
+        fail(ErrorCode::InvalidParams, "\"to\" must come after \"from\"", Json{{"path", "/to"}});
+    }
+    const std::string captions = c.string("captions", "hide");
+    if (captions != "hide" && captions != "keep" && captions != "remove") {
+        fail(ErrorCode::InvalidParams, "\"captions\" is \"hide\", \"keep\" or \"remove\"", Json{{"path", "/captions"}});
+    }
+    // The cues that start inside the range, in order.
+    std::vector<const CaptionCue*> cues;
+    for (const CaptionCue& cue : source.cues) {
+        if ((!from || cue.start >= *from) && (!to || cue.start < *to) && !cue.text.empty()) {
+            cues.push_back(&cue);
+        }
+    }
+    if (cues.empty()) {
+        fail(ErrorCode::EditRejected, "caption track " + std::to_string(source.id.value) + " has no cues there to convert");
+    }
+    const CaptionStyle style = resolvedCaptionStyle(source.style, c.state().brandKit ? &*c.state().brandKit : nullptr);
+
+    ProjectState state = c.state();
+    // Where the graphics go: the named video track when it is free under every cue, else new video tracks on top - one,
+    // or more when the track's cues overlap (a style that allows it).
+    std::vector<TrackId> lanes;
+    std::vector<Ticks> laneEnd;
+    const bool named = c.has("track");
+    if (named) {
+        const TrackId id = c.track("track");
+        const Track* t = seq.findTrack(id);
+        if (t == nullptr || t->kind != TrackKind::Video) {
+            fail(ErrorCode::InvalidParams, "\"track\" must be a video track", Json{{"path", "/track"}});
+        }
+        for (const CaptionCue* cue : cues) {
+            for (const Clip& clip : t->clips) {
+                if (clip.start() < cue->end() && cue->start < clip.end()) {
+                    fail(ErrorCode::EditRejected,
+                         "track " + c.trackLabel(id) + " is not free under the cue at " + c.timecode(cue->start) +
+                             ": name a free track, or leave \"track\" out for new ones");
+                }
+            }
+        }
+        lanes.push_back(id);
+        laneEnd.push_back(Ticks{});
+    }
+    CommandOutput out;
+    Json placed = Json::array();
+    const std::string baseName = source.name.empty() ? std::string("Caption") : source.name;
+    for (const CaptionCue* cue : cues) {
+        std::size_t lane = lanes.size();
+        for (std::size_t i = 0; i < lanes.size(); ++i) {
+            if (laneEnd[i] <= cue->start) {
+                lane = i;
+                break;
+            }
+        }
+        if (lane == lanes.size()) {
+            if (named || lanes.size() >= 8) {
+                fail(ErrorCode::EditRejected, "the cues at " + c.timecode(cue->start) + " overlap more than a track can take");
+            }
+            auto created = c.take(edit::addTrack(state, c.sequenceId(), TrackKind::Video, baseName));
+            state = std::move(created.state);
+            lanes.push_back(created.id);
+            laneEnd.push_back(Ticks{});
+        }
+        laneEnd[lane] = cue->end();
+        edit::EditResult r = c.take(edit::addGraphic(state, c.sequenceId(), lanes[lane], cue->start, cue->duration,
+                                                     graphicOfCue(*cue, style, seq.width, seq.height, baseName)));
+        state = std::move(r.state);
+        out.createdIds.push_back(r.placed.front().value);
+        placed.push_back(r.placed.front().value);
+        c.checkpoint("converting captions");
+    }
+    // The captions themselves: hidden (the graphics show the same text), kept as they are, or removed with the track.
+    if (captions == "hide") {
+        edit::CaptionTrackChange change;
+        change.enabled = false;
+        state = c.take(edit::setCaptionTrackInfo(state, c.sequenceId(), source.id, change)).state;
+    } else if (captions == "remove") {
+        if (from || to) {
+            fail(ErrorCode::InvalidParams, "\"remove\" takes the whole caption track: leave \"from\" and \"to\" out",
+                 Json{{"path", "/captions"}});
+        }
+        state = c.take(edit::removeCaptionTrack(state, c.sequenceId(), source.id)).state;
+    }
+    out.state = std::move(state);
+    Json labels = Json::array();
+    for (const TrackId id : lanes) {
+        labels.push_back(c.trackLabel(id));
+    }
+    out.data = Json{{"clips", std::move(placed)}, {"tracks", std::move(labels)}, {"captions", captions},
+                    {"converted", cues.size()}};
+    return out;
+}
+
 } // namespace
+
+Graphic captionTextGraphic(const std::string& text, const CaptionStyle& style, std::int32_t width, std::int32_t height,
+                           const std::string& name) {
+    CaptionCue cue;
+    cue.text = text;
+    return graphicOfCue(cue, style, width, height, name);
+}
 
 void registerCaptionCommands(CommandRegistry& registry) {
     // --- Tracks --------------------------------------------------------------------------------------------
@@ -649,13 +939,20 @@ void registerCaptionCommands(CommandRegistry& registry) {
                     return out;
                 }});
     addBuiltin(registry,
-               {"captions.setTrack", 1, "Caption Track Settings", "Renames a caption track, sets its language or shows/hides it.",
+               {"captions.setTrack", 1, "Caption Track Settings",
+                "Renames a caption track, sets its language, shows/hides it, or draws it together with the main caption "
+                "track (bilingual captions).",
                 Capability::EditSequence,
                 withSequence({{"captionTrack", captionTrackParam()},
                               {"name", nameParam("New name.", kMaxCaptionNameBytes)},
                               {"language", nameParam("ISO 639-1 language.", 16)},
-                              {"enabled", schema::boolean("Shown (burned in and exported).")}}),
-                Json{{"captionTrack", 57}, {"name", "Thai"}, {"language", "th"}}, {},
+                              {"enabled", schema::boolean("Shown (burned in and exported).")},
+                              {"showTogether",
+                               schema::boolean("Drawn on screen together with the main caption track (the one chosen for the "
+                                               "monitor or the export, else the first shown): the monitor and exports show "
+                                               "both, stacked in track order (the first topmost), each in its own style. "
+                                               "Needs \"enabled\".")}}),
+                Json{{"captionTrack", 57}, {"showTogether", true}}, {},
                 [](ExecutionContext& c) {
                     const CaptionTrack& track = captionTrackOf(c);
                     edit::CaptionTrackChange change;
@@ -667,6 +964,9 @@ void registerCaptionCommands(CommandRegistry& registry) {
                     }
                     if (c.has("enabled")) {
                         change.enabled = c.boolean("enabled", true);
+                    }
+                    if (c.has("showTogether")) {
+                        change.showTogether = c.boolean("showTogether", false);
                     }
                     return edited(c.take(edit::setCaptionTrackInfo(c.state(), c.sequenceId(), track.id, change)));
                 }});
@@ -823,6 +1123,28 @@ void registerCaptionCommands(CommandRegistry& registry) {
                                                                patchedStyle(c, track.style))),
                                   Json{{"style", captionStyleJson(patchedStyle(c, track.style))}});
                 }});
+    // 0.7 (card 075): Premiere's Upgrade Caption to Graphic, with a text box that grows with its text.
+    addBuiltin(registry,
+               {"captions.toGraphics", 1, "Convert Captions to Graphics",
+                "Turns the cues of a caption track into graphic clips, one per cue at the cue's time, so the text can be "
+                "animated, restyled and moved like a title (Essential Graphics, graphic.applyPreset, Effect Controls). Each is "
+                "a text layer in the track's caption style - font, size, colours, outline, shadow, background box, "
+                "alignment, placement, line spacing - as paragraph text in a box as wide as the caption block and as tall as "
+                "its lines: the box grows with the text, and a caption at the bottom (top) is pinned to the frame's edge, so "
+                "editing it to a longer text grows it upwards (downwards) from the safe margin. Lower and upper case are "
+                "applied; the kinetic animation looks, speaker names, punctuation and accent rules are not (they belong to "
+                "caption rendering). The graphics go on new video tracks on top (more than one when cues overlap), or on "
+                "\"track\" when it is free under every cue. \"captions\" says what happens to the cues: \"hide\" switches "
+                "the caption track off so the text is not drawn twice (default), \"keep\" leaves it showing, \"remove\" "
+                "deletes the track. One undo step.",
+                Capability::EditSequence,
+                withSequence({{"captionTrack", captionTrackParam()},
+                              {"from", timeParam("Only the cues that start at or after this time.")},
+                              {"to", timeParam("Only the cues that start before this time.")},
+                              {"track", trackParam("A free video track for the graphics (default: new tracks on top).")},
+                              {"captions", schema::enumeration({"hide", "keep", "remove"},
+                                                               "What happens to the caption track. Default hide.")}}),
+                Json{{"captionTrack", 57}, {"captions", "hide"}}, {}, captionsToGraphics});
     addBuiltin(registry,
                {"captions.applyPreset", 1, "Apply Caption Preset",
                 "Gives a caption track the style of a preset: built in (" + presetList + ") or one of the project's.",
@@ -865,6 +1187,133 @@ void registerCaptionCommands(CommandRegistry& registry) {
                 [](ExecutionContext& c) {
                     return projectEdited(c.take(edit::removeCaptionPreset(c.state(), c.string("name"))));
                 }});
+    // 0.7 (card 115): caption presets as files, to use one look in every project.
+    addBuiltin(
+        registry,
+        command::touchesFiles(
+            {"captions.exportPresets", 1, "Export Caption Presets",
+             "Writes the project's caption presets (or the ones named) to a file (.wabcut-caption-presets.json) that "
+             "captions.importPresets reads into any other project: how one look is reused across projects. \"merge\" keeps "
+             "the presets already in the file (those of the same name are replaced) - how the app's own library of looks "
+             "grows. Refuses to replace a file unless \"overwrite\" or \"merge\". Built-in presets are in every project and "
+             "are not written. The project does not change; a dry run writes nothing.",
+             Capability::Read,
+             withSequence({{"path", Json{{"type", "string"}, {"minLength", 1}, {"maxLength", 4096},
+                                         {"description", "The file to write (UTF-8 path)."}}},
+                           {"names", schema::array(nameParam("A preset name.", kMaxCaptionNameBytes),
+                                                   "Only these presets (default: all the project's).", 1)},
+                           {"merge", schema::boolean("Keep the presets already in the file (default false).")},
+                           {"overwrite", schema::boolean("Replace an existing file (default false).")}},
+                          {"path"}),
+             Json{{"path", "C:/Looks/channel.wabcut-caption-presets.json"}, {"names", Json::array({"Channel look"})}}, {},
+             [](ExecutionContext& c) {
+                 const std::filesystem::path file = pathFromUtf8(c.string("path"));
+                 std::error_code ec;
+                 const bool exists = std::filesystem::exists(file, ec);
+                 const bool merge = c.boolean("merge", false);
+                 if (exists && !merge && !c.boolean("overwrite", false)) {
+                     fail(ErrorCode::EditRejected, "the file exists; pass \"overwrite\" to replace it or \"merge\" to add to it",
+                          Json{{"path", "/path"}});
+                 }
+                 std::vector<CaptionPreset> out;
+                 if (merge && exists) {
+                     std::ifstream in(file, std::ios::binary);
+                     const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                     out = c.take(io::captionPresetsFromJson(text));
+                 }
+                 std::vector<std::string> written;
+                 const auto put = [&](const CaptionPreset& p) {
+                     std::erase_if(out, [&](const CaptionPreset& q) { return sameCaptionPresetName(q.name, p.name); });
+                     out.push_back(p);
+                     written.push_back(p.name);
+                 };
+                 if (c.has("names")) {
+                     for (const Json& n : c.params()["names"]) {
+                         const CaptionPreset* p = c.state().findCaptionPreset(n.get<std::string>());
+                         if (p == nullptr) {
+                             fail(ErrorCode::NotFound, "the project has no caption preset \"" + n.get<std::string>() + "\"",
+                                  Json{{"path", "/names"}});
+                         }
+                         put(*p);
+                     }
+                 } else {
+                     for (const CaptionPreset& p : c.state().captionPresets) {
+                         put(p);
+                     }
+                 }
+                 if (written.empty()) {
+                     fail(ErrorCode::EditRejected, "the project has no caption presets of its own to export");
+                 }
+                 if (out.size() > kMaxCaptionPresets) {
+                     fail(ErrorCode::EditRejected, "a file holds at most " + std::to_string(kMaxCaptionPresets) + " caption presets");
+                 }
+                 if (!c.dryRun()) {
+                     const std::string text = c.take(io::captionPresetsToJson(out));
+                     c.take(io::writeFileAtomically(file, text));
+                 }
+                 return projectEdited(c.state(), Json{{"path", c.string("path")}, {"presets", written}, {"fileHolds", out.size()}});
+             }},
+            {"path"}));
+    addBuiltin(
+        registry,
+        command::touchesFiles(
+            {"captions.importPresets", 1, "Import Caption Presets",
+             "Reads a caption presets file (captions.exportPresets, the app's Export Presets) into the project: every preset "
+             "in it, or the ones named, becomes one of the project's own. A name the project already has is skipped unless "
+             "\"replace\" (then every caption track that follows it takes the new look); built-in names are never replaced. "
+             "One undo step.",
+             Capability::EditProject,
+             withSequence({{"path", Json{{"type", "string"}, {"minLength", 1}, {"maxLength", 4096},
+                                         {"description", "The caption presets file (UTF-8 path)."}}},
+                           {"names", schema::array(nameParam("A preset name.", kMaxCaptionNameBytes),
+                                                   "Only these presets (default: all in the file).", 1)},
+                           {"replace", schema::boolean("Replace the project's presets of the same names (default false: skipped).")}},
+                          {"path"}),
+             Json{{"path", "C:/Looks/channel.wabcut-caption-presets.json"}}, {},
+             [](ExecutionContext& c) {
+                 const std::filesystem::path file = pathFromUtf8(c.string("path"));
+                 std::error_code ec;
+                 if (!std::filesystem::is_regular_file(file, ec)) {
+                     fail(ErrorCode::NotFound, "the presets file does not exist", Json{{"path", "/path"}});
+                 }
+                 if (std::filesystem::file_size(file, ec) > io::kMaxCaptionPresetsFileBytes) {
+                     fail(ErrorCode::InvalidParams, "the presets file is larger than 4 MiB", Json{{"path", "/path"}});
+                 }
+                 std::ifstream in(file, std::ios::binary);
+                 const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                 const std::vector<CaptionPreset> presets = c.take(io::captionPresetsFromJson(text));
+                 std::vector<std::string> wanted;
+                 if (c.has("names")) {
+                     for (const Json& n : c.params()["names"]) {
+                         wanted.push_back(n.get<std::string>());
+                     }
+                 }
+                 const bool replace = c.boolean("replace", false);
+                 ProjectState state = c.state();
+                 Json imported = Json::array();
+                 Json skipped = Json::array();
+                 for (const CaptionPreset& p : presets) {
+                     if (!wanted.empty() && std::none_of(wanted.begin(), wanted.end(), [&](const std::string& n) {
+                             return sameCaptionPresetName(n, p.name);
+                         })) {
+                         continue;
+                     }
+                     if (isOriginalBuiltinCaptionPreset(p.name)) {
+                         skipped.push_back(Json{{"name", p.name}, {"reason", "a built-in preset has this name"}});
+                     } else if (!replace && state.findCaptionPreset(p.name) != nullptr) {
+                         skipped.push_back(Json{{"name", p.name}, {"reason", "the project has a preset of this name"}});
+                     } else {
+                         state = c.take(edit::saveCaptionPreset(state, p));
+                         imported.push_back(p.name);
+                     }
+                 }
+                 if (imported.empty() && skipped.empty()) {
+                     fail(ErrorCode::NotFound, wanted.empty() ? "the file holds no caption presets"
+                                                              : "the file has none of the named presets", Json{{"path", "/names"}});
+                 }
+                 return projectEdited(std::move(state), Json{{"imported", std::move(imported)}, {"skipped", std::move(skipped)}});
+             }},
+            {"path"}));
     addBuiltin(registry,
                {"captions.presets", 1, "Caption Presets",
                 "The caption presets: built in, then the project's, each with its style.", Capability::Read,
@@ -907,6 +1356,54 @@ void registerCaptionCommands(CommandRegistry& registry) {
                     const CaptionTrack& track = captionTrackOf(c);
                     return projectEdited(c.take(edit::pushCaptionTrackStyle(c.state(), c.sequenceId(), track.id)),
                                          Json{{"style", track.trackStyle}});
+                }});
+
+    // --- Custom words (0.7, card 061) ---------------------------------------------------------------------------
+    addBuiltin(
+        registry,
+        {"transcript.setCustomWords", 1, "Custom Words",
+         "Sets the project's custom words for transcription: names, game titles, jargon and invented terms the "
+         "recogniser should spell right. They are given to the local transcriber as its vocabulary hint and to a cloud "
+         "transcriber as key terms the next time audio is transcribed (transcript.transcribe; audio that already has a "
+         "transcript needs \"force\" to be heard again). Give \"words\" (replaces the list; an empty list clears it) or "
+         "\"text\" (one word or phrase per line, or separated by commas); \"add\" keeps the words already there and adds "
+         "these. Words are trimmed, duplicates (any case) dropped; at most 200 of 80 bytes. One undo step.",
+         Capability::EditProject,
+         withSequence({{"words", schema::array(schema::string("A word or short phrase, e.g. \"Elden Ring\"."), "The words.")},
+                       {"text", schema::string("Or the words as text: one per line, or separated by commas or semicolons.")},
+                       {"add", schema::boolean("Add to the words already there instead of replacing them (default false).", false)}}),
+         Json{{"words", Json::array({"Malenia", "Elden Ring"})}}, {},
+         [](ExecutionContext& c) {
+             std::vector<std::string> words;
+             if (c.has("words")) {
+                 for (const Json& w : c.params()["words"]) {
+                     words.push_back(w.get<std::string>());
+                 }
+             }
+             if (c.has("text")) {
+                 for (std::string& w : edit::splitCustomWords(c.string("text"))) {
+                     words.push_back(std::move(w));
+                 }
+             }
+             if (!c.has("words") && !c.has("text")) {
+                 fail(ErrorCode::InvalidParams, "give \"words\" or \"text\" (an empty list clears the words)");
+             }
+             if (c.boolean("add", false)) {
+                 words.insert(words.begin(), c.state().customWords.begin(), c.state().customWords.end());
+             }
+             ProjectState next = c.take(edit::setCustomWords(c.state(), std::move(words)));
+             Json list = next.customWords;
+             return projectEdited(std::move(next), Json{{"words", std::move(list)}});
+         }});
+    addBuiltin(registry,
+               {"transcript.customWords", 1, "List Custom Words",
+                "The project's custom words for transcription (transcript.setCustomWords).", Capability::Read,
+                withSequence({}), Json::object(), {},
+                [](ExecutionContext& c) {
+                    CommandOutput out;
+                    out.state = c.state();
+                    out.data = Json{{"words", c.state().customWords}};
+                    return out;
                 }});
 
     // --- Speakers ------------------------------------------------------------------------------------------
@@ -971,7 +1468,7 @@ void registerCaptionCommands(CommandRegistry& registry) {
                 "\"into\", and the merged speakers go.",
                 Capability::EditProject,
                 withSequence({{"from", Json{{"type", Json::array({"integer", "array"})},
-                                             {"description", "Speaker id(s) to merge away."},
+                                             {"description", "One speaker id, or an array of them, to merge away."},
                                              {"items", schema::integer("Speaker id.", 1)},
                                              {"minimum", 1}}},
                                 {"into", schema::integer("The speaker that stays.", 1)}},
@@ -1352,8 +1849,8 @@ CommandOutput placeCaptionFileCues(ExecutionContext& c, const std::filesystem::p
                                                                   {"cuesWithSpeaker", withSpeaker}});
                     out.createdIds.push_back(id.value);
                     if (dropped > 0) {
-                        out.warnings.push_back(std::to_string(dropped) +
-                                               " cue(s) could not be used (no text, no length or before the sequence start)");
+                        out.warnings.push_back(counted(static_cast<std::int64_t>(dropped), "cue") +
+                                               " not used (no text, no length or before the sequence start)");
                     }
                     for (auto& [key, value] : extra.items()) {
                         out.data[key] = value; // the format's own facts (interchange: format, report)

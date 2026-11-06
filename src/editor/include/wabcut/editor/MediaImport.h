@@ -156,6 +156,9 @@ struct MediaImportOptions {
     /// the same undo step; read on the probing threads. Preferences > Media "Chapter markers in recordings become clip
     /// markers" (on by default).
     bool readChapters = true;
+    /// 0.7 (stock media, card 035): per file given, the rights record its NEW item gets (empty, or shorter than `files`: none). Items
+    /// the project already had keep their own record.
+    std::vector<std::optional<MediaRights>> rights;
 };
 
 struct MediaImportResult {

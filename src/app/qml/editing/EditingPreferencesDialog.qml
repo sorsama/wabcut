@@ -70,7 +70,7 @@ WabcutDialog {
             Layout.fillWidth: true
             compact: true
             readonly property var values: ["none", "scaleToFrameSize", "setToFrameSize", "setToFillFrame"]
-            model: [qsTr("None"), qsTr("Scale to frame size"), qsTr("Set to frame size"), qsTr("Set to fill frame")]
+            model: [qsTr("None"), qsTr("Auto fit"), qsTr("Set scale to fit"), qsTr("Set scale to fill")]
             currentIndex: values.indexOf(Editing.defaultMediaScaling)
             onActivated: index => {
                 Editing.defaultMediaScaling = values[index]
@@ -78,7 +78,7 @@ WabcutDialog {
             }
         }
         Note {
-            text: qsTr("How media you import from now on is sized when it goes into a sequence of another frame size. Scale to frame size fits the picture and keeps Motion > Scale at 100 %; Set to frame size and Set to fill frame set Motion > Scale so the picture fits or fills the frame. Media already imported keeps its setting; change single clips with Video Options in the clip menu.")
+            text: qsTr("How media you import from now on is sized when it goes into a sequence of another frame size. Auto fit fits the picture and keeps Motion > Scale at 100 % (Premiere calls it Scale to Frame Size); Set scale to fit and Set scale to fill write the Motion > Scale that makes the picture fit or fill the frame (Premiere: Set to Frame Size and Fill Frame). Media already imported keeps its setting; change single clips with Video Options in the clip menu.")
         }
         // P0 round: OBS's "Add Chapter Marker" hotkey marks become clip markers on import.
         Toggle {

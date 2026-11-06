@@ -123,6 +123,8 @@ enum class LibraryEffect : int {
     BevelEdges = 55,
     DirectionalBlur = 56,
     CameraBlur = 57,
+    EyeContact = 58, // 0.7 (AI Eye Contact)
+    VrReorient = 59,
     // Stylize (LibraryStylize.cpp).
     UnsharpMask = 70,
     Emboss = 71,
@@ -160,6 +162,9 @@ enum class LibraryEffect : int {
     Lightning = 118,
     Scribble = 119,
     PaintBucket = 120,
+    DepthBlur = 121,
+    SkinSmoothing = 122, // 0.7 (LibraryRetouch.cpp)
+    FaceRetouch = 123,
 };
 
 using LibraryParams = std::array<double, 32>;

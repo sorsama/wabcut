@@ -52,8 +52,9 @@ class TranscriptBridge;
 /// The app's services for the AI-9 commands: transcripts, audio analysis, subjects (one subject provider, one
 /// wabcut-embed with the detectors, for the whole app) and, when given, the user's cloud chat model (created on the GUI
 /// thread through AiPlatform, so consent, the locks and the spend cap apply to its calls).
+/// `chatLocal` (r07, QA-07): the chat model runs on this computer, so a no-cloud project may use it.
 std::shared_ptr<command::CommandServices> aiEditingServices(TranscriptBridge* transcripts, const std::filesystem::path& projectFile,
-                                                            std::shared_ptr<ai::IChatModel> chat = nullptr);
+                                                            std::shared_ptr<ai::IChatModel> chat = nullptr, bool chatLocal = false);
 
 /// The project the preview frames (image://wabcut-frames) are decoded from: bridges that show frames of a project set
 /// it before their previews (the Shorts, Reframe, Rough cut, Takes and Auto zoom bridges).

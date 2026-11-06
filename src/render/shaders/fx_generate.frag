@@ -56,6 +56,9 @@ const int OP_CELL_PATTERN = 117;
 const int OP_LIGHTNING = 118;
 const int OP_SCRIBBLE = 119;
 const int OP_PAINT_BUCKET = 120;
+const int OP_DEPTH_BLUR = 121; // 0.7: AI Refocus
+const int OP_SKIN_SMOOTHING = 122; // 0.7: Skin Smoothing (CPU twin: render/reference/LibraryRetouch.cpp)
+const int OP_FACE_RETOUCH = 123;   // 0.7: AI Face Retouch (tex1: R skin, G mouth, B eyes as linear coverage)
 
 float q[32];
 
@@ -574,6 +577,204 @@ bool bucketSimilar(vec4 c, vec4 seedColor)
     return d * 255.0 <= q[3];
 }
 
+// ---- 0.7: Skin Smoothing and AI Face Retouch ------------------------------------------------------------------------------
+// Both work on the straight colour encoded with the BT.709 curve and write back only the change (retouchDelta), so a pixel
+// they leave alone stays bit-exact (also above 1.0). The CPU twin, render/reference/LibraryRetouch.cpp, has the same
+// constants, tap layouts and formulas; docs/effects.md describes the controls.
+const float RETOUCH_GOLDEN = 2.39996323;
+const float RETOUCH_RANGE_SIGMA = 0.08; // the smoothing's colour tolerance (distance in encoded RGB)
+
+// How skin-toned an encoded colour is, 0..1: the angle of (Cb, Cr) (BT.709) near `tone` degrees, enough chroma (not grey, not
+// a saturated primary) and a luma that is neither black nor white.
+float skinTone(vec3 e, float tone, float halfWidth, float soft)
+{
+    float y = luma(e);
+    float cb = (e.b - y) / 1.8556;
+    float cr = (e.r - y) / 1.5748;
+    float chroma = length(vec2(cb, cr));
+    float angle = degrees(atan(cr, cb));
+    if (angle < 0.0)
+        angle += 360.0;
+    float d = abs(angle - tone);
+    d = min(d, 360.0 - d);
+    float edge = mix(3.0, 20.0, soft);
+    float wHue = 1.0 - smoothstep(max(halfWidth - edge, 0.0), halfWidth + edge, d);
+    float wChroma = smoothstep(0.015, 0.045, chroma) * (1.0 - smoothstep(0.16, 0.26, chroma));
+    float wLuma = smoothstep(0.08, 0.2, y) * (1.0 - smoothstep(0.93, 0.995, y));
+    return wHue * wChroma * wLuma;
+}
+
+// Applies the change from encoded `from` to `to` to the layer's premultiplied linear pixel.
+vec4 retouchDelta(vec4 in0, vec3 from, vec3 to)
+{
+    if (to == from)
+        return in0;
+    return vec4(in0.rgb + (eotf3(to) - eotf3(from)) * in0.a, in0.a);
+}
+
+// The skin weight of the tap at `uv`: from the face map (fromMap) or from its own colour.
+float retouchSkinAt(vec2 uv, vec4 tap, vec3 e, bool fromMap, float tone, float halfWidth, float soft)
+{
+    if (tap.a <= 0.0)
+        return 0.0;
+    return fromMap ? clamp(textureLod(tex1, uv, 0.0).r, 0.0, 1.0) : skinTone(e, tone, halfWidth, soft);
+}
+
+// An edge-preserving smoothing of the skin around the pixel: 24 taps on a Vogel disc of `radius` texels, each weighted by a
+// Gaussian of its distance (sigma radius / 2), by how close its colour is to `c0` and by its own skin weight. rgb = the
+// smoothed colour (c0 where no skin is around), a = the skin weight averaged over the disc (the pixel counts as a tap).
+vec4 smoothSkin(vec3 c0, float s0, float radius, bool fromMap, float tone, float halfWidth, float soft)
+{
+    vec2 base = v_uv * p.texel.zw;
+    vec3 num = c0 * s0;
+    float den = s0;
+    float skinSum = s0;
+    float weightSum = 1.0;
+    for (int i = 0; i < 24; ++i) {
+        float rr = sqrt((float(i) + 0.5) / 24.0) * radius;
+        float th = float(i) * RETOUCH_GOLDEN;
+        vec2 cell = clamp(floor(base + vec2(cos(th), sin(th)) * rr), vec2(0.0), p.texel.zw - 1.0);
+        vec2 uv = (cell + 0.5) * p.texel.xy;
+        vec4 tap = textureLod(tex0, uv, 0.0);
+        vec3 e = encoded(tap);
+        float s = retouchSkinAt(uv, tap, e, fromMap, tone, halfWidth, soft);
+        float ws = exp(-2.0 * (rr / radius) * (rr / radius));
+        vec3 dc = e - c0;
+        float ws2 = ws * s;
+        float wr = ws2 * exp(-dot(dc, dc) / (2.0 * RETOUCH_RANGE_SIGMA * RETOUCH_RANGE_SIGMA));
+        num += wr * e;
+        den += wr;
+        skinSum += ws2;
+        weightSum += ws;
+    }
+    return vec4(den > 1e-6 ? num / den : c0, skinSum / weightSum);
+}
+
+// Spot healing: a robust average of the skin around the pixel (16 taps on a disc of `radius` texels; the first average is
+// averaged again without the taps far from it, and the pixel is only healed where most of the skin agrees on one colour), and where the pixel and the pixel smoothed over its 4 neighbours both differ
+// from it by more than a threshold, but not by a feature's worth, the pixel moves to it, keeping its own fine texture.
+vec3 healBlemish(vec3 c0, float strength, float radius)
+{
+    vec2 base = v_uv * p.texel.zw;
+    vec3 colors[16];
+    float weights[16];
+    vec3 sum1 = vec3(0.0);
+    float tot1 = 0.0;
+    for (int i = 0; i < 16; ++i) {
+        float rr = sqrt((float(i) + 0.5) / 16.0) * radius;
+        float th = float(i) * RETOUCH_GOLDEN;
+        vec2 cell = clamp(floor(base + vec2(cos(th), sin(th)) * rr), vec2(0.0), p.texel.zw - 1.0);
+        vec2 uv = (cell + 0.5) * p.texel.xy;
+        vec4 tap = textureLod(tex0, uv, 0.0);
+        vec3 e = encoded(tap);
+        float w = tap.a > 0.0 ? clamp(textureLod(tex1, uv, 0.0).r, 0.0, 1.0) : 0.0;
+        colors[i] = e;
+        weights[i] = w;
+        sum1 += w * e;
+        tot1 += w;
+    }
+    if (tot1 < 1e-4)
+        return c0;
+    vec3 mean1 = sum1 / tot1;
+    vec3 sum2 = vec3(0.0);
+    float tot2 = 0.0;
+    for (int i = 0; i < 16; ++i) {
+        vec3 d = colors[i] - mean1;
+        float w = weights[i] * exp(-dot(d, d) / (2.0 * 0.08 * 0.08));
+        sum2 += w * colors[i];
+        tot2 += w;
+    }
+    vec3 mean = tot2 > 1e-4 ? sum2 / tot2 : mean1;
+    // How much of the skin round the pixel agrees on one colour: a spot in clean skin leaves most of it, the edge of a feature (a
+    // nostril, a shadow) leaves two colours and nothing that is "the skin round it": then nothing is healed.
+    float agree = smoothstep(0.30, 0.65, tot2 / tot1);
+    vec2 cell0 = floor(base);
+    vec3 low = c0;
+    for (int k = 0; k < 4; ++k) {
+        vec2 off = k == 0 ? vec2(1.0, 0.0) : k == 1 ? vec2(-1.0, 0.0) : k == 2 ? vec2(0.0, 1.0) : vec2(0.0, -1.0);
+        vec2 cell = clamp(cell0 + off, vec2(0.0), p.texel.zw - 1.0);
+        low += encoded(textureLod(tex0, (cell + 0.5) * p.texel.xy, 0.0));
+    }
+    low /= 5.0;
+    float dev = min(length(c0 - mean), length(low - mean));
+    float t0 = mix(0.10, 0.025, strength);
+    float b = smoothstep(t0, t0 + 0.06, dev) * (1.0 - smoothstep(0.30, 0.50, dev)) * agree;
+    float f = b * clamp(strength * 1.5, 0.0, 1.0);
+    return mix(c0, mean + clamp(c0 - low, vec3(-0.04), vec3(0.04)), f);
+}
+
+vec4 skinSmoothing(vec4 in0)
+{
+    float amount = clamp(q[0] / 100.0, 0.0, 1.0);
+    float detail = clamp(q[1] / 100.0, 0.0, 1.0);
+    float radius = max(q[2], 0.0) * p.texel.z / p.frame.z;
+    float tone = q[3];
+    float halfWidth = mix(8.0, 45.0, clamp(q[4] / 100.0, 0.0, 1.0));
+    float soft = clamp(q[5] / 100.0, 0.0, 1.0);
+    int view = int(floor(q[6] + 0.5));
+    if (view != 1 && (amount <= 0.0 || radius < 0.5))
+        return in0;
+    vec3 c0 = encoded(in0);
+    float s0 = in0.a > 0.0 ? skinTone(c0, tone, halfWidth, soft) : 0.0;
+    if (view != 1 && s0 <= 0.0)
+        return in0; // not skin: not changed, whatever is round it (the taps would only weigh it by s0 = 0)
+    vec4 sm = smoothSkin(c0, s0, max(radius, 0.5), false, tone, halfWidth, soft);
+    float m = s0 * smoothstep(0.15, 0.75, sm.a);
+    if (view == 1)
+        return vec4(vec3(eotf(m)), 1.0);
+    vec3 result = mix(c0, sm.rgb + detail * (c0 - sm.rgb), amount * m);
+    return retouchDelta(in0, c0, result);
+}
+
+vec4 faceRetouch(vec4 in0, bool hasMap)
+{
+    if (!hasMap)
+        return in0; // no face map yet: the picture as it is
+    float smoothing = clamp(q[0] / 100.0, 0.0, 1.0);
+    float detail = clamp(q[1] / 100.0, 0.0, 1.0);
+    float scale = p.texel.z / p.frame.z;
+    float radius = max(q[2], 0.0) * scale;
+    float blemish = clamp(q[3] / 100.0, 0.0, 1.0);
+    float blemishRadius = max(q[4], 0.0) * scale;
+    float teeth = clamp(q[5] / 100.0, 0.0, 1.0);
+    float eyes = clamp(q[6] / 100.0, 0.0, 1.0);
+    int view = int(floor(q[7] + 0.5));
+    vec3 map = clamp(textureLod(tex1, v_uv, 0.0).rgb, 0.0, 1.0);
+    if (view >= 1 && view <= 3)
+        return vec4(vec3(eotf(view == 1 ? map.r : view == 2 ? map.g : map.b)), 1.0);
+    bool doSkin = map.r > 0.003 && in0.a > 0.0;
+    bool doBlemish = doSkin && blemish > 0.0 && blemishRadius >= 0.5;
+    bool doSmooth = doSkin && smoothing > 0.0 && radius >= 0.5;
+    bool doTeeth = teeth > 0.0 && map.g > 0.003;
+    bool doEyes = eyes > 0.0 && map.b > 0.003;
+    if (!doBlemish && !doSmooth && !doTeeth && !doEyes)
+        return in0;
+    vec3 c0 = encoded(in0);
+    vec3 c = c0;
+    if (doBlemish)
+        c = mix(c, healBlemish(c, blemish, blemishRadius), map.r); // by the pixel's own skin weight: a map's soft tail beyond the edge heals nothing
+    if (doSmooth) {
+        vec4 sm = smoothSkin(c, map.r, radius, true, 0.0, 0.0, 0.0);
+        c = mix(c, sm.rgb + detail * (c - sm.rgb), smoothing * map.r);
+    }
+    float y = luma(c);
+    float mx = max(c.r, max(c.g, c.b));
+    float sat = mx > 0.0 ? (mx - min(c.r, min(c.g, c.b))) / mx : 0.0;
+    if (doTeeth) {
+        // The bright, barely coloured part of the mouth: teeth (the tongue, gums and shadows are darker or redder).
+        float k = teeth * map.g * smoothstep(0.30, 0.50, y) * (1.0 - smoothstep(0.35, 0.60, sat));
+        vec3 t = mix(c, vec3(y), 0.85 * k);
+        c = t + (vec3(1.0) - t) * (0.28 * k);
+    }
+    if (doEyes) {
+        // The whites of the eyes: bright and barely coloured (the iris, pupil, lashes and the red of the veins are left).
+        float k = eyes * map.b * smoothstep(0.35, 0.55, y) * (1.0 - smoothstep(0.30, 0.55, sat));
+        vec3 t = mix(c, vec3(y), 0.6 * k);
+        c = t + (vec3(1.0) - t) * (0.25 * k);
+    }
+    return retouchDelta(in0, c0, clamp(c, 0.0, 1.0));
+}
+
 void main()
 {
     loadParams();
@@ -844,6 +1045,57 @@ void main()
                       : mode == 4 ? blendOver(4, in0, fill)
                                   : fill;
         }
+    } else if (op == OP_DEPTH_BLUR) {
+        // AI Refocus (0.7). tex1's alpha is the depth map placed like the layer: 0 = nearest .. 1 = farthest. A pixel's circle
+        // of confusion grows with its distance from the focus (outside the sharp zone) and the blur gathers 48 Vogel-disc taps,
+        // each counted when its own circle reaches this pixel; a sharp nearer pixel is not covered by the blurred farther ones.
+        // CPU twin: render/reference/LibraryGenerate.cpp depthBlur (same constants).
+        float focus = clamp(q[0] / 100.0, 0.0, 1.0);
+        float zone = clamp(q[1], 0.0, 100.0) / 200.0;
+        float maxRadius = clamp(q[2], 0.0, 100.0) / 100.0 * 40.0 * (p.texel.w / 1080.0);
+        float fore = clamp(q[3], 0.0, 100.0) / 100.0;
+        float back = clamp(q[4], 0.0, 100.0) / 100.0;
+        int view = int(floor(q[5] + 0.5));
+        if (!second) {
+            fragColor = in0; // no depth map yet: the picture as it is
+        } else {
+            float z0 = clamp(textureLod(tex1, v_uv, 0.0).a, 0.0, 1.0);
+            float off0 = z0 - focus;
+            float c0 = clamp(max(abs(off0) - zone, 0.0) / 0.4, 0.0, 1.0) * (off0 < 0.0 ? fore : back);
+            float r0 = c0 * maxRadius;
+            if (view == 1) {
+                fragColor = vec4(vec3(eotf(z0)), 1.0);
+            } else if (view == 2) {
+                fragColor = vec4(vec3(eotf(c0)), 1.0);
+            } else if (maxRadius < 0.25) {
+                fragColor = in0;
+            } else {
+                vec2 base = v_uv * p.texel.zw;
+                vec4 sum = in0;
+                float total = 1.0;
+                for (int i = 0; i < 48; ++i) {
+                    float rr = sqrt((float(i) + 0.5) / 48.0) * maxRadius;
+                    float th = float(i) * 2.39996323;
+                    vec2 pos = base + vec2(cos(th), sin(th)) * rr;
+                    vec2 cell = clamp(floor(pos), vec2(0.0), p.texel.zw - 1.0);
+                    vec2 uv = (cell + 0.5) * p.texel.xy;
+                    float zs = clamp(textureLod(tex1, uv, 0.0).a, 0.0, 1.0);
+                    float offs = zs - focus;
+                    float rs = clamp(max(abs(offs) - zone, 0.0) / 0.4, 0.0, 1.0) * (offs < 0.0 ? fore : back) * maxRadius;
+                    float cover = clamp(rs - rr + 0.5, 0.0, 1.0);
+                    if (zs > z0 + 0.02) {
+                        cover *= smoothstep(0.0, 1.0, r0 / max(rs, 1.0));
+                    }
+                    sum += textureLod(tex0, uv, 0.0) * cover;
+                    total += cover;
+                }
+                fragColor = sum / total;
+            }
+        }
+    } else if (op == OP_SKIN_SMOOTHING) {
+        fragColor = skinSmoothing(in0);
+    } else if (op == OP_FACE_RETOUCH) {
+        fragColor = faceRetouch(in0, second);
     } else {
         fragColor = in0;
     }

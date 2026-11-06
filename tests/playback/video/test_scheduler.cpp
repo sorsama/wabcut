@@ -6,10 +6,15 @@
 #include "PlaybackTestSupport.h"
 
 #include <wabcut/audio/AudioEngine.h>
+#include <wabcut/media/Probe.h>
 #include <wabcut/model/EditSession.h>
+#include <wabcut/model/EditingOps.h>
+#include <wabcut/model/MediaLocator.h>
 #include <wabcut/playback/video/PlaybackController.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <catch2/catch_test_macros.hpp>
 #include <functional>
 #include <memory>
@@ -79,6 +84,37 @@ TEST_CASE("A paused seek presents the exact frame", "[playback][scheduler]") {
     INFO("decode backends: " << s.decodeBackends);
     CHECK(s.activeSessions == 1);
     CHECK_FALSE(s.decodeBackends.empty());
+}
+
+TEST_CASE("The presented picture carries the sequence pixel aspect ratio for the monitor (156)", "[playback][scheduler]") {
+    if (skipWithoutMedia()) {
+        SKIP("test media missing");
+    }
+    TestProject anamorphic = makeProject({{kClip, 0, 0, 400, kSourceIn}});
+    auto sequence = std::make_shared<Sequence>(*anamorphic.state.findSequence(anamorphic.sequence));
+    sequence->pixelAspect = Rate{4, 3}; // HDV: 1440x1080 is seen as 16:9
+    sequence->width = 1440;
+    anamorphic.state.sequences[0] = std::move(sequence);
+    EditSession session(anamorphic.state);
+    PlaybackController controller;
+    controller.setSession(&session);
+    controller.setSequence(anamorphic.sequence);
+    controller.seek(framesToTicks(10, kRate60));
+    Presented seen;
+    const std::uint64_t epoch = controller.mailbox()->epoch();
+    consume(*controller.mailbox(), 5000ms, [&](const std::vector<Presented>& all) {
+        seen = all.back();
+        return seen.epoch == epoch && seen.target == framesToTicks(10, kRate60);
+    });
+    REQUIRE(seen.target == framesToTicks(10, kRate60));
+    CHECK(seen.canvas.width == 1440);
+    CHECK(seen.canvas.height == 1080);
+    CHECK(std::abs(seen.pixelAspect - 4.0 / 3.0) < 1e-9);
+
+    // A square sequence says 1 (and Sequence Settings changing the ratio changes what the monitor is told).
+    Fixture square;
+    square.controller.seek(framesToTicks(10, kRate60));
+    CHECK(square.waitFor(framesToTicks(10, kRate60)).pixelAspect == 1.0);
 }
 
 TEST_CASE("stepFrames moves exactly one frame at a time", "[playback][scheduler]") {
@@ -426,6 +462,69 @@ TEST_CASE("Edits re-render the paused picture only when they touch it", "[playba
         return p.barcode == 137;
     });
     CHECK(p.barcode == 137);
+}
+
+TEST_CASE("Reload Footage: a file replaced under the same path plays from its new bytes at once (143)",
+          "[playback][scheduler][changes]") {
+    if (skipWithoutMedia() || !haveMedia("h264_360p120.mp4")) {
+        SKIP("test media missing");
+    }
+    // The paused picture shows frame 10 of a 1080p60 file. Another program writes a 640x360 120 fps file over the same
+    // path (10/60 s is its frame 20); the path does not change, so only the fingerprint tells playback to let go of the
+    // decoders (and the frames they hold) it opened on the old bytes.
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "wabcut_reload_footage_playback";
+    std::error_code ignored; // a decoder of the last run may still hold the file: best effort
+    std::filesystem::remove_all(dir, ignored);
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path file = dir / "footage.mp4";
+    const auto writeFrom = [&](const char* clip) {
+        std::ifstream in(std::filesystem::path(WABCUT_TEST_MEDIA_DIR) / clip, std::ios::binary);
+        std::ofstream out(file, std::ios::binary | std::ios::trunc); // in place, as a program saving over the file does
+        REQUIRE(in.good());
+        REQUIRE(out.good());
+        out << in.rdbuf();
+        out.flush();
+        REQUIRE(out.good());
+    };
+    writeFrom(kClip);
+    TestProject project = makeProject({{kClip, 0, 0, 100, 0}});
+    const MediaId mediaId = project.state.media.front()->id;
+    {
+        auto item = std::make_shared<MediaItem>(*project.state.media.front());
+        item->locator.path = pathToUtf8(file);
+        item->locator.fingerprint = fingerprintFile(file).value();
+        project.state.media.front() = std::move(item);
+    }
+    EditSession session(project.state);
+    PlaybackController controller;
+    controller.setSession(&session);
+    controller.setSequence(project.sequence);
+    const Ticks target = framesToTicks(10, kRate60);
+    const auto showing = [&](std::int64_t barcode) {
+        Presented p;
+        consume(*controller.mailbox(), 6000ms, [&](const std::vector<Presented>& seen) {
+            p = seen.back();
+            return p.target == target && p.barcode == barcode;
+        });
+        return p;
+    };
+    controller.seek(target);
+    REQUIRE(showing(10).barcode == 10);
+
+    writeFrom("h264_360p120.mp4");
+    const ProjectSnapshot now = session.snapshot();
+    MediaItem fresh = *now->findMedia(mediaId);
+    fresh.locator.fingerprint = fingerprintFile(file).value();
+    fresh.info = media::probe(pathToUtf8(file)).value();
+    auto outcome = edit::reloadFootage(*now, std::vector<edit::ReloadedFootage>{{mediaId, fresh}});
+    REQUIRE(outcome.has_value());
+    REQUIRE(outcome->reloaded.size() == 1);
+    REQUIRE(session.commit("Reload Footage", std::move(outcome->state)).has_value());
+
+    const Presented after = showing(20);
+    CHECK(after.target == target);
+    CHECK(after.barcode == 20); // the new file's frame, not the old decoder's frame 10 (nor garbage from its open handle)
+    std::filesystem::remove_all(dir, ignored); // the decoders may still hold the file (the next run clears it)
 }
 
 TEST_CASE("A redaction marked in the source re-renders the paused picture (I.6)", "[playback][scheduler][changes][redaction]") {

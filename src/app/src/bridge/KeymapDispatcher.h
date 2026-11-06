@@ -24,6 +24,7 @@
 #include <wabcut/keymap/Platform.h>
 #include <wabcut/keymap/TransportGesture.h>
 
+#include <QMap>
 #include <QObject>
 #include <QPointer>
 #include <QQuickItem>
@@ -156,19 +157,28 @@ public:
 
     // ---- Run-time commands (C.12 extensions) ----
     struct ExtraCommand {
-        QString id;    ///< "ext:<extension id>/<command id>"
+        QString id;    ///< "ext:<extension id>/<command id>", or 0.7's "fx:<effect id>" / "preset:<preset name>"
         QString title; ///< "<extension name>: <command title>"
+        QString group = QStringLiteral("Extensions"); ///< the shortcut editor's group ("Apply Effect", "Apply Preset")
         friend bool operator==(const ExtraCommand&, const ExtraCommand&) = default;
     };
     /// Replaces the run-time commands (the extensions' palette commands): listed by keymap().registry() in the
     /// "Extensions" group, bound in the Application scope with no default key, their user shortcuts kept. Ids of
-    /// built-in commands are ignored.
+    /// built-in commands are ignored. Same as setExtraCommandsFor("extensions", commands).
     void setExtraCommands(const QList<ExtraCommand>& commands);
+    /// 0.7 (card #82): one source's run-time commands (the extensions', the Effects panel's effects and presets): each
+    /// source replaces only its own list; the keymap lists all of them, and a key bound to one whose source no longer
+    /// offers it (an extension that is off, a deleted preset) stays saved as "(unavailable)". Ids start with "ext:",
+    /// "fx:" or "preset:" (the prefixes that save and load the user's keys even without their source).
+    void setExtraCommandsFor(const QString& source, const QList<ExtraCommand>& commands);
     /// A run-time command that exists now (false for an unavailable leftover kept for its shortcut).
     Q_INVOKABLE bool isExtraCommandAvailable(const QString& commandId) const;
 
 signals:
     void commandTriggered(const QString& commandId);
+    /// 0.7 (card 063): the key of a momentary command (H, Z: CommandInfo::momentary) came up after it was held past the
+    /// threshold, or the window lost focus while it was down: Main hands back the tool it replaced. A tap sends nothing.
+    void commandReleased(const QString& commandId);
     /// `speedNum/speedDen` is set for ShuttleStep and SetSpeed, `frames` for StepFrames.
     void transportIntent(wabcut::app::KeymapDispatcher::TransportKind kind, int speedNum, int speedDen,
                          int frames);
@@ -183,12 +193,15 @@ private:
     bool handleKeyRelease(QKeyEvent* event);
     bool isSuppressed(QKeyEvent* event, QQuickItem* focus) const;
     bool focusClaimsKey(QKeyEvent* event, QQuickItem* focus) const;
+    /// 0.7 (card 021): the focused text editor opted into field stepping (property fieldStepping) and `event` is one of its keys.
+    bool stepsFields(const QKeyEvent* event, const QQuickItem* focus) const;
     std::optional<keymap::KeyChord> chordOf(const QKeyEvent* event) const;
     keymap::Scope scopeFor(QQuickItem* item) const;
     void deliver(const keymap::KeyResult& result);
     void deliver(const std::vector<keymap::TransportIntent>& intents);
     void updateGestureTimer();
     void resetGesture();
+    void endHolds();
     void attachIfUnset(QWindow* window);
     void reload();
     bool saveOverrides();
@@ -209,7 +222,8 @@ private:
     QTimer m_gestureTimer;
     QSet<int> m_consumedKeys; ///< keys whose press was consumed: their release is consumed too
     int m_revision = 0;
-    QList<ExtraCommand> m_extra;
+    QList<ExtraCommand> m_extra;                       ///< every source's, in source order (the registry's extras)
+    QMap<QString, QList<ExtraCommand>> m_extraSources; ///< 0.7: per source
     std::unique_ptr<Registry> m_registry; ///< the keymap's registry when there are run-time commands
     /// Registries of earlier keymaps: copies of a keymap (the shortcut editor's) refer to their commands.
     std::vector<std::unique_ptr<Registry>> m_retiredRegistries;

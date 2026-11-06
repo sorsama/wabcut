@@ -37,7 +37,7 @@ validated commands** (independent product review, 2026-10-11):
 - A request carries `{command, version, params, expectedRevision, idempotencyKey, dryRun}`. `dryRun` returns the proposed `ChangeSet`
   plus a preview snapshot without committing. A commit is rejected if `expectedRevision` is stale (or recomputed explicitly).
   Every external edit is **validated** (invariants and locks) even in release builds.
-- The same command catalog backs the AI agent tools, `wabcut-cli`, the scripting API (later) and a local **MCP server** (so external agents
+- The same command catalog backs the AI agent tools, `wabcut-cli`, the [Python scripting API](python.md) and a local **MCP server** (so external agents
   such as Claude Desktop/Code can drive Wabcut with consent). Model output never becomes executed code. It only becomes typed commands.
 - Keymap CommandIds and edit commands share names where they overlap, so "what the agent did" reads like menu actions.
 
@@ -225,6 +225,10 @@ the app bridge is `AiController`.
   - **Unverified:** `voxtral-mini-latest` (Mistral). Its word-timestamp response shape is undocumented and its docs disagree on the
     auth header, so it has no adapter yet.
 - **User entries.** Users add model ids to local and OpenAI-compatible providers (`addModel`) or whole custom providers.
+  - A model id added for a kind the provider ships no model of (a Whisper model on LiteLLM, an image model on LocalAI, a
+    Sora model on OpenAI) speaks the OpenAI path of that kind on the provider's address (`/audio/transcriptions`,
+    `/audio/speech`, `/images/generations`, `/videos`, `/sound-generation`). On a server of the user's (`local`) it is free;
+    on a cloud provider Wabcut does not know its price, so the Generate panel says it cannot cap a run with it.
 
 ### Providers and the platform (`Provider.h`)
 - `ProviderRegistry` maps api ids to adapter factories (`net::registerCloudAdapters()` registers all seven).
@@ -238,6 +242,136 @@ the app bridge is `AiController`.
   4. Settle the actual cost from the response's usage (or release it on failure).
   5. Log the call.
 - `preflightChat` / `preflightTranscription` give the UI the consent state, the cost estimate and the remaining budget.
+
+### Providers per capability (r07)
+Beyond chat, every capability has several cloud providers. Each runs through its own adapter in `src/ai_net` (`net::registerCloudAdapters()`),
+behind the same guard as chat: consent, offline and no-cloud locks, spend caps, the redacted request log.
+
+| Capability | Provider (api) | Models | Notes |
+|---|---|---|---|
+| Transcription | OpenAI (`openai-transcriptions`) | whisper-1, gpt-4o-transcribe-diarize | Whisper has word times; the diarize model has speakers on segment times (words spread over each segment). Both shut down 2027-02-26. |
+| | Groq (`openai-transcriptions`) | whisper-large-v3-turbo, whisper-large-v3 | Word times. |
+| | Mistral (`openai-transcriptions`) | voxtral-mini-transcribe-3 | Segment times and speakers. |
+| | Together, DeepInfra (`openai-transcriptions`) | Whisper Large v3 (Turbo) | Word times; Together also has speakers. |
+| | Speechmatics (`speechmatics`) | Enhanced, Standard | Upload, then poll. Region in the base URL (eu1 by default). |
+| | Gladia (`gladia`) | Solaria | Upload, then poll. Speakers and language detection. |
+| Voice | Deepgram (`deepgram-speak`) | Aura-2 | One voice per language (`aura-2-thalia-en`, ...). 2,000 characters per line. |
+| | Cartesia (`cartesia-tts`) | Sonic 3.6 | Stock voices, or any voice id from your account. |
+| | Fish Audio (`fish-tts`) | S2.1 Pro | Public voices, or any voice model id. Billed per UTF-8 byte. |
+| | Any OpenAI-compatible server (`openai-speech`) | | `/audio/speech`; WAV or MP3 answers. Any voice name the server offers (Kokoro's `af_heart`); OpenAI's own models keep their 13 voices. |
+| Translation | DeepL API Pro / Free (`deepl`) | DeepL | Separate Free and Pro hosts; free keys end in `:fx`. |
+| | Google Cloud Translation (`google-translate`) | NMT | API key from a Google Cloud project. |
+| Images | OpenAI (`openai-images`) | GPT Image 2, GPT Image 1 mini | Medium quality. |
+| | xAI, Together (`openai-images`) | Grok Imagine Image (2.0), FLUX.2 [pro] | |
+| | Stability AI (`stability-image`) | Stable Image Ultra / Core, SD 3.5 Large | |
+| | Black Forest Labs (`bfl-flux`) | FLUX 3 | Optional reference image. |
+| | Ideogram (`ideogram`) | Ideogram 3.0 Turbo / Default / Quality | Legible text in images. Prices unverified. |
+| | fal.ai (`fal-queue`), Replicate (`replicate`) | FLUX.1 [dev], FLUX.1 [schnell], FLUX1.1 [pro] | One key for many models. |
+| Video | xAI (`xai-video`) | Grok Imagine Video 1.5 (Lite) | 480p / 720p / 1080p, generated sound. |
+| | fal.ai (`fal-queue`) | Kling 3 Pro (text and image to video) | Generated sound is a pricier tier. |
+| | OpenAI-compatible servers (`openai-videos`) | | `/videos` for custom providers. OpenAI's own Sora API closed on 2026-09-24. |
+| Sound effects | fal.ai (`fal-queue`) | ElevenLabs Sound Effects v2, MMAudio V2 | Besides ElevenLabs itself. |
+| | OpenAI-compatible servers (`sound-generation`) | | ElevenLabs' request at the server's `/sound-generation` path (LocalAI serves `/v1/sound-generation`); the answer is the audio file (WAV, MP3, FLAC, OGG). |
+
+- **Header keys.** Providers can carry their key in any header (`"auth": "header"`, `authHeader`, `authPrefix`): DeepL
+  (`Authorization: DeepL-Auth-Key ...`), fal.ai (`Authorization: Key ...`), Gladia (`x-gladia-key`), Black Forest Labs (`x-key`),
+  Ideogram (`Api-Key`).
+- **Generated files come only from the provider's own result hosts.** Black Forest Labs `*.bfl.ai`, Ideogram `ideogram.ai`,
+  fal.ai `fal.media` / `*.fal.media`, Replicate `replicate.delivery` / `*.replicate.delivery`, xAI `vidgen.x.ai`; base64
+  answers are written directly.
+  - A custom or self-hosted server (LocalAI, a gateway) serves its files from its own address: the same scheme, host and port
+    as its base URL, plain `http` only on this computer.
+  - Every file must have the expected signature, so a 200 that is an error page fails.
+  - Keys go only where the vendor requires them: Replicate's delivery hosts, and the API host of a custom server.
+- **Job APIs.**
+  - Polling URLs must be on the vendor's API hosts: `queue.fal.run`; `api.bfl.ai`, `api.eu.bfl.ai`, `api.us.bfl.ai`.
+  - Cancelling a run cancels the job where the API can (fal.ai, Replicate).
+  - Speechmatics and Gladia jobs are deleted, with their audio, once the transcript is read (or the run is cancelled).
+- **Not offered.**
+  - Luma: its API docs name no host for result files, so downloads cannot be limited to the vendor.
+  - Hume TTS: its API shuts down on 2026-11-13.
+  - Fireworks audio: deprecated.
+  - Replicate video models: no published prices, so a spend cap could not be kept.
+
+### Chat providers, custom providers and routing (r07)
+**Chat providers.** Besides Anthropic, OpenAI, Gemini, OpenRouter, Groq and Mistral, the registry lists these OpenAI-compatible
+chat hosts (checked against their docs on 2026-11-03; `source` and `notes` in `models.json` say where and what is missing):
+
+| Provider | Base URL | Notes |
+|---|---|---|
+| xAI (`xai`) | `https://api.x.ai/v1` | Grok 4.7; price doubles above 200K input tokens. |
+| DeepSeek (`deepseek`) | `https://api.deepseek.com` | V4.1 Flash, V4 Pro; data stored in the PRC. |
+| Together AI, Fireworks AI, DeepInfra, Novita AI | per provider | Open models (gpt-oss, DeepSeek, Kimi, GLM). |
+| Cerebras, SambaNova Cloud | per provider | Very fast inference on their own chips. |
+| Cohere (`cohere`) | `https://api.cohere.ai/compatibility/v1` | Command A / A+; no published price is booked. |
+| Moonshot AI (`moonshot`), Z.ai (`zai`), MiniMax (`minimax`), Alibaba Cloud Model Studio (`alibaba`) | per provider | Kimi, GLM, MiniMax M3, Qwen. |
+| Azure OpenAI (`azure-openai`) | `https://{resource}.openai.azure.com/openai/v1` | `api-key` header; your deployment names are the models. |
+| Amazon Bedrock (`bedrock`) | `https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1` | Bedrock API key; change the region in the address. |
+| Cloudflare Workers AI (`cloudflare`) | `https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1` | Put your account id in the address. |
+| NVIDIA NIM API catalog (`nvidia`) | `https://integrate.api.nvidia.com/v1` | Trial endpoints. |
+| Hugging Face Inference Providers (`huggingface`) | `https://router.huggingface.co/v1` | One token for many hosts; the same token downloads gated local models. |
+| Nebius Token Factory (`nebius`) | `https://api.tokenfactory.nebius.com/v1` | Add the model ids you use. |
+| vLLM, LiteLLM proxy, LocalAI, Jan | `localhost` (ports 8000, 4000, 8080, 1337) | Servers on this computer: no key needed, no consent, work offline. |
+
+- **Addresses with a placeholder** (`{resource}`, `{account_id}`) show "Set its address first" until the user enters theirs.
+- **No free key check.** Azure, Bedrock, NVIDIA and SambaNova have no call that checks a key without using it: their keys are saved
+  unchecked and checked on first use.
+- **Not offered.** Perplexity: its chat-completions API ended on 2026-09-27.
+- **Provider-scoped model ids.** Model ids are unique in the registry, but several hosts serve one model under the same name. Such
+  entries are `<provider>:<name>` with `apiId` = the name (`together:openai/gpt-oss-120b`). Adapters get the model under its
+  `apiId`, so they send the vendor's name. A user model or custom model whose name is taken is scoped the same way.
+- **Catalogue fields.** Providers also carry `description`, `website` and `features` (features their API serves beyond their
+  listed models).
+
+**Features and routing.** The parts of Wabcut a user routes to a model are its features:
+
+| Feature | Powers | "Automatic" |
+|---|---|---|
+| `chat` | the assistant, rough cut, shorts, takes, autopilot, descriptions | the local assistant: a local model that runs now, else the tier this computer runs best (to download). Saving a key never moves it to the cloud: the user picks a cloud model. |
+| `transcribe` | the Transcript panel, captions | whisper.cpp on this computer, then the first usable cloud model |
+| `translate` | caption translation | the assistant's model |
+| `speak` | Dub, narration, voice previews | the first usable voice model |
+| `image`, `video`, `sound` | the Generate panel | the first usable model of that kind |
+
+- **Defaults.** `AiController::setDefaultModel(feature, model)` stores the user's choice per feature ("" = automatic) under
+  `ai/defaults/<feature>`. The choice becomes the preference that `AiPlatform::resolve()` uses. The order is recomputed when keys,
+  offline mode, the no-cloud lock, models or downloads change.
+  - `routing` shows what each feature uses now, with the reason when it cannot run.
+  - Features that let the user pick per run start from the default: the Transcript panel (until the user picks there), the Dub
+    dialog, the Generate panel (each kind's default listed first).
+- **Custom providers** (Settings > AI > Providers > Custom provider): OpenAI-, Anthropic- or Gemini-compatible.
+  - The OpenAI-compatible kind serves chat, translation, transcription (`/audio/transcriptions`), voice (`/audio/speech`), images
+    (`/images/generations`), video (`/videos`) and sound effects (`/sound-generation`: OpenAI's API has none, so this is
+    ElevenLabs' request, which LocalAI serves). Advanced users can change the path per feature (paths stay on the provider's
+    address). The Anthropic- and Gemini-compatible kinds serve chat and translation only.
+  - The key is sent as `Authorization: Bearer`, in a header the user names (proxies, `api-key`), or not at all.
+  - Extra headers are allowed, but never ones that carry credentials: the key lives in the key store, while the spec is kept in
+    settings (`ai/customProviders`).
+  - The spec is validated on save and again on every start, since settings are untrusted input. Removing a provider removes its key,
+    consents, spend cap and models; defaults that used it become automatic.
+  - Consent, offline mode, the no-cloud lock and spend caps apply as for built-in providers. A custom provider on a loopback address
+    counts as local. Wabcut does not know its prices, so its calls are not booked against a cap.
+  - "Fetch models" lists the server's models (`GET /models`, off the GUI thread) with a guessed feature for each.
+  - The dialog changes a saved provider only on Save: Test connection and Fetch models check the form as it is without saving
+    it, and Cancel leaves the provider and its key as they were. Save checks a new key first; when the check fails the form
+    stays open with the reason and "Save without checking".
+
+#### Settings > AI (r07 UI)
+
+- **Header:** the switch for every AI feature beside the title, and one line saying what runs on this computer, what goes
+  to which cloud provider and what is not set up yet (from `routing`).
+- **Features:** one card per capability (assistant, transcription, translation, voice, images, video, sound effects):
+  what it powers, what it uses now (or why nothing can run), and a picker: Automatic, any model a provider offers for it
+  (grouped by provider, local first, unusable ones greyed with their reason), or any model id ("Other model id"). "Add a
+  provider" opens Providers filtered by that capability. The AI helpers' CPU limit sits at the bottom.
+- **Providers:** search, filter chips (All, Connected, each capability, Local, Custom) and a list grouped Connected, your
+  custom providers, cloud, and local or self-hosted, beside the chosen provider's detail: status, what it is good for, its
+  links, the API key (masked; Save and check, Check, Remove, Save without checking), the server address where it can
+  change, its models with "Use for <feature>", Add model id and Fetch models, its data policy and a monthly cap. Narrower
+  than 720 px the two panes stack (the detail has a Back button). "+ Custom provider" opens the custom provider dialog
+  (name, protocol, base URL, key, models with their feature; Advanced: how the key is sent, paths per feature, extra
+  headers; Test connection; Delete asks first).
+- **Local models**, **Privacy** and **Usage** keep their content; Privacy and Usage stack their two columns when narrow.
 
 ### Keys (`Secrets.h`)
 - `Secret` is move-only, wiped on destruction and shown masked (`••••abcd`).
@@ -256,6 +390,9 @@ the app bridge is `AiController`.
   - The project lock is a project setting (`ProjectState::aiNoCloud`, see "Security"); the ledger reads the ACTIVE
     project's value at every check through `setProjectLockSource()`.
   - Loopback-local providers need no consent and work offline. A "local" provider pointed at another host counts as cloud.
+  - Offline mode and the project lock stop cloud models only: the assistant, rough cut, shorts, autopilot, caption
+    translation, Dub / narration and the Generate panel keep working with a model on this computer (the local assistant,
+    Ollama, a custom provider on localhost).
   - `makeConsentPrompt()` gives the prompt its content: what is sent, the destination host, the provider's terms link and data
     policy, and the cost.
 - **Spend.** Monthly caps per provider are enforced on this computer. The estimate is conservative: input ≈ bytes / 4, plus 1,600
@@ -411,6 +548,68 @@ AI-7: one way to turn media audio into a `Transcript`, shared by the Transcript 
 - → stored in the analysis cache under the source fingerprint (cloud: `cloud/<model>`, params model + language; local:
   TranscriptionService's own key; added providers: `custom/<id>`), with `provenance.params["provider"]`, where
   `CachedTranscriptProvider` and every transcript command find it. `useCache = false` (force) re-transcribes and replaces it.
+
+**Language spoken, translate to English (0.7).** The Transcript tab names the language of a recording (**Language** above
+**Transcribe sequence**; also in the source clip's page and in Transcribe again): **Auto-detect** or any of Whisper's 99
+languages and Cantonese, found by typing the English name, the language's own name (Hebrew / עברית, Íslenska, Українська) or its
+code. Indonesian, Hebrew, Ukrainian, Arabic, Polish, Turkish, Icelandic, Finnish, Czech, Slovak, Romanian, Bosnian, Croatian
+and Serbian are all there, on this computer. Naming the language helps a short or noisy clip that detection gets wrong. Every
+row says how much audio of the language Whisper learned from (**Strong**, **Fair**, **Limited**: the amounts of
+training audio in the Whisper paper, appendix E), and a note under the button names a model size that suits the choice
+("Whisper heard little Icelandic audio in training: Medium or Large v3 is far more accurate, and check the result either way",
+with the model of Settings > AI > Local models). The choice is remembered. **Translate to English** is Whisper's translate task: the
+transcript comes out in English whatever is spoken (Icelandic or Finnish interviews, say; the other transcripts are in the
+spoken language). It runs on this computer with a multilingual model: a cloud transcriber is refused with why, English-only
+models cannot, and large-v3-turbo can but translates poorly (the note says so; Small, Medium or Large v3 are better). A
+translation is cached apart from the transcription of the same audio, and its transcript says `en`.
+
+**Mixed languages (0.7).** A recording that switches language - an interview with a translator, a streamer who changes language
+- is transcribed in each language it uses instead of in the first one detected. With **Auto-detect**, turn on **Mixed
+languages** (under **Language**; remembered; it hides while a language is named or Translate to English is on, which say the
+recording has one language): the audio is cut at the pauses into short pieces of about a sentence (a piece closes at the next
+pause once it holds 3 s of speech, never more than 25 s; shorter ones wait for the next), the recogniser names the language of
+each piece, and the transcript keeps it: every segment has its own language (`TranscriptSegment::language`, written to the
+transcript's JSON as `segments[].language`; a build without 0.7 reads such a transcript as one language and ignores them), the
+transcript's own language is the one most words are in, words are split the way each language writes them (Thai has no spaces,
+English has), and captions, SRT and VTT join each segment that way. The Transcript tab starts a new paragraph where the language
+changes, tags each with its language and says **"Languages: English 75 % · Thai 25 %"** above the words. A language that changes in the middle of
+a sentence, with no pause, stays in the language the recogniser heard first for that piece. It runs on this computer only (a
+cloud or added transcriber is refused with why: nothing is uploaded) and with a multilingual model; **Small or larger** tells languages
+apart far better than Tiny and Base (the note under the button says so), and it takes longer than one language, because every
+piece is listened to separately. A transcript of mixed languages is a cache entry of its own: asking for it is not answered by a
+transcript made as one language, and a repeat is. `transcript.transcribe` takes `mixedLanguages` (default false; with `language`
+"auto"), `transcript.text` and `transcript.words` list `languages` ({language, words}, most words first) when there are several, and
+`wabcut-cli transcribe --mixed-languages` does the same (a segment of another language than the transcript's reads `(th) ...` in the
+text output). Not done yet: the language inside one stretch of speech without a pause, a language per word, and the cloud
+transcribers that can name several languages themselves.
+
+**Custom words (0.7).** Names, game titles and jargon the transcriber keeps mangling: **Custom words** beside **Language** (in
+the Transcript tab's set-up, the source clip's page and Transcribe again) opens a list - one per line, or separated by commas -
+that belongs to the **project** (one undo step; saved with it; at most 200 words of 80 bytes). The next transcription listens for
+them: the local transcriber gets them as its vocabulary hint (`Vocabulary: Malenia, Elden Ring.`; the first ones that fit about
+480 bytes, Whisper reads at most 224 tokens of prompt), a cloud transcriber as key terms (the first 100). Audio that already
+has a transcript keeps it until you transcribe it again (**Transcribe again**), and a transcript made with other words is
+made apart from one made without. Words that still come out wrong are fixed afterwards with Find and Replace or Correct from
+your script. Commands: `transcript.setCustomWords` (`words`, or `text` with `add`) and `transcript.customWords`;
+`transcript.transcribe` takes the project's words unless the call names others in `"vocabulary"`.
+
+Command: `transcript.transcribe` `"language"` (a code of the list; a regional tag such as `he-IL` or the old `iw` are read;
+anything else is an `InvalidParams` error) and `"translate"`; `"check": true` lists the languages with their own names,
+direction and tier. The CLI's `--language` takes the same codes. Lists: `ai::spokenLanguages()` (`SpokenLanguages.h`);
+the protocol to the helper has a `translate` field (`TranscribeRequest`, whisper.cpp's `params.translate`). The captions made
+from a Hebrew or Arabic transcript read right to left (see [captions.md](captions.md)).
+
+**Delete or redo a transcript (0.7).** Transcripts live beside the source file in the analysis cache, not in the project, so
+deleting clips already drops their words from the sequence's transcript. To throw one away on purpose, or to transcribe
+again in another language, the **...** menu next to Find on the Transcript tab (and in the source clip's page) has
+**Transcribe again** and **Delete transcript**, for the sequence or the selected clips, each asked in a row under the
+toolbar. Delete removes the cached transcripts of those audio streams (every model and language, and no other analysis of
+the file); the words leave the tab at once and Transcribe starts from nothing. Captions made from the transcript and cuts
+made by editing its text are not touched, and nothing changes in the project (no undo step). Transcribe again replaces the
+transcript when the new one is done and keeps the old one if you cancel or the job fails. Command: `transcript.delete`
+(`media`, `clips`; `dryRun` lists what would go), `transcript.transcribe` with `"force": true` for the redo;
+`AnalysisCache::removeAnalyzer` and `TranscribeService::forget` are the cache side. Tests: `tests/ai/test_media_services.cpp`,
+`tests/app/test_d2_text_audio_ui.cpp`.
 
 **Cloud uploads.** The audio is extracted once to raw 16 kHz mono float32 and uploaded as 16 kHz mono 16-bit WAV. Audio longer
 than one request (`cloudChunk`, 10 min, and the model's `maxAudioSeconds` / `maxUploadBytes`) is cut at pauses: speech from
@@ -646,7 +845,7 @@ analysis in `wabcut_audio_edit_media`.
   `track.setRecordArm`, `record.takes`, `record.useTake`; recording itself is the app's (no command, no agent). See
   "Voice-over recording (A.8)" below.
 - **Audio channels and 5.1 (A.9).** Modify > Audio Channels on clips and media items (presets: Fill Left / Right, swap,
-  sum to mono, split to mono; per-channel volume), mono / stereo / 5.1 / adaptive tracks, a 5.1 master with a VBAP
+  sum to mono, split to mono; per-channel volume), mono / stereo / 5.1 / 7.1 (0.7) / adaptive tracks, a 5.1 or 7.1 master with a VBAP
   panner and LFE send, the ITU-R BS.775 downmix for stereo preview and export, 5.1 AAC / AC-3 export and 5.1 loudness.
   See "Audio channels and 5.1 (A.9)" below.
 - **Track roles.** `Track::role` (dialogue, music, effects), `track.setRole`.
@@ -660,7 +859,8 @@ analysis in `wabcut_audio_edit_media`.
   the rendered level: 10 ms RMS, 12 dB above the noise floor, hysteresis), builds the envelope (down by `amount` over `attack` before
   each phrase, back over `release` after `hold`, short pauses bridged) and writes plain linear volume keyframes on the music-role
   clips, replacing their keys in the range like Premiere's Auto Ducking. One undo step; `dryRun` returns the preview state.
-  Silero VAD (AI-2's helper) is a possible third source; transcripts and level cover the MVP. `"preset": "gameUnderVoice"`
+  Silero VAD (AI-2's helper) is a possible third source; transcripts and level cover the MVP. 0.7: `audio.autoMix` mixes
+  several voices against each other (see [audio.md](audio.md)). `"preset": "gameUnderVoice"`
   (A.10) ducks a gaming recording's game audio and music under the streamer's mic, with tracks found by name; see "Streamer
   voice and Game under voice (A.10)" below.
 - **Variable-speed audition.** Forward 1/4x to 4x (J/K/L 2x and 4x, slow shuttle) is heard, pitch preserved: the player mixes
@@ -861,7 +1061,7 @@ has EmbedHelper's crash, timeout and cancel handling:
 **AI helpers and the CPU (0.2).** Every AI helper process - wabcut-infer (transcription), wabcut-embed (analysis, search,
 segmentation, detection, audio models) and the local model server - starts as an AI helper (`ChildProcessOptions::aiHelper`):
 below normal priority and, on Windows, a hard CPU rate cap on its job object (`JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP`), so
-background analysis leaves playback its share of the processors. Preferences > AI > Models > "AI helpers' CPU": No limit,
+background analysis leaves playback its share of the processors. Settings > AI > Features > "AI helpers' CPU" (0.2: Models; r07: Features): No limit,
 75 % (the default), 50 % or 25 % of the machine (`ai/helperCpuLimit`, `setHelperCpuPolicy`); it applies to helpers started
 afterwards. POSIX: nice +10 only (no cap yet). The export CPU limit (Export queue > Limit CPU use) is separate: it caps the
 encoder's threads. Test: `tests/ai/test_process.cpp` "AI helpers run below normal priority under the helper policy's CPU cap".
@@ -1349,7 +1549,7 @@ order (each effect marked with its section):
   section switches (Repair, Clarity) cover the gate and the limiter. The EQ menu shows `streamerVoice` by its id until it gets
   a name. One-click entries: "Streamer voice" on a mic track's menu runs `audio.essentialSound` with `"tracks"`; "Game under
   voice" runs `audio.autoDuck` with the preset (dryRun first for the ghost keyframes).
-- **In the app (0.4).** Audio Tools' **Auto-duck** card has two modes, **"Music under dialogue"** (the 0.3 card: music
+- **In the app (0.4).** Audio Tools' **Auto-duck** card has two modes (the tabs **"Music"** and **"Game"**; 0.7 added **"Voices"**), **"Music under dialogue"** (the 0.3 card: music
   under the dialogue roles) and **"Game under my voice"** (this preset, with `includeMusic` from its **"Include music"**
   switch). `AudioMixer.duckMode` ("default" | "gameUnderVoice") is suggested per sequence: game mode when an audio track
   is named for the game ("Game", "Desktop Audio", ...) and a voice track exists; a pick sticks until the current sequence
@@ -1483,7 +1683,10 @@ Each pass is a new WAV and a new clip. Passes over the same range stack as takes
    3, 2, 1 to show. 0 to 10 seconds; default 3.
 2. **Pre-roll.** From punchIn − preroll the program plays (default 2 s), so the speaker hears the lead-in.
 3. **Recording.** The input heard while the transport presented [punchIn, punchOut) is the take. Without a punch-out it
-   runs until `stop()`.
+   runs until `stop()`. A take is a WAV file, which cannot hold more than 4 GiB (about 3 h of 32-bit float stereo at 48 kHz,
+   4 h of 24-bit stereo): a pass that reaches it ends there, the file complete and valid, with the message "The take
+   reached the longest a WAV file can be (4 GiB) and ended there. Record the rest as a new take" (`VoiceOverResult::reachedLimit`;
+   `WavWriter` never writes past it, so `recoverWav` can always repair the file).
 4. **Post-roll.** After the punch-out the program plays on (default 1 s), then the transport stops (state `finished`),
    once the input past the punch-out has come in.
 5. **`stop()`** writes what is left, finishes the WAV, pauses the transport and restores the engine's source. A pass stopped
@@ -1645,8 +1848,8 @@ microphones recorded on the left and right channels of one file.
 
 **Model** (`wabcut/model/AudioChannels.h`, `AudioChannelOps.h`; additive, written only when set, so other projects save
 byte-identical):
-- `ChannelFormat`: mono, stereo, 5.1 (L, R, C, LFE, Ls, Rs, the SMPTE / WAV / FFmpeg order), adaptive (channels pass
-  through one to one).
+- `ChannelFormat`: mono, stereo, 5.1 (L, R, C, LFE, Ls, Rs, the SMPTE / WAV / FFmpeg order), 7.1 (0.7: L, R, C, LFE, Lrs, Rrs,
+  Ls, Rs, a 7.1 WAVE file's and FFmpeg's order), adaptive (channels pass through one to one).
 - `AudioChannelMap` on a clip (`ClipContent::channels`) or a media item (`MediaItem::channels`): the clip's format and,
   for each clip channel, the source channels that feed it (averaged when several), a mute, and a volume in dB (a
   constant or keyframes in the clip's curve time: Premiere's Channel Volume). A clip without a map uses its item's;
@@ -1656,7 +1859,7 @@ byte-identical):
   - Bounds: 32 clip channels, source channels below 64, 8 sources per channel, volume -144..+24 dB. Files past them
     are refused.
 - `Track::format` (stereo by default) and `Track::surround` (the 5.1 panner: x, y, the LFE send).
-- `Sequence::masterFormat`: stereo or 5.1.
+- `Sequence::masterFormat`: stereo, 5.1 or (0.7) 7.1.
 - Ops: `setClipChannels`, `setMediaChannels`, `setMasterFormat`, `splitClipToMono` (the clip plays channel 1, linked
   copies on the given free tracks play the others), and `TrackStateChange::format` / `surround`.
 - The ChangeSet reports a map change as an audio change of the clip, and a format or panner change as a track header
@@ -1676,7 +1879,9 @@ byte-identical):
   - mono → stereo: -3 dB on each side, what FFmpeg's resampler does for a mono file;
   - stereo → mono: the mean;
   - 5.1 → stereo: ITU-R BS.775, L' = L + 0.7071 C + 0.7071 Ls, R' = R + 0.7071 C + 0.7071 Rs, LFE dropped;
-  - mono → 5.1: C; stereo → 5.1: L, R; adaptive: channel to channel.
+  - mono → 5.1: C; stereo → 5.1: L, R; adaptive: channel to channel;
+  - 7.1 → 5.1 (0.7): Ls' = Ls + 0.7071 Lrs, Rs' = Rs + 0.7071 Rrs; 7.1 → stereo and mono: that, then the 5.1 rows; 5.1 → 7.1: 5.1's
+    Ls / Rs on the side pair, the rear pair silent (`upmix51To71(true)` copies them into it at -3 dB too).
 - **The 5.1 panner:** two-dimensional VBAP over the five full-range speakers (L -30, R +30, C 0, Ls -110, Rs +110
   degrees). Its x, y and LFE send are taken on the 32-frame parameter grid (timeline frames) and interpolated between,
   like every automated audio parameter, so a moving puck does not step and preview equals export (A5-P2-1).
@@ -1712,9 +1917,9 @@ byte-identical):
 | `audio.splitToMono {clip, tracks?}` | EditSequence | one linked mono clip per source channel, on the free audio tracks below (new tracks when needed) |
 | `audio.channels {clips?}` | Read | each clip's source channels and map (its own, its item's, none), the tracks' formats and panners, the master |
 | `audio.channelLevels {clips}` | MediaAnalysis | peak / RMS per source channel (at most 120 s of the clip) and `silentChannels` (30 dB under the loudest) |
-| `track.setFormat {track, format}` | EditSequence | mono, stereo, 5.1, adaptive |
+| `track.setFormat {track, format}` | EditSequence | mono, stereo, 5.1, 7.1, adaptive |
 | `track.setSurroundPan {track, x, y, lfeDb}` | EditSequence | the track's 5.1 panner |
-| `sequence.setMasterFormat {format}` | EditSequence | stereo or 5.1 |
+| `sequence.setMasterFormat {format}` | EditSequence | stereo, 5.1 or 7.1; the result's `note` says what a change of layout does to the sound |
 
 **The assistant:**
 - "Split the two mics into separate tracks" is `audio.splitToMono`.
@@ -1736,7 +1941,8 @@ byte-identical):
 - A stereo track panned where both of its sides fall between the same two speakers (behind the listener: Ls and Rs
   are 140 degrees apart) plays both sides on them, so material that is the same on both sides comes out up to 3 dB
   louder there. A mono track (track.setFormat mono) keeps its power everywhere.
-- No 7.1 master. An adaptive track on a 5.1 master passes its first six channels.
+- An adaptive track on a 5.1 master passes its first six channels (on a 7.1 master its first eight). A 7.1 master is not written to AAF / OMF
+  (each track keeps its channels); eight mono files are not recognised as a 7.1 layout on import. Docs/audio.md "7.1 surround master" has the rest.
 - The live fader override's pan applies on a stereo master only.
 
 **Tests:**
@@ -1767,7 +1973,7 @@ byte-identical):
 - **The 5.1 panner:** when the master is 5.1 (Sequence Settings > Audio > Master: stereo / 5.1, through
   `sequence.setMasterFormat`), the Audio Track Mixer's pan knob on mono and stereo tracks becomes a puck in a square
   (x, y) with an LFE knob (`track.setSurroundPan`). The master meter shows six channels (`masterMeter()` has them).
-- **Export dialog:** Audio Channels: "As the master" (0), Mono, Stereo, 5.1 (6), and AC-3 in the codec list.
+- **Export dialog:** Audio Channels: "As the master" (0), Mono, Stereo, 5.1 (6), 7.1 (8: AAC, Opus, PCM; AC-3 takes 5.1), and AC-3 in the codec list.
 
 ## AI analyses through multicam and nested clips (0.2)
 
@@ -2460,7 +2666,7 @@ Caption translation, AI voice-over (dubbing) and script narration, so one edit c
 - **Time fit** (`fitLines`). A line longer than its slot is sped up, pitch kept, by at most `maxStretch` (15 %, the audio engine's WSOLA stretcher, rendered offline: clips at speed ≠ 1 play silent); what still does not fit starts earlier into free time (≤ 0.5 s), and a line that runs into the next slot is flagged and pushes the next one later. Lines shorter than their slot play at their own speed. The report lists every line: as generated, sped up (speed), moved (why) or flagged.
 - **The edit** (`assembleDub`), one undo step: the speech as ONE generated audio file (the lines one after another, 50 ms apart, mono 48 kHz float WAV in `<cache>/generated/dub`, with an XMP provenance sidecar), a media item with `generated` provenance (`kind` "audio", `operation` "dub" / "narration", provider, model, SHA-256 of the text, time), a new audio track "Dub (<native name>)" / "Narration" with the **Dialogue** role, a clip per line, and the original dialogue (Dialogue and unassigned tracks; for narration music too) ducked under the new lines with `audio.autoDuck`'s envelope (−18 dB for a dub, −12 dB for narration; `duck`). The timeline draws its "AI" badge on the clips (AI-10).
 - **Cost and the cap.** `estimate: true` plans and prices the run without sending anything, anywhere (`estimateSpeechCost` per line: per character for ElevenLabs; per text token plus per minute of audio for OpenAI and Gemini, the audio at 14 characters a second, its ceiling at 6). A run needs `maxCost`: it is refused when the estimate's ceiling is above it, and the run stops before any line that could take it past it (the worst case of the lines already sent counts). The platform's monthly cap and consent (capability Speak) apply to every request, which is never retried by the transport (a line is never billed twice).
-- **Who may run it.** Paid generation follows AI-10: standalone CLI/MCP and the assistant cannot spend. In the app the assistant's `dub.create` / `narration.create` open the Dub dialog prefilled; the user sees the voice, the estimate, sets the cap and answers the consent prompt. A no-cloud project refuses both commands (there is no permissive local voice, see below).
+- **Who may run it.** Paid generation follows AI-10: standalone CLI/MCP and the assistant cannot spend. In the app the assistant's `dub.create` / `narration.create` open the Dub dialog prefilled; the user sees the voice, the estimate, sets the cap and answers the consent prompt. A no-cloud project refuses both commands unless the voice model runs on this computer (a custom provider on localhost; Wabcut ships no local voice with a permissive licence, see below).
 - **Voice cloning** (opt-in, ElevenLabs instant voice cloning): `cloneVoice` with `rightsConfirmed` ("I have the speaker's permission") and the project `speaker`. Refused for a speaker with any redacted speech in the sequence, with less than 5 s of their speech, or with another provider. Up to 90 s of the speaker's own transcribed speech from one recording is written to a temporary WAV, uploaded once (`POST /v1/voices/add`), used for the run, and the voice is deleted again (`DELETE /v1/voices/{id}`) when the run ends, also on failure; the sample file is removed.
 
 ### Voice providers (BYOK; as of 2026-10-12)
@@ -2489,6 +2695,41 @@ The CLI and MCP translate with the installed local models (nothing is downloaded
 - **Translate captions** (`qml/dialogs/TranslateDialog.qml`, singleton `TranslateCaptions`): the caption track, language chips (Thai first; each says "local", "↓ 118 MB" or "cloud"), who translates (Auto / This computer / the user's model, only with one set up and never for a no-cloud project), tone, glossary ("term = translation" lines), notes. **Translate** stages the tracks (the consent prompt first when the cloud model is used); the report per language shows cues re-timed, merged and split, cues still too fast and warnings, and the corrections and bleeps kept. **Add tracks** applies. **Download** fetches a pair's model through the AI network stack.
 - **Dub** (`qml/dialogs/DubDialog.qml`, singleton `Dub`): Dub captions or Narration from a script; the voice model (price, set up or not), voice chips (or an ElevenLabs library voice id), delivery, **Hear it** (one short line, ≤ $0.05), max speed-up, ducking, the estimate and the cap, cloning with the rights box. **Generate** (consent first) stages the speech with the timing report (every line's dot: as spoken, sped up or moved, flagged); **Add to timeline** applies it.
 - Entry points (the hooks patch): Captions page "Translate…" and "Dub…", Sequence menu "Narration from Script…", and the assistant's proposals.
+
+### Audio description (0.7)
+
+For a version that blind and low-vision viewers can follow: **Sequence > Generate Audio Description…** (hidden while AI is off;
+`sequence.generateAudioDescription`) finds the silences between the dialogue, shows a picture from each to a chat model that can
+read pictures, and writes one short line that fits each gap. Nothing is voiced until you have read the lines.
+
+1. **Find gaps** (`audioDescription.findGaps`; `src/ai/dub/AudioDescription.h`). From the sequence's transcript: words closer than
+   0.5 s are one stretch of speech; each silence between stretches (and before the first and after the last) keeps 0.3 s clear of
+   the speech and counts when what is left is at least the **shortest gap** (1.5, 2, 3 or 5 s; default 2). A silence longer than
+   15 s is cut into pieces. Each gap says how many words fit at 2.5 words a second (about 150 a minute; at most 40) and shows the
+   words said just before and after. A video without speech: tick **This video has no speech** and the whole sequence is the gap.
+   The sequence must be transcribed first (the Transcript tab).
+2. **Describe.** A chat model that takes images (`vision` in the model registry: your cloud model, or one on this computer through
+   Ollama, llama.cpp or a custom provider on localhost) gets, per gap, one to three 768 px JPEG frames from inside the gap and the
+   dialogue around it, with the rules of audio description: say what is visible, present tense, plain words, no camera terms, no
+   repeating the dialogue, no names unless they are on screen or in your guidance, and answer `NONE` when nothing matters (the gap
+   stays silent). The lines already written are sent along so they do not repeat. The line is cut to the gap's word budget at a
+   sentence end. It runs off the GUI thread with progress and **Stop**; pictures are rendered by the export renderer, so what the
+   model sees is what the program monitor shows. **Consent and cost:** the dialog shows the model and the price (about and at most,
+   for all the pictures) and asks for consent like the other AI features; "Allow once" or "Always allow". Offline mode and a
+   no-cloud project use a model on this computer only. Wabcut ships no vision model: pick one in Settings > AI.
+3. **Read and edit.** Every gap is a row with its time, the gap's length, a word count against what fits (amber when over), the
+   line in a text field, and the dialogue around it. Change any line, clear one to leave the gap silent, or write one in a gap the
+   model skipped.
+4. **Put on a track** (`audioDescription.createTrack`, one undo step) makes the caption track **Audio Description**, one cue per
+   line, switched off so it is not burned into the picture; it is edited in the Captions tab like any track and **replaced** when
+   you put the lines on a track again. **Export script…** writes a text file with a timecode, the gap's length and the line for a
+   human narrator. **Voice…** opens the Dub dialog for the track with the name "Audio Description" and the other audio ducked 12 dB
+   under each line: the voice, the cost, the cap and the consent are asked there, as for any voice-over (`dub.create`: lines fitted
+   to their gaps, sped up 15 % at most, one undo step, the audio marked AI-generated).
+
+Tests: `tests/ai/global/test_audio_description.cpp` (gaps, fit, prompt, a run with a scripted model, the commands),
+`tests/app/test_d6_ui.cpp` (the dialog, with screenshots). Not yet: a pause-aware fit (lines are placed in the gap, not timed to
+the picture inside it), extended description that pauses the video, a second language in one run.
 
 ### Measured (2026-10-12, this machine)
 - **Local translation, English → Thai** (opus-mt-en-mul, 8-bit, `ai_global_media` benchmark, 10 cooking-video captions, Release): **1.7–2.0 cues/s on the CPU** (500–590 ms a cue, 163 tokens in all, greedy, no key/value cache). "Today we are cooking green curry." → "วันนี้เรากำลังกินคาร์รี่เขียว" (rough: en-mul). Thai → English (opus-mt-th-en): "สวัสดีครับ วันนี้เราจะทำแกงเขียวหวาน" → "Hello, we're making a green curry today."
@@ -2798,6 +3039,224 @@ thumbnails), and the render / playback / export suites' matte cases ([masks.md](
 - The mattes live in this computer's analysis cache. Another computer, or a cleared cache, shows the mask's bounding box
   (and a redaction its box grown) until the object is selected again there.
 - Remapped clips and frame holds are refused.
+
+## AI video effects: Restore and Denoise (0.7)
+
+Two clip effects that make footage better with local AI models, on this computer (no picture leaves it): **AI Restore**
+(upscale, deblur and light denoise: the job of Topaz Video AI and of Resolve's Super Scale) and **AI Denoise** (noise from
+low-light and high-ISO footage). They are in the Effects panel under **AI** and are ordinary clip effects: Effect Controls rows,
+a keyframable **Amount**, copy and paste, presets, saved with the project, one undo step per edit; Master Clip Effects work too.
+
+**Why a Process step.** A model needs seconds for a picture, so the compositor never runs it. The effects work at the *source
+stage* - before the clip's other effects, masks and colour, so the grade sees the restored picture - and their pictures are made
+ahead of time and kept per clip:
+
+- **Effect Controls > the effect's header** shows its state - *Model needed*, *Not processed*, *Processing 37 %*, *Processed*,
+  *Processed 40 %* - with **Download**, **Process** / **Continue**, **Cancel** and **Delete**. Process runs in the background
+  (progress, Cancel; a cancelled run keeps what it made and continues later); the frame under the playhead shows each picture as
+  soon as it is stored. The tooltip gives the estimate (measured on your machine after the first run) and the output size.
+- **Playback** uses the cache and stays real time; a frame without its processed picture plays *unprocessed*, and the Program
+  Monitor says so (**AI: 1 layer not processed**). A chain that changes nothing (Restore at 1x without deblur or denoise, Denoise at
+  strength 0, Amount 0) costs nothing and shows no badge.
+- **Export** processes what is missing first, on the spot, and gives the same pictures as the preview. The Export panel says
+  beforehand how many clips that is and about how long (**Process now** does it in the background first). If a model is not
+  downloaded the notice says which, and the export stops with that reason instead of quietly exporting the unprocessed picture.
+- **Settings and the cache.** Everything that changes the picture - scale, upscaler, deblur, denoise, grain, tile size, the order
+  of the AI effects - is part of the cache's key; **Amount** is not (it mixes the processed picture with the unprocessed one when
+  the picture is shown, so it can be keyframed). Clips of one media with the same settings share their pictures, and a trimmed clip
+  processes only what it uses. Settings > Media & cache lists **AI video pictures**; Clean deletes them (Process makes them again).
+
+**Settings.** AI Restore: *Scale* (Auto, 1x, 2x, 4x - Auto does not enlarge a picture that already fills the sequence, so a 4K clip
+on a 1080p timeline is only deblurred), *Upscaler* (Fast: Real-ESRGAN general-x4v3, 5 MB, 2x by halving its 4x result; High
+quality: x2plus / x4plus), *Deblur* (0..100 %), *Light Denoise*, *Preserve Grain*, *Tile Size* (Auto = 256; the deblurrer always works in tiles of at least 352 pixels, because its network pools over 384 pixel windows and fails or gives wrong pictures on smaller ones). AI Denoise:
+*Strength* (the noise level the model assumes), *Preserve Grain* (puts part of the removed noise back so the picture does not
+turn waxy), *Tile Size*. Several AI effects on one clip are a chain, in stack order (denoise, then restore); each stage feeds the
+next, and the chain's Amount is the product of the effects' Amounts.
+
+**Models** (never bundled; downloaded on request, licence card shown first, size and SHA-256 checked, files pinned to a revision
+in `src/ai/src/ModelStore.cpp`, kind `Video`): DRUNet colour (MIT, 131 MB) for denoising with a noise level you choose; NAFNet
+GoPro (MIT, 92 MB) for deblurring; Real-ESRGAN general-x4v3 (BSD-3-Clause, 5 MB), x2plus and x4plus (BSD-3-Clause, 67 MB each)
+for upscaling. Sources and licences: [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md#ai-video-effect-models-07-verified-2026-11-05).
+
+**How it runs.** `wabcut_ai_video` (`src/ai/video`, pure C++, core preset) is a reusable image-to-image runner; later effects (frame
+interpolation, refocus, face retouching) add a model and a stage, not a new pipeline:
+
+- *Inference* is out of process: the models run in `wabcut-embed` (ONNX Runtime 1.24.4, DirectML on Windows with the CPU as
+  fallback, `process_picture` in the protocol of `EmbedProtocol.h`), so a model that crashes or a GPU driver reset ends one picture
+  with an error, never the editor. After a crash the helper restarts on the CPU and the picture is made again; Cancel kills it. A
+  picture travels as a raw 16-bit RGB file; the helper cuts it into tiles of `tile` pixels with 16 pixels of reflected context
+  (`Tiling.h`), runs one fixed-size graph per tile (fp32 or fp16 as the graph's input says) and writes the cores back, so memory is
+  bounded by the tile and there are no blend seams.
+- *Frames*: a decoded frame is converted with its own matrix and range (BT.601 / 709 / 2020, limited or full, 8 / 10 bit,
+  4:2:0 / 4:2:2 / 4:4:4, NV12 / P010, RGBA with alpha) to the 16-bit RGB a model sees, and the result goes back as YUV 4:4:4 at 10
+  bits (a fourth plane for alpha; RGBA8 for RGB sources) with the same matrix and range tags, so the colour pipeline reads it as it
+  reads the original. HDR and log footage is processed as code values (the models were trained on display-referred pictures): it
+  works, with less certainty.
+- *Cache*: `ProcessedCache` keeps one deflated file per source frame under `<cache>/ai-video/<media>-s<stream>-<chain>/`, written
+  atomically, found by the frame's start within half a frame, with a provenance file (chain, settings, model digests and
+  licences, date, app version) beside the pictures.
+- *Evaluator hook*: `LayerSpec::ai` (the chain at the frame); `buildCompositeLayers` asks the installed
+  `SourceFrameProcessor` (`playback/video/SourceStage.h`), which returns the cached picture or reports it missing
+  (`CompositeLayer::aiUnprocessed`; the scheduler counts them for the monitor's badge). An export sets
+  `ScopedSourceStageMode::ProcessMissing` on its decode thread: the processor then makes the picture with the backend.
+
+**Limits of this first version.** Pictures are made per frame (no temporal model: a denoise can leave a faint shimmer on very noisy
+footage - a larger Strength or the High quality upscaler helps); transition handles outside a clip's In and Out play unprocessed;
+still images, titles, graphics and nested sequences are not processed; "Render and replace" (a ProRes / DNxHR file with
+provenance that relinks the clip), a media-level switch and an optional cloud restore provider are not built. Speed depends on
+the GPU: the first frames of a run measure it (a 1080p frame through DRUNet takes about a second on a mid-range GPU, ten on a CPU).
+
+## AI Frame Interpolation and AI Refocus (0.7)
+
+Two more effects on the same runner ([above](#ai-video-effects-restore-and-denoise-07)): same model library (download on request with the
+licence card, never bundled), same Process step with progress and Cancel, the same cache, the same export rule (the export makes
+what is missing, or stops with the reason), the same badge on the Program Monitor (**AI: N layers not processed**).
+
+### AI Frame Interpolation (smooth slow motion)
+
+**Clip > Video Options > Time Interpolation > AI Frame Interpolation** (also the fourth tab of the Speed/Duration dialog, and
+`clip.setTimeInterpolation` with `"method": "aiInterpolation"`) makes the frames between a retimed clip's own frames with a neural
+model instead of repeating, blending or warping them. It applies wherever Time Interpolation does: a speed other than 100 %,
+Reverse, Time Remapping ramps, Rate Stretch, footage at another frame rate than the sequence. The model is **RIFE 4.25 lite**
+(MIT, 23 MB).
+
+- **Process.** The Speed/Duration dialog shows the clip's state under the tabs - *Model needed* (**Download 23 MB** shows the licence
+  first), *Not processed*, *Processing 37 %*, *Processed* - with **Process** / **Continue**, **Cancel** and **Delete**. One picture is
+  made for every output frame of the clip that falls between two frames of its media (a frame on a media frame needs none). `effect.processAi`
+  does it from commands and scripts (`"kind": "interpolation"` in `effect.aiStatus`).
+- **Until it is processed** the clip plays with **Optical Flow** and the monitor says **AI: 1 layer not processed**; processed
+  frames show the model's pictures. An export makes the missing pictures itself (slower) or stops with the reason (model not
+  downloaded, no AI helper).
+- **The cache** keys a picture by its exact source time in 1/64 of a frame, so clips of one media share them, a trimmed clip makes only
+  what it uses, and a change of speed makes only the new times. Pictures are stored lossless like the other AI pictures; they can be
+  large for long slow-motion sections (Settings > Media & cache lists **AI video pictures** and cleans them).
+- **Saved** as `"timeInterpolation": "opticalFlow"` plus `"aiInterpolation": true`: a Wabcut that does not have it opens the project
+  with Optical Flow; **File > Save for an Older Version** lists it and writes Optical Flow.
+- **Limits.** Pictures larger than 1920 on the long side are interpolated at 1920 and scaled up; an interpolated picture is not
+  restored by AI Restore on the same clip; transition handles outside a clip's In and Out play with Optical Flow; a very fast or ambiguous motion can show warping that a cross-fade would not (turn Time Interpolation back to
+  Optical Flow for that section).
+
+### AI Refocus (shift the focus after the shot)
+
+**AI Refocus** (Effects panel > AI, `wabcut.ai.refocus`) moves the focal point of a shot and its depth of field. A local depth model
+(**Depth Anything V2 Small**, Apache-2.0, 99 MB) estimates how far each part of the picture is; the compositor then blurs the picture
+like a lens by the distance from the focus. Distances run from 0 (the nearest part of the picture) to 100 (the farthest).
+
+| Setting | |
+|---|---|
+| Focus | the distance that is sharp - keyframe it for a **focus pull** |
+| Sharp Zone | how deep the in-focus zone is around it |
+| Blur Size | the largest blur (up to 40 pixels of a 1080-line picture) |
+| Near Blur, Far Blur | how much the nearer and the farther parts blur |
+| Show | the *Result*, the *Depth Map* (near is dark, far is light) or the *Blur Map* (white is the most blurred) |
+
+- **Process** (the effect's header, or `effect.processAi`) makes one 8-bit depth map per frame of the clip; they belong to the picture,
+  not to the settings, so **moving the focus or changing any slider never makes them again** and keyframes are free. Playback and
+  export read them like any processed picture; a frame without a depth map is left sharp and the monitor says so.
+- It works on the footage's own picture: put it **first** in the clip's effects (a blur or a crop above it moves the picture away
+  from its depth map). Retimed clips with Frame Blending, Optical Flow or AI Frame Interpolation, and footage with non-square pixels, are
+  not supported by this first version (the effect leaves the picture as it is on interpolated frames).
+- **Limits.** The depth is relative and made for every frame on its own, so a very busy scene can show faint flicker at the edges
+  of the sharp zone; very thin objects (hair, wire) blur with what is behind them. A mask on the effect limits where it blurs.
+
+**Models.** RIFE 4.25 lite by hzwer, an ONNX export by t9749 (repository `t9749/rife-4.25-lite-onnx`, MIT); Depth Anything V2 Small by
+Lihe Yang et al., ONNX weights from the ONNX Community (`onnx-community/depth-anything-v2-small`, Apache-2.0). Revisions, sizes
+and digests are pinned in `src/ai/src/ModelStore.cpp` and listed in [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md#ai-video-effect-models-07-verified-2026-11-05).
+In the runner they are `Model::Interpolate` (two pictures and a timestep, run on the whole picture, at most 1920 on the long side)
+and `Model::Depth` (one picture at 518 lines on the shorter side, normalised by percentiles, stored as one 8-bit plane); the cache,
+the helper protocol (`input2` and `timestep` in `process_picture`), the evaluator hooks (`SourceFrameProcessor::depth` and
+`interpolate`) and the compositor's Depth Blur op (`shaders/fx_generate.frag`, CPU twin `LibraryGenerate.cpp`) are the pieces.
+
+## AI Face Retouch (0.7)
+
+**AI Face Retouch** (Effects panel > AI, `wabcut.ai.faceRetouch`; the non-AI **Skin Smoothing** beside it is described in
+[effects.md](effects.md#skin-smoothing-07)) smooths skin, heals blemishes, whitens teeth and brightens eyes **only where the model says
+they belong**, on the same runner as the other AI video effects: the models are downloaded on request with their licence card (never
+bundled), **Process** (the effect's header, or `effect.processAi`) makes the maps with progress and Cancel, the export makes what is
+missing or stops with the reason, the monitor shows **AI: N layers not processed** for a frame without a map.
+
+- **Models.** **YuNet** (OpenCV Zoo, MIT, 0.2 MB: finds the faces; the same detector Auto Reframe uses) and **BiSeNet face parsing**
+  (ResNet-18, 53 MB, MIT; Yakhyokhuja Valikhujaev's weights, built on zllrunning's face-parsing.PyTorch, trained on CelebAMask-HQ). The
+  header's Download fetches both (53 MB) after the licence card; the card says where the weights come from. One `wabcut-embed` request
+  runs both: YuNet on the picture (at most 1280 pixels on the long side), then the parser on a 512 x 512 crop round each face.
+- **The face map** is made for every frame of the clip and stored as three 8-bit planes (skin, mouth, eyes) at the working size, in the
+  processed cache (shared by clips of one media; Settings > Media & cache lists it with the other AI pictures). Per face: the crop is 1.5
+  times the face box, the network's 19 labels (softmax) are summed into *skin* (face, nose, ears, and the neck at 80 % so the jaw
+  blends), *mouth* (the inside of the lips: teeth, tongue, gums) and *eyes*; brows, glasses, lips, hair, hat, clothes and background are
+  in none of them. The crops of up to 8 faces (at least 24 pixels at the working size) are pasted into one map with a soft edge.
+  **Show** displays the maps.
+- **The retouch** is one compositor pass (`shaders/fx_generate.frag`, `OP_FACE_RETOUCH`; CPU twin `LibraryRetouch.cpp`) that reads the map
+  as the effect's second picture, like AI Refocus's depth map. *Smoothing*: an edge-preserving smoothing of the skin pixels
+  (24 taps, weights by distance, by colour closeness and by the map's skin weight, so nothing from the lips, hair or background leaks
+  in), mixed with the picture by Amount and Keep Detail. *Blemishes*: a robust average of the skin round the pixel (16 taps, the
+  second average without the taps far from the first); where the pixel and its neighbourhood both differ from it by more than a
+  threshold (lower for more removal) but by less than a feature's worth, the pixel moves to the average and keeps its own fine
+  texture; a pixel beside a feature is not taken for a spot. *Whiten Teeth* and *Bright Eyes*: only the bright, barely coloured pixels of the mouth
+  and eye maps are desaturated and lifted. Every change is made on the encoded colour and applied as a difference, so a pixel it does
+  not touch is bit-exact, also above 1.0 in linear light. With every amount at 0, or without a map, the picture is as it was.
+- **Natural results.** At the defaults most of the skin texture stays (over 60 % of the pore-level contrast), even Smoothing
+  100 with Keep Detail 30 leaves at least a fifth of it, no pixel moves far, and the large-scale shading (the light on the face) is not flattened; the
+  tests in `tests/render_reference/test_retouch.cpp` measure these.
+- **Limits.** Each frame is parsed on its own (no temporal smoothing): the map's edge can shimmer slightly on a moving face, which the
+  smoothing hides but a strong Whiten Teeth or Bright Eyes can show; every face the detector finds is retouched (a mask on the effect limits
+  it to one); faces smaller than 24 pixels at the working size, or turned far away from the camera, may be missed; glasses, hair
+  and hands in front of the face are left alone only as far as the parser separates them; heavy make-up or strongly coloured
+  light can fool the teeth and eye tests (they look for bright, barely coloured pixels). Face reshaping (a slimmer jaw, bigger eyes) is
+  not part of it. The weights were trained on CelebAMask-HQ, a collection published for research; the weights' author licenses them
+  MIT, which is what Wabcut relies on (see [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md#ai-video-effect-models-07-verified-2026-11-05)).
+  A different parser (for example a landmark-based one with a permissive training set) fits behind the same `Model::FaceParse` step.
+- **Commands.** `effect.aiStatus` lists a clip's face maps as `"kind": "faces"` (chain `Face maps`), `effect.processAi` makes them.
+  Settings change through the ordinary effect commands.
+
+## AI Eye Contact (0.7)
+
+**AI Eye Contact** (Effects panel > AI, `wabcut.ai.eyeContact`) turns the gaze of a speaker who reads notes or looks at a second monitor
+towards the camera, on the same runner as the other AI video effects: the models are downloaded on request with their licence card (never
+bundled), **Process** (the effect's header, or `effect.processAi`) measures the eyes with progress and Cancel, the export measures what is
+missing or stops with the reason, the monitor shows **AI: N layers not processed** for a frame without measurements.
+
+- **What it is, and is not.** A landmark model plus an iris warp. A model that redirects gaze by repainting the eye (NVIDIA Broadcast's
+  eye contact, research systems such as DeepWarp or STED) would look more alive on large corrections, but no such model with a licence
+  that allows this use and a verifiable model card turned up (the Hugging Face Hub has no gaze-redirection model, searched 2026-11-05;
+  the commercial one is proprietary and the research systems are published as research code), so the first version measures the eyes
+  with a permissive landmark model and moves the iris itself.
+  That works for what the card asks - a speaker whose gaze sits a little below the lens - and not for a head turned to the side or a
+  gaze far off the lens; those are left alone on purpose.
+- **Models.** **YuNet** (OpenCV Zoo, MIT, 0.2 MB: finds the faces) and **MediaPipe's face landmark network** (Google, Apache-2.0, 4.9 MB:
+  478 landmarks per face, the face mesh and ten iris points; an ONNX conversion of the Face Landmarker's network, pinned to a revision
+  and SHA-256). The header's Download fetches both (5 MB) after the licence card. One `wabcut-embed` request runs both: YuNet on the
+  picture (at most 1280 pixels on the long side), then the landmark network on a 256 x 256 crop of each face (1.5 times the box, rolled
+  so the eyes are level). Up to four faces of at least 24 pixels are measured per frame; a crop the network does not believe is a face
+  (presence under 0.5) is dropped.
+- **The measurements** are kept per frame in the processed cache (shared by clips of one media): per face, for each eye, the corners'
+  middle, the corner line's roll, its half width, how far the upper and the lower lid lie from the corner line (a parabola fitted to
+  the seven lid landmarks each side), the iris's centre and radius (the four limbus points) in the eye's own frame (x along the corner line,
+  y down), and the face's turn (the nose tip's place between the cheeks) and size: 24 floats a face, a few hundred bytes a frame. Nothing in
+  them depends on the effect's settings, so moving a slider never measures again, and clips of one media share them. **Show > Eye Map** and
+  the render tests make the geometry visible.
+- **The correction** is one compositor pass (`shaders/fx_distort.frag`, `OP_EYE_CONTACT`; CPU twin `LibraryDistort.cpp`). Per eye the evaluator
+  (`playback/Evaluate.cpp`, `model/EyeContact.h`) works out how far the iris is from where it looks into the lens - the eye's
+  middle in x, the middle of the opening in y - as a share of the eye's width, gates it by the ranges, the blink and the head turn
+  (each a smooth ramp, never a switch), and moves the iris by Amount of what is left, at most 1.1 radii. The settings of the frame on
+  screen are used (they can be keyframed). One copy of the effect is made per face (the largest first), each baking its two eyes into
+  the effect's parameters. In the shader the opening is a soft-edged lens between the lids; the iris disc is copied from where it was to where
+  it goes (clipped to the opening on both ends, so a lid never moves and no skin enters the eye); the vacated area (the old disc minus the new)
+  takes the sclera of the same row from both sides of the iris, by distance, only from places that are sclera. A shift under 1/20 pixel, an
+  eye without a measurement, or Amount 0 leaves every pixel as it was, bit for bit; outside the openings nothing ever changes.
+- **Natural results.** The tests draw an eye analytically (`tests/render_reference/test_eye_contact.cpp`): the iris moves by the shift
+  to within a third of a pixel level and rolled, keeps its size, the vacated sclera matches the sclera beside it, no skin colour appears in the
+  opening and every pixel outside it is identical. `tests/render/test_library_effects.cpp` holds the shader to the twin (>= 40 dB), and its
+  opt-in test (`WABCUT_TEST_FACE_IMAGE`, `WABCUT_TEST_GAZE_FACE`) runs a real portrait: the real landmarks, the irises moved down by the effect,
+  then corrected, compared with the original.
+- **Limits (first version).** Each frame is measured on its own (landmarks can jitter by a pixel from frame to frame: the iris follows;
+  a short median over the cached neighbours is the first follow-up); a head turned past about 45 degrees, a closed or squinting eye, strong
+  glasses reflections and an iris the network cannot see (heavy lids) are left alone or corrected little; a correction larger than about an
+  iris radius is not made (looking far down stays looking down); the lids do not follow the iris, so a speaker who looks down with
+  lowered lids keeps lowered lids (partial Amounts look more natural there); the catch-light moves with the iris; non-square pixels are
+  treated as square. Every face the model finds is corrected unless Faces says Largest (a mask on the effect limits it to a region).
+  Stills, titles and nested sequences are not targets (the same as the other AI video effects).
+- **Commands.** `effect.aiStatus` lists a clip's measurements as `"kind": "gaze"` (chain `Eye measurements`), `effect.processAi` makes them.
+  Settings change through the ordinary effect commands.
 
 ## UI integration
 - An "AI" status pill shows Local / provider name / Offline. Settings > AI (`settings/AiSettingsPage`, 0.1.3; it replaced
@@ -3342,3 +3801,84 @@ whole-tree gate, about 26x real time, on the shared machine.)
 - **Auto reframe, rough cut, auto zoom, masks**: the numbers in their sections above were measured earlier on this
   machine class with synthetic or fixture material; nothing in this pass re-measured them, and none of them has a
   real-footage accuracy number yet.
+
+## Local model library (r07, as of 2026-11-03)
+
+Settings > AI > Local models is a library of models that run on this computer. Nothing you ask a local model, and
+no audio you transcribe locally, leaves it. Every download goes through the AI network stack: proxies, TLS, the
+redacted request log, offline mode and the project's no-cloud lock all apply. Searches, model details and
+downloads run off the GUI thread.
+
+- **Recommended**: the curated assistant models Wabcut is tested with (the AI-15 tiers and Phi-4 mini). The one
+  this computer runs best comes first. One click downloads the model and its llama-server build, then starts the
+  assistant with it.
+- **Browse**: a Hugging Face search of GGUF models (`GET https://huggingface.co/api/models?filter=gguf&...`; only
+  models llama.cpp can chat with). Sort orders:
+  - Recommended: what fits this computer, then the curated picks, then the benchmark score.
+  - Benchmark score.
+  - Most downloaded, most liked, trending, newest, recently updated.
+  - Smallest.
+
+  Filters cover task (assistant, coding, reasoning, vision, translation), fits this computer, download size,
+  parameter count, quantization, open licences only (on by default), language, publisher (official, or official
+  and well-known quantizers) and downloaded only. A model's card is fetched on demand
+  (`/api/models/<repo>?blobs=true`, falling back to the repository tree for LFS digests). It shows the
+  quantizations, their download size and how each would run here. It also shows the published benchmarks with their
+  source and the licence. Any repository opens by its id (`owner/name`).
+- **Transcription**: the whisper.cpp models (tiny to large-v3, English-only variants, 5-, 8- and 16-bit turbo). The
+  chosen one is what "On this computer" transcription uses. Automatic picks large-v3-turbo (5-bit) with a GPU and
+  base without one, preferring whichever of them is already downloaded. A transcription downloads the model it
+  needs, and the voice detector, on first use.
+- **Downloaded**: the storage folder (changeable; models already downloaded stay where they are) and every
+  downloaded model. Each has its size, Use, Remove (asks first), and advanced launch settings for assistant models:
+  context size, GPU layers (0 = CPU only) and CPU threads. They apply at the model's next start.
+
+### Downloads
+
+The queue (`wabcut/ai/ModelDownloads.h`) runs one download at a time and shows bytes, speed and time left.
+
+- **Pause** keeps the partial file. **Resume** continues it with an HTTP Range request. **Cancel** deletes what the
+  request wrote. Shared runtimes stay.
+- **Before a download starts**, the drive must hold what is left to download plus 512 MB.
+- **Verification**: every file is checked against its size and the SHA-256 the Hub publishes for it. Files are
+  pinned to the repository revision the card was read at, so a file without a published digest is never offered.
+  A file that fails the check is deleted.
+- **Gated repositories** use the Hugging Face access token when one is saved (key ring entry `huggingface`, or
+  `WABCUT_HUGGINGFACE_API_KEY`). The token is sent to `https://huggingface.co` only, never to the file CDN the Hub
+  redirects to.
+- **Licences**: the curated picks keep the existing allow-list. A Hugging Face model under another licence (a Llama
+  or Gemma licence, a non-commercial one, ...) is shown with that licence. It downloads only after the user
+  explicitly accepts it, and the acceptance is recorded with the model.
+
+### Where it lives
+
+- `<store>/library/index.json` lists what the library downloaded: repository, revision, quantization, files with
+  their size and SHA-256, licence and acceptance, launch settings. Entries read back from disk are validated as
+  untrusted input (ids, paths inside the model's folder, URLs on the model's repository, digests).
+- The files sit in `<store>/library/<owner>/<name>/`. Split GGUF shards stay side by side, which is how llama-server
+  finds them.
+- At start, AiController registers each entry with ModelStore (`registerModel`, so the local assistant and
+  transcription find it) and with its own registry (provider `local-llm`, api `managed-llama`; constrained tool
+  calls, structured output, and images when a vision projector was downloaded). Routing and the model pickers list
+  these models; they are not saved as user models. When one starts, llama-server gets the other shards beside the
+  first and `--mmproj` for the vision projector.
+
+### Benchmarks
+
+`src/ai/data/local-benchmarks.json` is a bundled table of base model families and their published results:
+
+- **Metrics**: MMLU-Pro, GPQA Diamond, IFEval and LiveCodeBench count toward the score; AIME 2025 and MMLU are shown
+  but do not count.
+- **Sources**: each family names the page its numbers were copied from (the publisher's model card or technical
+  report) and the date it was read. A score that came from another page names its own source.
+- **Matching**: a repository gets a family's results when it is that model or a quantization of it, by its
+  `base_model` data or, without it, by a name that is the family's name plus GGUF or quantization suffixes.
+  Fine-tunes, merges and "abliterated" variants get none. A repository's own `model-index` results count when no
+  family applies.
+- **The score** that sorts the list is the mean of the counted metrics a family reports. Different families report
+  different subsets, so it is a rough guide; a model's card shows each number with its mode (thinking or not). A
+  model without published results says so and sorts last.
+
+The 2026-11-03 table holds 44 families, 38 of them with scores. Every number was checked against its source page.
+A few were read from a chart image rather than a table, and some cards say "GPQA" without naming the Diamond subset;
+the family's note says so.

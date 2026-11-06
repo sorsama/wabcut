@@ -41,6 +41,7 @@
 // every selected clip of that kind in one undo step (a key at the playhead where the parameter is animated).
 
 #include "BridgeIds.h"
+#include "KeyframeGraph.h"
 #include "ParameterUi.h"
 
 #include <wabcut/model/Clip.h>
@@ -54,6 +55,7 @@
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -78,6 +80,15 @@ bool isListedEffect(const EffectDescriptor& descriptor);
 /// The Effects panel's icon of an effect or transition: its category's, the same in its own bin, Favorites and custom
 /// bins ("sliders-horizontal" for an audio plug-in).
 QString effectLibraryIcon(const EffectDescriptor& descriptor);
+
+/// 0.7 (card 044): what the Dynamics Processing graph reads, for Effect Controls and the mixer's effect settings alike.
+/// The live levels of the effect instance `instance` (its id value): { active (audio went through it since the last look),
+/// inputDb, outputDb, reduction: [dB x4] }, the peaks since the last look (this takes them). `seenBlocks` is the caller's
+/// memory of the processor's block counter for this instance.
+QVariantMap dynamicsMeterReading(std::uint64_t instance, std::uint64_t& seenBlocks);
+/// The static transfer curve of a band: `points` output levels (dB) for inputs spread from `fromDb` to `toDb`.
+QVariantList dynamicsCurvePoints(int mode, double threshold, double ratio, double range, double knee, double makeup, double fromDb,
+                                 double toDb, int points);
 
 class EffectControlsModel : public QAbstractListModel {
     Q_OBJECT
@@ -105,6 +116,9 @@ class EffectControlsModel : public QAbstractListModel {
     /// The interpolation every selected key shares ("linear", "hold", "bezier", "easeIn", "easeOut", "easeInOut"),
     /// or "" when they differ or none is selected.
     Q_PROPERTY(QString selectedKeyInterpolation READ selectedKeyInterpolation NOTIFY keySelectionChanged FINAL)
+    /// 0.7 (card 120): where every selected key is pinned ("start", "end", "none" for unpinned), or "" when they differ or
+    /// none is selected.
+    Q_PROPERTY(QString selectedKeyPin READ selectedKeyPin NOTIFY keySelectionChanged FINAL)
     /// A one-line message about the last edit ("Shortened to the available media"), or "".
     Q_PROPERTY(QString notice READ notice NOTIFY noticeChanged FINAL)
     /// 0.4: the selected section headers ("motion", "opacity", "audio", "e12"), in panel order.
@@ -115,6 +129,8 @@ class EffectControlsModel : public QAbstractListModel {
     Q_PROPERTY(bool canPasteKeys READ canPasteKeys NOTIFY keyClipboardChanged FINAL)
     /// 0.6, "multi" mode: how many clips the rows edit (0 otherwise).
     Q_PROPERTY(int multiCount READ multiCount NOTIFY contextChanged FINAL)
+    /// 0.7 (card 96): the Graph Editor panel's engine, a second view of the same keyframes and key selection.
+    Q_PROPERTY(wabcut::app::KeyframeGraph* graph READ graph CONSTANT FINAL)
 
 public:
     enum Role {
@@ -176,11 +192,13 @@ public:
     bool zoomed() const { return m_viewEnd - m_viewStart < 1.0 - 1e-9; }
     int selectedKeyCount() const { return static_cast<int>(m_selectedKeys.size()); }
     QString selectedKeyInterpolation() const;
+    QString selectedKeyPin() const;
     QString notice() const { return m_notice; }
     QStringList selectedSections() const { return m_selectedSections; }
     bool canPasteEffects() const { return effectsPastePending(); }
     bool canPasteKeys() const { return m_keyClipboard != nullptr && m_keysPending; }
     int multiCount() const { return m_multiCount; }
+    KeyframeGraph* graph() const { return m_graph; }
 
     /// Row index of a key, or -1.
     Q_INVOKABLE int rowOf(const QString& key) const;
@@ -199,6 +217,10 @@ public:
     Q_INVOKABLE void endEdit();
     /// Back to the default (at the playhead when animated).
     Q_INVOKABLE void resetValue(const QString& row);
+    /// 0.7 (card #136): steps the Blend Mode of the selected video clips (else the clip shown) to the next (+1) or
+    /// previous (-1) mode of Premiere's menu order, wrapping at both ends: one undo step "Blend Mode". The keymap's
+    /// effectControls.nextBlendMode / previousBlendMode. False when there is no video clip to step.
+    Q_INVOKABLE bool stepBlendMode(int step);
     /// The stopwatch: on turns the value into a curve with a key at the playhead; off deletes every key and keeps
     /// the value at the playhead.
     Q_INVOKABLE void setAnimated(const QString& row, bool animated);
@@ -297,6 +319,9 @@ public:
     Q_INVOKABLE void endKeyDrag();
     /// Interpolation of the selected keys: "linear", "hold", "bezier", "easeIn", "easeOut", "easeInOut".
     Q_INVOKABLE void setKeyInterpolation(const QString& interpolation);
+    /// 0.7 (card 120): pins the selected keys to their clip's "start" or "end" (each moves there, keeping its value, and
+    /// follows that end through trims and slips), or "none" unpins them; one undo step "Pin Keyframes". Clip keys only.
+    Q_INVOKABLE void setKeyPin(const QString& pin);
     Q_INVOKABLE void deleteSelectedKeys();
     /// 0.6: puts the selected keys on the keyframe clipboard (`cut`: also deletes them, one undo step "Cut Keyframes"):
     /// each with its parameter, its time after the earliest copied key, value, interpolation and handles. Returns how
@@ -326,8 +351,10 @@ public:
     /// tolerances. True when one was hit.
     Q_INVOKABLE bool pressHandle(const QString& row, double x, double y, double toleranceX, double toleranceY);
     /// Drags the handle to (x, y) of the graph: that side's influence (how far along the segment) and slope. The
-    /// key's other handle follows with the same slope unless `broken` (Alt). One undo step per drag.
-    Q_INVOKABLE void dragHandle(double x, double y, bool broken);
+    /// key's other handle follows with the same slope unless `broken` (Alt). 0.7 (card #79): `flat` (Shift) pins the
+    /// handle level with its key (slope 0, a flat ease) and only its length follows the pointer; letting go of Shift
+    /// mid-drag frees the height again. One undo step per drag.
+    Q_INVOKABLE void dragHandle(double x, double y, bool broken, bool flat = false);
     Q_INVOKABLE void endHandleDrag();
 
     // ---- Transition rows ----
@@ -340,6 +367,32 @@ public:
     /// the sections of a clip in the panel's order.
     std::optional<ClipId> sectionClip(const QString& section) const;
     QStringList sectionsOf(ClipId clip) const;
+
+    // ---- 0.7 (card #57): pinned favourites ----
+    /// Every Favorites effect (the Effects panel's Add to Favorites; video effects on a video clip, audio effects on an
+    /// audio one) that the clip does not have yet shows at the end of its stack as a header ready to use: section
+    /// "pin:<effect id>", sectionKind "pinned", with the effect's name and an Add button. addPinned() puts that effect on
+    /// the shown clip (the Effects panel's double-click: one undo step), and the real section takes its place.
+    /// Returns "" or why not.
+    Q_INVOKABLE QString addPinned(const QString& section);
+    /// The effect id a section stands for: "pin:<id>" or the effect of a stack section ("e12"); "" for others.
+    Q_INVOKABLE QString effectIdOfSection(const QString& section) const;
+    /// Rebuilds the rows after the Favorites changed (the Effects panel, the section menu's Pin).
+    Q_INVOKABLE void refreshPinned();
+
+    // ---- 0.7 (card 044): Dynamics Processing ----
+    /// Its section shows a graph row (kind "dynamics", key "<section>:graph", the controls in `graph`) above the rows of the
+    /// bands in use. The live levels of the section's effect: { active (audio went through it since the last look), inputDb,
+    /// outputDb, reduction: [dB x4] } as the peaks since the last look (a call takes them).
+    Q_INVOKABLE QVariantMap dynamicsMeters(const QString& section);
+    /// The static transfer curve of a band: `points` output levels (dB) for inputs spread from `fromDb` to `toDb`.
+    Q_INVOKABLE QVariantList dynamicsCurve(int mode, double threshold, double ratio, double range, double knee, double makeup,
+                                           double fromDb, double toDb, int points) const;
+    /// The presets of the bands (names as shown) and applying one to a Dynamics Processing section: its crossovers, bands,
+    /// limiter and Auto Gate (Input, Output and Mix stay), one undo step "Dynamics Processing: <preset>". False when the
+    /// section is not a Dynamics Processing effect or there is no such preset.
+    Q_INVOKABLE QStringList dynamicsPresets() const;
+    Q_INVOKABLE bool applyDynamicsPreset(const QString& section, const QString& name);
 
     /// Rebuilds the rows from the controller (connected to its change signals).
     void refresh();
@@ -358,6 +411,7 @@ signals:
     void keyClipboardChanged();
 
 private:
+    friend class KeyframeGraph; // 0.7: the Graph Editor edits through the same rows, selection and key drags
     struct Row {
         QString key, kind, section, sectionKind, title, icon, unit, text, description, stackKind;
         double from = 0, to = 100, step = 1, decimals = 0, origin = 0, value = 0, defaultValue = 0;
@@ -400,6 +454,14 @@ private:
     Ticks rowCurveTime(const Row& row, const Clip& clip, Ticks t) const;
     Ticks rowCurveTimeAtPlayhead(const Row& row, const Clip& clip) const;
     std::optional<Ticks> rowTimelineTime(const Row& row, const Clip& clip, Ticks curveTime) const;
+    /// 0.7 (cards #98, #136): a clip's own flag row of Transform / Opacity (Nearest Neighbor Scaling, Blend Mode): one undo step.
+    void setClipFlag(const Row& row, double value);
+    /// 0.7 (card #57): the pinned headers of a clip, and the Favorites effects (cached per library revision).
+    void addPinnedSections(std::vector<Row>& rows, const Clip& clip, bool video);
+    /// 0.7 (card 044): the graph row of a Dynamics Processing section.
+    void addDynamicsGraph(std::vector<Row>& rows, const Clip& clip, const EffectInstance& instance, const QString& section,
+                          bool enabled);
+    const std::vector<std::string>& pinnedEffects();
     /// Applies `edit` to a copy of a text row's layer (at the playhead's graphic time) as one undo step.
     bool editTextLayer(const Row& row, const char* label, const std::function<bool(GraphicLayer&, Ticks)>& edit,
                        const std::string& mergeKey = {});
@@ -433,6 +495,11 @@ private:
     std::vector<std::pair<std::size_t, Ticks>> visibleKeys(const Row& row, const Curve& curve, const Clip& clip) const;
     /// The value graph of a parameter row (GraphRole).
     QVariantMap graphOf(const Row& row, const Curve& curve, const Clip& clip) const;
+    /// 0.7 (KeyframeGraph): a parameter row's value as its clip plays it, and several edits as ONE undo step (merged with the
+    /// edits before it that share `mergeKey`).
+    ParamValue rowValue(const Row& row) const;
+    bool applyChainedEdit(const char* label, const std::vector<std::function<edit::EditOutcome(const ProjectState&)>>& steps,
+                          std::string_view mergeKey = {});
 
     QPointer<ProjectController> m_controller;
     std::vector<Row> m_rows;
@@ -453,6 +520,12 @@ private:
     std::set<KeyRef> m_shownKeys; ///< keys the rows show (rebuilt with them)
     QString m_notice;
     bool m_refreshing = false;
+    // 0.7 (card #57): the Favorites effects as of the library revision they were read at.
+    std::vector<std::string> m_pinned;
+    std::uint64_t m_pinnedRevision = 0;
+    bool m_pinnedLoaded = false;
+    /// 0.7 (card 044): the block counter of each Dynamics Processing meter at the last look (is audio going through it?).
+    std::map<std::uint64_t, std::uint64_t> m_meterBlocks;
 
     struct DragGroup {
         QString row;
@@ -469,6 +542,10 @@ private:
     } m_drag;
     int m_dragCounter = 0;
 
+    KeyframeGraph* m_graph = nullptr; ///< 0.7: the Graph Editor
+    /// 0.7: while the Graph Editor is open and a section is collapsed, the rows as they are with every section open (the
+    /// editor lists the curves of collapsed sections too; findRow() also finds them); empty otherwise.
+    std::vector<Row> m_uncollapsedRows;
     std::set<QString> m_graphRows; ///< rows whose value graph is open
     struct HandleDrag {
         bool active = false;

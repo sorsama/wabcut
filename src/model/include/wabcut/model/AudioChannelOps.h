@@ -25,7 +25,7 @@ EditOutcome setClipChannels(const ProjectState& state, SequenceId sequence, std:
 /// Sets a media item's channel map (nullopt clears it); its clips without a map of their own follow it.
 std::expected<ProjectState, Error> setMediaChannels(const ProjectState& state, MediaId media, std::optional<AudioChannelMap> map);
 
-/// The master's channel format: Stereo or Surround51 (an error otherwise).
+/// The master's channel format: Stereo, Surround51 or (0.7) Surround71 (an error otherwise).
 EditOutcome setMasterFormat(const ProjectState& state, SequenceId sequence, ChannelFormat format);
 
 /// Premiere's split to mono for a clip in a sequence: the clip plays source channel sourceChannels[0] as a mono clip,

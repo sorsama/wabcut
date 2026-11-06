@@ -126,12 +126,12 @@ endfunction()
 # (it links the FFmpeg media layer). OFF by default until the other compilers of the core gate have built it.
 option(WABCUT_CORE_COMMAND_TESTS "Build the command suite in core-only builds too (without the wabcut-cli stdio tests)" OFF)
 if(WABCUT_CORE_ONLY)
-    set(wabcut_test_suites model keymap interchange ai audio_edit color masks motion render_reference script)
+    set(wabcut_test_suites model keymap interchange ai audio_edit color masks motion render_reference script cloud)
     if(WABCUT_CORE_COMMAND_TESTS)
         list(APPEND wabcut_test_suites command)
     endif()
 else()
-    set(wabcut_test_suites model keymap media audio render playback plughost export interchange command ai audio_edit color masks motion render_reference script app editor e2e perf)
+    set(wabcut_test_suites model keymap media audio render playback plughost ofxhost export capture interchange command ai audio_edit color masks motion render_reference script cloud app editor e2e perf)
 endif()
 # The parser fuzz harnesses (tests/fuzz/README.md): libFuzzer executables with WABCUT_FUZZ, else ctest regression runs.
 list(APPEND wabcut_test_suites fuzz)
@@ -150,4 +150,13 @@ wabcut_allow_qt_generated_code(wabcut_app_tests)
 if(MSVC AND TARGET wabcut_audio_tests)
     set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/audio/test_clock.cpp
         TARGET_DIRECTORY wabcut_audio_tests PROPERTIES COMPILE_OPTIONS /wd4702)
+endif()
+
+# The CI helper scripts, the known-gap table, the vcpkg platform qualifiers and the macOS / Linux packaging files
+# (tests/tools/test_ci_scripts.py): static checks, so a broken workflow input fails here and not on a runner an hour in.
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+    add_test(NAME tools.ci_scripts COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ci_scripts.py"
+        "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(tools.ci_scripts PROPERTIES LABELS tools TIMEOUT 120)
 endif()

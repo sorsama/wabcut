@@ -99,7 +99,7 @@ FocusScope {
         readonly property string seconds: Number(card.modelData.seconds ?? 0).toFixed(1)
         text: fieldCount === 0 ? qsTr("%1 s").arg(seconds)
               : fieldCount === 1 ? qsTr("%1 s · 1 field").arg(seconds)
-              : qsTr("%1 s · %n fields", "", fieldCount).arg(seconds)
+              : qsTr("%1 s · %n field(s)", "", fieldCount).arg(seconds)
         elide: Text.ElideRight
         color: Theme.textTertiary
         font.family: Theme.fontSans

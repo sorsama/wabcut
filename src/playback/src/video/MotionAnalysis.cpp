@@ -47,9 +47,11 @@ std::uint64_t pictureKey(std::uint64_t h, const MotionPicture& p) {
     h = mixDouble(h, p.transform.position.x);
     h = mixDouble(h, p.transform.position.y);
     h = mixDouble(h, p.transform.scale);
+    h = mixDouble(h, p.transform.aspectX); // 0.7 (card #12)
     h = mixDouble(h, p.transform.rotationDegrees);
     h = mixDouble(h, p.transform.anchor.x);
     h = mixDouble(h, p.transform.anchor.y);
+    h = mix(h, p.transform.mirrorX ? 1u : 0u); // card 154
     h = mix(h, static_cast<std::uint64_t>(p.frameWidth));
     h = mix(h, static_cast<std::uint64_t>(p.frameHeight));
     h = mixDouble(h, p.pixelAspect);
@@ -57,6 +59,16 @@ std::uint64_t pictureKey(std::uint64_t h, const MotionPicture& p) {
 }
 
 std::size_t bytesOf(const motion::FlowPair& pair) { return pair.data.size() * sizeof(float) + sizeof(motion::FlowPair); }
+
+// 0.7: the process's face finder. A mutex, not std::atomic<std::shared_ptr> (not on every standard library CI builds with).
+std::mutex g_faceMutex;
+std::shared_ptr<FaceFinder> g_faceFinder;
+
+/// What a face-aware request's result depends on besides the request: the installed detector (0: none, the plain flow).
+std::uint64_t faceFinderKey() {
+    const std::shared_ptr<FaceFinder> finder = faceFinder();
+    return finder ? mixString(0x46616365ull, finder->version()) : 0;
+}
 
 /// Decoders of the analysis: CPU frames of one stream, borrowed by one thread at a time.
 class DecoderShelf {
@@ -120,7 +132,7 @@ private:
 bool MotionRequest::isValid() const {
     const auto ok = [](const MotionPicture& p) {
         return !p.path.empty() && p.time.value >= 0 && p.frameWidth > 0 && p.frameHeight > 0 && p.pixelAspect > 0.0 &&
-               std::isfinite(p.pixelAspect) && std::isfinite(p.transform.scale) && p.transform.scale != 0.0 &&
+               std::isfinite(p.pixelAspect) && std::isfinite(p.transform.scale) && std::isfinite(p.transform.aspectX) && p.transform.hasArea() &&
                std::isfinite(p.transform.rotationDegrees) && std::isfinite(p.transform.position.x) &&
                std::isfinite(p.transform.position.y) && std::isfinite(p.transform.anchor.x) &&
                std::isfinite(p.transform.anchor.y);
@@ -133,7 +145,18 @@ std::uint64_t MotionRequest::key() const {
     h = pictureKey(h, a);
     h = pictureKey(h, b);
     h = mix(h, static_cast<std::uint64_t>(canvas.width));
-    return mix(h, static_cast<std::uint64_t>(canvas.height));
+    h = mix(h, static_cast<std::uint64_t>(canvas.height));
+    return faceAware ? mix(h, faceFinderKey()) : h; // 0.7: the same pictures with and without face alignment are two motions
+}
+
+void setFaceFinder(std::shared_ptr<FaceFinder> finder) {
+    std::lock_guard lock(g_faceMutex);
+    g_faceFinder = std::move(finder);
+}
+
+std::shared_ptr<FaceFinder> faceFinder() {
+    std::lock_guard lock(g_faceMutex);
+    return g_faceFinder;
 }
 
 motion::Plane lumaOf(const media::FrameHandle& frame) {
@@ -251,6 +274,7 @@ struct MotionAnalyzer::Impl {
     std::size_t bytes = 0;
     std::uint64_t computed = 0;
     std::uint64_t failed = 0;
+    std::uint64_t facesAligned = 0;
     std::unordered_set<std::uint64_t> failedKeys; ///< bounded: cleared when it grows past kMaxFailedKeys
     double lastMs = 0.0;
     static constexpr std::size_t kMaxQueued = 64;
@@ -328,10 +352,29 @@ struct MotionAnalyzer::Impl {
         if (pair->empty()) {
             return std::unexpected(Error{ErrorCode::InvalidArgument, "nothing to analyse"});
         }
+        // 0.7: where the detector sees the same face on both sides, the flow inside it follows the face's own motion. No finder, no face
+        // on a side, or a face that does not match: the plain flow stays (the old Morph Cut).
+        bool aligned = false;
+        if (r.faceAware) {
+            if (const std::shared_ptr<FaceFinder> finder = faceFinder()) {
+                const std::vector<motion::FaceFeatures> facesA = finder->find(*a);
+                const std::vector<motion::FaceFeatures> facesB = facesA.empty() ? std::vector<motion::FaceFeatures>{} : finder->find(*b);
+                if (!facesA.empty() && !facesB.empty()) {
+                    motion::FaceAlignOptions faceOptions;
+                    faceOptions.threads = threads;
+                    motion::FaceAlignStats faceStats;
+                    *pair = motion::alignFaces(*a, *b, *pair, facesA, facesB, faceOptions, &faceStats);
+                    aligned = faceStats.faces > 0;
+                }
+            }
+        }
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         std::lock_guard lock(mutex);
         lastMs = ms;
         ++computed;
+        if (aligned) {
+            ++facesAligned;
+        }
         return std::shared_ptr<const motion::FlowPair>(std::move(pair));
     }
 
@@ -515,6 +558,7 @@ MotionAnalyzer::Stats MotionAnalyzer::stats() const {
     s.running = m_impl->running;
     s.computed = m_impl->computed;
     s.failed = m_impl->failed;
+    s.facesAligned = m_impl->facesAligned;
     s.cachedEntries = m_impl->lru.size();
     s.cachedBytes = m_impl->bytes;
     s.lastMilliseconds = m_impl->lastMs;

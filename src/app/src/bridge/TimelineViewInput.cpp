@@ -17,6 +17,7 @@
 
 #include <wabcut/model/Animations.h>
 #include <wabcut/model/ClipGroups.h>
+#include <wabcut/model/ClipLock.h>
 #include <wabcut/model/EffectPresets.h>
 #include <wabcut/model/Effects.h>
 #include <wabcut/model/FinishingOps.h>
@@ -98,30 +99,38 @@ std::vector<Ticks> TimelineView::localSnapTargets(Ticks t, bool withPlayhead) co
     std::vector<Ticks> targets;
     if (!m_sequence)
         return targets;
-    if (withPlayhead)
+    // 0.7 (card 113): only the kinds of target the Snap to options leave on.
+    const edit::SnapOptions options = snapOptions();
+    if (withPlayhead && options.playhead)
         targets.push_back(m_playhead);
-    if (m_sequence->markIn)
-        targets.push_back(*m_sequence->markIn);
-    if (m_sequence->markOut)
-        targets.push_back(*m_sequence->markOut);
-    for (const Marker& m : m_sequence->markers) {
-        targets.push_back(m.start);
-        if (m.duration.value > 0)
-            targets.push_back(m.start + m.duration);
+    if (options.marks) {
+        if (m_sequence->markIn)
+            targets.push_back(*m_sequence->markIn);
+        if (m_sequence->markOut)
+            targets.push_back(*m_sequence->markOut);
+    }
+    if (options.markers) {
+        for (const Marker& m : m_sequence->markers) {
+            targets.push_back(m.start);
+            if (m.duration.value > 0)
+                targets.push_back(m.start + m.duration);
+        }
     }
     // 0.1.3: the beats of the beat grid near `t`, like a drag's targets (edit::snapTargets).
-    if (m_sequence->beatGrid) {
+    if (options.beats && m_sequence->beatGrid) {
         const Ticks reach = snapTolerance();
         for (const Beat& b : m_sequence->beatGrid->beatsIn(TimeRange::fromStartEnd(t > reach ? t - reach : Ticks{}, t + reach + Ticks{1})))
             targets.push_back(b.time);
     }
-    m_sequence->forEachTrack([&](const Track& track) {
-        const std::size_t i = firstEndingAfter(track.clips, t);
-        for (std::size_t k = i > 0 ? i - 1 : 0; k < std::min(track.clips.size(), i + 2); ++k) {
-            targets.push_back(track.clips[k].start());
-            targets.push_back(track.clips[k].end());
-        }
-    });
+    if (options.clipEdges) {
+        m_sequence->forEachTrack([&](const Track& track) {
+            const std::size_t i = firstEndingAfter(track.clips, t);
+            for (std::size_t k = i > 0 ? i - 1 : 0; k < std::min(track.clips.size(), i + 2); ++k) {
+                targets.push_back(track.clips[k].start());
+                targets.push_back(track.clips[k].end());
+            }
+        });
+    }
     std::sort(targets.begin(), targets.end());
     targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
     return targets;
@@ -262,10 +271,12 @@ int TimelineView::nearestRow(double y) const {
     if (m_rows.empty())
         return -1;
     const double contentY = y + m_scrollY;
-    int best = 0;
+    int best = -1;
     double bestDistance = 1e300;
     for (std::size_t i = 0; i < m_rows.size(); ++i) {
         const Row& r = m_rows[i];
+        if (r.hidden) // 0.7 (card 124): folded into a collapsed track group
+            continue;
         if (contentY >= r.y && contentY < r.y + r.height)
             return static_cast<int>(i);
         const double distance = std::abs(contentY - (r.y + r.height / 2));
@@ -315,6 +326,14 @@ TimelineView::Hit TimelineView::hitTest(double x, double y) const {
         const double reach = std::min(handle, (x1 - x0) / 3.0);
         hit.clip = c.id;
         hit.zone = x - x0 <= reach ? Zone::Head : x1 - x <= reach ? Zone::Tail : Zone::Body;
+        // 0.7 (card 041): the clip's fx badge, where the last frame drew it, takes the click (a menu of the clip's properties).
+        if (!m_gesture.active) {
+            const auto chip = m_stats.fxRects.constFind(c.id.value);
+            if (chip != m_stats.fxRects.constEnd() && chip->contains(x, y)) {
+                hit.zone = Zone::FxBadge;
+                return hit;
+            }
+        }
         return speedHit(x, y, volumeHit(x, y, hit));
     }
     // In a gap: an edge within reach still counts (the edge zone straddles the clip's border).
@@ -551,6 +570,14 @@ void TimelineView::pressClip(const Hit& hit, Qt::KeyboardModifiers mods) {
     m_pressClip = hit.clip;
     m_pendingKind = gestureFor(hit, mods);
     m_pressWasSelected = m_controller->isSelected(hit.clip);
+    // 0.7: in trim mode Shift on a clip's edge adds that edit point (the release does it, editPointClicked). The press must
+    // leave the selection alone: a selected clip ends trim mode and the points chosen so far would be gone by the release.
+    if ((mods & Qt::ShiftModifier) && !m_trimPoints.empty() && (hit.zone == Zone::Head || hit.zone == Zone::Tail)
+        && (m_tool == TimelineTool::Select || m_tool == TimelineTool::Ripple || m_tool == TimelineTool::Roll)) {
+        m_pendingKind = GestureKind::None;
+        m_drag = Drag::Click;
+        return;
+    }
     // 0.4: Ctrl+Alt at the press is a rearrange, not the Alt link override: it selects as a plain press does.
     const bool ctrl = mods & Qt::ControlModifier;
     const bool ctrlAlt = ctrl && (mods & Qt::AltModifier);
@@ -726,20 +753,86 @@ void TimelineView::revealClip(const QString& clipId) {
     const auto loc = m_sequence->findClip(*id);
     if (!loc)
         return;
-    const double x0 = xOfTicks(loc->clip().start());
-    const double x1 = xOfTicks(loc->clip().end());
+    revealSpan(loc->clip().start(), loc->clip().end(), loc->track);
+}
+
+void TimelineView::revealSpan(Ticks start, Ticks end, const Track* track) {
+    const double x0 = xOfTicks(start);
+    const double x1 = xOfTicks(end);
     if (x0 < 0 || x0 > width() * 0.9)
         setScrollX(m_scrollX + x0 - width() * 0.1);
     else if (x1 > width() && x1 - x0 < width() * 0.8)
         setScrollX(m_scrollX + x1 - width() * 0.9);
     for (const Row& row : m_rows) {
-        if (row.track.get() != loc->track)
+        if (row.track.get() != track)
             continue;
         if (row.y < m_scrollY)
             setScrollY(row.y);
         else if (row.y + row.height > m_scrollY + height())
             setScrollY(row.y + row.height - height());
     }
+}
+
+QVariantMap TimelineView::menuAnchor() {
+    if (!m_controller || !m_sequence)
+        return {};
+    // What the menu is for: the selected transition, else the selected gap, else the primary clip (the first selected one
+    // when no clip is primary).
+    QString kind;
+    QString id;
+    const Track* track = nullptr;
+    Ticks start;
+    Ticks end;
+    const TransitionId transition = m_controller->selectedTransitionId();
+    if (transition) {
+        for (const Row& row : m_rows) {
+            for (const Transition& t : row.track->transitions) {
+                const auto range = t.id == transition ? transitionRange(*row.track, t) : std::nullopt;
+                if (!range)
+                    continue;
+                kind = QStringLiteral("transition");
+                id = transitionKey(t.id);
+                track = row.track.get();
+                start = range->start;
+                end = range->end();
+            }
+        }
+    } else if (const auto& gap = m_controller->gapSelection()) {
+        const auto row = std::find_if(m_rows.begin(), m_rows.end(), [&](const Row& r) { return r.track->id == gap->track; });
+        if (row != m_rows.end()) {
+            kind = QStringLiteral("gap");
+            id = trackKey(gap->track);
+            track = row->track.get();
+            start = gap->range.start;
+            end = gap->range.end();
+        }
+    } else {
+        ClipId clip = m_controller->primaryClip();
+        if (!clip && !m_controller->selection().empty())
+            clip = m_controller->selection().front();
+        const auto loc = clip ? m_sequence->findClip(clip) : std::nullopt;
+        if (loc) {
+            kind = QStringLiteral("clip");
+            id = clipKey(clip);
+            track = loc->track;
+            start = loc->clip().start();
+            end = loc->clip().end();
+        }
+    }
+    if (kind.isEmpty() || !track)
+        return {};
+    revealSpan(start, end, track); // scrolls only when the span is out of view
+    const auto row = std::find_if(m_rows.begin(), m_rows.end(), [&](const Row& r) { return r.track.get() == track; });
+    if (row == m_rows.end())
+        return {};
+    // The middle of the part of its rectangle that is in view, kept inside the view.
+    const double x0 = std::max(0.0, xOfTicks(start));
+    const double x1 = std::min(width(), xOfTicks(end));
+    const double y0 = std::max(0.0, row->y - m_scrollY);
+    const double y1 = std::min(height(), row->y + row->height - m_scrollY);
+    const double x = std::clamp(x1 > x0 ? (x0 + x1) / 2 : x0, 0.0, std::max(0.0, width() - 1));
+    const double y = std::clamp(y1 > y0 ? (y0 + y1) / 2 : y0, 0.0, std::max(0.0, height() - 1));
+    return {{QStringLiteral("kind"), kind}, {QStringLiteral("id"), id}, {QStringLiteral("x"), x}, {QStringLiteral("y"), y}};
 }
 
 void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
@@ -799,6 +892,13 @@ void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
         break;
     case Drag::Pending:
     case Drag::Click:
+        // 0.7 (card 041): a click (no drag) on a clip's fx badge - which the press selected like the rest of the clip - opens the
+        // menu of the clip's properties (Show Clip Keyframes). A drag from the badge moves the clip as anywhere on its body.
+        if (m_controller && m_pressClip && m_pressHit.zone == Zone::FxBadge && m_tool == TimelineTool::Select
+            && !(m_pressMods & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier))) {
+            emit fxBadgeClicked(clipKey(m_pressClip), m_pressPos.x(), m_pressPos.y());
+            break;
+        }
         // A click (no drag) on a clip edge selects that edit point for trimming (M5i, TrimBridge): the Selection
         // tool a regular trim (Ctrl/Cmd: ripple), the Ripple and Roll tools theirs.
         if (m_controller && m_pressClip && (m_pressHit.zone == Zone::Head || m_pressHit.zone == Zone::Tail)
@@ -907,7 +1007,7 @@ QString TimelineView::hoverCursorKey(const Hit& hit, Qt::KeyboardModifiers mods)
     case TimelineTool::Select:
         if (hit.zone == Zone::FadeHandle)
             return QStringLiteral("resizeH"); // 0.2: a fade handle drags sideways
-        if (hit.zone == Zone::VolumeKey || hit.zone == Zone::SpeedKey)
+        if (hit.zone == Zone::VolumeKey || hit.zone == Zone::SpeedKey || hit.zone == Zone::FxBadge)
             return QStringLiteral("point");
         if (hit.zone == Zone::VolumeLine || hit.zone == Zone::SpeedLine)
             return QStringLiteral("vertical");
@@ -950,11 +1050,13 @@ QString TimelineView::gestureCursorKey(Qt::KeyboardModifiers mods) const {
     const bool head = m_gesture.spec.edge == edit::Edge::Head;
     switch (m_gesture.spec.kind) {
     case GestureKind::Move: {
-        // 0.4: Ctrl+Alt rearranges, Alt copies (the system copy cursor), Ctrl inserts.
+        // 0.4: Ctrl+Alt rearranges, Alt copies (the system copy cursor), Ctrl inserts. 0.7 (card 040): Alt first and then
+        // Ctrl inserts the copy.
         const bool ctrl = mods & Qt::ControlModifier;
         const bool alt = mods & Qt::AltModifier;
-        return ctrl && alt ? QStringLiteral("rearrange")
-               : alt       ? QStringLiteral("copy")
+        return ctrl && alt && m_gesture.altFirst ? QStringLiteral("insertCopy")
+               : ctrl && alt ? QStringLiteral("rearrange")
+               : alt         ? QStringLiteral("copy")
                : ctrl      ? QStringLiteral("insert")
                            : QStringLiteral("move");
     }
@@ -1157,7 +1259,13 @@ bool TimelineView::startGesture() {
     std::erase(clips, grabbed);
     clips.insert(clips.begin(), grabbed);
     g.spec.clips = clips;
+    // Card 095: the Track Select Forward tool moves the markers after the selection with it (Ripple Sequence Markers);
+    // 0.7: the Backward tool the markers before it.
+    g.spec.moveMarkers = g.spec.kind == GestureKind::Move
+                         && (m_tool == TimelineTool::TrackForward || m_tool == TimelineTool::TrackBackward);
+    g.spec.markersBefore = g.spec.moveMarkers && m_tool == TimelineTool::TrackBackward;
     g.spec.groupTrim = std::move(groupEdges);
+    g.altFirst = (m_pressMods & Qt::AltModifier) && !(m_pressMods & Qt::ControlModifier); // card 040
     g.grabbed = grabbed;
     const auto loc = seq.findClip(grabbed);
     const auto position = loc ? seq.trackPosition(loc->track->id) : std::nullopt;
@@ -1216,7 +1324,7 @@ bool TimelineView::startGesture() {
         break;
     }
     if (!g.edges.empty()) {
-        edit::SnapOptions options;
+        edit::SnapOptions options = snapOptions(); // 0.7 (card 113): the Snap to choices
         options.exclude = involved;
         g.targets = edit::snapTargets(seq, m_playhead, options);
         // The dragged edges' own starting positions are not targets (a drag would stick to where it began).
@@ -1274,7 +1382,14 @@ void TimelineView::updateGesture(QPointF pos, Qt::KeyboardModifiers mods) {
     const bool move = g.spec.kind == GestureKind::Move;
     const bool ctrl = mods & Qt::ControlModifier;
     const bool alt = mods & Qt::AltModifier;
-    const bool copy = move && alt && !ctrl;
+    // 0.7 (card 040), Premiere: a drag started with Alt copies, and Ctrl pressed before the drop inserts the copy; Ctrl+Alt
+    // that went down together (or Ctrl first, then Alt) is a rearrange. Which key was first is remembered across moves.
+    if (alt && !ctrl)
+        g.altFirst = true;
+    else if (!alt)
+        g.altFirst = false;
+    const bool rearrange = move && alt && ctrl && !g.altFirst;
+    const bool copy = move && alt && (!ctrl || g.altFirst);
     const bool keepTime = move && (mods & Qt::ShiftModifier);
     Ticks delta = keepTime ? Ticks{0}
                            : snapToFrame(Ticks{static_cast<std::int64_t>(std::llround(seconds * static_cast<double>(kTicksPerSecond)))},
@@ -1291,7 +1406,7 @@ void TimelineView::updateGesture(QPointF pos, Qt::KeyboardModifiers mods) {
     int shift = 0;
     if (spec.kind == GestureKind::Move) {
         spec.copy = copy;
-        spec.moveMode = ctrl && alt ? edit::MoveMode::Rearrange : ctrl ? edit::MoveMode::Insert : edit::MoveMode::Overwrite;
+        spec.moveMode = rearrange ? edit::MoveMode::Rearrange : ctrl ? edit::MoveMode::Insert : edit::MoveMode::Overwrite;
         spec.newAudioTracks = 0;
         const int row = nearestRow(pos.y());
         if (!g.grabbedVideo && pos.y() + m_scrollY > m_modelRowsBottom + m_style.trackGap) {
@@ -1371,6 +1486,10 @@ void TimelineView::updateGesture(QPointF pos, Qt::KeyboardModifiers mods) {
             g.preview.reset();
             showSequence(m_controller->currentSequence());
         }
+    } else if (!outcome && edit::isLockedClipError(outcome.error())) {
+        // 0.7 (card 064): a locked clip does not move, trim, slip or slide, and nothing is dropped onto it or pushed past it:
+        // the readout says so (the last valid preview, if any, stays).
+        refusal = QString::fromStdString(outcome.error().message);
     }
     m_stats.previewNs = timer.nsecsElapsed();
 
@@ -1395,7 +1514,8 @@ void TimelineView::updateGesture(QPointF pos, Qt::KeyboardModifiers mods) {
         m_gestureReadout = (applied.value < 0 ? QStringLiteral("−") : QStringLiteral("+")) + length(magnitude);
         if (g.spec.kind == GestureKind::Move) {
             if (g.spec.copy)
-                m_gestureReadout = tr("Copy %1").arg(m_gestureReadout);
+                m_gestureReadout = (g.spec.moveMode == edit::MoveMode::Insert ? tr("Insert Copy %1") : tr("Copy %1"))
+                                       .arg(m_gestureReadout);
             else if (g.spec.moveMode == edit::MoveMode::Rearrange)
                 m_gestureReadout = tr("Rearrange %1").arg(m_gestureReadout);
             else if (g.spec.moveMode == edit::MoveMode::Insert)

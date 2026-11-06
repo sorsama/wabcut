@@ -3,7 +3,8 @@ import QtQuick
 import QtQuick.Layouts
 
 // The tour's coach marks (M5j onboarding): slice-style callouts that point at one part of the window at a time
-// (Library → Timeline → Export). The rest of the window dims; the highlighted part stays live (clicks reach it), so the
+// (Library → Timeline → menu bar → Program Monitor → Effects → command palette → Export; a step without a target
+// centres its card). The rest of the window dims; the highlighted part stays live (clicks reach it), so the
 // tour is interactive: opening the Export workspace on the last step completes it. The highlight follows its target
 // through layout animations.
 // Keyboard: the card takes focus; Right or Return goes on, Left goes back, Esc ends the tour. Focus goes back where it
@@ -168,6 +169,8 @@ FocusScope {
         width: Math.min(Theme.space(84), root.width - 2 * edge)
         height: cardColumn.implicitHeight + 2 * Theme.space(5)
         x: {
+            if (root.hole.width <= 0) // a step with no target: the card in the middle
+                return Math.max(edge, (root.width - width) / 2)
             if (root.hole.x + root.hole.width + gap + width <= root.width - edge)
                 return root.hole.x + root.hole.width + gap
             if (root.hole.x - gap - width >= edge)
@@ -175,6 +178,8 @@ FocusScope {
             return Math.max(edge, Math.min(root.width - width - edge, root.hole.x + root.hole.width / 2 - width / 2))
         }
         y: {
+            if (root.hole.width <= 0)
+                return Math.max(edge, (root.height - height) / 2)
             if (beside)
                 return Math.max(edge, Math.min(root.height - height - edge, root.hole.y + root.hole.height / 2 - height / 2))
             if (root.hole.y + root.hole.height + gap + height <= root.height - edge)

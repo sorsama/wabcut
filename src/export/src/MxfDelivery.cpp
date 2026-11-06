@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <format>
+#include <fstream>
+#include <iterator>
 #include <random>
 #include <system_error>
 #include <utility>
@@ -38,7 +40,10 @@ int mxfMixChannels(int outputs, ChannelFormat master) {
     if (outputs <= 1) {
         return 1;
     }
-    return outputs >= 6 && master == ChannelFormat::Surround51 ? 6 : 2;
+    if (master == ChannelFormat::Surround71 && outputs >= 8) {
+        return 8; // 0.7: the 7.1 mix over eight tracks
+    }
+    return outputs >= 6 && (master == ChannelFormat::Surround51 || master == ChannelFormat::Surround71) ? 6 : 2;
 }
 
 void configureMxfMuxer(Muxer& muxer, const MxfFileInfo& info) {
@@ -182,20 +187,125 @@ std::expected<void, Error> MxfAudioOut::finishFiles() {
     return {};
 }
 
-std::expected<std::vector<std::filesystem::path>, Error> MxfAudioOut::commitFiles() {
-    std::vector<std::filesystem::path> files;
-    for (Track& t : m_tracks) {
-        if (!t.own) {
+std::expected<void, Error> commitFileSet(const std::vector<FileMove>& moves) {
+    struct Placed {
+        std::filesystem::path temp;
+        std::filesystem::path final;
+        std::filesystem::path backup; ///< the earlier file, moved aside (empty = there was none)
+        bool placed = false;          ///< the new file has taken the name
+    };
+    std::vector<Placed> done;
+    done.reserve(moves.size());
+    const auto rollback = [&] {
+        std::error_code ignored;
+        for (auto it = done.rbegin(); it != done.rend(); ++it) {
+            if (it->placed) { // the new file goes back under its temporary name (its owner removes it)
+                std::filesystem::rename(it->final, it->temp, ignored);
+                if (ignored) {
+                    std::filesystem::remove(it->final, ignored);
+                }
+            }
+            if (!it->backup.empty()) {
+                std::filesystem::rename(it->backup, it->final, ignored);
+            }
+        }
+    };
+    for (const FileMove& m : moves) {
+        Placed p;
+        p.temp = m.temp;
+        p.final = m.final;
+        std::error_code ec;
+        if (std::filesystem::exists(m.final, ec)) {
+            p.backup = partialPath(m.final); // ".wabcut-partial-" in the name: never mistaken for an export
+            std::filesystem::rename(m.final, p.backup, ec);
+            if (ec) {
+                p.backup.clear();
+                rollback();
+                return std::unexpected(Error{ErrorCode::IoError, std::format("Cannot replace {} (is another program using it?): {}",
+                                                                             pathToUtf8(m.final), ec.message())});
+            }
+        }
+        done.push_back(std::move(p));
+        std::filesystem::rename(m.temp, m.final, ec);
+        if (ec) {
+            rollback();
+            return std::unexpected(Error{ErrorCode::IoError, std::format("Cannot move {} into place: {}",
+                                                                         pathToUtf8(m.final), ec.message())});
+        }
+        done.back().placed = true;
+    }
+    std::error_code ignored;
+    for (const Placed& p : done) {
+        if (!p.backup.empty()) {
+            std::filesystem::remove(p.backup, ignored);
+        }
+    }
+    return {};
+}
+
+bool isWabcutMxf(const std::filesystem::path& file) {
+    // configureMxfMuxer sets company_name and product_name to "Wabcut"; the MXF Identification set (in the header
+    // partition, at the start of the file) holds them as UTF-16BE strings.
+    static constexpr unsigned char kMark[] = {0x00, 'W', 0x00, 'a', 0x00, 'b', 0x00, 'c', 0x00, 'u', 0x00, 't'};
+    std::ifstream in(file, std::ios::binary);
+    if (!in) {
+        return false;
+    }
+    std::vector<char> head(256 * 1024);
+    in.read(head.data(), static_cast<std::streamsize>(head.size()));
+    const auto got = static_cast<std::size_t>(in.gcount());
+    const auto begin = reinterpret_cast<const unsigned char*>(head.data());
+    return std::search(begin, begin + got, std::begin(kMark), std::end(kMark)) != begin + got;
+}
+
+std::vector<std::filesystem::path> removeStaleAudioFiles(const std::filesystem::path& video, int tracks,
+                                                         const std::vector<std::filesystem::path>& keep,
+                                                         std::vector<std::filesystem::path>* left) {
+    constexpr int kMaxTracks = 64; // an MXF audio layout never goes beyond this
+    std::vector<std::filesystem::path> removed;
+    for (int n = std::max(tracks, 0) + 1; n <= kMaxTracks; ++n) {
+        const std::filesystem::path file = opAtomAudioPath(video, n);
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(file, ec)) {
             continue;
         }
-        std::error_code ec;
-        std::filesystem::rename(t.temp, t.final, ec); // replaces an existing file
-        if (ec) {
-            return std::unexpected(Error{ErrorCode::IoError, std::format("Cannot move {} into place: {}",
-                                                                         pathToUtf8(t.final), ec.message())});
+        const bool protectedFile = std::ranges::any_of(keep, [&](const std::filesystem::path& k) {
+            std::error_code same;
+            return std::filesystem::equivalent(file, k, same);
+        });
+        // 152 (review): only what Wabcut wrote. A camera original or another program's "<stem>_A<n>.mxf" next to the
+        // output is not an earlier export's audio file, whatever its name.
+        if (protectedFile || !isWabcutMxf(file)) {
+            if (left) {
+                left->push_back(file);
+            }
+            continue;
         }
-        t.temp.clear();
-        files.push_back(t.final);
+        if (std::filesystem::remove(file, ec) && !ec) {
+            removed.push_back(file);
+        }
+    }
+    return removed;
+}
+
+std::expected<std::vector<std::filesystem::path>, Error> MxfAudioOut::commitFiles(const std::filesystem::path& pictureTemp,
+                                                                                  const std::filesystem::path& picture) {
+    std::vector<FileMove> moves;
+    for (const Track& t : m_tracks) {
+        if (t.own) {
+            moves.push_back({t.temp, t.final}); // the audio first, the picture last
+        }
+    }
+    moves.push_back({pictureTemp, picture});
+    if (auto ok = commitFileSet(moves); !ok) {
+        return std::unexpected(ok.error());
+    }
+    std::vector<std::filesystem::path> files;
+    for (Track& t : m_tracks) {
+        if (t.own) {
+            t.temp.clear();
+            files.push_back(t.final);
+        }
     }
     return files;
 }

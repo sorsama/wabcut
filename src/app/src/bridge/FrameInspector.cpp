@@ -272,8 +272,9 @@ QStringList redactionNames(const ProjectState& project, const Clip& clip, Ticks 
                                                [&](const TimeRange& range) { return range.contains(sourceTime); });
         if (covered)
             out << (r.name.empty() ? FrameInspector::tr("Redaction") : text(r.name)) + QStringLiteral(": ") +
-                       (r.audio == RedactionAudio::Bleep ? FrameInspector::tr("bleep (1 kHz, -12 dBFS)")
-                                                         : FrameInspector::tr("muted"));
+                       (r.audio == RedactionAudio::Bleep
+                            ? (r.sound.isValid() ? FrameInspector::tr("replaced by your sound") : FrameInspector::tr("bleep (1 kHz, -12 dBFS)"))
+                            : FrameInspector::tr("muted"));
     }
     return out;
 }
@@ -489,6 +490,14 @@ std::optional<ExplainedCaption> explainCaption(const Sequence& sequence, Ticks t
     ExplainedCaption out;
     out.shown = captions != nullptr;
     out.trackName = text(track->name);
+    if (captions) { // card 116: the other caption tracks drawn together with it
+        for (const CaptionTrack* other : playback::captionTracksFor(sequence, settings)) {
+            if (other != track && std::any_of(other->cues.begin(), other->cues.end(), [&](const CaptionCue& c) {
+                    return TimeRange{c.start, c.duration}.contains(time);
+                }))
+                out.trackName += QStringLiteral(" + ") + text(other->name);
+        }
+    }
     out.text = text(cue->text);
     out.inText = text(ticksToTimecode(cue->start, sequence.frameRate, sequence.dropFrame));
     out.outText = text(ticksToTimecode(cue->end(), sequence.frameRate, sequence.dropFrame));

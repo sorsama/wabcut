@@ -1,6 +1,7 @@
 #include <wabcut/ai/translate/CaptionTranslation.h>
 
 #include <wabcut/ai/TranscriptRedaction.h>
+#include <wabcut/model/Plural.h>
 #include <wabcut/model/RedactedSpeech.h>
 #include <wabcut/ai/edit/SequenceTranscript.h>
 #include <wabcut/model/CaptionStyle.h>
@@ -539,7 +540,7 @@ std::expected<LanguageResult, AiError> translateTrack(const CaptionTrack& source
         for (std::size_t k = 0; k < failed.size() && k < 12; ++k) {
             list += (k ? ", " : "") + std::to_string(failed[k]);
         }
-        out.warnings.push_back(std::to_string(failed.size()) + " cue(s) could not be translated and keep the source text: " + list +
+        out.warnings.push_back(counted(static_cast<std::int64_t>(failed.size()), "cue") + " not translated, the source text stays: " + list +
                                (failed.size() > 12 ? ", ..." : ""));
     }
 
@@ -554,8 +555,8 @@ std::expected<LanguageResult, AiError> translateTrack(const CaptionTrack& source
         }
         if (missed > 0) {
             out.missedTerms.push_back(t);
-            out.warnings.push_back("\"" + term.source + "\" was not translated as \"" + term.target + "\" in " + std::to_string(missed) +
-                                   " cue(s)");
+            out.warnings.push_back("\"" + term.source + "\" was not translated as \"" + term.target + "\" in " +
+                                   counted(static_cast<std::int64_t>(missed), "cue"));
         }
     }
 
@@ -571,8 +572,8 @@ std::expected<LanguageResult, AiError> translateTrack(const CaptionTrack& source
     }
     const std::vector<TimedCue> timed = resegment(cues, out.language, rules, options.timing, breaker, &out.segmentation);
     if (out.segmentation.tooFast > 0) {
-        out.warnings.push_back(std::to_string(out.segmentation.tooFast) + " cue(s) still read faster than " +
-                               std::to_string(static_cast<int>(rules.charsPerSecond)) + " characters per second");
+        out.warnings.push_back("Still faster than " + std::to_string(static_cast<int>(rules.charsPerSecond)) +
+                               " characters per second: " + counted(static_cast<std::int64_t>(out.segmentation.tooFast), "cue"));
     }
 
     out.track.name = source.name + " (" + std::string(rules.nativeName.empty() ? out.language : rules.nativeName) + ")";

@@ -64,6 +64,8 @@ struct CaptionTrackChange {
     std::optional<std::string> name;
     std::optional<std::string> language;
     std::optional<bool> enabled;
+    /// 0.7 (card 116): draw the track together with the main caption track (CaptionTrack::showTogether).
+    std::optional<bool> showTogether;
 };
 EditOutcome setCaptionTrackInfo(const ProjectState& state, SequenceId sequence, CaptionTrackId track,
                                 const CaptionTrackChange& change);
@@ -84,6 +86,18 @@ EditOutcome setCaptionTrackStyle(const ProjectState& state, SequenceId sequence,
 /// Premiere's Push to Track Style: the track's style becomes its project preset's, and every track that follows that
 /// preset takes it. Errors: InvalidArgument (the track follows no preset, or a built-in one), NotFound.
 std::expected<ProjectState, Error> pushCaptionTrackStyle(const ProjectState& state, SequenceId sequence, CaptionTrackId track);
+
+// ---------------------------------------------------------------------------------------------------
+// Custom words for transcription (0.7)
+
+/// Replaces the project's custom words (ProjectState::customWords): each is trimmed and collapsed to one line, empty
+/// ones and duplicates (case-insensitive, the first spelling stays) drop out. Errors: InvalidArgument (more than
+/// kMaxCustomWords, one longer than kMaxCustomWordBytes, text that is not valid UTF-8). The state is unchanged
+/// (a no-op for the caller) when the list is the same.
+std::expected<ProjectState, Error> setCustomWords(const ProjectState& state, std::vector<std::string> words);
+/// Splits free text into words the way the Transcript panel's field means it: one per line, or separated by commas
+/// or semicolons ("Elden Ring, Malenia; Radahn"). Not validated (setCustomWords does that).
+std::vector<std::string> splitCustomWords(std::string_view text);
 
 // ---------------------------------------------------------------------------------------------------
 // Speakers and transcript edits (Transcripts.h)

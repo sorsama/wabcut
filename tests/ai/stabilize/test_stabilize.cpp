@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
@@ -974,4 +975,87 @@ TEST_CASE("Stabilize: analysis speed at the analysis width", "[ai][stabilize][ti
             CHECK(lost == 0);
         }
     }
+}
+// Card 129: a Smoothness that changes over the clip.
+TEST_CASE("Stabilize: a keyed Smoothness steadies one part of the shot and leaves the rest as shot (card 129)",
+          "[ai][stabilize][keyed]") {
+    const Clip& clip = staticShot();
+    const auto times = frameTimes(kFrames);
+    const MotionAnalysis truth = truthAnalysis(clip.truth, times, Method::Similarity);
+    const auto points = scenePoints();
+    SmoothOptions options = stabilizeOnly(Smoothing::Gaussian);
+    options.frameRate = 30.0;
+    options.smoothnessAt.assign(kFrames, 0.0);
+    for (std::size_t i = kFrames / 2; i < kFrames; ++i) {
+        options.smoothnessAt[i] = 0.5;
+    }
+    const Compensation result = stabilize(truth, options, kW, kH);
+    REQUIRE(result.times.size() == kFrames);
+    const Positions asShot = shot(clip.truth, points);
+    const Positions steady = stabilized(result, clip.truth, points);
+    // Smoothness 0: the compensation is the identity, the scene points stay where the camera put them.
+    double leftAlone = 0.0;
+    for (std::size_t i = 0; i < kFrames / 2; ++i) {
+        for (std::size_t q = 0; q < points.size(); ++q) {
+            leftAlone = std::max(leftAlone, distance(steady[i][q], asShot[i][q]));
+        }
+    }
+    CHECK(leftAlone < 1e-6);
+    // 0.5 s: the shake of the second half is mostly gone (the window still reaches back over the first half).
+    const auto tail = [](const Positions& p) { return Positions(p.begin() + 55, p.end()); };
+    const Stats before = frameToFrame(tail(asShot));
+    const Stats after = frameToFrame(tail(steady));
+    std::printf("C.15 stabilize: keyed Smoothness 0 then 0.5: frame-to-frame shake of the steadied half %.3f -> %.3f px RMS\n",
+                before.rms, after.rms);
+    CHECK(after.rms < 0.2 * before.rms);
+}
+
+TEST_CASE("Stabilize: a keyed Smoothness that is constant or the wrong size is the plain setting (card 129)",
+          "[ai][stabilize][keyed]") {
+    const MotionAnalysis truth = truthAnalysis(staticShot().truth, frameTimes(kFrames), Method::Similarity);
+    SmoothOptions plain = stabilizeOnly(Smoothing::Gaussian);
+    plain.smoothness = 0.3;
+    const Compensation expected = stabilize(truth, plain, kW, kH);
+    SmoothOptions same = plain;
+    same.smoothness = 0.9; // overridden by the per-frame values, which are all 0.3
+    same.smoothnessAt.assign(kFrames, 0.3);
+    const Compensation constant = stabilize(truth, same, kW, kH);
+    CHECK(constant.x == expected.x);
+    CHECK(constant.y == expected.y);
+    CHECK(constant.rotation == expected.rotation);
+    SmoothOptions wrong = plain;
+    wrong.smoothnessAt.assign(kFrames - 1, 0.0); // not one per frame: ignored
+    CHECK(stabilize(truth, wrong, kW, kH).x == expected.x);
+    // Hostile values (negative, not a number, huge) are clamped, never a crash or a NaN in the keys.
+    SmoothOptions odd = plain;
+    odd.smoothnessAt.assign(kFrames, 0.3);
+    odd.smoothnessAt[3] = -4.0;
+    odd.smoothnessAt[4] = std::numeric_limits<double>::quiet_NaN();
+    odd.smoothnessAt[5] = 1e9;
+    const Compensation clamped = stabilize(truth, odd, kW, kH);
+    REQUIRE(clamped.x.size() == kFrames);
+    for (std::size_t i = 0; i < kFrames; ++i) {
+        CHECK(std::isfinite(clamped.x[i]));
+        CHECK(std::isfinite(clamped.y[i]));
+    }
+}
+
+TEST_CASE("Stabilize: a ramped Smoothness steadies more as it rises (card 129)", "[ai][stabilize][keyed]") {
+    const Clip& clip = staticShot();
+    const MotionAnalysis truth = truthAnalysis(clip.truth, frameTimes(kFrames), Method::Similarity);
+    const auto points = scenePoints();
+    SmoothOptions options = stabilizeOnly(Smoothing::Gaussian);
+    options.frameRate = 30.0;
+    options.smoothnessAt.resize(kFrames);
+    for (std::size_t i = 0; i < kFrames; ++i) {
+        options.smoothnessAt[i] = 0.6 * static_cast<double>(i) / static_cast<double>(kFrames - 1); // 0 -> 0.6 s
+    }
+    const Positions steady = stabilized(stabilize(truth, options, kW, kH), clip.truth, points);
+    const Positions asShot = shot(clip.truth, points);
+    const auto part = [](const Positions& p, std::size_t from, std::size_t to) { return Positions(p.begin() + static_cast<std::ptrdiff_t>(from), p.begin() + static_cast<std::ptrdiff_t>(to)); };
+    const double lowEnd = frameToFrame(part(steady, 0, 15)).rms / frameToFrame(part(asShot, 0, 15)).rms;
+    const double highEnd = frameToFrame(part(steady, 70, kFrames)).rms / frameToFrame(part(asShot, 70, kFrames)).rms;
+    std::printf("C.15 stabilize: ramped Smoothness: shake left %.3f at the low end, %.3f at the high end\n", lowEnd, highEnd);
+    CHECK(highEnd < 0.25);
+    CHECK(highEnd < 0.5 * lowEnd);
 }

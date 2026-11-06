@@ -30,11 +30,10 @@ ColumnLayout {
     readonly property var run: runs[Math.min(runIndex, Math.max(0, runs.length - 1))] ?? ({})
     readonly property var canvas: Graphics.graphic
 
-    readonly property var fonts: [
-        { id: "", name: qsTr("Default (sans-serif)") }, { id: "Segoe UI", name: "Segoe UI" }, { id: "Arial", name: "Arial" },
-        { id: "Inter", name: "Inter" }, { id: "Georgia", name: "Georgia" }, { id: "Noto Sans Thai", name: "Noto Sans Thai" },
-        { id: "Cascadia Mono", name: "Cascadia Mono" }
-    ].concat((Graphics.brand.fonts ?? []).map(f => ({ id: "brand:" + f.role, name: qsTr("Brand %1 (%2)").arg(f.role).arg(f.family) })))
+    /// card 053: the font picker's extras - the default font and the brand kit's roles; every installed family is
+    /// searched in the picker itself.
+    readonly property var fontExtras: [{ id: "", name: qsTr("Default (sans-serif)") }]
+        .concat((Graphics.brand.fonts ?? []).map(f => ({ id: "brand:" + f.role, name: qsTr("Brand %1 (%2)").arg(f.role).arg(f.family) })))
     readonly property var weights: [
         { id: "300", name: qsTr("Light") }, { id: "400", name: qsTr("Regular") }, { id: "500", name: qsTr("Medium") },
         { id: "600", name: qsTr("Semibold") }, { id: "700", name: qsTr("Bold") }, { id: "900", name: qsTr("Black") }
@@ -231,11 +230,13 @@ ColumnLayout {
         RowLayout {
             Layout.fillWidth: true
             spacing: Theme.space(1)
-            GraphicChoicePill {
+            FontChoicePill {
                 objectName: "graphicFont"
                 Layout.fillWidth: true
-                options: root.fonts
+                family: root.run.fontFamily ?? ""
+                extras: root.fontExtras
                 current: (root.run.brandFont ?? "") !== "" ? "brand:" + root.run.brandFont : (root.run.fontFamily ?? "")
+                sampleText: root.run.text ?? ""
                 placeholder: root.run.fontFamily ?? ""
                 Accessible.name: qsTr("Font")
                 onChosen: id => {
@@ -344,7 +345,8 @@ ColumnLayout {
             spacing: Theme.space(1)
             Repeater {
                 model: [{ key: "fauxBold", label: qsTr("Faux Bold") }, { key: "fauxItalic", label: qsTr("Faux Italic") },
-                    { key: "underline", label: qsTr("Underline") }, { key: "kerning", label: qsTr("Kerning") }]
+                    { key: "underline", label: qsTr("Underline") }, { key: "kerning", label: qsTr("Kerning") },
+                    { key: "opticalKerning", label: qsTr("Optical Kerning") }]
                 delegate: PillButton {
                     id: styleToggle
                     required property var modelData
@@ -377,6 +379,50 @@ ColumnLayout {
                         Graphics.setRun(root.layerId, root.runIndex, "caps", capsToggle.styleOn ? "normal" : capsToggle.modelData.key)
                         Graphics.endEdit()
                     }
+                }
+            }
+        }
+        // 0.7 (card #138): OpenType features. The pills show what the shaper does (ligatures and contextual alternates are on
+        // unless turned off - Persian and Arabic fonts shape their joining forms and alternates by default); the field takes
+        // the whole list: calt, -liga, dlig, ss01, salt=2, "smcp" 1.
+        Flow {
+            objectName: "graphicTextFeatures"
+            Layout.fillWidth: true
+            spacing: Theme.space(1)
+            Repeater {
+                model: [{ tag: "liga", label: qsTr("Ligatures") }, { tag: "calt", label: qsTr("Contextual Alternates") },
+                    { tag: "dlig", label: qsTr("Discretionary Ligatures") }, { tag: "salt", label: qsTr("Stylistic Alternates") },
+                    { tag: "swsh", label: qsTr("Swashes") }]
+                delegate: PillButton {
+                    id: featureToggle
+                    required property var modelData
+                    readonly property bool featureOn: (root.run.featureOn ?? ({}))[featureToggle.modelData.tag] === true
+                    objectName: "graphicTextFeature_" + modelData.tag
+                    compact: true
+                    variant: featureOn ? "primary" : "ghost"
+                    text: modelData.label
+                    tooltip: qsTr("OpenType feature “%1”").arg(modelData.tag)
+                    Accessible.checkable: true
+                    Accessible.checked: featureOn
+                    onClicked: {
+                        Graphics.setRun(root.layerId, root.runIndex, "feature:" + featureToggle.modelData.tag, !featureToggle.featureOn)
+                        Graphics.endEdit()
+                    }
+                }
+            }
+        }
+        FieldInput {
+            id: featuresField
+            objectName: "graphicTextFeaturesField"
+            Layout.fillWidth: true
+            placeholderText: qsTr("OpenType features: calt, -liga, ss01, salt=2")
+            text: root.run.features ?? ""
+            Accessible.name: qsTr("OpenType features")
+            Accessible.description: qsTr("Four-letter OpenType feature tags separated by commas; - turns a feature off, =2 picks an alternate.")
+            onEditingFinished: {
+                if (text !== (root.run.features ?? "")) {
+                    Graphics.setRun(root.layerId, root.runIndex, "features", text)
+                    Graphics.endEdit()
                 }
             }
         }

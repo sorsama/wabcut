@@ -448,6 +448,8 @@ DrawText drawText(const TextContent& keyed, Ticks time, const ResolveOptions& o)
         run.leading = s.leading;
         run.baselineShift = s.baselineShift;
         run.kerning = s.kerning;
+        run.opticalKerning = s.opticalKerning && s.kerning;
+        run.features = s.features;
         run.caps = s.caps;
         run.fauxBold = s.fauxBold;
         run.fauxItalic = s.fauxItalic;
@@ -674,6 +676,10 @@ const TextMeasurer& approximateTextMeasurer() {
 }
 
 DrawList resolveGraphic(const Graphic& graphic, Ticks time, const ResolveOptions& options) {
+    // 0.7 (card #71): a template field with keys shows its value at this time (the copy has no keys left: no recursion).
+    if (hasFieldKeys(graphic)) {
+        return resolveGraphic(withFieldKeysAt(graphic, time), time, options);
+    }
     DrawList list;
     list.width = graphic.width;
     list.height = graphic.height;

@@ -102,7 +102,12 @@ std::string mcpMarkdown(const CommandRegistry& registry) {
     md += "| `--save-on-exit` | Saves the project when the client disconnects, if anything changed (needs "
           "`--allow-edit`). |\n";
     md += "| `--autosave` | Saves after every change (needs `--allow-edit`). |\n";
-    md += "| `--timeout-ms <n>` | Longest a tool call may run (default 30000). |\n\n";
+    md += "| `--timeout-ms <n>` | Longest a tool call may run (default 30000). |\n";
+    md += "| `--transactions` | (0.7) Also serves `edit_transaction` (`begin` / `commit` / `rollback`): everything the "
+          "connection edits between `begin` and `commit` is one undo step, or nothing when it is rolled back or the "
+          "connection drops. Python scripts use it ([docs/python.md](python.md)); AI agents are not given it. |\n";
+    md += "| `--audit-log <file>` | (0.7) Appends one JSON line per tool call: time, tool, outcome, revision. Never the "
+          "parameters or the answer. |\n\n";
     md += "Without a save flag, changes stay in memory until the agent calls `project_save`. Every save is atomic and "
           "keeps rotated `.bak` copies.\n\n";
     md += "### Claude Desktop\n\n";

@@ -21,9 +21,12 @@
 #include <QQmlEngine>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QThreadPool>
 #include <QTimer>
 
+#include <algorithm>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <set>
 
@@ -98,8 +101,70 @@ struct CollectFilesBridge::Inputs {
     ProjectState state;
     std::filesystem::path projectFile;
     editor::CapsuleOptions options;
+    /// "Include transcripts and analysis results": the sidecars are written (start) or sized (estimate) on a worker, in
+    /// `tempDir`, which is only named here.
+    bool analysis = false;
     std::filesystem::path tempDir;
 };
+
+namespace {
+
+/// The media of `state` that can have analysis results, with the cache's fingerprint of each file (reads the file: call
+/// on a worker). `keepGoing` ends the walk early.
+template <class Fn>
+void forEachAnalysedMedia(const ProjectState& state, const std::vector<MediaId>& only, const std::function<bool()>& keepGoing,
+                          const Fn& fn) {
+    for (const MediaPtr& m : state.media) {
+        if (!keepGoing()) {
+            return;
+        }
+        if (!m || m->isGenerator() || m->locator.path.empty()) {
+            continue;
+        }
+        // Only the media the capsule holds: a capsule of one sequence must not carry the transcripts of the other
+        // sequences' footage, nor of footage nothing in it uses.
+        if (!std::ranges::binary_search(only, m->id, [](MediaId a, MediaId b) { return a.value < b.value; })) {
+            continue;
+        }
+        if (const auto fp = media::sourceFingerprint(m->locator.path)) {
+            fn(*m, *fp);
+        }
+    }
+}
+
+} // namespace
+
+std::vector<editor::CapsuleExtraFile> collectAnalysisSidecars(const ProjectState& state, const std::vector<MediaId>& only,
+                                                              const std::filesystem::path& tempDir,
+                                                              const std::filesystem::path& cacheRoot) {
+    std::vector<editor::CapsuleExtraFile> extras;
+    std::error_code ec;
+    std::filesystem::create_directories(tempDir, ec);
+    const ai::AnalysisCache cache(cacheRoot);
+    std::set<QString> taken; // case-folded: on Windows "A.analysis.json" and "a.analysis.json" are one file
+    forEachAnalysedMedia(state, only, [] { return true; }, [&](const MediaItem& m, std::uint64_t fp) {
+        const auto sidecar = cache.exportSidecar(fp);
+        if (!sidecar || sidecar->empty()) {
+            return;
+        }
+        std::string name = pathToUtf8(pathFromUtf8(m.locator.path).stem()) + ".analysis.json";
+        for (int n = 2; !taken.insert(QString::fromStdString(name).toCaseFolded()).second; ++n) {
+            name = pathToUtf8(pathFromUtf8(m.locator.path).stem()) + " (" + std::to_string(n) + ").analysis.json";
+        }
+        const std::filesystem::path temp = tempDir / pathFromUtf8(name);
+        std::ofstream(temp, std::ios::binary) << *sidecar;
+        extras.push_back({temp, std::filesystem::path("Analysis") / pathFromUtf8(name), "analysis"});
+    });
+    return extras;
+}
+
+std::int64_t collectAnalysisSidecarBytes(const ProjectState& state, const std::vector<MediaId>& only,
+                                         const std::function<bool()>& keepGoing, const std::filesystem::path& cacheRoot) {
+    const ai::AnalysisCache cache(cacheRoot);
+    std::int64_t total = 0;
+    forEachAnalysedMedia(state, only, keepGoing, [&](const MediaItem&, std::uint64_t fp) { total += cache.sidecarBytesEstimate(fp); });
+    return total;
+}
 
 CollectFilesBridge::CollectFilesBridge(QObject* parent) : QObject(parent) {
     m_gate->owner = this;
@@ -200,7 +265,26 @@ std::expected<CollectFilesBridge::Inputs, QString> CollectFilesBridge::gather(co
     options.destination = toPath(folder.toLocalFile());
     options.name = o.value(QStringLiteral("name")).toString().trimmed().toStdString();
     options.trim = o.value(QStringLiteral("trim"), false).toBool();
-    options.handles = Ticks{static_cast<std::int64_t>(o.value(QStringLiteral("handles"), 1.0).toDouble() * kTicksPerSecond)};
+    // Card 003: 0 to 10 s of handles (the dialog's field); anything else is cut to that.
+    options.handles = Ticks{static_cast<std::int64_t>(std::clamp(o.value(QStringLiteral("handles"), 1.0).toDouble(), 0.0, 10.0) *
+                                                      kTicksPerSecond)};
+    // Card 003: "sequences" are indices into ProjectController.sequenceNames (the project's sequence order); absent = every
+    // sequence. A list that names none that exists is refused: it must never collect everything instead.
+    if (o.contains(QStringLiteral("sequences"))) {
+        for (const QVariant& v : o.value(QStringLiteral("sequences")).toList()) {
+            bool ok = false;
+            const int index = v.toInt(&ok);
+            if (ok && index >= 0 && static_cast<std::size_t>(index) < in.state.sequences.size()) {
+                options.sequences.push_back(in.state.sequences[static_cast<std::size_t>(index)]->id);
+            }
+        }
+        if (options.sequences.empty()) {
+            return std::unexpected(tr("Choose at least one sequence to collect."));
+        }
+    }
+    // Card 076: "layout" is "flat" (default), "bins" (the project's bins as folders) or "folders" (the folders the files
+    // came from); anything else is flat.
+    options.layout = editor::capsuleLayoutFromName(o.value(QStringLiteral("layout"), QStringLiteral("flat")).toString().toStdString());
     options.includeProxies = o.value(QStringLiteral("proxies"), false).toBool();
     options.excludeUnused = !o.value(QStringLiteral("unused"), false).toBool();
     options.verify = true;
@@ -221,34 +305,43 @@ std::expected<CollectFilesBridge::Inputs, QString> CollectFilesBridge::gather(co
         }
     }
     if (o.value(QStringLiteral("analysis"), false).toBool()) {
-        // Analysis results (transcripts, shots, beats) as portable sidecars, one per media file.
+        in.analysis = true;
         in.tempDir = std::filesystem::temp_directory_path() / ("wabcut-collect-" + std::to_string(QDateTime::currentMSecsSinceEpoch()));
-        std::error_code ec;
-        std::filesystem::create_directories(in.tempDir, ec);
-        const ai::AnalysisCache cache(ai::AnalysisCache::defaultRoot());
-        std::set<QString> taken; // case-folded: on Windows "A.analysis.json" and "a.analysis.json" are one file
-        for (const MediaPtr& m : in.state.media) {
-            if (!m || m->isGenerator() || m->locator.path.empty()) {
-                continue;
-            }
-            const auto fp = media::sourceFingerprint(m->locator.path);
-            if (!fp) {
-                continue;
-            }
-            const auto sidecar = cache.exportSidecar(*fp);
-            if (!sidecar || sidecar->empty()) {
-                continue;
-            }
-            std::string name = pathToUtf8(pathFromUtf8(m->locator.path).stem()) + ".analysis.json";
-            for (int n = 2; !taken.insert(QString::fromStdString(name).toCaseFolded()).second; ++n) {
-                name = pathToUtf8(pathFromUtf8(m->locator.path).stem()) + " (" + std::to_string(n) + ").analysis.json";
-            }
-            const std::filesystem::path temp = in.tempDir / pathFromUtf8(name);
-            std::ofstream(temp, std::ios::binary) << *sidecar;
-            options.extras.push_back({temp, std::filesystem::path("Analysis") / pathFromUtf8(name), "analysis"});
-        }
     }
     return in;
+}
+
+namespace {
+
+struct EstimateNumbers {
+    std::int64_t bytes = 0;
+    std::int64_t freeBytes = -1; ///< -1: unknown
+};
+
+/// The size of the capsule `in` would make, and the free space of its folder. Runs on a worker (or the caller's thread
+/// for estimate()): it stats and fingerprints files.
+EstimateNumbers estimateNumbers(const std::function<bool()>& keepGoing, const ProjectState& state,
+                                const std::filesystem::path& projectFile, const editor::CapsuleOptions& options, bool analysis) {
+    EstimateNumbers n;
+    n.bytes = editor::capsuleBytesNeeded(state, projectFile, options);
+    if (analysis && keepGoing()) {
+        // Only the media the capsule holds (the chosen sequences' used media), as the sidecars written later.
+        n.bytes += collectAnalysisSidecarBytes(state, editor::capsuleMedia(state, projectFile, options), keepGoing,
+                                               ai::AnalysisCache::defaultRoot());
+    }
+    std::error_code ec;
+    const auto space = std::filesystem::space(options.destination, ec);
+    if (!ec) {
+        n.freeBytes = static_cast<std::int64_t>(space.available);
+    }
+    return n;
+}
+
+} // namespace
+
+QString CollectFilesBridge::estimateSentence(std::int64_t bytes, std::int64_t freeBytes) const {
+    //: Collect Files estimate, e.g. "About 1.4 GB (210 GB free)"
+    return freeBytes < 0 ? tr("About %1").arg(sizeText(bytes)) : tr("About %1 (%2 free)").arg(sizeText(bytes), sizeText(freeBytes));
 }
 
 QString CollectFilesBridge::estimate(const QUrl& folder, const QVariantMap& options) {
@@ -256,15 +349,47 @@ QString CollectFilesBridge::estimate(const QUrl& folder, const QVariantMap& opti
     if (!in) {
         return in.error();
     }
-    const std::int64_t bytes = editor::capsuleBytesNeeded(in->state, in->projectFile, in->options);
-    std::error_code ec;
-    const auto space = std::filesystem::space(in->options.destination, ec);
-    if (!in->tempDir.empty()) {
-        std::filesystem::remove_all(in->tempDir, ec);
+    const EstimateNumbers n = estimateNumbers([] { return true; }, in->state, in->projectFile, in->options, in->analysis);
+    return estimateSentence(n.bytes, n.freeBytes);
+}
+
+void CollectFilesBridge::requestEstimate(const QUrl& folder, const QVariantMap& options) {
+    if (m_running) {
+        return;
     }
-    //: Collect Files estimate, e.g. "About 1.4 GB (210 GB free)"
-    return ec ? tr("About %1").arg(sizeText(bytes))
-              : tr("About %1 (%2 free)").arg(sizeText(bytes), sizeText(static_cast<std::int64_t>(space.available)));
+    auto in = gather(folder, options);
+    const std::uint64_t generation = ++m_estimateGeneration;
+    m_estimateLatest->store(generation);
+    if (!in) {
+        m_estimateText = in.error();
+        m_estimating = false;
+        emit estimateChanged();
+        return;
+    }
+    m_estimating = true;
+    emit estimateChanged();
+    QThreadPool::globalInstance()->start([gate = m_gate, latest = m_estimateLatest, generation,
+                                          in = std::make_shared<Inputs>(std::move(*in))] {
+        const auto current = [&] { return latest->load() == generation; };
+        const EstimateNumbers n = estimateNumbers(current, in->state, in->projectFile, in->options, in->analysis);
+        if (!current()) {
+            return; // a newer request replaced this one
+        }
+        std::lock_guard lock(gate->mutex);
+        if (CollectFilesBridge* owner = gate->owner) {
+            QMetaObject::invokeMethod(
+                owner, [owner, generation, n] { owner->onEstimate(generation, n.bytes, n.freeBytes); }, Qt::QueuedConnection);
+        }
+    });
+}
+
+void CollectFilesBridge::onEstimate(std::uint64_t generation, std::int64_t bytes, std::int64_t freeBytes) {
+    if (generation != m_estimateGeneration) {
+        return;
+    }
+    m_estimateText = estimateSentence(bytes, freeBytes);
+    m_estimating = false;
+    emit estimateChanged();
 }
 
 bool CollectFilesBridge::start(const QUrl& folder, const QVariantMap& options) {
@@ -288,13 +413,22 @@ bool CollectFilesBridge::start(const QUrl& folder, const QVariantMap& options) {
     m_result.clear();
     emit stateChanged();
     emit progressChanged();
-    m_job = std::jthread([gate = m_gate, in = std::move(*in)](std::stop_token stop) {
+    m_job = std::jthread([gate = m_gate, in = std::move(*in)](std::stop_token stop) mutable {
         const auto post = [&gate](auto fn) {
             std::lock_guard lock(gate->mutex);
             if (CollectFilesBridge* owner = gate->owner) {
                 QMetaObject::invokeMethod(owner, [owner, fn] { fn(owner); }, Qt::QueuedConnection);
             }
         };
+        if (in.analysis) { // card #173: the sidecars are read from the cache and written here, not on the GUI thread
+            // Only the media the capsule holds: the chosen sequences' used media (or all of it with "unused"), not the
+            // transcripts of the rest of the project.
+            const std::vector<MediaId> held = editor::capsuleMedia(in.state, in.projectFile, in.options);
+            for (editor::CapsuleExtraFile& extra :
+                 collectAnalysisSidecars(in.state, held, in.tempDir, ai::AnalysisCache::defaultRoot())) {
+                in.options.extras.push_back(std::move(extra));
+            }
+        }
         auto result = editor::collectProject(in.state, in.projectFile, in.options, stop,
                                              [&](const editor::CapsuleProgress& p) {
                                                  post([p](CollectFilesBridge* owner) { owner->onProgress(p); });
@@ -335,6 +469,10 @@ void CollectFilesBridge::onDone(const std::expected<editor::CapsuleResult, Error
         for (const std::string& n : r->notes) {
             notes << QString::fromStdString(n);
         }
+        QStringList sequenceNames;
+        for (const std::string& n : r->sequences) {
+            sequenceNames << QString::fromStdString(n);
+        }
         m_result = {
             {QStringLiteral("ok"), true},
             {QStringLiteral("cancelled"), false},
@@ -347,6 +485,7 @@ void CollectFilesBridge::onDone(const std::expected<editor::CapsuleResult, Error
             {QStringLiteral("files"), static_cast<int>(r->files.size())},
             {QStringLiteral("media"), r->mediaFiles},
             {QStringLiteral("trimmed"), r->trimmedFiles},
+            {QStringLiteral("sequences"), sequenceNames},
             {QStringLiteral("size"), sizeText(r->bytes)},
             {QStringLiteral("notes"), notes},
         };

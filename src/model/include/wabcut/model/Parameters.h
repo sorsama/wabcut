@@ -74,8 +74,13 @@ enum class ParamId : std::uint8_t {
     Opacity,
     VolumeDb,
     Pan,
+    /// 0.7 (card #12): Premiere's Motion > Scale Width. With Uniform Scale off, Scale is the height and this is the width;
+    /// with it on, Scale scales both and this is ignored (and kept at its default).
+    ScaleWidth,
+    /// 0.7 (card #12): Premiere's Motion > Uniform Scale, a switch (1 = on, the default). A constant only.
+    UniformScale,
 };
-inline constexpr std::size_t kParamCount = 9;
+inline constexpr std::size_t kParamCount = 11;
 
 enum class ParamUnit : std::uint8_t {
     Pixels,       ///< position: offset of the anchor from the canvas centre (sequence px); anchor: from the frame centre (source px)
@@ -100,6 +105,7 @@ struct ParameterInfo {
     double minValue;
     double maxValue;
     PropertyRole role;
+    bool animatable = true; ///< false: a switch that takes a constant only (0.7: Uniform Scale)
 };
 
 /// The parameter table, in ParamId order.
@@ -133,12 +139,26 @@ struct BezierHandle {
     bool operator==(const BezierHandle&) const = default;
 };
 
+/// 0.7 (card 120): a clip keyframe that stays on one end of its clip ("responsive" keyframes). Clip keys are in media time,
+/// so trimming or slipping a clip normally leaves them on the picture (and hides the ones past the new ends). A key pinned
+/// to the clip's start (ClipStart) or end (ClipEnd) follows that end instead: when an edit moves the clip's first (or
+/// last) media frame, the key moves to it, keeping its value, so a fade-in that begins at the head of a clip still begins
+/// at its head after a trim. A pin is honoured only while the key sits exactly on that end of the clip it belongs to (a
+/// razor cut gives both halves one curve: the key stays with the half whose end it is on). Clip keys only; the keys of
+/// track and master effects are timeline times and ignore it.
+enum class KeyPin : std::uint8_t { None, ClipStart, ClipEnd };
+
+/// "none", "start", "end".
+std::string_view toString(KeyPin pin);
+std::optional<KeyPin> keyPinFromString(std::string_view text);
+
 struct Keyframe {
     Ticks time;    ///< curve time (media time; see the file comment)
     double value = 0.0;
     Interpolation interpolation = Interpolation::Linear;
     BezierHandle in;  ///< arriving side, used when interpolation is Bezier
     BezierHandle out; ///< leaving side, used when interpolation is Bezier
+    KeyPin pin = KeyPin::None; ///< 0.7: follows the clip's start or end through trims and slips (KeyPin). Saved only when set.
 
     bool operator==(const Keyframe&) const = default;
 };
@@ -194,6 +214,14 @@ struct ClipProperties {
     /// Value at a curve time (Clip::curveTimeAt; evaluators use Clip::parameterAt).
     double value(ParamId id, Ticks curveTime = {}) const { return (*this)[id].valueAt(curveTime); }
     void set(ParamId id, double constant) { (*this)[id] = ParamValue(constant); }
+    /// 0.7 (card #12): Uniform Scale is on (the default).
+    bool uniformScale() const { return (*this)[ParamId::UniformScale].constant() >= 0.5; }
+    /// 0.7 (card #12): the Motion scale at a curve time as {width, height} factors: Scale for both with Uniform Scale on,
+    /// else Scale Width and Scale (the height). Every evaluator that places a picture uses this, never Scale alone.
+    std::pair<double, double> scaleAt(Ticks curveTime = {}) const {
+        const double height = value(ParamId::Scale, curveTime);
+        return {uniformScale() ? height : value(ParamId::ScaleWidth, curveTime), height};
+    }
     bool isDefault(ParamId id) const;
     /// Roles of the parameters that differ between the two.
     PropertyRoles differences(const ClipProperties& other) const;

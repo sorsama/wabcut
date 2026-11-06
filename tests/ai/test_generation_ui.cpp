@@ -34,6 +34,7 @@ TEST_CASE("Generate cost preview and local model page screenshots", "[ai][ui][ge
             };
             QObject* preferences = walk(settings->property("contentItem").value<QQuickItem*>());
             REQUIRE(preferences);
+            spin(150); // the Transcription row is revealed once the window has opened (QA-12): let it land first
             preferences->setProperty("currentTab", 4);
             REQUIRE(waitFor([&] { return preferences->property("opened").toBool(); }));
         } else {

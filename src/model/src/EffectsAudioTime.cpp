@@ -158,6 +158,13 @@ constexpr std::array<EffectParamInfo, 2> kClickRemoverParams{{
     {"complexity", "Complexity", U::Amount, 16.0, 1.0, 100.0},
 }};
 
+// 0.7 (card 047): Spectral Repair. The repairs themselves are the effect's data (an edit list, SpectralRepair.h); the
+// parameters are how the sound is analysed and a monitoring switch.
+constexpr std::array<EffectParamInfo, 2> kSpectralRepairParams{{
+    {"fftSize", "FFT Size", U::Amount, 1.0, 0.0, 2.0, false, "1024|2048|4096"},
+    {"listen", "Listen", U::Amount, 0.0, 0.0, 2.0, false, "Off|Selection|Removed"},
+}};
+
 } // namespace
 
 void appendTimeEffects(std::vector<EffectDescriptor>& out) {
@@ -238,6 +245,14 @@ void appendTimeEffects(std::vector<EffectDescriptor>& out) {
                    "Finds clicks and pops (short impulses that stand out of the sound's local high-frequency level) and "
                    "replaces them with an interpolation of the sound on either side. Lower Threshold finds more clicks; "
                    "higher Complexity repairs longer ones with a more detailed model."});
+    out.push_back({"wabcut.audio.spectralRepair", 1, "Spectral Repair", "Noise Reduction/Restoration", audio, false,
+                   kSpectralRepairParams, lookahead,
+                   "Repairs sound on the time-frequency plane without touching the rest: a list of edits stored with the "
+                   "clip (made in the Spectral tab of Audio Tools). Attenuate lowers a region by some dB, Heal replaces it "
+                   "with what surrounds it, Fill with Noise Floor with the quiet background, Remove Tone takes out a steady "
+                   "or moving tone and its harmonics. FFT Size trades frequency for time resolution. Listen plays only the "
+                   "selected sound or only what the repair removes; Off plays the repaired sound. The edits are in the "
+                   "clip's source time and are not keyframed; the repair plays the same in preview and export."});
 }
 
 } // namespace wabcut::audiocatalog

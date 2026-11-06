@@ -14,6 +14,8 @@ extern "C" {
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/spherical.h>
+#include <libavutil/stereo3d.h>
 }
 
 #include <algorithm>
@@ -240,7 +242,7 @@ struct DictionaryOwner {
 
 /// Encoder-specific rate control, preset and profile options.
 void configureVideoOptions(const std::string& name, const VideoSettings& v, AVCodecContext* ctx,
-                           AVDictionary** opts) {
+                           AVDictionary** opts, bool realtime = false) {
     const bool quality = v.rateControl == RateControl::Quality;
     const std::int64_t maxRate = v.maxBitrate > 0 ? v.maxBitrate : v.bitrate * 3 / 2;
     auto setBitrate = [&] {
@@ -275,7 +277,7 @@ void configureVideoOptions(const std::string& name, const VideoSettings& v, AVCo
         setOption(opts, "sc_threshold", 1'000'000'000); // a fixed GOP: no scene-change I-frames
         setOption(opts, "mpv_flags", "+strict_gop");
     } else if (name == "libx264" || name == "libx265") {
-        setOption(opts, "preset", "medium");
+        setOption(opts, "preset", realtime ? "veryfast" : "medium"); // 0.7: a live capture must keep up
         if (quality) {
             setOption(opts, "crf", v.quality);
         } else {
@@ -329,7 +331,7 @@ void configureVideoOptions(const std::string& name, const VideoSettings& v, AVCo
             setBitrate();
         }
     } else if (name == "libsvtav1") { // I.9
-        setOption(opts, "preset", 8);   // SVT-AV1 presets 0 (slowest) .. 13; 8 keeps 1080p exports near real time
+        setOption(opts, "preset", realtime ? 11 : 8); // SVT-AV1 presets 0 (slowest) .. 13; 8 keeps 1080p exports near real time
         if (quality) {
             setOption(opts, "crf", std::clamp(v.quality * 63 / 51, 1, 63)); // the 0..51 scale onto SVT-AV1's 1..63
         } else {
@@ -480,7 +482,8 @@ std::expected<Muxer, Error> Muxer::create(Container container, const std::filesy
 Muxer::Muxer(Muxer&& other) noexcept
     : m_ctx(std::exchange(other.m_ctx, nullptr)), m_container(other.m_container),
       m_path(std::move(other.m_path)), m_open(std::exchange(other.m_open, false)), m_bext(other.m_bext),
-      m_writeMutex(std::move(other.m_writeMutex)), m_formatOptions(std::move(other.m_formatOptions)) {}
+      m_writeMutex(std::move(other.m_writeMutex)), m_formatOptions(std::move(other.m_formatOptions)),
+      m_filterStream(std::exchange(other.m_filterStream, nullptr)), m_filter(std::move(other.m_filter)) {}
 
 Muxer& Muxer::operator=(Muxer&& other) noexcept {
     if (this != &other) {
@@ -493,6 +496,8 @@ Muxer& Muxer::operator=(Muxer&& other) noexcept {
         m_bext = other.m_bext;
         m_writeMutex = std::move(other.m_writeMutex);
         m_formatOptions = std::move(other.m_formatOptions);
+        m_filterStream = std::exchange(other.m_filterStream, nullptr);
+        m_filter = std::move(other.m_filter);
     }
     return *this;
 }
@@ -542,6 +547,53 @@ std::expected<AVStream*, Error> Muxer::addCaptionStream(AVRational frameTimeBase
     return st;
 }
 
+bool Muxer::setSpherical(AVStream* stream, const VrFormat& format) {
+    if (!stream || !m_ctx || !format.isVr() ||
+        (m_container != Container::Mp4 && m_container != Container::Mkv && m_container != Container::WebM)) {
+        return false;
+    }
+    AVCodecParameters* par = stream->codecpar;
+    const auto put = [&](AVPacketSideDataType type, const void* data, std::size_t size) {
+        av_packet_side_data_remove(par->coded_side_data, &par->nb_coded_side_data, type);
+        if (AVPacketSideData* sd = av_packet_side_data_new(&par->coded_side_data, &par->nb_coded_side_data, type, size, 0)) {
+            std::memcpy(sd->data, data, size);
+            return true;
+        }
+        return false;
+    };
+    std::size_t size = 0;
+    AVSphericalMapping* sphere = av_spherical_alloc(&size);
+    if (!sphere) {
+        return false;
+    }
+    if (format.projection == VrProjection::Equirectangular180) {
+        // VR180 is the front half of the sphere: a quarter of the picture is cropped from the left and the right
+        // (the 'equi' box's bounds are 0.32 fixed-point fractions).
+        sphere->projection = AV_SPHERICAL_EQUIRECTANGULAR_TILE;
+        sphere->bound_left = 0x40000000u;
+        sphere->bound_right = 0x40000000u;
+    } else {
+        sphere->projection = AV_SPHERICAL_EQUIRECTANGULAR;
+    }
+    bool ok = put(AV_PKT_DATA_SPHERICAL, sphere, size);
+    av_free(sphere);
+    if (format.stereo != StereoLayout::Mono) {
+        std::size_t stereoSize = 0;
+        AVStereo3D* stereo = av_stereo3d_alloc_size(&stereoSize);
+        if (stereo) {
+            stereo->type = format.stereo == StereoLayout::TopBottom ? AV_STEREO3D_TOPBOTTOM : AV_STEREO3D_SIDEBYSIDE;
+            ok = put(AV_PKT_DATA_STEREO3D, stereo, stereoSize) && ok;
+            av_free(stereo);
+        }
+    }
+    if (ok && m_container == Container::Mp4) {
+        // The MP4 muxer writes the spherical and stereo boxes (they are not part of ISO 14496-12) only when unofficial tags
+        // are allowed.
+        m_ctx->strict_std_compliance = FF_COMPLIANCE_UNOFFICIAL;
+    }
+    return ok;
+}
+
 void Muxer::setLanguage(AVStream* stream, const std::string& language) {
     if (stream && !language.empty()) {
         av_dict_set(&stream->metadata, "language", language.c_str(), 0);
@@ -569,6 +621,7 @@ std::expected<AVStream*, Error> Muxer::addStream(const AVCodecContext* encoder) 
     st->time_base = encoder->time_base;
     if (encoder->codec_type == AVMEDIA_TYPE_VIDEO) {
         st->avg_frame_rate = encoder->framerate;
+        st->sample_aspect_ratio = encoder->sample_aspect_ratio; // 145: the muxers (MKV, MXF, MOV pasp) read either
         if (encoder->codec_id == AV_CODEC_ID_HEVC &&
             (m_container == Container::Mp4 || m_container == Container::Mov)) {
             st->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1'); // what Apple players require
@@ -609,6 +662,12 @@ std::expected<void, Error> Muxer::open() {
 
 std::expected<void, Error> Muxer::write(AVPacket* packet, AVRational encoderTimeBase, AVStream* stream) {
     std::lock_guard lock(*m_writeMutex);
+    if (m_filter && stream == m_filterStream) {
+        if (auto filtered = m_filter(packet, encoderTimeBase); !filtered) {
+            av_packet_unref(packet);
+            return filtered;
+        }
+    }
     av_packet_rescale_ts(packet, encoderTimeBase, stream->time_base);
     packet->stream_index = stream->index;
     const int r = av_interleaved_write_frame(m_ctx, packet);
@@ -825,7 +884,7 @@ std::expected<VideoEncoder, Error> openVideoEncoder(const std::string& name, con
     }
 
     DictionaryOwner opts;
-    configureVideoOptions(name, v, ctx, &opts.dict);
+    configureVideoOptions(name, v, ctx, &opts.dict, params.realtime);
     if (params.masteringDisplay) { // I.9: HDR10 static metadata for the encoder's SEI / metadata OBU
         AVFrameSideData* sd = av_frame_side_data_new(&ctx->decoded_side_data, &ctx->nb_decoded_side_data,
                                                      AV_FRAME_DATA_MASTERING_DISPLAY_METADATA,

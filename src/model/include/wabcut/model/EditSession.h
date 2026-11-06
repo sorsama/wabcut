@@ -61,6 +61,9 @@ struct EditSessionOptions {
     bool validateEdits = kValidateEditsByDefault;
     /// Queue snapshots the session lets go for releasePending() instead of freeing them in place.
     bool deferRelease = true;
+    /// 0.7 (card 144): the time stamped on sequences a commit adds (Sequence::createdAt), ISO-8601 UTC. Empty: the
+    /// system clock. Tests give a fixed one.
+    std::function<std::string()> clock;
 };
 
 /// Preview: a state shown with showPreview() or taken back with endPreview() (no undo step either way).

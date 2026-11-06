@@ -33,13 +33,14 @@ struct FixedEffect {
     std::string_view id;
     std::string_view name; // Premiere's section name
     EffectKind kind;
-    std::array<ParamId, 6> params;
+    std::array<ParamId, 8> params;
     std::size_t count;
 };
 
 constexpr std::array<FixedEffect, 4> kFixedEffects{{
     {kMotionEffect, "Motion", EffectKind::Video,
-     {ParamId::PositionX, ParamId::PositionY, ParamId::Scale, ParamId::Rotation, ParamId::AnchorX, ParamId::AnchorY}, 6},
+     {ParamId::PositionX, ParamId::PositionY, ParamId::Scale, ParamId::Rotation, ParamId::AnchorX, ParamId::AnchorY,
+      ParamId::ScaleWidth, ParamId::UniformScale}, 8},
     {kOpacityEffect, "Opacity", EffectKind::Video, {ParamId::Opacity}, 1},
     {kVolumeEffect, "Volume", EffectKind::Audio, {ParamId::VolumeDb}, 1},
     {kPannerEffect, "Panner", EffectKind::Audio, {ParamId::Pan}, 1},
@@ -366,6 +367,9 @@ std::optional<std::string> effectPresetProblem(const EffectPreset& p) {
             const ParameterInfo& info = parameterInfo(*id);
             if (!e.params[i].value.isValid(info.minValue, info.maxValue)) {
                 return what + " has parameter " + e.params[i].key + " outside its range or not finite";
+            }
+            if (e.params[i].value.isCurve() && !info.animatable) {
+                return what + " has parameter " + e.params[i].key + " animated, which it cannot be";
             }
         }
         if (!e.masks.empty() || !e.mask.empty()) {
@@ -837,7 +841,13 @@ std::expected<EffectPreset, Error> makeEffectPreset(const ProjectState& state, c
         e.id = EffectInstanceId{nextId++};
         e.effect = std::string(f.id);
         for (std::size_t i = 0; i < f.count; ++i) {
-            e.set(std::string(parameterInfo(f.params[i]).key), mapCurve(clip.properties()[f.params[i]], toOffset));
+            const ParamId id = f.params[i];
+            // 0.7 (card #12): Scale Width and Uniform Scale are kept in a preset only when set, so a preset of a plain clip
+            // still opens in an older build.
+            if ((id == ParamId::ScaleWidth || id == ParamId::UniformScale) && clip.properties().isDefault(id)) {
+                continue;
+            }
+            e.set(std::string(parameterInfo(id).key), mapCurve(clip.properties()[id], toOffset));
         }
         if (f.id == kOpacityEffect) {
             e.setData(EffectData{std::string(kPresetBlendModeKey), std::string(toString(clip.blendMode()))});
@@ -1046,6 +1056,100 @@ std::expected<PresetResult, Error> applyEffectPreset(const ProjectState& state, 
     return result;
 }
 
+
+// ---- 0.7 (card 101): presets of an effect chain (Audio Track Mixer strips) ------------------------------------------------
+
+std::expected<EffectPreset, Error> makeChainEffectPreset(const ProjectState& state, const EffectStack& chain, Ticks span,
+                                                         std::span<const std::size_t> indices, std::string name,
+                                                         EffectPresetType type, std::string description, std::string bin,
+                                                         std::vector<std::string>* notes) {
+    using detail::invalidArgument;
+    if (chain.empty()) {
+        return std::unexpected(invalidArgument("the chain has no effects to save"));
+    }
+    // The chain stands in for a clip that starts at 0, runs `span` at normal speed and plays the chain: the clip code
+    // then keeps keyframe times (timeline times on a chain) relative to 0 and bounds the preset as it does a clip's.
+    Clip stand;
+    stand.stream.kind = StreamKind::Audio;
+    stand.timelineRange = TimeRange{Ticks{}, span > Ticks{} ? span : Ticks{kTicksPerSecond}}; // an empty stretch: one second
+    stand.setEffects(chain);
+    PresetSelection selection;
+    if (indices.empty()) {
+        for (std::size_t i = 0; i < chain.size(); ++i) {
+            selection.effects.push_back(i);
+        }
+    } else {
+        selection.effects.assign(indices.begin(), indices.end());
+    }
+    return makeEffectPreset(state, stand, selection, std::move(name), type, std::move(description), std::move(bin), notes);
+}
+
+std::expected<ChainPresetResult, Error> applyEffectPresetToChain(const ProjectState& state, SequenceId sequenceId,
+                                                                 const EffectTarget& target, const EffectPreset& preset) {
+    using detail::invalidArgument;
+    if (const auto problem = effectPresetProblem(preset)) {
+        return std::unexpected(invalidArgument(*problem));
+    }
+    if (preset.kind() != EffectKind::Audio) {
+        return std::unexpected(invalidArgument("only an audio preset goes on an audio track or the audio master"));
+    }
+    const auto seq = detail::findSequence(state, sequenceId);
+    if (!seq) {
+        return std::unexpected(seq.error());
+    }
+    // The stretch the chain plays over: its track's end, or the sequence's; a chain with nothing yet takes the preset's own.
+    Ticks extent{};
+    if (target.kind == EffectTarget::Kind::Track) {
+        const Track* track = (*seq)->findAudioBus(target.track);
+        if (track == nullptr) {
+            return std::unexpected(detail::notFound("track " + std::to_string(target.track.value) + " does not exist"));
+        }
+        extent = track->end();
+    } else if (target.kind == EffectTarget::Kind::MasterAudio) {
+        extent = (*seq)->contentEnd();
+    } else {
+        return std::unexpected(invalidArgument("not an audio track or the audio master"));
+    }
+    if (extent <= Ticks{}) {
+        extent = preset.duration;
+    }
+    const long double scale = static_cast<long double>(extent.value) / static_cast<long double>(preset.duration.value);
+    const Ticks shift = extent - preset.duration;
+    const EffectPresetType type = preset.type;
+    const auto toTimeline = [=](Ticks offset) {
+        long double u = static_cast<long double>(offset.value);
+        if (type == EffectPresetType::Scale) {
+            u *= scale;
+        } else if (type == EffectPresetType::AnchorToOutPoint) {
+            u += static_cast<long double>(shift.value);
+        }
+        return clampTicks(u);
+    };
+    ChainPresetResult result;
+    std::vector<EffectInstance> instances;
+    for (const EffectInstance& e : preset.effects) {
+        if (fixedEffect(e.effect) != nullptr) {
+            result.skipped.push_back(effectNameOf(e) + ": the fader and panner are not part of an effect chain");
+            continue;
+        }
+        EffectInstance copy = e;
+        for (EffectParam& param : copy.params) {
+            param.value = mapCurve(param.value, toTimeline);
+        }
+        mapMasks(copy.masks, toTimeline);
+        result.applied.push_back(effectNameOf(e));
+        instances.push_back(std::move(copy));
+    }
+    if (instances.empty()) {
+        return std::unexpected(invalidArgument("the preset has no effects for an effect chain"));
+    }
+    auto edited = appendEffectInstances(state, sequenceId, target, std::move(instances));
+    if (!edited) {
+        return std::unexpected(edited.error());
+    }
+    result.edit = std::move(*edited);
+    return result;
+}
 } // namespace edit
 
 // ---- JSON ------------------------------------------------------------------------------------------------------------------

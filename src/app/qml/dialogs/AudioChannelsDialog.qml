@@ -30,8 +30,10 @@ WabcutDialog {
 
     readonly property int sourceCount: info.sourceChannels ?? 2
     readonly property var sourceLabels: info.sourceLabels ?? []
-    readonly property var formats: ["mono", "stereo", "5.1", "adaptive"]
-    readonly property int clipCount: format === "mono" ? 1 : format === "stereo" ? 2 : format === "5.1" ? 6 : adaptiveCount
+    /// 0.7 (card 062): the names a field recorder gave the channels of a poly WAV (iXML), one per source channel.
+    readonly property var sourceNames: info.sourceNames ?? []
+    readonly property var formats: ["mono", "stereo", "5.1", "7.1", "adaptive"]
+    readonly property int clipCount: format === "mono" ? 1 : format === "stereo" ? 2 : format === "5.1" ? 6 : format === "7.1" ? 8 : adaptiveCount
     readonly property var clipLabels: AudioChannels.channelLabels(format, clipCount)
     /// The measured levels of the first clip: { channel -> { peakDb, rmsDb } } and its silent channels.
     readonly property var measured: {
@@ -99,7 +101,7 @@ WabcutDialog {
     function preset(name) {
         useDefault = false
         if (name === "default") {
-            format = sourceCount === 1 ? "mono" : sourceCount === 2 ? "stereo" : sourceCount === 6 ? "5.1" : "adaptive"
+            format = sourceCount === 1 ? "mono" : sourceCount === 2 ? "stereo" : sourceCount === 6 ? "5.1" : sourceCount === 8 ? "7.1" : "adaptive"
             adaptiveCount = sourceCount
             routes = []
             resize(clipCount)
@@ -210,7 +212,7 @@ WabcutDialog {
             const from = dialog.info.mapFrom === "clip" ? qsTr("its own channel map")
                        : dialog.info.mapFrom === "media" ? qsTr("its media item's channel map")
                        : qsTr("the source as it is")
-            return qsTr("%1 · source: %2 channel(s) · plays %3").arg(what).arg(dialog.sourceCount).arg(from)
+            return qsTr("%1 · source: %n channel(s) · plays %2", "", dialog.sourceCount).arg(what).arg(from)
         }
         color: Theme.textSecondary
         font.family: Theme.fontSans
@@ -227,7 +229,7 @@ WabcutDialog {
             objectName: "audioChannelsFormat"
             Layout.preferredWidth: Theme.space(70)
             compact: true
-            model: [qsTr("Mono"), qsTr("Stereo"), qsTr("5.1"), qsTr("Adaptive")]
+            model: [qsTr("Mono"), qsTr("Stereo"), qsTr("5.1"), qsTr("7.1"), qsTr("Adaptive")]
             Accessible.name: qsTr("Clip format")
             onActivated: index => dialog.setFormat(dialog.formats[index])
         }
@@ -342,6 +344,16 @@ WabcutDialog {
                             color: dialog.silent(head.source) ? Theme.warning : Theme.textPrimary
                             font.family: Theme.fontMono
                             font.weight: Font.DemiBold
+                        }
+                        GridLabel {
+                            objectName: "sourceName" + head.source
+                            Layout.alignment: Qt.AlignHCenter
+                            Layout.maximumWidth: Theme.space(24)
+                            visible: text !== ""
+                            text: head.index < dialog.sourceNames.length ? dialog.sourceNames[head.index] : ""
+                            elide: Text.ElideRight
+                            color: Theme.textPrimary
+                            font.pixelSize: Theme.textXs
                         }
                         GridLabel {
                             objectName: "sourceLevel" + head.source

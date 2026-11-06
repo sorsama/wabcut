@@ -766,7 +766,8 @@ TEST_CASE("Leaving the edited sample project by Open Next to This One or an impo
     discard();
     CHECK_FALSE(dialog->property("visible").toBool());
     CHECK_FALSE(file->demo());
-    CHECK(graphicsMessage().contains(QStringLiteral("dotLottie")));
+    // 0.7: a dotLottie file is imported like any Lottie file (this one does not exist), so the refusal comes from the import.
+    CHECK(waitFor([&] { return !graphicsMessage().isEmpty(); }, 5000));
 
     const QStringList messages = takeMessages();
     INFO(join(messages));

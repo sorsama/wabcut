@@ -5,8 +5,10 @@ import QtQuick
 // the Markers panel (the timeline ruler's flags get the same rows in their ruler menu): Edit Marker… (the host opens
 // the marker editor once the menu has closed: editRequested), Marker Colour and Marker Type submenus, Go to Marker and
 // Delete Marker. It acts in Markers' current scope (the host sets it before openAt: "sequence" for the ruler and the time
-// bar, the panel's own scope for its rows); every change is one undo step. Its own file, importing only QtQuick, so
-// QtQuick.Controls' ContextMenu does not shadow ours.
+// bar, the panel's own scope for its rows); every change is one undo step. 0.7 (card 119): the marker joins the selection
+// when it is not in it, and the Copy / Cut / Delete rows act on the whole selection when it holds several markers; Paste
+// puts the copied markers at the playhead. Its own file, importing only QtQuick, so QtQuick.Controls' ContextMenu does not
+// shadow ours.
 ContextMenu {
     id: menu
     objectName: "markerContextMenu"
@@ -17,6 +19,9 @@ ContextMenu {
     property int pendingEdit: -1
     /// Markers.marker(markerIndex) as the menu opened.
     property var marker: ({})
+    /// How many markers the group rows act on: the whole selection when this marker is part of a larger one, else 1.
+    readonly property int groupCount: Markers.selectionCount > 1 && Markers.selection.indexOf(menu.markerIndex) >= 0
+                                      ? Markers.selectionCount : 1
 
     /// Edit Marker… on `index`.
     signal editRequested(int index)
@@ -24,6 +29,8 @@ ContextMenu {
     signal wentTo(int index)
 
     function openAt(target: Item, point: point, index: int) {
+        if (Markers.selection.indexOf(index) < 0)
+            Markers.select(index) // a right click on a marker outside the selection selects just that one
         menu.markerIndex = index
         menu.pendingEdit = -1
         menu.marker = Markers.marker(index)
@@ -65,9 +72,34 @@ ContextMenu {
     }
     ContextMenuSeparator {}
     ContextMenuItem {
+        objectName: "markerMenuCopy"
+        text: menu.groupCount > 1 ? qsTr("Copy %n marker(s)", "", menu.groupCount) : qsTr("Copy Marker")
+        iconName: "copy"
+        onTriggered: Markers.copySelected()
+    }
+    ContextMenuItem {
+        objectName: "markerMenuCut"
+        text: menu.groupCount > 1 ? qsTr("Cut %n marker(s)", "", menu.groupCount) : qsTr("Cut Marker")
+        iconName: "scissors"
+        onTriggered: Markers.cutSelected()
+    }
+    ContextMenuItem {
+        objectName: "markerMenuPaste"
+        text: qsTr("Paste Markers at Playhead")
+        iconName: "clipboard-paste"
+        enabled: Markers.clipboardCount > 0
+        onTriggered: Markers.paste()
+    }
+    ContextMenuSeparator {}
+    ContextMenuItem {
         objectName: "markerMenuDelete"
-        text: qsTr("Delete Marker")
+        text: menu.groupCount > 1 ? qsTr("Delete %n marker(s)", "", menu.groupCount) : qsTr("Delete Marker")
         iconName: "trash-2"
-        onTriggered: Markers.remove(menu.markerIndex)
+        onTriggered: {
+            if (menu.groupCount > 1)
+                Markers.removeSelected()
+            else
+                Markers.remove(menu.markerIndex)
+        }
     }
 }

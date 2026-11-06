@@ -22,6 +22,11 @@ inline constexpr std::size_t kMaxScriptBytes = 1024 * 1024;          ///< one .j
 inline constexpr std::size_t kMaxExtensionBytes = 4 * 1024 * 1024;   ///< every file of an extension
 /// The per-project extensions of a project: <project folder>/.wabcut/extensions/<extension>/.
 inline constexpr std::string_view kProjectExtensionsDir = ".wabcut/extensions";
+/// Folders next to an installed extension while it is installed or updated (card 164): the new version is written to
+/// "<id>.wabcut-new" and swapped in by a rename, the old one waiting in "<id>.wabcut-old" until then. findExtensions()
+/// never lists them (a crash can leave one behind; the next install of the id cleans up or restores).
+inline constexpr std::string_view kStagingSuffix = ".wabcut-new";
+inline constexpr std::string_view kReplacedSuffix = ".wabcut-old";
 
 /// Where an extension is installed. User extensions run once the user grants them; project extensions come with a
 /// project (untrusted input) and also need the user's trust for that project and that exact content.

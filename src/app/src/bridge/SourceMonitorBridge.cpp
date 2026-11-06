@@ -1,7 +1,9 @@
 #include "SourceMonitorBridge.h"
 
 #include "BridgeIds.h"
+#include "EditPreferences.h"
 #include "KeymapDispatcher.h"
+#include "NestingBridge.h"
 #include "PlaybackBridge.h"
 #include "ProgramMonitor.h"
 #include "ProjectController.h"
@@ -180,8 +182,15 @@ SourceMonitorBridge* SourceMonitorBridge::create(QQmlEngine* qmlEngine, QJSEngin
     if (qmlEngine) {
         bridge->setController(qmlEngine->singletonInstance<ProjectController*>("Wabcut", "ProjectController"));
         bridge->setProgramPlayback(qmlEngine->singletonInstance<PlaybackBridge*>("Wabcut", "Playback"));
+        // The Nesting singleton is looked up when Match Frame needs it: creating it here would loop (Nesting -> Library ->
+        // SourceMonitor -> Nesting).
+        bridge->m_engine = qmlEngine;
     }
     return bridge;
+}
+
+void SourceMonitorBridge::setNesting(NestingBridge* nesting) {
+    m_nesting = nesting;
 }
 
 void SourceMonitorBridge::setController(ProjectController* controller) {
@@ -220,6 +229,16 @@ void SourceMonitorBridge::setProgramPlayback(PlaybackBridge* playback) {
 }
 
 // ---- The source ---------------------------------------------------------------------------------------------
+
+QString SourceMonitorBridge::vrProjection() const {
+    const MediaItem* item = mediaItem();
+    return QString::fromLatin1(toString(item ? mediaVr(*item).projection : VrProjection::None));
+}
+
+QString SourceMonitorBridge::vrStereo() const {
+    const MediaItem* item = mediaItem();
+    return QString::fromLatin1(toString(item ? mediaVr(*item).stereo : StereoLayout::Mono));
+}
 
 const MediaItem* SourceMonitorBridge::mediaItem() const {
     if (m_pending)
@@ -462,6 +481,7 @@ bool SourceMonitorBridge::loadItem(const MediaItem& source, MediaId media, std::
     m_media = media;
     syncRedactions();
     syncMasterEffects();
+    applyMute(); // a mute stays for the next clips
     m_playback = std::make_unique<editor::PlaybackSession>(*m_sourceSession, sessionOptions());
     m_playback->setSequence(decodable ? withSequence->id : SequenceId{});
     m_length = length.value > 0 ? std::optional<Ticks>(length) : std::nullopt; // applyLoop reads it
@@ -625,6 +645,43 @@ void SourceMonitorBridge::syncMasterEffects() {
     [[maybe_unused]] const auto committed = m_sourceSession->commit("Master Clip Effects", next);
 }
 
+void SourceMonitorBridge::setMuted(bool muted) {
+    if (muted == m_muted)
+        return;
+    m_muted = muted;
+    applyMute();
+    emit mutedChanged();
+}
+
+/// 0.7: mutes (or unmutes) the audio tracks of the private one-clip session the monitor plays: the track mute of the
+/// mixer, which the audio player takes at once while playing. The user's project is not involved.
+void SourceMonitorBridge::applyMute() {
+    if (!m_sourceSession)
+        return;
+    const ProjectSnapshot current = m_sourceSession->snapshot();
+    if (!current)
+        return;
+    ProjectState next = *current;
+    bool changed = false;
+    for (const SequencePtr& seq : current->sequences) {
+        if (!seq)
+            continue;
+        for (const TrackPtr& track : seq->audioTracks) {
+            if (!track || track->muted == m_muted)
+                continue;
+            edit::TrackStateChange change;
+            change.muted = m_muted;
+            auto outcome = edit::setTrackState(next, seq->id, track->id, change);
+            if (!outcome)
+                continue;
+            next = std::move(outcome->state);
+            changed = true;
+        }
+    }
+    if (changed)
+        [[maybe_unused]] const auto committed = m_sourceSession->commit(m_muted ? "Mute Source Sound" : "Unmute Source Sound", next);
+}
+
 EffectStack SourceMonitorBridge::shownMasterEffects() const {
     const ProjectSnapshot current = m_sourceSession ? m_sourceSession->snapshot() : nullptr;
     const MediaItem* copy = current ? current->findMedia(m_copyMedia) : nullptr;
@@ -777,6 +834,29 @@ void SourceMonitorBridge::playAround(double prerollSeconds, double postrollSecon
     const Ticks here = positionTicks();
     const Ticks from = snapToFrame(std::max(Ticks{}, here - seconds(prerollSeconds)), m_rate);
     const Ticks to = std::min(here + seconds(postrollSeconds), m_length.value_or(Ticks::max()));
+    playOnce(from, to, here);
+}
+
+void SourceMonitorBridge::playInToOutAround(double prerollSeconds, double postrollSeconds) {
+    if (!m_playback || !loaded())
+        return;
+    const auto seconds = [](double s) {
+        return Ticks{static_cast<std::int64_t>(std::llround(std::clamp(s, 0.0, 3600.0) * kTicksPerSecond))};
+    };
+    if (!m_length)
+        return; // nothing to measure the Out against
+    const edit::SourceMarks m = marks();
+    const Ticks length = *m_length;
+    const Ticks in = m.in.value_or(Ticks{});
+    const Ticks out = std::min(m.out.value_or(length), length);
+    if (out <= in)
+        return;
+    playOnce(snapToFrame(std::max(Ticks{}, in - seconds(prerollSeconds)), m_rate), std::min(out + seconds(postrollSeconds), length),
+             positionTicks());
+}
+
+/// Plays [from, to) once (Loop ignored) and parks back on `here` (Play Around, Play In to Out with Preroll and Postroll).
+void SourceMonitorBridge::playOnce(Ticks from, Ticks to, Ticks here) {
     if (to <= from)
         return;
     if (m_programPlayback)
@@ -1416,9 +1496,14 @@ bool SourceMonitorBridge::needsFit() const {
 }
 
 Json SourceMonitorBridge::editParams(const QString& fit) const {
+    std::vector<SourcePatchSetting> patches = currentPatching();
+    if (!editprefs::addTracksOnEdit()) {
+        // 0.7 (card 182): a stream with no track to go to would get a new one; with automatic tracks off it stays out.
+        std::erase_if(patches, [](const SourcePatchSetting& p) { return !p.destination && !p.newTrack.empty(); });
+    }
     Json params{{"media", m_media.value},
                 {"at", m_controller ? m_controller->playhead().value : 0},
-                {"patches", patchesJson(currentPatching())}};
+                {"patches", patchesJson(patches)}};
     if (!fit.isEmpty())
         params["fit"] = fit.toStdString();
     return params;
@@ -1428,6 +1513,17 @@ QString SourceMonitorBridge::edit(bool insert, const QString& fit) {
     if (!loaded()) {
         setMessage(tr("Load a source in the Source Monitor first"));
         return m_message;
+    }
+    if (!editprefs::addTracksOnEdit()) {
+        // 0.7 (card 182): when every stream that would be placed needs a new track, say why nothing happens.
+        const auto patches = currentPatching();
+        const bool placed = std::ranges::any_of(patches, [](const SourcePatchSetting& p) { return p.enabled && p.destination; });
+        const bool wantsNew = std::ranges::any_of(
+            patches, [](const SourcePatchSetting& p) { return p.enabled && !p.destination && !p.newTrack.empty(); });
+        if (!placed && wantsNew) {
+            setMessage(tr("There is no track to edit into, and adding tracks automatically is off (Settings > Timeline & editing)"));
+            return m_message;
+        }
     }
     if (!adoptPreview())
         return m_message;
@@ -1517,7 +1613,12 @@ bool SourceMonitorBridge::dropAt(const QString& timecode, const QString& track, 
             landing = TimeRange{*at, out - in};
     }
     Json patches = Json::array();
+    bool leftOutNewTrack = false; // 0.7 (card 182)
     for (const edit::SourcePatch& p : editor::patchesForDrop(*seq, *item, under, landing)) {
+        if (!p.destination && !p.newTrack.empty() && !editprefs::addTracksOnEdit()) {
+            leftOutNewTrack = true; // a stream that would get a new track stays out while tracks are not added by edits
+            continue;
+        }
         if ((p.source.kind == StreamKind::Video && video) || (p.source.kind == StreamKind::Audio && audio)) {
             // A.10: a multi-track recording's stream names its track; without a track it gets a new one of that name.
             Json patch{{"source", command::sourceStreamLabel(p.source)}};
@@ -1529,8 +1630,9 @@ bool SourceMonitorBridge::dropAt(const QString& timecode, const QString& track, 
         }
     }
     if (patches.empty()) {
-        setMessage(streams == QLatin1String("audio") ? tr("The source has no audio to drop there")
-                                                     : tr("The source has no picture to drop there"));
+        setMessage(leftOutNewTrack ? tr("There is no track to edit into, and adding tracks automatically is off (Settings > Timeline & editing)")
+                   : streams == QLatin1String("audio") ? tr("The source has no audio to drop there")
+                                                       : tr("The source has no picture to drop there"));
         return false;
     }
     if (!adoptPreview())
@@ -1561,6 +1663,18 @@ bool SourceMonitorBridge::matchFrame() {
     if (!r.ok()) {
         setMessage(errorText(r));
         return false;
+    }
+    if (r.data.value("nested", false)) {
+        // 0.7 (card 097): a nested or multi-camera clip: its source sequence opens in a tab on the frame the clip shows
+        // (the Source Monitor has no media to load).
+        if (!m_nesting && m_engine)
+            m_nesting = m_engine->singletonInstance<NestingBridge*>("Wabcut", "Nesting");
+        if (!m_nesting) {
+            setMessage(tr("The nested sequence cannot be opened here"));
+            return false;
+        }
+        setMessage({});
+        return m_nesting->openNested(clipKey(ClipId{r.data.value("clip", std::uint64_t{0})}));
     }
     const MediaId media{r.data.value("media", std::uint64_t{0})};
     const Ticks at{r.data["sourceTime"].value("ticks", std::int64_t{0})};

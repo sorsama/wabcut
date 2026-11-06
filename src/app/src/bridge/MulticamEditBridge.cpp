@@ -29,6 +29,12 @@ namespace {
 
 QString text(const std::string& s) { return QString::fromStdString(s); }
 
+/// One frame of the multicam source sequence, in ticks (1 when its rate is not valid).
+std::int64_t frameTicksOf(const Sequence& source) {
+    const auto frame = framesToTicks(1, source.frameRate, Rounding::Nearest);
+    return frame ? std::max<std::int64_t>(1, frame->value) : 1;
+}
+
 QString syncName(const QString& sync) {
     if (sync == QStringLiteral("timecode"))
         return MulticamEditBridge::tr("Timecode");
@@ -455,13 +461,27 @@ QVariantList MulticamEditBridge::angles() const {
         }
     }
     const auto& list = source->multicam->angles;
+    const std::int64_t frameTicks = frameTicksOf(*source);
     for (std::size_t i = 0; i < list.size(); ++i) {
+        // 0.7 (card 009): how far a hand-nudged angle is from the offset its sync measured, in the source's frames.
+        int syncFrames = 0;
+        if (list[i].autoOffset) {
+            const std::int64_t off = list[i].offset.value - list[i].autoOffset->value;
+            const std::int64_t whole = (std::abs(off) + frameTicks / 2) / frameTicks;
+            syncFrames = static_cast<int>(off >= 0 ? whole : -whole);
+            if (syncFrames == 0 && off != 0)
+                syncFrames = off > 0 ? 1 : -1; // less than a frame is still a nudge
+        }
         out.append(QVariantMap{{QStringLiteral("angle"), static_cast<int>(i) + 1},
                                {QStringLiteral("name"), text(list[i].name)},
                                {QStringLiteral("video"), video && list[i].video.isValid() && i == shown},
                                {QStringLiteral("audio"), heard.contains(i)},
                                {QStringLiteral("hasVideo"), list[i].video.isValid()},
-                               {QStringLiteral("keyText"), i < 9 ? QString::number(i + 1) : QString()}});
+                               {QStringLiteral("keyText"), i < 9 ? QString::number(i + 1) : QString()},
+                               {QStringLiteral("syncFrames"), syncFrames},
+                               //: An angle's sync is this many frames off what its sync method measured, e.g. "+2 f"
+                               {QStringLiteral("syncText"),
+                                syncFrames == 0 ? QString() : tr("%1%2 f").arg(syncFrames > 0 ? QStringLiteral("+") : QString()).arg(syncFrames)}});
     }
     return out;
 }
@@ -663,6 +683,90 @@ void MulticamEditBridge::flushSwitches() {
     const command::CommandResult result = engine.execute(batch);
     setMessage(commandErrorText(result));
     emit anglesChanged();
+}
+
+QString MulticamEditBridge::sourceKey() const {
+    return m_site ? sequenceKey(m_site->source) : QString();
+}
+
+// ---- Sync nudges (0.7, card 009) ------------------------------------------------------------------------------------
+
+namespace {
+
+/// Runs `requests` (multicam.setSync steps) as one batch, one undo step under `label`.
+command::CommandResult runBatch(ProjectController* controller, std::shared_ptr<command::CommandServices> services,
+                                std::vector<command::CommandRequest> requests, const char* label) {
+    command::EnginePolicy policy;
+    policy.services = std::move(services);
+    command::CommandEngine engine(controller->session(), ai::edit::editingCommands(), policy);
+    command::CommandBatch batch;
+    batch.commands = std::move(requests);
+    batch.label = label;
+    return engine.execute(batch);
+}
+
+command::CommandRequest setSyncRequest(SequenceId source, int angle, Ticks offset) {
+    command::CommandRequest request;
+    request.command = "multicam.setSync";
+    request.params = Json{{"multicam", source.value}, {"angle", angle}, {"offset", offset.value}};
+    return request;
+}
+
+} // namespace
+
+QString MulticamEditBridge::nudgeAngleSync(int angle, int frames) {
+    if (!m_controller || !m_site || !m_siteSnapshot) {
+        setMessage(tr("Put the playhead over a multi-camera clip"));
+        return message();
+    }
+    const Sequence* source = m_siteSnapshot->findSequence(m_site->source);
+    if (!source || !source->multicam || angle < 1 || angle > static_cast<int>(source->multicam->angles.size())) {
+        setMessage(tr("This multi-camera clip has no angle %1").arg(angle));
+        return message();
+    }
+    if (frames == 0)
+        return {};
+    const std::int64_t frameTicks = frameTicksOf(*source);
+    const auto& list = source->multicam->angles;
+    const std::int64_t wanted = list[static_cast<std::size_t>(angle) - 1].offset.value + frames * frameTicks;
+    std::vector<command::CommandRequest> requests;
+    if (wanted >= 0) {
+        requests.push_back(setSyncRequest(source->id, angle, Ticks{wanted}));
+    } else {
+        // Before 0 there is nothing: the angle stays at 0 and every other angle moves later by what is missing, which
+        // keeps the distances between the angles (the sync) as asked.
+        const std::int64_t deficit = -wanted;
+        for (std::size_t i = 0; i < list.size(); ++i) {
+            if (static_cast<int>(i) + 1 != angle)
+                requests.push_back(setSyncRequest(source->id, static_cast<int>(i) + 1, Ticks{list[i].offset.value + deficit}));
+        }
+        requests.push_back(setSyncRequest(source->id, angle, Ticks{0}));
+    }
+    const command::CommandResult result = runBatch(m_controller, services(), std::move(requests), "Sync Angle");
+    setMessage(commandErrorText(result));
+    updateClip();
+    return commandErrorText(result);
+}
+
+QString MulticamEditBridge::resetAngleSync(int angle) {
+    if (!m_controller || !m_site || !m_siteSnapshot) {
+        setMessage(tr("Put the playhead over a multi-camera clip"));
+        return message();
+    }
+    const Sequence* source = m_siteSnapshot->findSequence(m_site->source);
+    if (!source || !source->multicam || angle < 1 || angle > static_cast<int>(source->multicam->angles.size())) {
+        setMessage(tr("This multi-camera clip has no angle %1").arg(angle));
+        return message();
+    }
+    const MulticamAngle& a = source->multicam->angles[static_cast<std::size_t>(angle) - 1];
+    if (!a.autoOffset)
+        return {}; // already where its sync put it
+    std::vector<command::CommandRequest> requests;
+    requests.push_back(setSyncRequest(source->id, angle, *a.autoOffset));
+    const command::CommandResult result = runBatch(m_controller, services(), std::move(requests), "Reset Angle Sync");
+    setMessage(commandErrorText(result));
+    updateClip();
+    return commandErrorText(result);
 }
 
 QString MulticamEditBridge::flatten(const QString& key) {

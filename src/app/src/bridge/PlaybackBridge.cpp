@@ -160,6 +160,10 @@ void PlaybackBridge::attachMirror(QObject* object) {
     }
     if (!m_mirror) {
         playback::PlaybackOptions options; // CPU frames: the window's device is not the one decoders share
+        // The output display's own latency: frames are chosen for the instant they become visible (one monitor refresh by
+        // default), so a display that shows them late is given frames that much further ahead.
+        options.scheduler.displayLatencyNs =
+            std::max<std::int64_t>(0, options.scheduler.displayLatencyNs + static_cast<std::int64_t>(m_mirrorSyncOffsetMs) * 1'000'000);
         m_mirror = std::make_unique<playback::PlaybackController>(options);
         m_mirror->scheduler().setPreview(m_preview);
         m_mirror->scheduler().setCaptions(m_captionSettings);
@@ -168,6 +172,19 @@ void PlaybackBridge::attachMirror(QObject* object) {
     }
     m_mirrorMonitor = monitor;
     monitor->setPlaybackController(m_mirror.get());
+}
+
+void PlaybackBridge::setMirrorSyncOffsetMs(int ms) {
+    ms = std::clamp(ms, -500, 500);
+    if (ms == m_mirrorSyncOffsetMs)
+        return;
+    m_mirrorSyncOffsetMs = ms;
+    if (m_mirror && m_mirrorMonitor) {
+        // The scheduler's latency is fixed when it is made: make the mirror again with the new offset.
+        const QPointer<ProgramMonitor> monitor = m_mirrorMonitor;
+        detachMirror(monitor);
+        attachMirror(monitor);
+    }
 }
 
 void PlaybackBridge::detachMirror(QObject* object) {
@@ -438,6 +455,7 @@ void PlaybackBridge::updateStats() {
     m_presentedAtLastSample = s.presented;
     m_droppedAtLastSample = s.dropped;
     m_bypassedEffects = s.bypassedEffects;
+    m_aiUnprocessedLayers = s.aiUnprocessedLayers;
     // P.2: the monitor waits for motion, or Morph Cuts / Optical Flow are analysed in the background.
     const playback::MotionAnalyzer::Stats motion = playback::MotionAnalyzer::shared().stats();
     m_analyzingMotion = active->scheduler().stats().motionWaits > 0 || motion.queued + motion.running > 0;
@@ -788,6 +806,22 @@ void PlaybackBridge::playAround(double prerollSeconds, double postrollSeconds) {
     startAudio();
     m_session->play();
     tick();
+}
+
+void PlaybackBridge::playInToOutAround(double prerollSeconds, double postrollSeconds) {
+    if (!m_session || !m_controller || m_sourceVideo) {
+        return;
+    }
+    const SequencePtr seq = m_controller->currentSequence();
+    const std::optional<TimeRange> range = loopRange();
+    if (!seq || !range) {
+        return;
+    }
+    const auto seconds = [](double s) {
+        return Ticks{static_cast<std::int64_t>(std::llround(std::clamp(s, 0.0, 3600.0) * kTicksPerSecond))};
+    };
+    const Ticks end = std::max(seq->duration, seq->contentEnd());
+    playRange(std::max(Ticks{}, range->start - seconds(prerollSeconds)), std::min(end, range->end() + seconds(postrollSeconds)));
 }
 
 void PlaybackBridge::playRange(Ticks from, Ticks to) {

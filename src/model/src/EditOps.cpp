@@ -844,9 +844,13 @@ EditOutcome addEdit(const ProjectState& state, SequenceId sequenceId, Ticks at, 
         if (t->locked || std::find(cut.begin(), cut.end(), id) != cut.end()) {
             continue;
         }
+        const Clip* inside = strictlyInside(*t);
+        if (inside && inside->locked) {
+            continue; // 0.7 (card 064): a locked clip is not cut, as a locked track is not
+        }
         cut.push_back(id);
-        if (const Clip* c = strictlyInside(*t); c && c->linkGroup.isValid()) {
-            groups.insert(c->linkGroup);
+        if (inside && inside->linkGroup.isValid()) {
+            groups.insert(inside->linkGroup);
         }
     }
     if (links == LinkMode::FollowLinks && !groups.empty()) {
@@ -854,7 +858,7 @@ EditOutcome addEdit(const ProjectState& state, SequenceId sequenceId, Ticks at, 
             if (t.locked || std::find(cut.begin(), cut.end(), t.id) != cut.end()) {
                 return;
             }
-            if (const Clip* c = strictlyInside(t); c && c->linkGroup.isValid() && groups.contains(c->linkGroup)) {
+            if (const Clip* c = strictlyInside(t); c && !c->locked && c->linkGroup.isValid() && groups.contains(c->linkGroup)) {
                 cut.push_back(t.id);
             }
         });

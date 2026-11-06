@@ -7,6 +7,7 @@
 #include <wabcut/command/Registry.h>
 #include <wabcut/model/ChangeSet.h>
 #include <wabcut/model/GraphicOps.h>
+#include <wabcut/model/GraphicResolve.h>
 #include <wabcut/model/Graphics.h>
 
 #include <QColor>
@@ -206,6 +207,38 @@ QString GraphicToolsBridge::renameTextStyle(const QString& from, const QString& 
 
 QString GraphicToolsBridge::removeTextStyle(const QString& name) {
     return run("textStyle.remove", Json{{"name", name.toStdString()}});
+}
+
+QString GraphicToolsBridge::applyTextStyleToRange(const QString& clip, int layer, int from, int to, const QString& name) {
+    const auto id = parseClipKey(clip);
+    if (!id)
+        return tr("Select a graphic clip");
+    if (!m_controller)
+        adoptEngineController(this);
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    const Sequence* seq = snap ? snap->findSequence(m_controller->currentSequenceId()) : nullptr;
+    const auto located = seq ? seq->findClip(*id) : std::nullopt;
+    const Graphic* graphic = located ? located->clip().graphic() : nullptr;
+    const GraphicLayer* text = graphic ? graphic->findLayer(static_cast<std::uint32_t>(std::max(0, layer))) : nullptr;
+    if (!text || text->kind != LayerKind::Text)
+        return tr("Select a text layer");
+    const Clip& placed = located->clip();
+    const Ticks now = std::clamp(m_controller->playhead(), placed.start(), placed.end() - Ticks{1});
+    // The editor counts UTF-16 units; the command counts characters (code points).
+    const QString shown = QString::fromStdString(textAt(text->text, graphicTimeAt(placed, *graphic, now)).text());
+    const auto characters = [&](int units) { return shown.left(std::clamp(units, 0, static_cast<int>(shown.size()))).toUcs4().size(); };
+    const auto first = characters(std::min(from, to));
+    const auto last = characters(std::max(from, to));
+    return run("textStyle.applyRange", Json{{"clip", id->value},
+                                            {"layer", layer},
+                                            {"from", static_cast<std::int64_t>(first)},
+                                            {"to", static_cast<std::int64_t>(last)},
+                                            {"name", name.toStdString()},
+                                            {"time", now.value}});
+}
+
+QString GraphicToolsBridge::moveTextStyle(const QString& name, int index) {
+    return run("textStyle.move", Json{{"name", name.toStdString()}, {"index", std::max(0, index)}});
 }
 
 

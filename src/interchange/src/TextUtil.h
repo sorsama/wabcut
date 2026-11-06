@@ -25,6 +25,9 @@ bool iequals(std::string_view a, std::string_view b);
 bool istartsWith(std::string_view text, std::string_view prefix);
 bool iendsWith(std::string_view text, std::string_view suffix);
 std::string toLowerAscii(std::string_view text);
+/// `text` without a leading UTF-8 byte order mark (EF BB BF): Notepad and Python's utf-8-sig put one in front of the
+/// text of an .otio or .edl, and it is part of the encoding, not of the content (card 162).
+std::string_view withoutUtf8Bom(std::string_view text);
 
 /// Decimal integer with optional sign and surrounding blanks; nullopt on anything else or overflow.
 std::optional<std::int64_t> parseInt64(std::string_view text);

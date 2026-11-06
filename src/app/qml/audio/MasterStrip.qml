@@ -73,10 +73,11 @@ Rectangle {
                 }
             }
 
-            // The master's channel format (A.9, M5n; Premiere's Sequence Settings > Audio > Master): stereo or 5.1.
-            RowLayout {
+            // The master's channel format (A.9, M5n; Premiere's Sequence Settings > Audio > Master): stereo, 5.1 or (0.7) 7.1.
+            // The label sits above the tabs: three tabs need the strip's whole width.
+            ColumnLayout {
                 Layout.fillWidth: true
-                spacing: Theme.space(1)
+                spacing: Theme.space(0.5)
                 Text {
                     text: qsTr("Format")
                     color: Theme.textSecondary
@@ -88,14 +89,26 @@ Rectangle {
                     objectName: "masterFormatTabs"
                     Layout.fillWidth: true
                     compact: true
-                    model: [qsTr("Stereo"), qsTr("5.1")]
-                    currentIndex: AudioChannels.masterFormat === "5.1" ? 1 : 0
+                    readonly property var ids: ["stereo", "5.1", "7.1"]
+                    model: [qsTr("Stereo"), qsTr("5.1"), qsTr("7.1")]
+                    currentIndex: Math.max(0, ids.indexOf(AudioChannels.masterFormat))
                     Accessible.name: qsTr("Master channel format")
                     onActivated: index => {
-                        AudioChannels.setMasterFormat(index === 1 ? "5.1" : "stereo")
-                        currentIndex = Qt.binding(() => AudioChannels.masterFormat === "5.1" ? 1 : 0)
+                        AudioChannels.setMasterFormat(ids[index])
+                        currentIndex = Qt.binding(() => Math.max(0, ids.indexOf(AudioChannels.masterFormat)))
                     }
                 }
+            }
+            // What the last change of the format did to the sound (the 5.1 to 7.1 upmix leaves the rear pair silent).
+            Text {
+                objectName: "masterFormatNote"
+                Layout.fillWidth: true
+                visible: text !== ""
+                text: AudioChannels.masterNote
+                wrapMode: Text.Wrap
+                color: Theme.textTertiary
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textXs
             }
 
             EffectSlots {
@@ -322,8 +335,9 @@ Rectangle {
                     id: masterMeter
                     objectName: "masterMeter"
                     Layout.fillHeight: true
-                    // A 5.1 master meters six channels (L, R, C, LFE, Ls, Rs).
-                    Layout.preferredWidth: masterMeter.channels > 2 ? Theme.meterBarWidth * 3 : Theme.meterBarWidth
+                    // A 5.1 master meters six channels (L, R, C, LFE, Ls, Rs), a 7.1 one eight (0.7).
+                    Layout.preferredWidth: masterMeter.channels > 6 ? Theme.meterBarWidth * 4
+                                         : masterMeter.channels > 2 ? Theme.meterBarWidth * 3 : Theme.meterBarWidth
                     source: AudioMixer
                     channel: "master"
                     trackColor: Theme.sunken

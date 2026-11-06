@@ -176,16 +176,28 @@ std::expected<std::unique_ptr<WavWriter>, Error> WavWriter::create(const std::fi
 }
 
 WavWriter::WavWriter(std::FILE* file, std::filesystem::path path, WavFormat format, std::int64_t syncFrames)
-    : m_file(file), m_path(std::move(path)), m_format(format), m_syncFrames(syncFrames) {}
+    : m_file(file), m_path(std::move(path)), m_format(format), m_syncFrames(syncFrames), m_capacity(maxFrames(format)) {}
 
 WavWriter::~WavWriter() { (void)finish(); }
+
+std::int64_t WavWriter::maxFrames(const WavFormat& format) noexcept {
+    const std::int64_t frameBytes = static_cast<std::int64_t>(format.channels) * bytesPerSample(format);
+    return frameBytes > 0 ? kMaxDataBytes / frameBytes : 0;
+}
+
+void WavWriter::limitFrames(std::int64_t frames) noexcept { m_capacity = std::clamp<std::int64_t>(frames, 0, maxFrames(m_format)); }
 
 std::expected<void, Error> WavWriter::write(std::span<const float> interleaved) {
     if (m_file == nullptr) {
         return std::unexpected(Error(ErrorCode::InvalidArgument, "the WAV is finished"));
     }
     const auto ch = static_cast<std::size_t>(m_format.channels);
-    const std::size_t frames = interleaved.size() / ch;
+    const std::size_t asked = interleaved.size() / ch;
+    // A WAV header cannot describe more than 4 GiB of data: the writer never goes past it, so the file always is one its
+    // own reader (recoverWav / inspectWav) accepts. What still fits is written; the rest is refused below.
+    const auto room = static_cast<std::size_t>(std::max<std::int64_t>(m_capacity - m_frames, 0));
+    const std::size_t frames = std::min(asked, room);
+    const bool truncated = frames < asked;
     const int bps = bytesPerSample(m_format);
     std::vector<std::uint8_t> bytes(frames * ch * static_cast<std::size_t>(bps));
     std::uint8_t* out = bytes.data();
@@ -212,6 +224,13 @@ std::expected<void, Error> WavWriter::write(std::span<const float> interleaved) 
     }
     m_frames += static_cast<std::int64_t>(frames);
     m_unsynced += static_cast<std::int64_t>(frames);
+    if (truncated) {
+        // The header covers everything written (the take ends here), then the caller is told.
+        if (auto sized = writeSizes(); !sized) {
+            return sized;
+        }
+        return std::unexpected(Error(ErrorCode::Unsupported, "a WAV file holds at most 4 GiB: " + pathToUtf8(m_path) + " is full"));
+    }
     if (m_unsynced >= m_syncFrames) {
         return writeSizes();
     }

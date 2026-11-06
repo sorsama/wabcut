@@ -9,7 +9,10 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <fstream>
+#include <mutex>
+#include <set>
 #include <vector>
 
 namespace wabcut::ai {
@@ -100,6 +103,124 @@ ModelInfo llm(std::string id, std::string_view repo, std::string_view revision, 
                      std::move(license), std::move(card), std::move(description)};
 }
 
+/// AI video effects (0.7, docs/ai.md "AI video effects"): image-to-image ONNX models, each pinned to a Hugging Face revision;
+/// sizes and SHA-256 are the repositories' LFS metadata (checked 2026-11-05, and the digests re-computed on the downloaded
+/// files). Real-ESRGAN (Xintao Wang et al., BSD-3-Clause) in two re-exports: realesr-general-x4v3 (a compact 4x upscaler) by
+/// Heliosoph, RealESRGAN_x2plus / x4plus (RRDBNet) by SceneWorks. Deblur: NAFNet (Megvii, MIT) GoPro, as the OpenCV Zoo
+/// publishes it. Denoise: DRUNet (Kai Zhang, KAIR, MIT), colour, with a noise-level channel, exported by synthscript.
+/// All take 1 x 3 x H x W float32 RGB in [0, 1] (DRUNet 4 channels: the noise level over 255 as the fourth) and have
+/// dynamic H and W.
+constexpr std::string_view kVideoRealGeneralRepo = "Heliosoph/realesrgan-onnx";
+constexpr std::string_view kVideoRealGeneralRevision = "488e5dda07333179f229a6205d92135eea4c25e9";
+constexpr std::string_view kVideoRealPlusRepo = "SceneWorks/real-esrgan-onnx";
+constexpr std::string_view kVideoRealPlusRevision = "09f741bac80a246b407da3ee902bf5f3291b602f";
+constexpr std::string_view kVideoNafnetRepo = "opencv/deblurring_nafnet";
+constexpr std::string_view kVideoNafnetRevision = "f1f255116cdb628a311d2b5749871189a4639d84";
+constexpr std::string_view kVideoDrunetRepo = "synthscript/drunet-color-onnx";
+constexpr std::string_view kVideoDrunetRevision = "a2b9fccfa27b197f44a3876c567f5e48970c44a7";
+constexpr std::string_view kRealEsrganCard =
+    "Real-ESRGAN (Xintao Wang, Liangbin Xie, Chao Dong, Ying Shan; Tencent ARC Lab), BSD 3-Clause License (Copyright (c) "
+    "2021, Xintao Wang), converted to ONNX without changing the weights. AI Restore runs it on this computer, picture by "
+    "picture: no picture leaves it. https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE";
+constexpr std::string_view kNafnetCard =
+    "NAFNet GoPro deblurring (Liangyu Chen, Xiaojie Chu, Xiangyu Zhang, Jian Sun; Megvii), MIT License (Copyright (c) 2022 "
+    "megvii-model), as the OpenCV Zoo publishes the ONNX export. AI Restore runs it on this computer: no picture leaves "
+    "it. https://github.com/megvii-research/NAFNet/blob/main/LICENSE";
+constexpr std::string_view kDrunetCard =
+    "DRUNet colour denoiser (Kai Zhang, Yawei Li, Wangmeng Zuo, Lei Zhang, Luc Van Gool, Radu Timofte; KAIR), MIT License "
+    "(Copyright (c) 2019 Kai Zhang), original weights exported to ONNX unchanged. It was trained on public image collections "
+    "published for research (DIV2K, Flickr2K, Waterloo Exploration); the author's licence for the weights is MIT. AI Denoise "
+    "and AI Restore run it on this computer: no picture leaves it. https://github.com/cszn/KAIR/blob/master/LICENSE";
+
+/// AI frame interpolation and AI refocus (0.7; verified 2026-11-05: repository, revision, file, size, SHA-256 re-computed on the
+/// downloaded files, licence from the model cards, graph inputs and outputs read with ONNX Runtime 1.31).
+///  * RIFE 4.25 lite (Practical-RIFE by hzwer, MIT) exported to ONNX by t9749 with the export scripts in the repository
+///    (weights loaded tensors-only; the one change to the network is a stateless warp): inputs img0 and img1 (1 x 3 x H x W
+///    float32, RGB 0..1; H and W multiples of 64, dynamic) and timestep (1 x 1 x 1 x 1 float32, 0..1), output frame (1 x 3 x H x W).
+///  * Depth Anything V2 Small (Lihe Yang et al., Apache-2.0; the Base, Large and Giant models are CC-BY-NC and are not used) as
+///    onnx-community publishes it: input pixel_values (batch x 3 x H x W float32, ImageNet mean and standard deviation, H and W
+///    multiples of 14), output predicted_depth (batch x 14*floor(H/14) x 14*floor(W/14)): relative inverse depth, larger = nearer.
+constexpr std::string_view kVideoRifeRepo = "t9749/rife-4.25-lite-onnx";
+constexpr std::string_view kVideoRifeRevision = "8d1488a82e19fd2f2ca5b3ee1d1bfacd6787b9df";
+constexpr std::string_view kVideoDepthRepo = "onnx-community/depth-anything-v2-small";
+constexpr std::string_view kVideoDepthRevision = "4472b7362082ad9968fee890ca0f1e5aca36b93d";
+constexpr std::string_view kRifeCard =
+    "RIFE 4.25 lite (Zhewei Huang, Tianyuan Zhang, Wen Heng, Boxin Shi, Shuchang Zhou; Practical-RIFE by hzwer), MIT License "
+    "(Copyright (c) 2021 hzwer), the author's own 4.25 lite weights converted to ONNX without retraining. AI Frame "
+    "Interpolation runs it on this computer, picture pair by picture pair: no picture leaves it. "
+    "https://github.com/hzwer/Practical-RIFE/blob/main/LICENSE";
+constexpr std::string_view kDepthCard =
+    "Depth Anything V2 Small (Lihe Yang, Bingyi Kang, Zilong Huang, Zhen Zhao, Xiaogang Xu, Jiashi Feng, Hengshuang Zhao), "
+    "Apache License 2.0, as ONNX weights published by the ONNX Community. AI Refocus runs it on this computer to estimate "
+    "how far each part of the picture is: no picture leaves it. https://huggingface.co/depth-anything/Depth-Anything-V2-Small";
+
+/// AI Face Retouch (0.7; verified 2026-11-05): BiSeNet face parsing, ResNet-18 backbone, by Yakhyokhuja Valikhujaev
+/// (github.com/yakhyo/face-parsing, MIT, built on zllrunning/face-parsing.PyTorch, MIT), the author's trained weights exported to ONNX and
+/// published as a release asset (tag v0.0.2; the SHA-256 is the GitHub release digest and was re-computed on the download). Graph read
+/// with ONNX Runtime 1.31: input `input` 1 x 3 x 512 x 512 float32, RGB 0..1 with the ImageNet mean (.485 .456 .406) and deviation
+/// (.229 .224 .225); outputs `output` (and two auxiliary heads, 414 and 424) 1 x 19 x 512 x 512 class logits, the 19 CelebAMask-HQ
+/// classes (0 background, 1 skin, 2 l_brow, 3 r_brow, 4 l_eye, 5 r_eye, 6 eye_g, 7 l_ear, 8 r_ear, 9 ear_r, 10 nose, 11 mouth,
+/// 12 u_lip, 13 l_lip, 14 neck, 15 neck_l, 16 cloth, 17 hair, 18 hat). The input size is fixed.
+constexpr std::string_view kFaceParsingUrl = "https://github.com/yakhyo/face-parsing/releases/download/v0.0.2/resnet18.onnx";
+constexpr std::string_view kFaceParsingCard =
+    "BiSeNet face parsing, ResNet-18 (Yakhyokhuja Valikhujaev; architecture and training recipe from zllrunning's face-parsing."
+    "PyTorch, also MIT), MIT License (Copyright (c) 2024 Yakhyokhuja Valikhujaev), the author's trained weights exported to ONNX. "
+    "It was trained on CelebAMask-HQ, a face-parsing image collection published for research. AI Face Retouch runs it on this "
+    "computer, on each face the YuNet detector finds: no picture leaves it. https://github.com/yakhyo/face-parsing/blob/main/LICENSE";
+
+/// AI Eye Contact (0.7; verified 2026-11-05): the MediaPipe Face Landmarker's landmark network (Google LLC, Apache-2.0: the face mesh with
+/// iris points), converted from TFLite to ONNX by naklitechie (format only, no retraining; the repository carries MediaPipe's Apache-2.0
+/// LICENSE and its model card links Google's Face Mesh V2 model card), pinned to the revision checked. The SHA-256 is the one the
+/// repository's model card states and was re-computed on the download. Graph read with ONNX Runtime 1.31: input `input_12` 1 x 256 x 256 x 3
+/// float32 (NHWC) RGB 0..1, a face crop rolled so the eyes are level; outputs `Identity` 1 x 1 x 1 x 1434 = 478 x (x, y, z) in input pixels
+/// (the face mesh and ten iris points: 468..472 and 473..477), `Identity_1` the face-presence logit, `Identity_2` auxiliary. No gaze-redirection
+/// network with a licence that allows this use was found (searched 2026-11-05): the landmarks measure the eyes, the effect moves the iris.
+constexpr std::string_view kFaceLandmarksRepo = "naklitechie/face-landmarks-onnx";
+constexpr std::string_view kFaceLandmarksRevision = "575c33816c840c5b156398adb485e4f8d138adc2";
+constexpr std::string_view kFaceLandmarksCard =
+    "MediaPipe Face Landmarker landmark network (Google LLC), Apache License 2.0, as ONNX weights converted from the TFLite model by "
+    "naklitechie (format change only). It places 478 points on a face, the eyelids and the irises among them. AI Eye Contact runs it on "
+    "this computer, on each face the YuNet detector finds, to measure where the irises are: no picture leaves it. "
+    "https://huggingface.co/naklitechie/face-landmarks-onnx";
+
+ModelInfo videoModel(std::string id, std::string file, std::string_view repo, std::string_view revision, std::string_view repoPath,
+                     std::uint64_t size, std::string sha, std::string license, std::string_view card, std::string description) {
+    return ModelInfo{std::move(id), ModelKind::Video, "ai-video/" + std::move(file), hfUrl(repo, revision, repoPath), size, std::move(sha),
+                     std::move(license), std::string(card), std::move(description)};
+}
+
+std::vector<ModelInfo> videoManifest() {
+    return {
+        videoModel("video-upscale-general-x4v3", "realesr-general-x4v3.onnx", kVideoRealGeneralRepo, kVideoRealGeneralRevision,
+                   "realesr-general-x4v3.onnx", 4871181, "09b757accd747d7e423c1d352b3e8f23e77cc5742d04bae958d4eb8082b76fa4",
+                   "BSD-3-Clause", kRealEsrganCard, "Real-ESRGAN general x4 v3 (5 MB): the fast upscaler, 4x (2x by halving it)"),
+        videoModel("video-upscale-x2plus", "real_esrgan_x2.onnx", kVideoRealPlusRepo, kVideoRealPlusRevision, "real_esrgan_x2.onnx",
+                   67073434, "7115ba92e8a1bfa63d68558ef006ef3d91273a068d321b1439f8bb1c9179002c", "BSD-3-Clause", kRealEsrganCard,
+                   "Real-ESRGAN x2plus (67 MB): the high quality 2x upscaler"),
+        videoModel("video-upscale-x4plus", "real_esrgan_x4.onnx", kVideoRealPlusRepo, kVideoRealPlusRevision, "real_esrgan_x4.onnx",
+                   67051616, "5c586662929cbc686c1a5c38d9c060dbdb4ea5863a1f7672b8c0761e6b89c033", "BSD-3-Clause", kRealEsrganCard,
+                   "Real-ESRGAN x4plus (67 MB): the high quality 4x upscaler"),
+        videoModel("video-deblur-nafnet", "deblurring_nafnet_2025may.onnx", kVideoNafnetRepo, kVideoNafnetRevision,
+                   "deblurring_nafnet_2025may.onnx", 91736251, "07263f416febecce10193dd648e950b22e397cf521eedab1a114ef77b2bc9587", "MIT",
+                   kNafnetCard, "NAFNet deblurring (92 MB): sharpens motion blur and soft focus"),
+        videoModel("video-denoise-drunet", "drunet_color.onnx", kVideoDrunetRepo, kVideoDrunetRevision, "drunet_color.onnx", 130589232,
+                   "2ae3ab5eb15daac2ee79be984d584b908ce7f0f60b27be87d005f728c2aa0087", "MIT", kDrunetCard,
+                   "DRUNet colour denoiser (131 MB): removes noise at a level you choose"),
+        videoModel("video-interpolate-rife", "rife_v425lite.onnx", kVideoRifeRepo, kVideoRifeRevision, "rife_v425lite.onnx", 22677513,
+                   "702802d0862ab78f2d72133c6bc3768e7e89b81756f7cd51d1055a2fe3d06577", "MIT", kRifeCard,
+                   "RIFE 4.25 lite (23 MB): makes the frames between two frames for smooth slow motion"),
+        videoModel("video-depth-anything-v2-small", "depth_anything_v2_small.onnx", kVideoDepthRepo, kVideoDepthRevision,
+                   "onnx/model.onnx", 99060839, "afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c", "Apache-2.0", kDepthCard,
+                   "Depth Anything V2 Small (99 MB): estimates how far each part of a picture is, for AI Refocus"),
+        ModelInfo{"video-face-parsing-bisenet", ModelKind::Video, "ai-video/face-parsing-bisenet-resnet18.onnx", std::string(kFaceParsingUrl),
+                  53205364, "0d9bd318e46987c3bdbfacae9e2c0f461cae1c6ac6ea6d43bbe541a91727e33f", "MIT", std::string(kFaceParsingCard),
+                  "BiSeNet face parsing (53 MB): tells skin from eyes, mouth, hair and background in each face, for AI Face Retouch"},
+        videoModel("video-face-landmarks", "face-landmarks-mediapipe.onnx", kFaceLandmarksRepo, kFaceLandmarksRevision, "face_landmarks.onnx",
+                   4920995, "f38c3321ceffbc9e95103480ad38cc3f52e7e1bde2bcee7cd9355d0b9138ac0c", "Apache-2.0", kFaceLandmarksCard,
+                   "Face landmarks (5 MB): finds the eyelids and irises of each face, for AI Eye Contact"),
+    };
+}
+
 /// llama.cpp's official release archives (MIT), build b11429 (2026-10-05); sizes and SHA-256 from the
 /// GitHub release API's asset digests. The CUDA runtime archives hold NVIDIA's redistributable cudart / cuBLAS DLLs
 /// (NVIDIA CUDA EULA, Attachment A): downloaded only when the user picks the CUDA engine.
@@ -186,6 +307,26 @@ std::vector<ModelInfo> makeManifest() {
         whisper("large-v3-turbo-q5_0", "ggml-large-v3-turbo-q5_0.bin", 574041195,
                 "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
                 "Whisper large-v3-turbo, 5-bit (574 MB): near large-v3 quality, the default with a GPU"),
+        // r07, the model library's transcription picker: more of the same repository revision (sizes and SHA-256 from
+        // its LFS metadata, read 2026-11-03 through /api/models/ggerganov/whisper.cpp/tree/<revision>).
+        whisper("base.en", "ggml-base.en.bin", 147964211, "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
+                "Whisper base, English only (148 MB): a little more accurate than base for English"),
+        whisper("small", "ggml-small.bin", 487601967, "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+                "Whisper small, multilingual (488 MB): clearly better than base, still fine on a CPU"),
+        whisper("small.en", "ggml-small.en.bin", 487614201, "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
+                "Whisper small, English only (488 MB)"),
+        whisper("medium-q5_0", "ggml-medium-q5_0.bin", 539212467,
+                "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f",
+                "Whisper medium, multilingual, 5-bit (539 MB): slower than large-v3-turbo for similar quality"),
+        whisper("large-v3-turbo-q8_0", "ggml-large-v3-turbo-q8_0.bin", 874188075,
+                "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1",
+                "Whisper large-v3-turbo, 8-bit (874 MB): closer to the full model, for a GPU"),
+        whisper("large-v3-turbo-f16", "ggml-large-v3-turbo.bin", 1624555275,
+                "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+                "Whisper large-v3-turbo, full precision (1.6 GB): for a GPU with memory to spare"),
+        whisper("large-v3-q5_0", "ggml-large-v3-q5_0.bin", 1081140203,
+                "d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1",
+                "Whisper large-v3, 5-bit (1.1 GB): the most accurate, much slower than turbo; for a GPU"),
         ModelInfo{"silero-v6.2.0", ModelKind::Vad, "ggml-silero-v6.2.0.bin",
                   std::string(kVadRepo) + "ggml-silero-v6.2.0.bin", 885098,
                   "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987", "MIT", std::string(kVadCard),
@@ -239,6 +380,9 @@ const std::vector<ModelInfo>& manifest() {
             all.push_back(std::move(m));
         }
         for (ModelInfo& m : translationManifest()) {
+            all.push_back(std::move(m));
+        }
+        for (ModelInfo& m : videoManifest()) {
             all.push_back(std::move(m));
         }
         return all;
@@ -300,9 +444,98 @@ std::string envOr(const char* name) {
 
 std::filesystem::path fromUtf8(const std::string& s) { return std::filesystem::path(std::u8string(s.begin(), s.end())); }
 
+/// The model library's registered models (r07). A deque: entries never move, so pointers stay valid; a new entry
+/// for an id that exists is appended and found first (the newest wins); unregistering hides the id.
+struct Registered {
+    std::mutex mutex;
+    std::deque<ModelInfo> models;
+    std::set<std::string, std::less<>> hidden;
+};
+Registered& registered() {
+    static Registered r;
+    return r;
+}
+
+/// A store-relative file name that stays inside the store: relative, '/'-separated, no "." or ".." parts, no drive,
+/// colon, backslash or control character.
+bool safeStoreName(std::string_view name) {
+    if (name.empty() || name.front() == '/' || name.back() == '/' || name.size() > 400)
+        return false;
+    for (const char c : name) {
+        if (static_cast<unsigned char>(c) < 0x20 || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' ||
+            c == '<' || c == '>' || c == '|')
+            return false;
+    }
+    std::size_t start = 0;
+    while (start <= name.size()) {
+        const std::size_t slash = name.find('/', start);
+        const std::string_view part = name.substr(start, slash == std::string_view::npos ? std::string_view::npos : slash - start);
+        if (part.empty() || part == "." || part == "..")
+            return false;
+        if (slash == std::string_view::npos)
+            break;
+        start = slash + 1;
+    }
+    return true;
+}
+
+std::mutex& rootMutex() {
+    static std::mutex m;
+    return m;
+}
+std::filesystem::path& rootOverride() {
+    static std::filesystem::path p;
+    return p;
+}
+
 } // namespace
 
 std::span<const ModelInfo> builtinModels() { return manifest(); }
+
+bool registerModel(ModelInfo model) {
+    if (model.id.empty() || !safeStoreName(model.fileName) || model.sha256.size() != 64)
+        return false;
+    for (const ModelInfo& m : manifest()) {
+        if (m.id == model.id)
+            return false; // built-in ids stay built-in
+    }
+    Registered& r = registered();
+    std::lock_guard lock(r.mutex);
+    if (auto hidden = r.hidden.find(model.id); hidden != r.hidden.end())
+        r.hidden.erase(hidden);
+    for (auto it = r.models.rbegin(); it != r.models.rend(); ++it) {
+        if (it->id == model.id) {
+            if (it->fileName == model.fileName && it->sha256 == model.sha256 && it->size == model.size &&
+                it->parts == model.parts && it->projector == model.projector &&
+                it->licenseAccepted == model.licenseAccepted && it->paramsB == model.paramsB &&
+                it->description == model.description)
+                return true; // the same entry again
+            break;
+        }
+    }
+    r.models.push_back(std::move(model));
+    return true;
+}
+
+void unregisterModel(std::string_view id) {
+    Registered& r = registered();
+    std::lock_guard lock(r.mutex);
+    r.hidden.insert(std::string(id));
+}
+
+std::vector<ModelInfo> registeredModels() {
+    Registered& r = registered();
+    std::lock_guard lock(r.mutex);
+    std::vector<ModelInfo> out;
+    std::set<std::string, std::less<>> seen;
+    for (auto it = r.models.rbegin(); it != r.models.rend(); ++it) {
+        if (r.hidden.contains(it->id) || !seen.insert(it->id).second)
+            continue;
+        out.push_back(*it);
+    }
+    std::reverse(out.begin(), out.end());
+    return out;
+}
 
 bool isAllowedModelLicense(std::string_view spdx) {
     static constexpr std::array<std::string_view, 7> kAllowed{"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause",
@@ -322,6 +555,16 @@ const ModelInfo* findModel(std::string_view idOrAlias) {
     for (const ModelInfo& m : manifest()) {
         if (m.id == id) {
             return &m;
+        }
+    }
+    Registered& r = registered();
+    std::lock_guard lock(r.mutex);
+    if (r.hidden.contains(id)) {
+        return nullptr;
+    }
+    for (auto it = r.models.rbegin(); it != r.models.rend(); ++it) {
+        if (it->id == id) {
+            return &*it;
         }
     }
     return nullptr;
@@ -351,7 +594,27 @@ std::filesystem::path userCacheDir() {
 
 ModelStore::ModelStore(std::filesystem::path root) : m_root(std::move(root)) {}
 
-std::filesystem::path ModelStore::defaultRoot() { return userCacheDir() / "models"; }
+std::filesystem::path ModelStore::defaultRoot() {
+    {
+        std::lock_guard lock(rootMutex());
+        if (!rootOverride().empty()) {
+            return rootOverride();
+        }
+    }
+    return userCacheDir() / "models";
+}
+
+void ModelStore::setDefaultRoot(std::filesystem::path root) {
+    std::lock_guard lock(rootMutex());
+    rootOverride() = std::move(root);
+}
+
+std::uint64_t ModelStore::partialBytes(const ModelInfo& model) const {
+    std::error_code ec;
+    const std::filesystem::path part = partFor(pathFor(model));
+    const std::uint64_t size = std::filesystem::is_regular_file(part, ec) ? std::filesystem::file_size(part, ec) : 0;
+    return ec ? 0 : size;
+}
 
 std::filesystem::path ModelStore::pathFor(const ModelInfo& model) const { return m_root / model.fileName; }
 
@@ -367,7 +630,8 @@ bool ModelStore::isInstalled(const ModelInfo& model) const {
 std::expected<std::filesystem::path, Error> ModelStore::ensure(const ModelInfo& model, IDownloadTransport* transport,
                                                                const std::function<void(const DownloadProgress&)>& progress,
                                                                std::stop_token stop) {
-    if (model.kind == ModelKind::Llm && model.license != "MIT" && model.license != "Apache-2.0")
+    // A library model with another licence downloads only after the user accepted it (r07, licenseAccepted).
+    if (model.kind == ModelKind::Llm && model.license != "MIT" && model.license != "Apache-2.0" && !model.licenseAccepted)
         return std::unexpected(Error{ErrorCode::InvalidArgument, "local LLM license is not allowed"});
 
     const std::filesystem::path file = pathFor(model);

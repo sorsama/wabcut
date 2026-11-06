@@ -2,6 +2,7 @@
 
 Wabcut hosts CLAP and VST3 audio effects on clips, tracks and the master bus. Plugins run outside the editor, in the
 `wabcut-plughost` helper: a plugin that crashes or hangs disables itself with a badge, never the editor. Owner: Audio engine.
+OpenFX **video** plug-ins have their own section at the end of this page ([OpenFX video plug-ins](#openfx-video-plug-ins-07)).
 Code: `src/plughost` (the helper, the wire, the editor side), the plugin hooks in `src/audio` (`EffectChain.h`) and the model
 (`Effects.h`), and the commands in `src/audio/edit` (`PluginLibrary.h`).
 
@@ -291,3 +292,153 @@ through both, aligned. A missing plugin is refused, pointing to `plugins.list`.
 - **Badges.** `effects()->status(effect)`: Missing (with the saved name), Crashed, Failed, Hung (with the reason), and
   `missedBlocks` (late on the master: worth a warning dot).
 - **Waveforms and meters** need nothing new: plugin effects are part of the rendered mix.
+
+# OpenFX video plug-ins (0.7)
+
+Wabcut hosts OpenFX image effect plug-ins on clips, as built-in effects. OpenFX is the open standard of DaVinci Resolve, Vegas
+Pro, Nuke and Natron, and many free and paid effects exist for it. The plug-ins run outside the editor, in the
+`wabcut-ofxhost` helper, as the audio plugins above do: a plug-in that crashes or hangs disables itself with a badge, never the
+editor. Code: `src/ofxhost` (the helper, the wire and the editor side), the hook in `src/playback`
+(`playback/video/ExternalEffects.h`, `Evaluate.cpp`), and the UI in `src/app` (`OfxUi`, Effect Controls, the Effects panel).
+
+| | |
+|---|---|
+| Standard | OpenFX Image Effect API 1.x. The headers are vendored unmodified (OpenFX 1.5.1, BSD-3-Clause; see THIRD-PARTY-NOTICES.md). |
+| Platforms | Windows, built with the audio plugin host (`WABCUT_WITH_AUDIO_PLUGINS`). The helper's processes, shared memory and job objects are Win32 for now. |
+| Contexts | Filter and General (the "Source" clip and the "Output"; further clips must be optional). |
+| Rendering | On the CPU, in the pixels the plug-in asks for: Float, Short (16-bit) or Byte, as RGBA or RGB. |
+| Where | The effect stack of a clip of footage or of a still image: `plugin.ofx.<plug-in identifier>` effects, keyframable where the plug-in allows. |
+| Tested with | The test plug-ins built in `tests/ofxhost`, written against the raw C API, and (opt-in, `[.sdk]`) the OpenFX SDK's own Invert, Basic, ChoiceParams and Rectangle examples. |
+
+## Using plug-ins
+
+- **Where Wabcut looks.** `%COMMONPROGRAMFILES%\OFX\Plugins` (OpenFX's standard folder), every folder in the `OFX_PLUGIN_PATH`
+  environment variable (separated by `;`), and the folders the user added. A plug-in is a `<Name>.ofx.bundle` folder holding
+  `Contents\Win64\<Name>.ofx`, or a loose `.ofx` file. The app scans new and changed binaries in the background at startup;
+  The Audio Plug-ins tools' Rescan (and `plugins.scan`) scan OpenFX again too, so a plug-in installed while Wabcut runs appears
+  without a restart. The same Audio Plug-ins tools show the blocklist; the OpenFX blocklist is listed by `plugins.list`.
+- **The Effects panel** lists the usable plug-ins in the folder "OpenFX Plug-ins", grouped by the group each plug-in files itself
+  under ("Color", "Blur", ...). Double-click, Enter or a drag onto a clip (or onto Effect Controls) puts the plug-in on the
+  selected video clips: one instance each, one undo step ("Add Plug-in"). Plug-ins that cannot run here are not offered (below).
+- **Effect Controls** shows the plug-in as a section like any effect's: its parameters as rows, in the order of the plug-in's
+  parameter page; the power button, the reset button and removing work as everywhere. Every change is one undo step named
+  "<plug-in>: <parameter>"; a drag is one step. Parameters keyframe where the plug-in lets them animate.
+- **Saved with the project** as an ordinary effect: its parameters (constants and keyframes) and its text settings. Nothing about
+  the plug-in's binary is saved but its identifier and the name it was added with.
+- **A plug-in this computer does not have** keeps its section, shown as "<name> (not available)" with a **Missing** badge. The
+  effect is kept as it is (saved again unchanged), bypassed, and works again once the plug-in is installed. Removing it is one
+  undo step like any effect.
+- **Badges.** **Crashed** (with the helper's exit code), **Hung** (a picture took longer than the timeout), **Failed** (the plug-in
+  reported an error for three pictures in a row). The layer shows the picture without the effect and nothing else is touched.
+  Turning the effect off and on again tries the plug-in again (a new helper).
+
+| OpenFX parameter | In Effect Controls (key) |
+|---|---|
+| Double | a slider (`name`): degrees for an angle, a percentage for a scale, pixels for a position in pixels; keyframable |
+| Integer | a slider in whole steps (`name`); keyframable |
+| Boolean | a switch (`name`), not keyframable |
+| Choice, string choice | a menu (`name`, the option index), not keyframable |
+| RGB, RGBA | one slider per channel, 0 to 100 % (`name.r`, `.g`, `.b`, `.a`); keyframable |
+| 2D, 3D (double and integer) | one slider per axis (`name.x`, `.y`, `.z`); a position in normalised coordinates is a percentage of the picture and reaches the plug-in in pixels |
+| String | a text row (not keyframable); saved as effect data under the parameter's name |
+
+Hidden (secret) parameters, buttons, groups, pages, custom, bytes and parametric parameters are not offered.
+
+## How a picture is made
+
+```
+ decoded frame ─► float RGBA ─► wabcut-ofxhost: effect 1 ─► ... effect n ─► 8-bit RGBA raster ─► compositor
+ (CPU planes)     premultiplied   (shared memory both ways)                    (the layer's view)   Motion, opacity,
+                                                                                                    built-in effects
+```
+
+- **Where it happens.** The evaluator collects a clip's OpenFX effects at the frame's curve time (`LayerSpec::external`: every
+  parameter, constants and keyframe curves alike, and the text settings). `buildCompositeLayers` hands the layer's decoded frame
+  to the processor (`OfxEffects`), which returns the picture the compositor draws instead of the frame. The player's scheduler
+  and export both build their composites with that function, so **preview and export show the same picture**.
+- **Order.** The plug-in effects run first, in stack order, on the clip's own picture; then the layer's Motion, opacity and the
+  built-in effects, as for any clip. Time Interpolation and the stabilizers process each frame before they mix or warp it.
+- **Colour.** A plug-in works on the picture as a colourist sees it: the frame's R'G'B' as the file encodes them (the YCbCr matrix and
+  range applied, the transfer function left on), premultiplied when the frame has alpha. The result goes back in the same
+  encoding, tagged with the frame's primaries and transfer, so the compositor's colour management reads it as it read the frame.
+- **Decoder surfaces.** When the preview keeps frames on the GPU (zero-copy decoding), a CPU copy of the frame is decoded for the
+  plug-in (the same file, the same frame).
+- **Cache.** Results are cached by the source frame (file, frame, size, colour) and every effect's values: a paused frame, a seek
+  back, a loop and the export of a preview do not run the plug-ins again (192 MiB of pictures). A plug-in that says its pictures
+  change from frame to frame (noise, time-based effects) is cached per frame of the clip.
+- **Threads.** Pictures are made on the scheduler's and the export's own threads, never the GUI thread. A plug-in may use the
+  host's multi-thread suite; rows of the conversions run on up to eight threads.
+
+## Out of process, and held to little
+
+- **One helper per plug-in binary**, as for audio: a crash disables that binary's plug-ins only, a heavy plug-in loads once, and
+  every instance (one per effect instance in the project, 24 kept) shares it. The helper serves one picture at a time.
+- **The wire** (`src/ofxhost/common/include/wabcut/ofxhost/Protocol.h`): JSON lines over the helper's pipes (hello, create, attach,
+  render, destroy, quit; each request carries an id its reply repeats) and one shared-memory block per instance holding the
+  input and the output picture (float RGBA, premultiplied, top-down). The control channel is the synchronisation.
+- **Limited rights (crash isolation, not a security boundary).** The helper runs with your user rights, in a Windows job object of its own, so a plug-in that crashes or hangs cannot take the editor down; install only plug-ins you trust. It runs in the job object: it cannot start other processes, use the clipboard,
+  change display settings or log off, and is capped at 6 GiB of committed memory; it is ended with the editor. It starts with a
+  minimal environment (no API keys), in its own folder, with a restricted DLL search order, and its standard output and error go
+  to a log, never into the control channel. What it sends back is parsed defensively and bounded; a plug-in's own text is cut to
+  its limits.
+- **Timeouts.** A picture may take 4 s where it is played and 60 s in an offline render (export, Render In to Out); past it the
+  instance counts as hung and the helper is ended. A crash is noticed the moment the helper's pipe closes.
+- **Scanning.** Every binary is scanned by its own `wabcut-ofxhost --scan`; one that crashes or hangs (30 s) goes on the blocklist
+  with the reason and is skipped until it changes. The cache is `%LOCALAPPDATA%\Wabcut\ofx-plugins.json`
+  (`WABCUT_OFX_CACHE` overrides it for tests and scripts).
+
+## Not supported yet
+
+What a plug-in needs that this version does not have. The host tells plug-ins what it offers (its host properties), and a
+plug-in that cannot work without it is listed as unusable here, with the reason:
+
+- **GPU rendering**: the OpenGL, CUDA, Metal and OpenCL render suites. A plug-in that only renders on the GPU ("needed") is not
+  offered; one that can also render on the CPU does.
+- **On-screen controls**: overlays and interacts (handles in the Program Monitor), and the draw suite.
+- **Parameters**: custom, parametric (curves), bytes and push-button parameters; parameter pages and groups only decide the order.
+  A plug-in sees no keyframes of its own (Wabcut evaluates the curves and sends the values at each frame's time), and a value a
+  plug-in sets itself is not saved to the project.
+- **Time**: a plug-in always gets the current frame (no temporal clip access, no neighbouring frames), and the Generator, Paint,
+  Retimer and Transition contexts are not run.
+- **Inputs**: only the "Source" clip; optional extra clips (a mask) are not connected, and a plug-in with a required second
+  input is unusable.
+- **Tiles and multi-resolution**: the whole picture is rendered at the size it is given (a preview at reduced resolution gives
+  plug-ins the reduced picture, so a radius in pixels looks larger there; positions as fractions of the picture do not).
+- **HDR** (PQ, HLG) pictures are not given to plug-ins (the effect is bypassed); the result is 8-bit into the compositor.
+  Pictures over 4096 x 4096 pixels are bypassed too.
+- **Where**: clips of footage and still images only. Titles, graphics, generated media (colour mattes, bars), nested clips, track
+  and master stacks bypass an OpenFX effect (the badge counts it as bypassed). A plug-in sees the stored picture, before the
+  display rotation of phone footage.
+- **Other**: the colour-space, dialog and progress suites (progress calls are accepted and ignored), AU and LV2 audio plugins
+  (macOS and Linux follow-ups), Linux and macOS builds of the helper, a folder dialog and a blocklist view for OpenFX (use
+  `OFX_PLUGIN_PATH`, or `plugins.scan` with `addFolders`, `unblock`).
+
+## Commands and MCP
+
+OpenFX plug-ins are part of the plugin commands, next to the audio ones:
+
+| Command | What |
+|---|---|
+| `plugins.list {format?, query?, params?}` | `format: "openfx"` lists the OpenFX plug-ins: effect id `plugin.ofx.<id>`, name, version, the group as the vendor, the reason when one cannot be used here, and with "params" the effect parameters (keys as above, ranges, whether they can be keyframed); the blocklist and folders cover both kinds |
+| `plugins.scan {rescan?, addFolders?, removeFolders?, unblock?, clearBlocklist?}` | scans the OpenFX folders with the audio ones: the same options, one summary |
+| `clip.addEffect {clips, plugin, params}` | `plugin: "plugin.ofx.<id>"` puts a plug-in on video clips, with parameter values by effect key |
+| `clip.addKeyframe`, `clip.setEffect`, ... | its parameters, and its text settings (`data`), like any effect's |
+
+The assistant may list and add OpenFX plug-ins like audio ones, but never scans (`plugins.scan` runs plug-in code).
+
+## Tests (`tests/ofxhost`, suite `ofxhost`; `tests/app/test_ofx_effect_controls.cpp`)
+
+The test plug-ins, built from one source (`plugins/TestOfx.cpp`) into bundles under `<build>/test-ofx`: `WabcutTestOfx.ofx` (a
+gain with every parameter kind, 8-bit RGBA and 16-bit RGB inverters, a plug-in that always fails, one that needs OpenGL, one that
+needs two inputs, a General-context plug-in), a binary that crashes while it renders, one that never returns from a render, and
+one that crashes while it is described.
+- **Scan:** bundles found, parameters in page order, hidden ones left out, descriptors (ranges, menus, text settings), plug-ins that
+  cannot run listed with the reason, the blocklist (crash while described), the cache and a restart, the folders.
+- **Render:** every parameter kind reaches the plug-in, the picture keeps its orientation, Byte and Short and RGB pictures,
+  identity, a larger picture than the block was made for, a failing plug-in.
+- **Isolation:** a crash while rendering (exit code 0xC0000005) disables that instance while the editor and another plug-in's
+  helper carry on, a hang ends after the timeout, the offline timeout is longer.
+- **Effects:** a decoded frame becomes the picture the compositor draws (YUV and RGBA, straight alpha), the cache, the order of
+  effects, bypassed effects, HDR refused, badges (missing, crashed, failed) and retrying.
+- **Pipeline:** from a project through the evaluator to the composite layer, keyframes included.
+- **App:** Effect Controls rows and undo steps, the Effects panel and applying, a missing plug-in, a crashed one.

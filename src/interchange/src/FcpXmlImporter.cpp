@@ -432,11 +432,20 @@ std::optional<ClipProperties> FcpXmlParser::propertiesOf(const pugi::xml_node& n
             }
         } else if (tag == "adjust-transform") {
             const auto scale = splitWords(attrText(child, "scale"));
+            bool stretched = false; // 0.7 (card #12): the width and the height scale differ (Uniform Scale off)
             if (scale.size() == 2) {
                 const auto sx = parseDouble(scale[0]);
                 const auto sy = parseDouble(scale[1]);
+                const ParameterInfo& range = parameterInfo(ParamId::Scale);
                 if (sx && sy && *sx == *sy && *sx >= 0.0) {
                     props.set(ParamId::Scale, *sx);
+                    any = true;
+                } else if (sx && sy && *sx >= range.minValue && *sx <= range.maxValue && *sy >= range.minValue &&
+                           *sy <= range.maxValue) {
+                    // Non-uniform scale is kept: Scale Width = x, Scale (the height) = y, Uniform Scale off.
+                    props.set(ParamId::ScaleWidth, *sx);
+                    props.set(ParamId::Scale, *sy);
+                    stretched = true;
                     any = true;
                 } else if (sx && sy) {
                     report(ReportOutcome::Approximated, ReportCategory::Effect,
@@ -451,14 +460,42 @@ std::optional<ClipProperties> FcpXmlParser::propertiesOf(const pugi::xml_node& n
                 props.set(ParamId::Rotation, -*rotation); // FCP rotates counter-clockwise
                 any = true;
             }
-            if (auto keyed = keyframesOf(child, "scale", ParamId::Scale,
-                                         [](std::string_view s) -> std::optional<double> {
-                                             const auto words = splitWords(s);
-                                             return words.empty() ? std::nullopt : parseDouble(words.front());
-                                         },
-                                         name)) {
-                props[ParamId::Scale] = std::move(*keyed);
+            // Keyed scale: word `i` of each key's "x y" value (the first when there is one word).
+            const auto scaleWord = [](std::size_t i) {
+                return [i](std::string_view s) -> std::optional<double> {
+                    const auto words = splitWords(s);
+                    return words.empty() ? std::nullopt : parseDouble(words.size() > i ? words[i] : words.front());
+                };
+            };
+            if (auto keyed = keyframesOf(child, "scale", ParamId::Scale, scaleWord(0), name)) {
+                bool keysStretch = false;
+                for (const pugi::xml_node p : child.children("param")) {
+                    if (std::string_view(p.attribute("name").value()) != "scale") {
+                        continue;
+                    }
+                    for (const pugi::xml_node key : p.child("keyframeAnimation").children("keyframe")) {
+                        const auto words = splitWords(key.attribute("value").value());
+                        if (words.size() == 2 && words[0] != words[1] && parseDouble(words[0]) != parseDouble(words[1])) {
+                            keysStretch = true;
+                        }
+                    }
+                }
+                auto height = keysStretch ? keyframesOf(child, "scale", ParamId::Scale, scaleWord(1), name) : std::nullopt;
+                if (height) {
+                    props[ParamId::ScaleWidth] = std::move(*keyed);
+                    props[ParamId::Scale] = std::move(*height);
+                    stretched = true;
+                } else {
+                    props[ParamId::Scale] = std::move(*keyed);
+                    if (stretched) { // the keys are uniform: they replace the constant pair
+                        props.set(ParamId::ScaleWidth, parameterInfo(ParamId::ScaleWidth).defaultValue);
+                        stretched = false;
+                    }
+                }
                 any = true;
+            }
+            if (stretched) {
+                props.set(ParamId::UniformScale, 0.0);
             }
             if (auto keyed = keyframesOf(child, "rotation", ParamId::Rotation,
                                          [](std::string_view s) -> std::optional<double> {
@@ -719,7 +756,7 @@ void FcpXmlParser::addMediaClip(const pugi::xml_node& node, const Asset& asset, 
             const ClipProperties defaults;
             const bool picture = kind == StreamKind::Video;
             for (const ParamId id : {ParamId::PositionX, ParamId::PositionY, ParamId::Scale, ParamId::Rotation, ParamId::AnchorX,
-                                     ParamId::AnchorY, ParamId::Opacity}) {
+                                     ParamId::AnchorY, ParamId::Opacity, ParamId::ScaleWidth, ParamId::UniformScale}) {
                 if (!picture) {
                     own[id] = defaults[id];
                 }
@@ -756,12 +793,47 @@ void FcpXmlParser::addMediaClip(const pugi::xml_node& node, const Asset& asset, 
         if (m_doc.media[asset.media].audioChannels.empty()) {
             m_doc.media[asset.media].audioChannels.push_back(2);
         }
-        m_state->audioLanes[lane].clips.push_back(make(StreamKind::Audio));
+        IrClip audioClip = make(StreamKind::Audio);
         if (node.attribute("audioStart") || node.attribute("audioDuration")) {
-            report(ReportOutcome::Approximated, ReportCategory::Clip,
-                   "split edit (J/L cut) of '" + name + "': its audio was trimmed to the video's edit points",
-                   node);
+            // 0.7 (card 046): a split edit (J/L cut): the sound has its own extent, in the clip's time like start /
+            // duration (FCPXML DTD: audioStart and audioDuration "define J/L cuts (i.e., split edits)").
+            const Ticks audioLocal = time(node, "audioStart").value_or(localStart);
+            const Ticks audioLength = time(node, "audioDuration").value_or(duration);
+            bool kept = false;
+            if (!speed && !remap && !window && audioLength.value > 0) {
+                Ticks audioSourceIn = audioLocal - asset.start;
+                Ticks audioBegin = seqStart + (audioLocal - localStart);
+                Ticks audioDur = audioLength;
+                bool trimmed = false;
+                if (audioSourceIn.value < 0) { // before the media's first frame
+                    audioBegin -= audioSourceIn;
+                    audioDur += audioSourceIn;
+                    audioSourceIn = Ticks{};
+                    trimmed = true;
+                }
+                if (audioBegin.value < 0) { // before the sequence's start
+                    audioSourceIn -= audioBegin;
+                    audioDur += audioBegin;
+                    audioBegin = Ticks{};
+                    trimmed = true;
+                }
+                if (audioDur.value > 0) {
+                    audioClip.start = audioBegin;
+                    audioClip.duration = audioDur;
+                    audioClip.sourceIn = audioSourceIn;
+                    kept = true;
+                    report(trimmed ? ReportOutcome::Approximated : ReportOutcome::Carried, ReportCategory::Clip,
+                           "split edit (J/L cut) of '" + name + "': its sound has its own start and length" +
+                               (trimmed ? " (cut where the media or the sequence begins)" : ""),
+                           node);
+                }
+            }
+            if (!kept) {
+                report(ReportOutcome::Approximated, ReportCategory::Clip,
+                       "split edit (J/L cut) of '" + name + "': its audio was trimmed to the video's edit points", node);
+            }
         }
+        m_state->audioLanes[lane].clips.push_back(std::move(audioClip));
     }
 }
 
@@ -1767,6 +1839,21 @@ std::expected<void, Error> FcpXmlParser::parseProject(const pugi::xml_node& proj
     }
     if (tcStart.value > 0) {
         seq.startTimecode = tcStart;
+    }
+    // 0.7 (card 046): Wabcut's work area, in the sequence's metadata (Final Cut has none; Wabcut wrote this).
+    for (const pugi::xml_node md : sequence.child("metadata").children("md")) {
+        if (std::string_view(md.attribute("key").value()) != "com.wabcut.workArea")
+            continue;
+        const std::string_view value = md.attribute("value").value();
+        const std::size_t colon = value.find(':');
+        if (colon == std::string_view::npos)
+            continue;
+        const auto in = parseInt64(value.substr(0, colon));
+        const auto out = parseInt64(value.substr(colon + 1));
+        if (in && out && *in >= 0 && *out > *in) {
+            seq.workIn = Ticks{*in};
+            seq.workOut = Ticks{*out};
+        }
     }
     if (m_inexact) {
         report(ReportOutcome::Approximated, ReportCategory::Clip,

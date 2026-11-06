@@ -9,6 +9,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <string>
+#include <vector>
 
 using namespace wabcut::ai;
 using namespace std::chrono;
@@ -22,7 +24,7 @@ year_month_day ymd(int y, unsigned m, unsigned d) { return year_month_day{year(y
 TEST_CASE("The shipped registry parses and covers the seeded providers and models", "[ai][platform][registry]") {
     REQUIRE(ModelRegistry::fromJson(ModelRegistry::builtinJson()));
     const ModelRegistry& r = ModelRegistry::builtin();
-    CHECK(r.updated() == "2026-10-12");
+    CHECK(r.updated() == "2026-11-03"); // r07: the provider catalogue
 
     for (const char* id : {"claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-1", "gpt-6.1-sol",
                            "gpt-6-astra", "gpt-6-luna", "gemini-3.8-flash", "nova-3", "scribe_v2", "universal-3-5-pro",
@@ -63,16 +65,23 @@ TEST_CASE("The shipped registry parses and covers the seeded providers and model
     CHECK(r.provider("llama-server")->baseUrl == "http://127.0.0.1:9931/v1");
     CHECK(findHeader(r.provider("anthropic")->extraHeaders, "anthropic-version") == "2023-06-01");
 
-    CHECK(r.modelsWith(Capability::Transcribe).size() == 4);
+    CHECK(r.modelsWith(Capability::Transcribe).size() >= 4); // r07: more transcription providers
     CHECK(r.modelsOf("anthropic").size() == 4);
     // AI-12: the voice models (ElevenLabs v4 / v3 / Flash v2.5, OpenAI gpt-4o-mini-tts, Gemini 3.8 Flash TTS).
-    CHECK(r.modelsWith(Capability::Speak).size() == 5);
+    CHECK(r.modelsWith(Capability::Speak).size() >= 5); // r07: more voice providers
     CHECK(r.model("gpt-4o-mini-tts")->retirement == ymd(2027, 1, 6));
 }
 
 TEST_CASE("Unverified registry entries are listed", "[ai][platform][registry]") {
     const auto unverified = ModelRegistry::builtin().unverifiedEntries();
-    CHECK(unverified == std::vector<std::string>{"model:voxtral-mini-latest"});
+    // r07: catalogue entries whose docs left a gap (notes say which); a reviewed list, extended on purpose.
+    CHECK(unverified == std::vector<std::string>{"provider:nvidia", "provider:nebius", "provider:cloudflare", "provider:litellm",
+                                                 "model:voxtral-mini-latest", "model:accounts/fireworks/models/gpt-oss-120b",
+                                                 "model:accounts/fireworks/models/deepseek-v4p1-flash",
+                                                 "model:accounts/fireworks/models/kimi-k3", "model:accounts/fireworks/models/glm-5p3",
+                                                 "model:nvidia/nemotron-3-ultra-550b-a55b", "model:nvidia:deepseek-ai/deepseek-v4.1-flash",
+                                                 "model:mistral-large-latest", "model:codestral-latest", "model:deepl-pro",
+                                                 "model:ideogram-3-turbo", "model:ideogram-3", "model:ideogram-3-quality"});
 }
 
 TEST_CASE("Costs follow the registry's price rules", "[ai][platform][registry][cost]") {
@@ -309,4 +318,153 @@ TEST_CASE("Chat requests are validated before sending", "[ai][platform][schema]"
     CHECK(parseToolArguments(R"({"clip":"c1"})").value()["clip"] == "c1");
     CHECK(parseToolArguments("[1]").error().code == AiErrorCode::InvalidRequest);
     CHECK(parseToolArguments("{\"clip\":").error().code == AiErrorCode::InvalidRequest);
+}
+
+// --- r07 (A1): the provider catalogue, features, apiId and custom providers -------------------------------------------
+
+TEST_CASE("The r07 catalogue lists the chat providers with complete entries", "[ai][platform][registry][r07]") {
+    const ModelRegistry& r = ModelRegistry::builtin();
+    REQUIRE(r.providers().size() >= 14 + 30); // 0.6 had 14; r07 adds at least 30 (A1's chat hosts + A2's media/voice)
+    // Providers without a free way to check a key save it unchecked (AiController::saveKey).
+    const std::vector<std::string> uncheckedKeys{"azure-openai", "bedrock", "nvidia", "sambanova"};
+    for (const char* id : {"xai", "deepseek", "together", "fireworks", "cerebras", "cohere", "azure-openai", "bedrock", "moonshot",
+                           "alibaba", "zai", "minimax", "nvidia", "huggingface", "sambanova", "deepinfra", "nebius", "novita",
+                           "cloudflare", "vllm", "litellm", "localai", "jan"}) {
+        INFO(id);
+        const ProviderSpec* p = r.provider(id);
+        REQUIRE(p != nullptr);
+        CHECK(p->api == "chat-completions");
+        CHECK_FALSE(p->description.empty());
+        CHECK_FALSE(p->website.empty());
+        CHECK_FALSE(p->dataPolicy.empty());
+        CHECK_FALSE(p->source.empty());
+        CHECK(p->envVar.starts_with("WABCUT_"));
+        CHECK_FALSE(p->custom);
+        if (std::find(uncheckedKeys.begin(), uncheckedKeys.end(), id) == uncheckedKeys.end()) {
+            CHECK_FALSE(p->keyCheck.path.empty());
+        }
+        if (p->local) {
+            CHECK(p->baseUrl.starts_with("http://"));
+            CHECK_FALSE(p->keyRequired);
+            CHECK(p->configurableBaseUrl);
+        } else {
+            CHECK(p->baseUrl.starts_with("https://"));
+            CHECK_FALSE(p->consoleUrl.empty());
+        }
+        const auto features = featuresOfApi(p->api);
+        CHECK(std::find(features.begin(), features.end(), "chat") != features.end());
+    }
+    // Addresses the user completes, and header auth.
+    CHECK(r.provider("azure-openai")->baseUrl.find("{resource}") != std::string::npos);
+    CHECK(r.provider("azure-openai")->auth == AuthScheme::Header);
+    CHECK(r.provider("azure-openai")->authHeader == "api-key");
+    CHECK(r.provider("cloudflare")->baseUrl.find("{account_id}") != std::string::npos);
+    CHECK(r.provider("huggingface")->keyCheck.path == "https://huggingface.co/api/whoami-v2"); // another host: a full URL
+    // Every provider of the shipped file has a description now (the Providers list shows it), and every cloud provider
+    // the terms its consent prompt links to (QA-09).
+    for (const auto& p : r.providers()) {
+        INFO(p.id);
+        CHECK_FALSE(p.description.empty());
+        if (!p.local) {
+            CHECK(p.termsUrl.starts_with("https://"));
+        }
+    }
+    // QA-09: Gladia's read-only job list checks a key (401 for a bad one).
+    CHECK(r.provider("gladia")->keyCheck.path == "/v2/pre-recorded?limit=1");
+    // Mistral's chat models (0.6 had only Voxtral, so the provider showed "Not supported yet").
+    REQUIRE(r.model("mistral-small-2603") != nullptr);
+    CHECK(r.model("mistral-small-2603")->provider == "mistral");
+    CHECK(r.model("mistral-small-2603")->caps.has(Capability::Chat));
+    CHECK(r.model("grok-4.7")->prices.size() == 2); // long-context tier
+}
+
+TEST_CASE("Hosts serving one model under the same name use provider-scoped ids", "[ai][platform][registry][r07]") {
+    const ModelRegistry& r = ModelRegistry::builtin();
+    const ModelSpec* together = r.model("together:openai/gpt-oss-120b");
+    const ModelSpec* deepinfra = r.model("deepinfra:openai/gpt-oss-120b");
+    REQUIRE(together != nullptr);
+    REQUIRE(deepinfra != nullptr);
+    CHECK(together->provider == "together");
+    CHECK(together->apiId == "openai/gpt-oss-120b");
+    CHECK(apiModelId(*together) == "openai/gpt-oss-120b");
+    CHECK(apiModelId(*r.model("grok-4.7")) == "grok-4.7"); // no apiId: the id itself
+    CHECK(r.model("openai/gpt-oss-120b") == nullptr);      // never registered under the bare name
+    // Scoped ids keep their apiId through JSON.
+    auto again = ModelRegistry::fromJson(r.toJson().dump());
+    REQUIRE(again);
+    CHECK(again->model("together:openai/gpt-oss-120b")->apiId == "openai/gpt-oss-120b");
+}
+
+TEST_CASE("Features map models to the parts of Wabcut they serve", "[ai][platform][registry][r07]") {
+    const ModelRegistry& r = ModelRegistry::builtin();
+    REQUIRE(featureIds().size() == 7);
+    CHECK(featureIds().front() == "chat");
+    CHECK(featureCapability("image") == Capability::GenerateMedia);
+    CHECK(featureCapability("sound") == Capability::GenerateMedia);
+    CHECK(featureCapability("translate") == Capability::Translate);
+    CHECK_FALSE(featureCapability("embed")); // search embeddings stay on this computer
+    CHECK_FALSE(featureCapability("telepathy"));
+
+    const ModelSpec& sonnet = *r.model("claude-sonnet-5-5");
+    CHECK(featuresOf(sonnet) == std::vector<std::string>{"chat", "translate"});
+    CHECK(servesFeature(*r.model("qwen3-4b-instruct-2507"), "translate")); // any chat model can translate
+    CHECK(featuresOf(*r.model("nova-3")) == std::vector<std::string>{"transcribe"});
+    CHECK(featuresOf(*r.model("eleven_v3")) == std::vector<std::string>{"speak"});
+    CHECK(featuresOf(*r.model("veo-3.1-fast-generate-preview")) == std::vector<std::string>{"video"});
+    CHECK(featuresOf(*r.model("gen4_image")) == std::vector<std::string>{"image"});
+    CHECK(featuresOf(*r.model("eleven_text_to_sound_v2")) == std::vector<std::string>{"sound"});
+    CHECK_FALSE(servesFeature(*r.model("gen4_image"), "video"));
+    CHECK(featuresOfApi("chat-completions") == std::vector<std::string>{"chat", "translate"});
+    CHECK(featuresOfApi("elevenlabs-tts").empty());
+}
+
+TEST_CASE("Catalogue metadata and custom providers in the registry", "[ai][platform][registry][r07]") {
+    auto parsed = ModelRegistry::fromJson(R"({"schemaVersion":1,"providers":[
+        {"id":"p","api":"chat-completions","baseUrl":"https://p.test/v1","description":"Fast open models.",
+         "website":"https://p.test","features":["chat","speak"]}],
+      "models":[{"id":"m","provider":"p","apiId":"vendor/m","capabilities":{"chat":true}}]})");
+    REQUIRE(parsed);
+    ModelRegistry r = std::move(*parsed);
+    CHECK(r.provider("p")->description == "Fast open models.");
+    CHECK(r.provider("p")->website == "https://p.test");
+    CHECK(r.provider("p")->features == std::vector<std::string>{"chat", "speak"});
+    CHECK(r.model("m")->apiId == "vendor/m");
+    CHECK_FALSE(r.isCustomProvider("p"));
+    CHECK_FALSE(r.removeCustomProvider("p")); // built-in providers stay
+
+    ProviderSpec custom;
+    custom.id = "custom-office";
+    custom.api = "chat-completions";
+    custom.baseUrl = "http://127.0.0.1:8000/v1";
+    ModelSpec a;
+    a.id = "custom-office:m"; // a name the registry already has, scoped (AiController does this)
+    a.apiId = "m";
+    a.caps.capabilities = {Capability::Chat};
+    ModelSpec b;
+    b.id = "office-tts";
+    b.caps.capabilities = {Capability::Speak};
+    REQUIRE(r.addCustomProvider(custom, {a, b}));
+    CHECK(r.isCustomProvider("custom-office"));
+    CHECK(r.provider("custom-office")->custom);
+    CHECK(r.modelsOf("custom-office").size() == 2);
+    ModelSpec twice;
+    twice.id = "office-tts";
+    twice.caps.capabilities = {Capability::Chat};
+    CHECK_FALSE(r.addCustomProvider(custom, {b, twice})); // listed twice
+    ModelSpec added;
+    added.id = "office-extra";
+    added.provider = "custom-office";
+    REQUIRE(r.addModel(added));
+    CHECK(r.isUserModel("office-extra"));
+    CHECK(r.removeCustomProvider("custom-office"));
+    CHECK(r.provider("custom-office") == nullptr);
+    CHECK(r.model("office-tts") == nullptr);
+    CHECK(r.model("office-extra") == nullptr);
+    CHECK_FALSE(r.isUserModel("office-extra"));
+    CHECK(r.model("m") != nullptr); // the built-in model of the same name is untouched
+
+    auto bad = ModelRegistry::fromJson(R"({"schemaVersion":1,"providers":[
+        {"id":"p","api":"a","baseUrl":"https://x","features":["telepathy"]}],"models":[]})");
+    REQUIRE_FALSE(bad);
+    CHECK(bad.error().message.find("feature") != std::string::npos);
 }

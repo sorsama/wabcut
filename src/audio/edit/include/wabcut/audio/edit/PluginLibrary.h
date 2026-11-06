@@ -94,6 +94,12 @@ private:
     std::shared_ptr<PluginLibrary> m_library;
 };
 
+/// 0.7: a second library whose plugins plugins.list lists after the first's (format "openfx") and that plugins.scan scans as
+/// well: the OpenFX video plug-ins (docs/plugins.md), installed by the host that has them. Null: none. Process-wide;
+/// thread-safe.
+void setSecondaryPluginLibrary(std::shared_ptr<PluginLibrary> library);
+std::shared_ptr<PluginLibrary> secondaryPluginLibrary();
+
 /// plugins.list and plugins.scan (registerAudioCommands adds them).
 void registerPluginCommands(command::CommandRegistry& registry);
 

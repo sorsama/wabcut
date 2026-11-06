@@ -109,6 +109,8 @@ public:
     QString libraryError() const;
     QString lastError() const { return m_lastError; }
     int userPresetCount() const;
+    /// 0.7 (card #82): the names of the user's presets (the keymap's "preset:<name>" commands).
+    QStringList presetNames() const;
     QUrl presetsFolder() const;
     QStringList lastImported() const { return m_lastImported; }
 
@@ -151,6 +153,14 @@ public:
     /// grade (Lumetri's). "" or why not.
     Q_INVOKABLE QString saveEffectOfClip(const QString& clip, const QString& effect, const QString& name, const QString& type,
                                          const QString& description, const QString& bin);
+    /// 0.7 (card 101): saves the effect chain of an Audio Track Mixer strip (`target`: "t12" for a track or submix, "master")
+    /// as an audio preset: "scale", "anchorToInPoint" or "anchorToOutPoint". "" or why not.
+    Q_INVOKABLE QString saveTrackEffects(const QString& target, const QString& name, const QString& type,
+                                         const QString& description, const QString& bin);
+    /// 0.7 (card 101): adds a preset's effects to the end of a strip's chain (one undo step). "" or why not.
+    Q_INVOKABLE QString applyToTrack(const QString& name, const QString& target);
+    /// 0.7 (card 101): the audio presets (the user's), for a strip's Presets menu: [{ name, description, bin, effects }].
+    Q_INVOKABLE QVariantList audioPresets() const;
     /// A free preset name based on `base` ("Gaussian Blur", "Gaussian Blur 2", ...).
     Q_INVOKABLE QString suggestName(const QString& base) const;
     /// The display name of a section's effect ("Motion", "Gaussian Blur").

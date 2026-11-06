@@ -305,10 +305,18 @@ void ExtensionHost::stop() {
     }
     if (m_watcher) {
         send(Json{{"type", "shutdown"}});
-        m_watcher->child().wait(std::chrono::milliseconds(500));
+        const bool exited = m_watcher->child().wait(m_setup.limits.stopGrace).has_value();
         // P1 round (#65): a storage change can still be on its way when a stop follows the call that made it: read
         // what the helper wrote before it ended, then save.
-        drainStorage(std::chrono::milliseconds(500));
+        if (exited) {
+            drainStorage(m_setup.limits.stopGrace);
+        } else {
+            // Card 165: it did not read the shutdown (a runaway script): its pipe never closes by itself, so waiting for
+            // that was another 500 ms of frozen editor per stuck extension. Kill it, then read what the pipe already holds
+            // (a closed pipe ends the read at once).
+            m_watcher->child().kill();
+            drainStorage(std::chrono::milliseconds(50));
+        }
     }
     ended(HostState::Stopped, "stopped", true);
 }

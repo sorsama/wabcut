@@ -109,7 +109,7 @@ CommandOutput findCommand(ExecutionContext& c) {
     std::string model;
     if (c.boolean("rerank", false) && !report.shorts.empty()) {
         auto* cloud = command::findService<ShortsServices>(c.services());
-        if (c.state().aiNoCloud) {
+        if (c.state().aiNoCloud && !(cloud && cloud->chat && cloud->chatLocal)) { // QA-07: local models stay
             warnings.push_back("this project is locked to no-cloud AI: the shorts were ranked on this computer only");
         } else if (!cloud || !cloud->chat) {
             warnings.push_back("no cloud chat model here: the shorts were ranked on this computer only");

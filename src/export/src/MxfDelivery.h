@@ -25,8 +25,32 @@ namespace wabcut::exporter::detail {
 /// OP-Atom: the file of audio channel `channel` (1-based) of the video file `video`: "<stem>_A<channel>.mxf".
 std::filesystem::path opAtomAudioPath(const std::filesystem::path& video, int channel);
 
-/// The channels the mix of an MXF export with `outputs` tracks renders: 6 for a 5.1 master into 6 or more tracks, else
-/// stereo (mono for one track).
+/// 152: a finished temporary file and the name it takes.
+struct FileMove {
+    std::filesystem::path temp;
+    std::filesystem::path final;
+};
+
+/// 152: puts a set of files that belong together (OP-Atom's picture file and its audio files) into place as ONE unit:
+/// each existing target is first moved aside, then the new file takes its name. When any move fails every target is
+/// back as it was before (old files restored, new ones left under their temporary names) and the error is returned;
+/// when all succeed the old files are removed.
+std::expected<void, Error> commitFileSet(const std::vector<FileMove>& moves);
+
+/// 152: OP-Atom, an export with `tracks` audio files replacing an earlier one with more: removes the earlier export's
+/// "<stem>_A<n>.mxf" for n > tracks (they would pair a new picture with old audio). Files in `keep` (source media) are
+/// never touched, and neither is a file Wabcut did not write (isWabcutMxf: a camera original or another program's file
+/// that happens to have such a name) - those go to `left` when it is given. Returns the files removed.
+std::vector<std::filesystem::path> removeStaleAudioFiles(const std::filesystem::path& video, int tracks,
+                                                         const std::vector<std::filesystem::path>& keep,
+                                                         std::vector<std::filesystem::path>* left = nullptr);
+
+/// Whether an MXF file was written by Wabcut: its Identification set (the start of the file) names Wabcut as the company
+/// and product (configureMxfMuxer). False for a file that cannot be read.
+bool isWabcutMxf(const std::filesystem::path& file);
+
+/// The channels the mix of an MXF export with `outputs` tracks renders: 8 for a 7.1 master into 8 or more tracks (0.7), 6 for a
+/// 5.1 or 7.1 master into 6 or more tracks, else stereo (mono for one track).
 int mxfMixChannels(int outputs, ChannelFormat master);
 
 /// What every MXF file of an export says about itself.
@@ -62,9 +86,11 @@ public:
     std::expected<void, Error> flush();
     /// OP-Atom: writes the audio files' trailers; they stay under their temporary names (removed with this object).
     std::expected<void, Error> finishFiles();
-    /// OP-Atom: moves the finished audio files into place - after the picture file is in place, so a failed or
-    /// cancelled export never leaves audio files without their picture; the files moved (OP1a: none).
-    std::expected<std::vector<std::filesystem::path>, Error> commitFiles();
+    /// OP-Atom: moves the finished audio files AND the picture file (`pictureTemp` -> `picture`) into place as one unit
+    /// (commitFileSet): a failed move (a locked audio file of the export being replaced) leaves every earlier file as it
+    /// was, never a new picture with old or missing audio. Returns the audio files moved (OP1a: none).
+    std::expected<std::vector<std::filesystem::path>, Error> commitFiles(const std::filesystem::path& pictureTemp,
+                                                                         const std::filesystem::path& picture);
 
     /// "8 mono tracks · PCM 24-bit 48 kHz · 1-2 stereo mix, 3-8 silent" (the export details).
     std::string describe() const;

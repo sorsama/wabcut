@@ -42,7 +42,7 @@ namespace ai = wabcut::ai;
 int usage() {
     std::fprintf(stderr,
                  "usage: wabcut-cli transcribe <media> [--provider auto|local|cloud:<model>] [--allow-cloud]\n"
-                 "                             [--model base|large-v3-turbo|tiny] [--language th|en|auto]\n"
+                 "                             [--model base|large-v3-turbo|tiny] [--language th|en|auto] [--mixed-languages]\n"
                  "                             [--json|--srt|--vtt] [--cpu] [--no-vad] [--beam <n>] [--threads <n>]\n"
                  "                             [--force | --no-cache] [--no-download] [--stream <index>] [--providers]\n"
                  "\n"
@@ -56,7 +56,9 @@ int usage() {
                  "  --allow-cloud     consent to upload this file's audio to the cloud provider\n"
                  "  --model <id>      base (default, CPU-friendly), large-v3-turbo (best, wants a GPU), tiny\n"
                  "  --language <xx>   ISO 639-1 code or auto (default)\n"
-                 "  --cpu             do not use a GPU\n"
+                 "  --mixed-languages the recording switches language: transcribe each stretch in the language it is\n"
+                 "                    spoken in (with --language auto; local only; each segment names its language)\n"
+                 "  --cpu            do not use a GPU\n"
                  "  --no-vad          transcribe everything, silence included\n"
                  "  --beam <n>        beam size (default 5; 1 = greedy, faster)\n"
                  "  --force           transcribe again and replace the cached transcript\n"
@@ -87,7 +89,9 @@ std::string clock(wabcut::Ticks t) {
 std::string plainText(const ai::Transcript& t) {
     std::string out;
     for (const ai::TranscriptSegment& s : t.segments) {
-        out += "[" + clock(s.t0) + " --> " + clock(s.t1) + "] " + ai::segmentWordsText(t, s) + "\n";
+        // 0.7 (card 111): a segment in another language than the transcript's says which.
+        const std::string tag = !s.language.empty() && s.language != t.language ? "(" + s.language + ") " : std::string();
+        out += "[" + clock(s.t0) + " --> " + clock(s.t1) + "] " + tag + ai::segmentWordsText(t, s) + "\n";
     }
     return out;
 }
@@ -213,6 +217,8 @@ int transcribe(int argc, char** argv) {
             options.local.model = argv[++i];
         } else if (arg == "--language" && hasValue) {
             options.language = argv[++i];
+        } else if (arg == "--mixed-languages") {
+            options.mixedLanguages = true; // 0.7 (card 111)
         } else if (arg == "--json") {
             format = Format::Json;
         } else if (arg == "--srt") {

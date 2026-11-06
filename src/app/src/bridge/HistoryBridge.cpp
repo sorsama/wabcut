@@ -18,6 +18,7 @@
 #include <QQmlEngine>
 #include <QQuickItem>
 #include <QQuickWindow>
+#include <QSettings>
 #include <QStringList>
 #include <QWindow>
 
@@ -30,6 +31,11 @@ using command::Json;
 namespace {
 
 QString text(const std::string& s) { return QString::fromStdString(s); }
+
+/// QSettings key of the automatic checkpoint interval (seconds, 0 = off), and its default and upper bound (a day).
+constexpr const char* kAutoIntervalKey = "history/autoIntervalSeconds";
+constexpr int kDefaultAutoSeconds = 300;
+constexpr int kMaxAutoSeconds = 24 * 60 * 60;
 
 QStringList textList(const std::vector<std::string>& lines) {
     QStringList out;
@@ -133,7 +139,11 @@ QString clipWhat(const ClipDiff& d) {
 
 HistoryBridge::HistoryBridge(QObject* parent) : QObject(parent) {
     m_reason = tr("Save the project to keep a version history");
-    m_autoTimer.setInterval(m_autoSeconds * 1000);
+    // 0.7 (card 006): the interval of Settings > General > Projects ("Keep versions every"), 0 = off; anything else a
+    // settings file might hold (negative, more than a day) is the default again.
+    const int stored = QSettings().value(QLatin1String(kAutoIntervalKey), kDefaultAutoSeconds).toInt();
+    m_autoSeconds = stored >= 0 && stored <= kMaxAutoSeconds ? stored : kDefaultAutoSeconds;
+    m_autoTimer.setInterval(std::max(1, m_autoSeconds) * 1000);
     connect(&m_autoTimer, &QTimer::timeout, this, &HistoryBridge::autoCheckpoint);
 }
 
@@ -173,11 +183,18 @@ void HistoryBridge::setLifecycle(ProjectLifecycle* lifecycle) {
 }
 
 void HistoryBridge::setAutoIntervalSeconds(int seconds) {
-    seconds = std::max(1, seconds);
+    seconds = std::clamp(seconds, 0, kMaxAutoSeconds); // 0: no automatic versions
     if (seconds == m_autoSeconds)
         return;
     m_autoSeconds = seconds;
-    m_autoTimer.setInterval(seconds * 1000);
+    QSettings().setValue(QLatin1String(kAutoIntervalKey), seconds);
+    if (seconds == 0) {
+        m_autoTimer.stop();
+    } else {
+        m_autoTimer.setInterval(seconds * 1000);
+        if (m_history) // restarts the running timer with the new interval
+            m_autoTimer.start();
+    }
     emit settingsChanged();
 }
 
@@ -206,7 +223,8 @@ void HistoryBridge::reopen() {
             m_history = std::make_shared<ProjectHistory>(std::move(*opened));
             m_services = std::make_shared<command::HistoryServices>(m_history);
             m_reason.clear();
-            m_autoTimer.start();
+            if (m_autoSeconds > 0)
+                m_autoTimer.start();
         }
     }
     m_checkpointRevision = m_controller ? m_controller->revision() : -1;

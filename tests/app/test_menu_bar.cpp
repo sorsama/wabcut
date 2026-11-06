@@ -30,6 +30,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QImage>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QMetaObject>
@@ -40,6 +42,7 @@
 #include <QUrl>
 #include <qpa/qwindowsysteminterface.h>
 
+#include <expected>
 #include <filesystem>
 
 using namespace wabcut;
@@ -383,6 +386,31 @@ TEST_CASE("Menu bar: Alt plus a letter opens a menu and Left and Right move betw
     CHECK(messages.isEmpty());
 }
 
+// The File menu is longer than a 960 px window: it is as tall as the room below its title and scrolls, instead of being
+// pushed up over the bar (where the neighbouring titles could not be reached with the pointer).
+TEST_CASE("Menu bar: a menu longer than the window stays below its title and scrolls", "[app][menubar][qml]") {
+    resetSettings();
+    clearMessages();
+    MenuShell s;
+    QQuickItem* content = s.w->contentItem();
+    QQuickItem* fileTitle = findNamed(content, QStringLiteral("menuBar_file"));
+    REQUIRE(fileTitle != nullptr);
+    QObject* file = s.open(0);
+    spin(100);
+    QQuickItem* box = popupItem(file);
+    REQUIRE(box != nullptr);
+    const qreal titleBottom = fileTitle->mapToScene(QPointF(0, fileTitle->height())).y();
+    INFO("title bottom " << titleBottom << ", menu top " << box->mapToScene(QPointF(0, 0)).y() << ", menu height " << box->height());
+    CHECK(box->mapToScene(QPointF(0, 0)).y() >= titleBottom);
+    CHECK(box->mapToScene(QPointF(0, box->height())).y() <= s.w->height());
+    // Edit's title is reachable: nothing of the File menu covers it.
+    QQuickItem* editTitle = findNamed(content, QStringLiteral("menuBar_edit"));
+    REQUIRE(editTitle != nullptr);
+    const QPointF editCentre = centreOf(editTitle);
+    CHECK_FALSE(box->contains(box->mapFromScene(editCentre)));
+    s.dismiss(file);
+}
+
 TEST_CASE("Menu bar: the pointer opens switches and closes the menus like a native menu bar", "[app][menubar][qml]") {
     resetSettings();
     clearMessages();
@@ -513,7 +541,7 @@ TEST_CASE("Menu bar: a Help row runs after its menu closed and its dialog keeps 
     QObject* help = s.open(8);
     for (const char* row : {"helpItem_guide", "helpItem_gettingStarted", "helpItem_fromPremiere", "helpItem_shortcutsGuide",
                             "helpItem_shortcuts", "helpItem_welcome", "helpItem_tour", "helpItem_trainer",
-                            "helpItem_whatsNew", "helpItem_releaseNotes", "helpItem_sample", "helpItem_reportIssue",
+                            "helpItem_whatsNew", "helpItem_releaseNotes", "helpItem_sample", "helpItem_reportBug",
                             "helpItem_about"}) {
         INFO(row);
         QObject* item = help->findChild<QObject*>(QLatin1String(row));
@@ -928,4 +956,113 @@ TEST_CASE("Menu bar: the Edit rows act on a focused text field and not on the ti
     const QStringList messages = takeMessages();
     INFO(join(messages));
     CHECK(messages.isEmpty());
+}
+
+// Card 015: Edit > Undo / Redo read "Undo Razor" / "Redo Ripple Delete" (the toolbar's tooltips already named the edit) when
+// the menu acts on the timeline; with a text field focused before the menu opened they act on its text and keep the plain
+// words. The names follow the history each time the menu opens.
+TEST_CASE("Menu bar: Edit > Undo and Redo name the edit, except on a focused text field", "[app][menubar][qml]") {
+    resetSettings();
+    clearMessages();
+    MenuShell s;
+    QQuickItem* lanes = s.shell.item("timelineLanes");
+    REQUIRE(lanes != nullptr);
+    QQuickItem* field = findNamed(s.w->contentItem(), QStringLiteral("librarySearchField"));
+    REQUIRE(field != nullptr);
+    const auto makeEdit = [&](const char* label) {
+        REQUIRE(s.controller->session().apply(label, [](const ProjectState& state) -> std::expected<ProjectState, Error> {
+            auto created = wabcut::edit::addSequence(state, wabcut::edit::SequenceSettings{});
+            if (!created)
+                return std::unexpected(created.error());
+            return std::move(created->state);
+        }));
+    };
+    const auto textOf = [&](QObject* menu, const char* row) { return s.row(menu, row)->property("text").toString(); };
+
+    // The timeline has the focus: the rows name the edit (the last one for Undo, the undone one for Redo).
+    lanes->forceActiveFocus(Qt::TabFocusReason);
+    makeEdit("Razor");
+    makeEdit("Ripple Delete");
+    QObject* menu = s.open(1);
+    CHECK(textOf(menu, "menuCommand_edit.undo") == QStringLiteral("Undo Ripple Delete"));
+    CHECK(textOf(menu, "menuCommand_edit.redo") == QStringLiteral("Redo")); // nothing to redo: the plain word
+    s.dismiss(menu);
+
+    REQUIRE(s.controller->undo());
+    lanes->forceActiveFocus(Qt::TabFocusReason);
+    menu = s.open(1);
+    CHECK(textOf(menu, "menuCommand_edit.undo") == QStringLiteral("Undo Razor"));
+    CHECK(textOf(menu, "menuCommand_edit.redo") == QStringLiteral("Redo Ripple Delete"));
+    s.dismiss(menu);
+
+    // A focused text field: the rows act on its text and say just Undo and Redo.
+    field->forceActiveFocus(Qt::MouseFocusReason);
+    menu = s.open(1);
+    CHECK(textOf(menu, "menuCommand_edit.undo") == QStringLiteral("Undo"));
+    CHECK(textOf(menu, "menuCommand_edit.redo") == QStringLiteral("Redo"));
+    s.dismiss(menu);
+
+    // Back in the timeline the names are there again, and follow the history (the redo is done, then everything undone).
+    lanes->forceActiveFocus(Qt::TabFocusReason);
+    REQUIRE(s.controller->redo());
+    menu = s.open(1);
+    CHECK(textOf(menu, "menuCommand_edit.undo") == QStringLiteral("Undo Ripple Delete"));
+    CHECK(textOf(menu, "menuCommand_edit.redo") == QStringLiteral("Redo"));
+    s.dismiss(menu);
+    REQUIRE(s.controller->undo());
+    REQUIRE(s.controller->undo());
+    lanes->forceActiveFocus(Qt::TabFocusReason);
+    menu = s.open(1);
+    CHECK(textOf(menu, "menuCommand_edit.undo") == QStringLiteral("Undo"));
+    CHECK(textOf(menu, "menuCommand_edit.redo") == QStringLiteral("Redo Razor"));
+    CHECK_FALSE(s.enabled(menu, "menuCommand_edit.undo")); // nothing to undo: greyed out
+    s.dismiss(menu);
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+// Card 015, screenshots (dark and light): the open Edit menu with Undo and Redo naming the edits. Written to
+// <build>/test-output/ui/edit-menu-named-undo-{dark,light}.png.
+TEST_CASE("Menu bar: the Edit menu shows the named Undo and Redo (screenshots)", "[app][menubar][qml][screenshots]") {
+    for (const bool dark : {true, false}) {
+        resetSettings();
+        clearMessages();
+        MenuShell s;
+        if (!dark) {
+            s.shell.setAppearance(false, "ultraviolet");
+            REQUIRE(s.shell.settle(false, s.shell.themeColor("accentFill")));
+        }
+        const auto makeEdit = [&](const char* label) {
+            REQUIRE(s.controller->session().apply(label, [](const ProjectState& state) -> std::expected<ProjectState, Error> {
+                auto created = wabcut::edit::addSequence(state, wabcut::edit::SequenceSettings{});
+                if (!created)
+                    return std::unexpected(created.error());
+                return std::move(created->state);
+            }));
+        };
+        makeEdit("Razor");
+        makeEdit("Ripple Delete");
+        REQUIRE(s.controller->undo()); // Undo names Razor, Redo names Ripple Delete
+        QQuickItem* lanes = s.shell.item("timelineLanes");
+        REQUIRE(lanes != nullptr);
+        lanes->forceActiveFocus(Qt::TabFocusReason);
+        QObject* menu = s.open(1);
+        spin(150);
+        CHECK(s.row(menu, "menuCommand_edit.undo")->property("text").toString() == QStringLiteral("Undo Razor"));
+        CHECK(s.row(menu, "menuCommand_edit.redo")->property("text").toString() == QStringLiteral("Redo Ripple Delete"));
+        QQuickItem* popup = popupItem(menu);
+        REQUIRE(popup != nullptr);
+        const QImage image = s.shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        const double dpr = image.devicePixelRatio();
+        const QRectF area = popup->mapRectToScene(QRectF(0, 0, popup->width(), popup->height()))
+                                .adjusted(-8, -8, 8, 8)
+                                .intersected(QRectF(0, 0, kShotWidth, kShotHeight));
+        REQUIRE(image.copy(QRectF(area.x() * dpr, area.y() * dpr, area.width() * dpr, area.height() * dpr).toRect())
+                    .save(QDir(outputDir()).filePath(dark ? QStringLiteral("edit-menu-named-undo-dark.png")
+                                                          : QStringLiteral("edit-menu-named-undo-light.png"))));
+        s.dismiss(menu);
+    }
 }

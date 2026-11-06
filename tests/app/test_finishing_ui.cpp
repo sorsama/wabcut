@@ -23,6 +23,7 @@
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QPointingDevice>
 #include <QPointer>
 #include <QQuickItem>
 #include <QStyleHints>
@@ -123,9 +124,12 @@ TEST_CASE("Effect Controls: pinned sections, then the effect stack; add, reorder
     CHECK(fx.mode() == QStringLiteral("clip"));
     CHECK(fx.title() == QStringLiteral("City B-roll"));
     QStringList keys = rowKeys(fx);
-    CHECK(keys.mid(0, 9) == QStringList{QStringLiteral("h:motion"), QStringLiteral("p:scale"), QStringLiteral("p:positionX"),
-                                        QStringLiteral("p:positionY"), QStringLiteral("p:rotation"), QStringLiteral("p:anchorX"),
-                                        QStringLiteral("p:anchorY"), QStringLiteral("h:opacity"), QStringLiteral("p:opacity")});
+    // 0.7: Transform ends with the Nearest Neighbor Scaling switch and Opacity with the Blend Mode (cards 98, 136).
+    // 0.7 (card #12): the Uniform Scale switch follows Scale (Scale Width shows only with it off).
+    CHECK(keys.mid(0, 12) == QStringList{QStringLiteral("h:motion"), QStringLiteral("p:scale"), QStringLiteral("p:uniformScale"), QStringLiteral("p:positionX"),
+                                         QStringLiteral("p:positionY"), QStringLiteral("p:rotation"), QStringLiteral("p:anchorX"),
+                                         QStringLiteral("p:anchorY"), QStringLiteral("p:nearestNeighbor"), QStringLiteral("h:opacity"),
+                                         QStringLiteral("p:opacity"), QStringLiteral("p:blendMode")});
     CHECK_FALSE(keys.contains(QStringLiteral("h:audio"))); // no linked audio
     CHECK(fx.row(QStringLiteral("p:scale")).value(QStringLiteral("value")).toDouble() == 100.0);
 
@@ -767,10 +771,19 @@ TEST_CASE("Effect Controls in the shell: Ctrl+wheel zooms the keyframe lane at t
     const double viewBefore = fx.viewStart();
     const QPointF onThumb = thumb->mapToScene(QPointF(thumb->width() / 2, thumb->height() / 2));
     const QPointF thumbTo = onThumb - QPointF(zoomBar->width() / 10, 0);
-    sendMouse(shell, QEvent::MouseButtonPress, onThumb, Qt::LeftButton, Qt::LeftButton);
+    // The drag runs on a pointing device of its own: events sent to the window by hand keep the press position of the
+    // key drag above on the shared primary device, and the drag handler measures its threshold from that position (a
+    // real mouse press starts afresh).
+    QPointingDevice mouse(QStringLiteral("test mouse"), 0x7e57, QInputDevice::DeviceType::Mouse, QPointingDevice::PointerType::Generic,
+                          QInputDevice::Capability::Position, 1, 3);
+    const auto sendOn = [&](QEvent::Type type, QPointF at, Qt::MouseButton button, Qt::MouseButtons buttons) {
+        QMouseEvent event(type, at, at, at, button, buttons, Qt::NoModifier, &mouse);
+        QCoreApplication::sendEvent(shell.window.get(), &event);
+    };
+    sendOn(QEvent::MouseButtonPress, onThumb, Qt::LeftButton, Qt::LeftButton);
     for (int i = 1; i <= 5; ++i)
-        sendMouse(shell, QEvent::MouseMove, onThumb + (thumbTo - onThumb) * (i / 5.0), Qt::NoButton, Qt::LeftButton);
-    sendMouse(shell, QEvent::MouseButtonRelease, thumbTo, Qt::LeftButton, Qt::NoButton);
+        sendOn(QEvent::MouseMove, onThumb + (thumbTo - onThumb) * (i / 5.0), Qt::NoButton, Qt::LeftButton);
+    sendOn(QEvent::MouseButtonRelease, thumbTo, Qt::LeftButton, Qt::NoButton);
     spin(30);
     CHECK(fx.viewStart() == Approx(std::max(0.0, viewBefore - 0.1)).margin(1e-6));
     // All the way in (five frames: the thumb at its narrowest): at the clip's end the thumb ends with the bar, at its

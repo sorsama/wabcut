@@ -5,8 +5,10 @@ import QtQuick.Layouts
 // The 5.1 panner of a mono or stereo track (A.9, M5n; Premiere's track 5.1 panner), shown on the mixer strip instead
 // of the pan knob while the master is 5.1: a square with the five full-range speakers (L −30°, R +30°, C 0°, Ls −110°,
 // Rs +110°, the front at the top) and the puck at (x, y) (−1 left .. +1 right, −1 back .. +1 front). Its distance from
-// the centre is the focus: at the rim the nearest speakers, at the centre all five. Drag the puck (one undo step per
+// the centre is the focus: at the rim the nearest speakers, at the centre all of them. Drag the puck (one undo step per
 // drag), arrow keys step 0.05 (Shift: 0.01), double-click returns it to the front centre. Below it, the LFE send.
+// 0.7 (card 048): `surround71` shows the seven full-range speakers of a 7.1 master instead (L −30°, R +30°, C 0°, side
+// surrounds Ls −90° and Rs +90°, rear surrounds Lrs −150° and Rrs +150°).
 // `moved(x, y, lfeDb)` asks for the change; `released()` ends the drag.
 ColumnLayout {
     id: root
@@ -15,6 +17,8 @@ ColumnLayout {
     property real panY: 1
     property real lfeDb: -144
     property string label: ""
+    /// 7.1 master (eight channels): the seven-speaker panner.
+    property bool surround71: false
 
     readonly property bool held: area.pressed || lfe.pressed
 
@@ -45,7 +49,7 @@ ColumnLayout {
         opacity: root.enabled ? 1 : Theme.disabledOpacity
 
         Accessible.role: Accessible.Dial
-        Accessible.name: qsTr("5.1 panner of %1").arg(root.label)
+        Accessible.name: root.surround71 ? qsTr("7.1 panner of %1").arg(root.label) : qsTr("5.1 panner of %1").arg(root.label)
         Accessible.description: qsTr("Left %1, front %2").arg(root.panX.toFixed(2)).arg(root.panY.toFixed(2))
 
         Keys.onLeftPressed: event => root.step((event.modifiers & Qt.ShiftModifier) ? -0.01 : -0.05, 0)
@@ -80,10 +84,13 @@ ColumnLayout {
             color: Theme.border
         }
 
-        // The five speakers.
+        // The five speakers (7.1: seven).
         Repeater {
-            model: [{ name: qsTr("L"), deg: -30 }, { name: qsTr("C"), deg: 0 }, { name: qsTr("R"), deg: 30 },
-                    { name: qsTr("Ls"), deg: -110 }, { name: qsTr("Rs"), deg: 110 }]
+            model: root.surround71 ? [{ name: qsTr("L"), deg: -30 }, { name: qsTr("C"), deg: 0 }, { name: qsTr("R"), deg: 30 },
+                                      { name: qsTr("Ls"), deg: -90 }, { name: qsTr("Rs"), deg: 90 },
+                                      { name: qsTr("Lrs"), deg: -150 }, { name: qsTr("Rrs"), deg: 150 }]
+                                   : [{ name: qsTr("L"), deg: -30 }, { name: qsTr("C"), deg: 0 }, { name: qsTr("R"), deg: 30 },
+                                      { name: qsTr("Ls"), deg: -110 }, { name: qsTr("Rs"), deg: 110 }]
             delegate: Text {
                 id: speaker
                 required property var modelData
@@ -145,7 +152,8 @@ ColumnLayout {
             sourceComponent: Tooltip {
                 parent: field
                 visible: true
-                text: qsTr("5.1 panner of %1: drag the puck; double-click for the front centre").arg(root.label)
+                text: (root.surround71 ? qsTr("7.1 panner of %1: drag the puck; double-click for the front centre")
+                                       : qsTr("5.1 panner of %1: drag the puck; double-click for the front centre")).arg(root.label)
             }
         }
         FocusRing {

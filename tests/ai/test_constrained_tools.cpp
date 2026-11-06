@@ -120,7 +120,7 @@ TEST_CASE("The constrained envelope is a portable schema with one branch per too
     CHECK(toolEnvelopeSchema(tools, named)["anyOf"].size() == 1);
     // Signatures: required parameters first and starred, enums spelled out, no "sequence".
     const std::string signature = toolSignature(tool(catalogTools(), "marker_add"));
-    CHECK(signature.find("type (comment|chapter|segmentation|webLink)") != std::string::npos);
+    CHECK(signature.find("type (comment|chapter|segmentation|webLink|source)") != std::string::npos);
     CHECK(signature.find("colorIndex (int 0..15)") != std::string::npos);
     CHECK(signature.find("\n  sequence") == std::string::npos); // no "sequence" parameter (descriptions may say the word)
     CHECK(signature.find("  time*") < signature.find("  name"));

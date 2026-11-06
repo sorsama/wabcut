@@ -306,6 +306,8 @@ json runJson(const TextRun& run) {
     putNumber(out, "baselineShift", s.baselineShift, d.baselineShift);
     // 0.6: kerning, capitals and the faux styles.
     put(out, "kerning", s.kerning, d.kerning, kIdentity);
+    put(out, "opticalKerning", s.opticalKerning, d.opticalKerning, kIdentity); // 0.7 (card #138)
+    put(out, "features", s.features, d.features, kIdentity);
     put(out, "caps", s.caps, d.caps, [](TextCaps v) { return std::string(toString(v)); });
     put(out, "fauxBold", s.fauxBold, d.fauxBold, kIdentity);
     put(out, "fauxItalic", s.fauxItalic, d.fauxItalic, kIdentity);
@@ -329,6 +331,8 @@ TextRun readRun(const Reader& r) {
     s.leading = number(r, "leading", 0.0);
     s.baselineShift = number(r, "baselineShift", 0.0);
     s.kerning = r.boolean("kerning", true);
+    s.opticalKerning = r.boolean("opticalKerning", false); // 0.7 (card #138)
+    s.features = r.string("features");
     s.caps = enumOf(r, "caps", s.caps, textCapsFromString);
     s.fauxBold = r.boolean("fauxBold", false);
     s.fauxItalic = r.boolean("fauxItalic", false);
@@ -951,6 +955,18 @@ json fieldJson(const TemplateField& f) {
     if (f.layer != 0) {
         out["layer"] = f.layer;
     }
+    // 0.7 (card #71): a keyed field (written only when it has keys).
+    if (!f.keys.empty()) {
+        json keys = json::array();
+        for (const FieldKey& k : f.keys) {
+            json key{{"t", k.time.value}, {"value", fieldValueJson(f.kind, k.value)}};
+            if (k.interpolation != Interpolation::Linear) {
+                key["i"] = std::string(toString(k.interpolation));
+            }
+            keys.push_back(std::move(key));
+        }
+        out["keys"] = std::move(keys);
+    }
     return out;
 }
 
@@ -963,6 +979,25 @@ TemplateField readField(const Reader& r) {
     f.property = r.child("property").asString();
     if (r.has("value")) {
         f.value = readFieldValue(f.kind, r.child("value"));
+    }
+    if (r.has("keys")) {
+        const Reader keys = r.child("keys");
+        const std::size_t n = keys.arraySize();
+        if (n > kMaxFieldKeys) {
+            keys.fail("more than " + std::to_string(kMaxFieldKeys) + " keys");
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            const Reader k = keys.element(i);
+            FieldKey key;
+            const std::int64_t t = k.child("t").asInt64();
+            if (t < 0 || t >= kMaxTicks) {
+                k.fail("a key's time must be within the longest timeline");
+            }
+            key.time = Ticks{t};
+            key.value = readFieldValue(f.kind, k.child("value"));
+            key.interpolation = enumOf(k, "i", Interpolation::Linear, interpolationFromString);
+            f.keys.push_back(std::move(key));
+        }
     }
     return f;
 }
@@ -1220,6 +1255,9 @@ json templateToJsonValue(const GraphicTemplate& t) {
     if (t.duration.value != 0) {
         out["duration"] = t.duration.value;
     }
+    if (!t.folder.empty()) {
+        out["folder"] = t.folder; // 0.7 (card #87)
+    }
     return out;
 }
 
@@ -1229,6 +1267,7 @@ GraphicTemplate templateFromJsonValue(const Reader& r) {
     t.id = r.child("id").asString();
     t.name = r.child("name").asString();
     t.description = r.string("description");
+    t.folder = r.string("folder");
     t.version = r.int32In("version", 1, 1, 1'000'000);
     t.graphic = graphicFromJsonValue(r.child("graphic"));
     if (r.has("fields")) {

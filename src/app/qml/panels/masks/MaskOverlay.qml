@@ -14,6 +14,16 @@ Item {
     readonly property bool active: Masks.clip !== "" && (Masks.outlines.length > 0 || Masks.tool !== "")
     visible: active
 
+    /// 0.7 (card #56): with Shift the drawn rectangle or ellipse is a square or circle - the far corner moves so both
+    /// sides equal the longer one (in monitor pixels, which are canvas pixels), keeping the direction of the drag.
+    function constrainedEnd(x0, y0, x1, y1, square) {
+        if (!square)
+            return Qt.point(x1, y1)
+        const dx = x1 - x0, dy = y1 - y0
+        const side = Math.max(Math.abs(dx), Math.abs(dy))
+        return Qt.point(x0 + (dx < 0 ? -side : side), y0 + (dy < 0 ? -side : side))
+    }
+
     function pointsOf(list) {
         const out = []
         for (let i = 0; i < list.length; ++i)
@@ -77,8 +87,9 @@ Item {
             if (draw.dragging) {
                 ctx.setLineDash([4, 3])
                 ctx.strokeStyle = Theme.accentStroke
-                const x = Math.min(draw.x0, draw.x1), y = Math.min(draw.y0, draw.y1)
-                const w = Math.abs(draw.x1 - draw.x0), h = Math.abs(draw.y1 - draw.y0)
+                const end = root.constrainedEnd(draw.x0, draw.y0, draw.x1, draw.y1, draw.square)
+                const x = Math.min(draw.x0, end.x), y = Math.min(draw.y0, end.y)
+                const w = Math.abs(end.x - draw.x0), h = Math.abs(end.y - draw.y0)
                 if (Masks.tool === "ellipse") {
                     ctx.beginPath()
                     ctx.ellipse(x, y, w, h)
@@ -124,9 +135,12 @@ Item {
         property real x1: 0
         property real y1: 0
         property bool penDragged: false
+        /// Shift is held: the shape being drawn is a square or circle (the pen ignores it).
+        property bool square: false
 
         onPressed: mouse => {
             root.forceActiveFocus()
+            square = (mouse.modifiers & Qt.ShiftModifier) !== 0
             if (Masks.tool === "pen") {
                 const pen = Masks.penPoints
                 if (pen.length >= 3 && Math.hypot(mouse.x - pen[0].x * width, mouse.y - pen[0].y * height) < 8) {
@@ -152,13 +166,17 @@ Item {
             }
             x1 = mouse.x
             y1 = mouse.y
+            square = (mouse.modifiers & Qt.ShiftModifier) !== 0
             canvas.requestPaint()
         }
         onReleased: mouse => {
             if (Masks.tool === "pen" || !dragging)
                 return
             dragging = false
-            Masks.drawShape(Masks.tool, x0 / width, y0 / height, mouse.x / width, mouse.y / height)
+            square = square || (mouse.modifiers & Qt.ShiftModifier) !== 0
+            const end = root.constrainedEnd(x0, y0, mouse.x, mouse.y, square)
+            Masks.drawShape(Masks.tool, x0 / width, y0 / height, end.x / width, end.y / height)
+            square = false
             canvas.requestPaint()
         }
     }
@@ -205,6 +223,20 @@ Item {
                 onReleased: Masks.endDrag()
                 onCanceled: Masks.endDrag()
             }
+        }
+    }
+
+    // Shift pressed or let go in the middle of a drag changes the shape at once, without a mouse move.
+    Keys.onPressed: event => {
+        if (event.key === Qt.Key_Shift && draw.dragging && Masks.tool !== "pen") {
+            draw.square = true
+            canvas.requestPaint()
+        }
+    }
+    Keys.onReleased: event => {
+        if (event.key === Qt.Key_Shift && draw.dragging && Masks.tool !== "pen") {
+            draw.square = false
+            canvas.requestPaint()
         }
     }
 

@@ -28,6 +28,7 @@
 #include <QJSValue>
 #include <QQuickItem>
 #include <QScopeGuard>
+#include <QSettings>
 #include <QSet>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -258,6 +259,35 @@ TEST_CASE("Home P1: Rename and Move to Recycle Bin take the sidecars and refuse 
     CHECK(fx.home.projectBlocker(QUrl::fromLocalFile(fx.path(QStringLiteral("Gone.wabcut")))).contains(QStringLiteral("missing")));
 }
 
+// Card 168: Rename and Duplicate go through the same name check as New project: "Con.wabcut" would be the console.
+TEST_CASE("Home: a project cannot be renamed or duplicated to a Windows device name", "[app][home][p1]") {
+    Fixture fx;
+    const QString trailer = fx.path(QStringLiteral("Trailer.wabcut"));
+    saveProjectAt(trailer);
+    fx.home.rememberProject(QUrl::fromLocalFile(trailer));
+    const QUrl url = QUrl::fromLocalFile(trailer);
+    for (const char* device : {"Con", "NUL", "aux", "Com1", "lpt9", "prn.txt"}) {
+        INFO(device);
+        CHECK(fx.home.validateRename(url, QString::fromLatin1(device)).contains(QStringLiteral("reserved")));
+        const QVariantMap renamed = fx.home.renameProject(url, QString::fromLatin1(device));
+        CHECK_FALSE(renamed.value("ok").toBool());
+        CHECK(renamed.value("error").toString().contains(QStringLiteral("reserved")));
+        const QVariantMap copy = fx.home.duplicateProject(url, QString::fromLatin1(device));
+        CHECK_FALSE(copy.value("ok").toBool());
+        CHECK(copy.value("error").toString().contains(QStringLiteral("reserved")));
+    }
+    // Nothing moved or appeared; a name that only starts like a device is fine.
+    CHECK(QFileInfo::exists(trailer));
+    CHECK(QDir(fx.dir.path()).entryList(QDir::Files).size() == 1);
+    CHECK(fx.home.validateRename(url, QStringLiteral("Console")).isEmpty());
+    CHECK(fx.home.duplicateProject(url, QStringLiteral("Trailer Copy")).value("ok").toBool());
+    // Card 174: a name typed with the extension in any case is that file (the duplicate is not "X.WABCUT.wabcut").
+    const QVariantMap upper = fx.home.duplicateProject(url, QStringLiteral("Upper.WABCUT"));
+    REQUIRE(upper.value("ok").toBool());
+    CHECK(QFileInfo::exists(fx.path(QStringLiteral("Upper.WABCUT"))));
+    CHECK_FALSE(QFileInfo::exists(fx.path(QStringLiteral("Upper.WABCUT.wabcut"))));
+}
+
 TEST_CASE("Home P1: a project that fails to open lists its own versions", "[app][home][p1][recovery]") {
     Fixture fx;
     const QString broken = fx.path(QStringLiteral("Broken.wabcut"));
@@ -432,6 +462,21 @@ TEST_CASE("Home P1: the project menu renames and lists versions and a failed ope
         QQuickItem* field = findNamed(shell.window->contentItem(), QStringLiteral("homeProjectNameField"));
         REQUIRE(field);
         CHECK(field->property("text").toString() == QStringLiteral("Trailer"));
+        // Card 168: a Windows device name is refused under the field, with the reason (the accept button stays off).
+        field->setProperty("text", QStringLiteral("Con"));
+        spin(150);
+        {
+            QQuickItem* problem = findNamed(shell.window->contentItem(), QStringLiteral("homeProjectNameProblem"));
+            REQUIRE(problem);
+            CHECK(problem->property("text").toString().contains(QStringLiteral("reserved")));
+            QQuickItem* acceptButton = findNamed(shell.window->contentItem(), QStringLiteral("homeProjectNameAccept"));
+            REQUIRE(acceptButton);
+            CHECK_FALSE(acceptButton->isEnabled());
+            const QImage image = shell.grab();
+            REQUIRE_FALSE(image.isNull());
+            saveItemShot(image, popupOf(field), dark ? QStringLiteral("home-rename-device-name-dark.png")
+                                                     : QStringLiteral("home-rename-device-name-light.png"));
+        }
         field->setProperty("text", QStringLiteral("Teaser"));
         spin(150);
         {
@@ -569,4 +614,59 @@ TEST_CASE("Home: an AAF imports in the background with progress and Cancel impor
     CHECK(f.lifecycle.timelineImport().value(QStringLiteral("cancelled")).toBool());
     CHECK(f.controller.session().undoCount() == 1);
     CHECK(media.entryList(QDir::Files) == written);
+}
+
+// ---- 0.7 (card 029): copies kept in the Auto-Save folder or the chosen folder ------------------------------------------------
+
+TEST_CASE("Home 0.7: Rename and Move to Recycle Bin take the copies kept in the Auto-Save folder and in the chosen folder",
+          "[app][home][backup][a5]") {
+    Fixture fx;
+    TestTrash trash(fx.dir.path());
+    const QString trailer = fx.path(QStringLiteral("Trailer.wabcut"));
+    saveProjectAt(trailer);
+    // Copies of an earlier setting (the Auto-Save folder next to the project) and of today's (a chosen folder).
+    writeFile(fx.path(QStringLiteral("Wabcut Auto-Save/Trailer.wabcut.bak1")), "{}");
+    writeFile(fx.path(QStringLiteral("Wabcut Auto-Save/Trailer.wabcut.autosave")), "{}");
+    writeFile(fx.path(QStringLiteral("Wabcut Auto-Save/Other.wabcut.bak1")), "another project's");
+    const QString root = fx.path(QStringLiteral("Elsewhere"));
+    QSettings().setValue(QStringLiteral("project/backupFolder"), root);
+    io::BackupLocation chosen;
+    chosen.mode = io::BackupLocation::Mode::Chosen;
+    chosen.root = std::filesystem::path(root.toStdU16String());
+    const auto chosenFolder = [&](const QString& project) {
+        return QString::fromStdU16String(io::backupDirectory(std::filesystem::path(project.toStdU16String()), chosen).u16string());
+    };
+    writeFile(chosenFolder(trailer) + QStringLiteral("/Trailer.wabcut.bak2"), "{}");
+    fx.home.rememberProject(QUrl::fromLocalFile(trailer));
+    const QUrl url = QUrl::fromLocalFile(trailer);
+
+    CHECK(names(HomeBridge::sidecarsOf(trailer)) ==
+          QSet<QString>({QStringLiteral("Trailer.wabcut.bak1"), QStringLiteral("Trailer.wabcut.autosave"),
+                         QStringLiteral("Trailer.wabcut.bak2")}));
+
+    // Rename: each copy keeps its folder (the chosen folder's folder is named after the project) and takes the new name.
+    const QVariantMap renamed = fx.home.renameProject(url, QStringLiteral("Final Cut"));
+    INFO(renamed.value("error").toString().toStdString());
+    REQUIRE(renamed.value("ok").toBool());
+    CHECK(renamed.value("warning").toString().isEmpty());
+    const QString finalPath = fx.path(QStringLiteral("Final Cut.wabcut"));
+    CHECK(QFileInfo::exists(fx.path(QStringLiteral("Wabcut Auto-Save/Final Cut.wabcut.bak1"))));
+    CHECK(QFileInfo::exists(fx.path(QStringLiteral("Wabcut Auto-Save/Final Cut.wabcut.autosave"))));
+    CHECK_FALSE(QFileInfo::exists(fx.path(QStringLiteral("Wabcut Auto-Save/Trailer.wabcut.bak1"))));
+    CHECK(QFileInfo::exists(fx.path(QStringLiteral("Wabcut Auto-Save/Other.wabcut.bak1")))); // not this project's
+    CHECK(QFileInfo::exists(chosenFolder(finalPath) + QStringLiteral("/Final Cut.wabcut.bak2")));
+    CHECK_FALSE(QFileInfo::exists(chosenFolder(trailer) + QStringLiteral("/Trailer.wabcut.bak2")));
+
+    // Move to Recycle Bin: the project and its three copies go, and Undo brings them back where they were.
+    const QUrl finalUrl = QUrl::fromLocalFile(finalPath);
+    const QVariantMap trashed = fx.home.trashProject(finalUrl);
+    INFO(trashed.value("error").toString().toStdString());
+    REQUIRE(trashed.value("ok").toBool());
+    CHECK(trashed.value("moved").toInt() == 4);
+    CHECK_FALSE(QFileInfo::exists(fx.path(QStringLiteral("Wabcut Auto-Save/Final Cut.wabcut.bak1"))));
+    CHECK(QFileInfo::exists(fx.path(QStringLiteral("Wabcut Auto-Save/Other.wabcut.bak1"))));
+    REQUIRE(fx.home.undoTrash());
+    CHECK(QFileInfo::exists(fx.path(QStringLiteral("Wabcut Auto-Save/Final Cut.wabcut.autosave"))));
+    CHECK(QFileInfo::exists(chosenFolder(finalPath) + QStringLiteral("/Final Cut.wabcut.bak2")));
+    CHECK(QFileInfo::exists(finalPath));
 }

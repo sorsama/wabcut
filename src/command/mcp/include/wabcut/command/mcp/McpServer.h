@@ -21,6 +21,7 @@
 #include <wabcut/command/mcp/McpTransport.h>
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -42,6 +43,17 @@ enum class SaveMode {
     Auto,   ///< also save after every change (edit, undo, redo)
 };
 
+/// One tool call, for the audit trail (McpServerOptions::audit).
+struct McpAuditEntry {
+    std::string tool;      ///< the tool as called ("clip_addEffect", "edit_batch")
+    bool ok = true;        ///< false: the call came back as an error
+    std::string code;      ///< the error code when it failed ("PermissionDenied")
+    std::uint64_t revision = 0; ///< the session revision after the call
+    bool committed = false;     ///< the call changed the project
+    bool dryRun = false;
+    std::size_t commands = 0;   ///< commands in the call (an edit_batch has several)
+};
+
 struct McpServerOptions {
     /// What the client may do. Read is always granted; EditSequence / EditProject enable the edit tools;
     /// MediaAnalysis the analysis commands (transcript.transcribe, audio.loudness; wabcut-cli mcp --allow-analysis).
@@ -55,6 +67,10 @@ struct McpServerOptions {
     /// path they are given must lie inside one of these folders once symlinks and junctions are resolved, and
     /// plugins.scan (native code) is never served.
     std::vector<std::filesystem::path> fileRoots;
+    /// Commands that run a model (CommandSpec::runsModel) need MediaAnalysis in `allowed` even when they only read: off by
+    /// default (wabcut-cli mcp serves the read-only ones), on for a Python script, whose "analyse media and use AI features"
+    /// switch is MediaAnalysis.
+    bool holdModelCommands = false;
     SaveMode saveMode = SaveMode::Manual;
     /// Longest a tool call may run. Checked at the engine's checkpoints (between batch steps, inside long
     /// commands, before committing); work between two checkpoints always finishes.
@@ -69,6 +85,13 @@ struct McpServerOptions {
     std::string serverVersion = "dev";
     /// What commands may need besides the project (transcripts for the transcript.* tools).
     std::shared_ptr<CommandServices> services;
+    /// Serves the edit_transaction tool (`wabcut-cli mcp --transactions`, 0.7): the Python package opens one around a
+    /// script, so everything the script edits is ONE undo step - all of it or none: committed with the script, rolled
+    /// back when the script fails, is cancelled or the connection drops. While one is open undo, redo and project_save
+    /// are refused and autosave waits. Off by default: an AI agent gets only the plain tools.
+    bool transactions = false;
+    /// Called after every tool call (the audit trail: `wabcut-cli mcp --audit-log`). Never sees parameters or results.
+    std::function<void(const McpAuditEntry&)> audit;
     /// Diagnostics (the CLI prints them to stderr). Never protocol output.
     std::function<void(std::string_view)> log;
     /// Time source for the call timeout (tests replace it).
@@ -86,6 +109,9 @@ public:
     void serve(McpTransport& transport);
     /// Handles one incoming message; replies and notifications go to `transport`.
     void handle(std::string_view line, McpTransport& transport);
+    /// Ends the session as serve() does when its input ends: an open transaction is rolled back, and the project is
+    /// saved when saveMode is OnExit and something changed. For hosts that feed handle() themselves. Idempotent.
+    void finish();
 
     /// The tools this server offers (the tools/list entries).
     Json tools() const;

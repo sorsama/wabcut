@@ -896,3 +896,149 @@ TEST_CASE("AudioEnergyService: a replaced file is not answered from memory", "[a
     REQUIRE(service.cached(file.string(), -1, range));
     CHECK(service.cached(file.string(), -1, range)->rmsDb == fresh->ranges[0].rmsDb);
 }
+
+// ---- 0.7 (card 061): custom words -------------------------------------------------------------------------------------
+
+TEST_CASE("The vocabulary prompt lists the words in order and stays inside what whisper reads", "[ai][transcribe][words]") {
+    std::size_t used = 99;
+    CHECK(vocabularyPrompt({}, &used).empty());
+    CHECK(used == 0);
+    const std::vector<std::string> words{"Malenia", "", "Elden Ring", "Radahn"};
+    CHECK(vocabularyPrompt(words, &used) == "Vocabulary: Malenia, Elden Ring, Radahn.");
+    CHECK(used == 3); // the empty one is skipped, not counted
+    // Past the limit the rest is left out; the prompt itself never is longer than kMaxVocabularyPromptBytes.
+    std::vector<std::string> many;
+    for (int i = 0; i < 200; ++i) {
+        many.push_back("Character" + std::to_string(i));
+    }
+    const std::string prompt = vocabularyPrompt(many, &used);
+    CHECK(prompt.size() <= kMaxVocabularyPromptBytes);
+    CHECK(prompt.size() > kMaxVocabularyPromptBytes - 30); // as full as the words allow
+    CHECK(used > 20);
+    CHECK(used < many.size());
+    CHECK(prompt.starts_with("Vocabulary: Character0, Character1, "));
+    CHECK(prompt.back() == '.');
+    // A word longer than all of it leaves nothing.
+    const std::vector<std::string> huge{std::string(kMaxVocabularyPromptBytes, 'x')};
+    CHECK(vocabularyPrompt(huge, &used).empty());
+    CHECK(used == 0);
+}
+
+TEST_CASE("Custom words reach the local recogniser as its hint and a cloud one as key terms", "[ai][transcribe][words]") {
+    const auto dir = test::freshDir("transcribe-words");
+    const TranscribeSource source{writeWav(dir / "talk.wav", toneTrack(6.0, {{1.0, 3.0}})).string(), -1};
+    {
+        TranscribeService service(serviceConfig(dir, true));
+        TranscribeJobOptions options = localOptions();
+        options.vocabulary = {"Malenia", "Elden Ring"};
+        auto first = service.run(source, options);
+        REQUIRE(first);
+        CHECK(first->transcript.provenance.params.at("initialPrompt") == "Vocabulary: Malenia, Elden Ring.");
+        // A hint the caller sets itself is the one used.
+        options.useCache = false;
+        options.local.initialPrompt = "Names: Radahn.";
+        auto own = service.run(source, options);
+        REQUIRE(own);
+        CHECK(own->transcript.provenance.params.at("initialPrompt") == "Names: Radahn.");
+        // No words, no hint.
+        options.local.initialPrompt.clear();
+        options.vocabulary.clear();
+        auto none = service.run(source, options);
+        REQUIRE(none);
+        CHECK(none->transcript.provenance.params.at("initialPrompt").empty());
+    }
+    {
+        Cloud cloud;
+        TranscribeService service(serviceConfig(dir, false, &cloud.platform));
+        TranscribeJobOptions options;
+        options.provider = "cloud:stt-model";
+        options.allowOnce = true;
+        for (int i = 0; i < 150; ++i) {
+            options.vocabulary.push_back("Name" + std::to_string(i));
+        }
+        options.useCache = false;
+        REQUIRE(service.run(source, options));
+        REQUIRE(cloud.calls.requests.size() == 1);
+        // The first kMaxKeyTerms, in order.
+        const std::vector<std::string>& terms = cloud.calls.requests[0].keyterms;
+        REQUIRE(terms.size() == kMaxKeyTerms);
+        CHECK(terms.front() == "Name0");
+        CHECK(terms.back() == "Name" + std::to_string(kMaxKeyTerms - 1));
+        options.vocabulary.clear();
+        REQUIRE(service.run(source, options));
+        REQUIRE(cloud.calls.requests.size() == 2);
+        CHECK(cloud.calls.requests[1].keyterms.empty());
+    }
+}
+
+// ---- 0.7 (card 111): a recording that switches language ----------------------------------------------------------------
+
+TEST_CASE("TranscribeService: mixed languages run on this computer and a single-language transcript does not answer them",
+          "[ai][transcribe][mixed]") {
+    const auto dir = test::freshDir("transcribe-mixed");
+    // Three stretches; the fake helper (--alternate-languages) hears the first and the last as English, the middle one as Thai.
+    const TranscribeSource source{
+        writeWav(dir / "talk.wav", toneTrack(30.0, {{1.0, 5.0}, {12.0, 16.0}, {22.0, 26.0}})).string(), -1};
+    TranscribeServiceConfig config = serviceConfig(dir, true);
+    config.local.helperArguments = {"--alternate-languages"};
+    TranscribeService service(config);
+
+    // The transcript an earlier Transcribe made: one language for the whole file.
+    auto single = service.run(source, localOptions());
+    REQUIRE(single);
+    REQUIRE(single->transcript.segments.size() == 3);
+    CHECK(single->transcript.segments[1].language.empty());
+
+    // Asking for mixed languages is not answered by it: the audio is heard again, each stretch in its own language.
+    TranscribeJobOptions mixed = localOptions("auto");
+    mixed.mixedLanguages = true;
+    auto first = service.run(source, mixed);
+    REQUIRE(first);
+    CHECK_FALSE(first->fromCache);
+    CHECK(first->provider == "local");
+    REQUIRE(first->transcript.segments.size() == 3);
+    CHECK(first->transcript.segments[0].language == "en");
+    CHECK(first->transcript.segments[1].language == "th");
+    CHECK(first->transcript.segments[2].language == "en");
+    CHECK(first->transcript.provenance.params.at("mixed") == "languages");
+
+    // It is now the newest transcript of the audio: a repeat, and a plain request, are answered from the cache.
+    auto again = service.run(source, mixed);
+    REQUIRE(again);
+    CHECK(again->fromCache);
+    CHECK(again->transcript.segments[1].language == "th");
+    auto plain = service.run(source, localOptions("auto"));
+    REQUIRE(plain);
+    CHECK(plain->fromCache);
+    CHECK(plain->transcript.segments[1].language == "th");
+
+    // A named language says it is one: the switch is ignored (and a cached single-language transcript answers).
+    TranscribeJobOptions named = localOptions("auto");
+    named.language = "th";
+    named.mixedLanguages = true;
+    named.useCache = false;
+    auto thai = service.run(source, named);
+    REQUIRE(thai);
+    CHECK_FALSE(thai->transcript.provenance.params.contains("mixed"));
+}
+
+TEST_CASE("TranscribeService: mixed languages are refused for a cloud transcriber before anything is uploaded", "[ai][transcribe][cloud][mixed]") {
+    const auto dir = test::freshDir("transcribe-mixed-cloud");
+    const TranscribeSource source{writeWav(dir / "talk.wav", toneTrack(6.0, {{1.0, 3.0}})).string(), -1};
+    Cloud cloud;
+    TranscribeService service(serviceConfig(dir, false, &cloud.platform));
+    TranscribeJobOptions options;
+    options.provider = "cloud:stt-model";
+    options.allowOnce = true;
+    options.mixedLanguages = true;
+    const auto refused = service.run(source, options);
+    REQUIRE_FALSE(refused);
+    CHECK(refused.error().code == ErrorCode::Unsupported);
+    CHECK(refused.error().message.find("local transcriber") != std::string::npos);
+    CHECK(cloud.calls.requests.empty()); // nothing was sent
+
+    // Naming the language (no mixing asked for) goes to the cloud as before.
+    options.mixedLanguages = false;
+    CHECK(service.run(source, options));
+    CHECK(cloud.calls.requests.size() == 1);
+}

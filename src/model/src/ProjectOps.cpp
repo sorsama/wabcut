@@ -5,6 +5,7 @@
 #include <wabcut/model/Auditions.h>
 #include <wabcut/model/Nesting.h>
 #include <wabcut/model/SubmixOps.h>
+#include <wabcut/model/TrackGroups.h>
 
 #include "SequenceEditor.h"
 
@@ -219,6 +220,9 @@ std::expected<Created<AssetId>, Error> addAsset(const ProjectState& state, Proje
     if (auto ok = checkAssetLocator(asset.locator); !ok) {
         return std::unexpected(ok.error());
     }
+    if (const auto problem = assetFolderProblem(asset.folder)) {
+        return std::unexpected(invalidArgument(*problem));
+    }
     Created<AssetId> out{state, {}};
     out.id = out.state.ids.allocate<AssetId>();
     asset.id = out.id;
@@ -237,6 +241,22 @@ std::expected<ProjectState, Error> relinkAsset(const ProjectState& state, AssetI
     for (ProjectAsset& a : out.assets) {
         if (a.id == asset) {
             a.locator = std::move(locator);
+        }
+    }
+    return out;
+}
+
+std::expected<ProjectState, Error> setAssetFolder(const ProjectState& state, AssetId asset, std::string folder) {
+    if (!state.findAsset(asset)) {
+        return std::unexpected(notFound("asset " + std::to_string(asset.value) + " does not exist"));
+    }
+    if (const auto problem = assetFolderProblem(folder)) {
+        return std::unexpected(invalidArgument(*problem));
+    }
+    ProjectState out = state;
+    for (ProjectAsset& a : out.assets) {
+        if (a.id == asset) {
+            a.folder = std::move(folder);
         }
     }
     return out;
@@ -509,6 +529,34 @@ EditOutcome removeTrack(const ProjectState& state, SequenceId sequence, TrackId 
     return ed.finish();
 }
 
+EditOutcome moveTrack(const ProjectState& state, SequenceId sequence, TrackId trackId, std::size_t position) {
+    const auto seq = detail::findSequence(state, sequence);
+    if (!seq) {
+        return std::unexpected(seq.error());
+    }
+    const Track* track = (*seq)->findTrack(trackId);
+    if (!track) {
+        if ((*seq)->findSubmix(trackId)) {
+            return std::unexpected(invalidArgument("a submix track keeps its place: only video and audio tracks move"));
+        }
+        return std::unexpected(notFound("track " + std::to_string(trackId.value) + " does not exist"));
+    }
+    const std::vector<TrackPtr>& stack = (*seq)->tracks(track->kind);
+    const auto from = static_cast<std::size_t>(
+        std::find_if(stack.begin(), stack.end(), [&](const TrackPtr& t) { return t->id == trackId; }) - stack.begin());
+    const std::size_t to = std::min(std::max<std::size_t>(position, 1), stack.size()) - 1;
+    if (from == to) {
+        return detail::unchanged(state);
+    }
+    SequenceEditor ed(state, **seq);
+    std::vector<TrackPtr>& list = track->kind == TrackKind::Video ? ed.header().videoTracks : ed.header().audioTracks;
+    TrackPtr moving = std::move(list[from]);
+    list.erase(list.begin() + static_cast<std::ptrdiff_t>(from));
+    list.insert(list.begin() + static_cast<std::ptrdiff_t>(to), std::move(moving));
+    regroupAfterMove(ed.header(), trackId); // 0.7 (card 124): a track dropped in a track group joins it; one dragged out leaves
+    return ed.finish();
+}
+
 EditOutcome setTrackState(const ProjectState& state, SequenceId sequence, TrackId trackId,
                           const TrackStateChange& change) {
     const auto seq = detail::findSequence(state, sequence);
@@ -546,6 +594,9 @@ EditOutcome setTrackState(const ProjectState& state, SequenceId sequence, TrackI
                             !change.surround->lfeDb.isValid(-144.0, 0.0))) {
         return std::unexpected(detail::invalidArgument("the 5.1 panner takes x and y in -1..1 and an LFE send in -144..0 dB"));
     }
+    if (change.colorIndex && (*change.colorIndex < -1 || *change.colorIndex > 15)) {
+        return std::unexpected(detail::invalidArgument("a track's label colour is 0..15, or -1 for none"));
+    }
     SequenceEditor ed(state, **seq);
     Track& t = ed.mutableTrack(trackId);
     const bool wasLocked = t.locked;
@@ -575,6 +626,9 @@ EditOutcome setTrackState(const ProjectState& state, SequenceId sequence, TrackI
     }
     if (change.recordArmed) {
         t.recordArmed = *change.recordArmed;
+    }
+    if (change.colorIndex) {
+        t.colorIndex = *change.colorIndex;
     }
     if (change.format) {
         t.format = *change.format;
@@ -613,6 +667,9 @@ EditOutcome setClipAttributes(const ProjectState& state, SequenceId sequence, st
             return std::unexpected(invalidArgument(*problem));
         }
     }
+    if (change.note && change.note->size() > kMaxClipNoteBytes) {
+        return std::unexpected(invalidArgument("a clip's note is at most " + std::to_string(kMaxClipNoteBytes) + " bytes"));
+    }
     const auto selection = detail::resolveClips(**seq, clips, LinkMode::IgnoreLinks);
     if (!selection) {
         return std::unexpected(selection.error());
@@ -627,10 +684,13 @@ EditOutcome setClipAttributes(const ProjectState& state, SequenceId sequence, st
         if (change.blendMode && c.blendMode() != *change.blendMode) {
             c.setBlendMode(*change.blendMode);
         }
-        if (change.name || change.properties) {
+        if (change.name || change.note || change.properties) {
             ClipContent content = c.content();
             if (change.name) {
                 content.name = *change.name;
+            }
+            if (change.note) {
+                content.note = *change.note;
             }
             if (change.properties) {
                 content.properties = *change.properties;
@@ -738,6 +798,33 @@ std::expected<ProjectState, Error> renameBin(const ProjectState& state, BinId bi
         }
     }
     return out;
+}
+
+std::expected<ProjectState, Error> setNestBin(const ProjectState& state, BinId bin, bool on) {
+    const Bin* found = state.findBin(bin);
+    if (!found) {
+        return std::unexpected(notFound("bin " + std::to_string(bin.value) + " does not exist"));
+    }
+    if (on && found->isSearch()) {
+        return std::unexpected(invalidArgument("'" + found->name + "' is a search bin: it holds no sequences"));
+    }
+    if (found->nestTarget == on && (!on || nestBinOf(state) == bin)) {
+        return state;
+    }
+    ProjectState out = state;
+    for (Bin& b : out.bins) {
+        b.nestTarget = on && b.id == bin; // one bin at most
+    }
+    return out;
+}
+
+BinId nestBinOf(const ProjectState& state) {
+    for (const Bin& b : state.bins) {
+        if (b.nestTarget && !b.isSearch()) {
+            return b.id;
+        }
+    }
+    return {};
 }
 
 std::expected<ProjectState, Error> moveToBin(const ProjectState& state, BinId target, std::span<const BinId> bins,
@@ -953,6 +1040,66 @@ std::expected<ProjectState, Error> setMediaAttributes(const ProjectState& state,
                     item.timecode.reset(); // nothing left of Modify > Timecode
                 }
             }
+        }
+        if (!(item == **slot)) {
+            *slot = std::make_shared<const MediaItem>(std::move(item));
+            changed = true;
+        }
+    }
+    return changed ? out : state;
+}
+
+std::expected<ProjectState, Error> setMediaRights(const ProjectState& state, std::span<const MediaId> media,
+                                                  const MediaRightsChange& change) {
+    ProjectState out = state;
+    bool changed = false;
+    for (const MediaId id : media) {
+        MediaPtr* slot = findMediaSlot(out, id);
+        if (!slot) {
+            return std::unexpected(notFound("media " + std::to_string(id.value) + " does not exist"));
+        }
+        if ((*slot)->isGenerator()) {
+            return std::unexpected(invalidArgument("'" + (*slot)->name + "' is generated in Wabcut: it has no file to clear"));
+        }
+        MediaItem item = **slot;
+        MediaRights rights = item.rights.value_or(MediaRights{});
+        if (change.source) {
+            rights.source = *change.source;
+        }
+        if (change.licence) {
+            rights.licence = *change.licence;
+        }
+        if (change.reference) {
+            rights.reference = *change.reference;
+        }
+        if (change.territory) {
+            rights.territory = *change.territory;
+        }
+        if (change.expiry) {
+            rights.expiry = *change.expiry;
+        }
+        if (change.currency) {
+            rights.currency = *change.currency;
+        }
+        if (change.creditLine) {
+            rights.creditLine = *change.creditLine;
+        }
+        if (change.notes) {
+            rights.notes = *change.notes;
+        }
+        if (change.costMinor) {
+            rights.costMinor = *change.costMinor;
+        }
+        if (change.status) {
+            rights.status = *change.status;
+        }
+        if (const auto problem = rightsProblem(rights)) {
+            return std::unexpected(invalidArgument("'" + item.name + "': " + *problem));
+        }
+        if (rights.isEmpty()) {
+            item.rights.reset();
+        } else {
+            item.rights = std::move(rights);
         }
         if (!(item == **slot)) {
             *slot = std::make_shared<const MediaItem>(std::move(item));

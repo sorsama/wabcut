@@ -120,6 +120,10 @@ TEST_CASE("3E Interface size: 90 percent and the sizes that fit the screen", "[a
     CHECK(args == QStringList{QStringLiteral("--rhi"), QStringLiteral("d3d12"), QStringLiteral("--new-instance"),
                               QFileInfo(project).absoluteFilePath()});
     CHECK(AppShell::restartArguments({QStringLiteral("wabcut"), QStringLiteral("Old.WABCUT")}, {}).isEmpty());
+    // 0.7 (card 005): a recording the app was started with ("Open with") was imported then, not again after a restart.
+    CHECK(AppShell::restartArguments({QStringLiteral("wabcut"), QStringLiteral("D:/Rec/Take 1.mp4"), QStringLiteral("--rhi"),
+                                      QStringLiteral("d3d11")},
+                                     {}) == QStringList{QStringLiteral("--rhi"), QStringLiteral("d3d11")});
     AppShell shell;
     CHECK_FALSE(AppShell::restartPending());
     shell.armRestart(QUrl::fromLocalFile(project).toString());
@@ -287,6 +291,8 @@ TEST_CASE("3E Media and cache: proxies in a chosen folder and the cache folders 
         // The sections scroll: the footer stays inside the window, also with the new rows.
         QQuickItem* done = findNamed(box, QStringLiteral("mediaCacheDone"));
         REQUIRE(done);
+        REQUIRE_FALSE(shell.grab().isNull()); // a frame: the layouts take the window's size when one is drawn
+        spin(50);
         CHECK(done->mapToScene(QPointF(0, done->height())).y() <= shell.window->height());
         QQuickItem* tabs = findNamed(box, QStringLiteral("proxyLocationTabs"));
         REQUIRE(tabs);

@@ -23,6 +23,8 @@
 #include <QString>
 #include <QtQml/qqmlregistration.h>
 
+#include <wabcut/model/Vr.h>
+
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -62,6 +64,16 @@ class ProgramMonitor : public QQuickRhiItem {
     /// P.2, Premiere's Transparency Grid: the frame keeps its alpha (premultiplied), so what lies under the item (a
     /// checkerboard) shows where nothing covers the canvas; off, the canvas is composited over black.
     Q_PROPERTY(bool transparencyGrid READ transparencyGrid WRITE setTransparencyGrid NOTIFY transparencyGridChanged FINAL)
+    /// 0.7 (VR / 360 video): the VR viewer. On, the picture (an equirectangular canvas of `vrProjection` and `vrStereo`)
+    /// is drawn as the flat view of someone in the middle of the sphere looking along `vrYaw` / `vrPitch` (degrees) with
+    /// a horizontal field of view of `vrFov`, filling the item; vrLook / vrZoom / vrReset are the drag, wheel and reset.
+    Q_PROPERTY(bool vrView READ vrView WRITE setVrView NOTIFY vrViewChanged FINAL)
+    /// "none", "equirect360" or "equirect180"; "mono", "topBottom" or "sideBySide" (wabcut::toString names).
+    Q_PROPERTY(QString vrProjection READ vrProjection WRITE setVrProjection NOTIFY vrViewChanged FINAL)
+    Q_PROPERTY(QString vrStereo READ vrStereo WRITE setVrStereo NOTIFY vrViewChanged FINAL)
+    Q_PROPERTY(double vrYaw READ vrYaw WRITE setVrYaw NOTIFY vrAngleChanged FINAL)
+    Q_PROPERTY(double vrPitch READ vrPitch WRITE setVrPitch NOTIFY vrAngleChanged FINAL)
+    Q_PROPERTY(double vrFov READ vrFov WRITE setVrFov NOTIFY vrAngleChanged FINAL)
 
 public:
     explicit ProgramMonitor(QQuickItem* parent = nullptr);
@@ -79,6 +91,24 @@ public:
     void setShareDecoderDevice(bool share);
     bool transparencyGrid() const { return m_transparencyGrid; }
     void setTransparencyGrid(bool on);
+    bool vrView() const { return m_vrView; }
+    void setVrView(bool on);
+    QString vrProjection() const;
+    void setVrProjection(const QString& projection);
+    QString vrStereo() const;
+    void setVrStereo(const QString& stereo);
+    double vrYaw() const { return m_vrYaw; }
+    void setVrYaw(double degrees);
+    double vrPitch() const { return m_vrPitch; }
+    void setVrPitch(double degrees);
+    double vrFov() const { return m_vrFov; }
+    void setVrFov(double degrees);
+    /// Drag to look around: the view turns by these degrees (positive: to the right / up); yaw wraps, pitch stops at the poles.
+    Q_INVOKABLE void vrLook(double deltaYaw, double deltaPitch);
+    /// The wheel: the field of view is divided by `factor` (above 1 zooms in), kept between wabcut::vr::kMinFov and kMaxFov.
+    Q_INVOKABLE void vrZoom(double factor);
+    /// Straight ahead, level, at the default field of view.
+    Q_INVOKABLE void vrReset();
 
     /// The composites to show (null detaches). GUI thread. The mailbox's publish callback is taken over to
     /// wake the monitor when it is idle.
@@ -96,6 +126,8 @@ signals:
     void scopesChanged();
     void shareDecoderDeviceChanged();
     void transparencyGridChanged();
+    void vrViewChanged();
+    void vrAngleChanged();
 
 protected:
     QQuickRhiItemRenderer* createRenderer() override;
@@ -120,6 +152,11 @@ private:
     bool m_scopes = false;
     bool m_shareDecoderDevice = true;
     bool m_transparencyGrid = false;
+    bool m_vrView = false;
+    VrFormat m_vrFormat{VrProjection::None, StereoLayout::Mono};
+    double m_vrYaw = 0.0;
+    double m_vrPitch = 0.0;
+    double m_vrFov = vr::kDefaultFov;
     QString m_renderBackend;
 };
 

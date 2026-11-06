@@ -8,6 +8,69 @@ will change as people use the editor and tell us what matters to them.
 
 ## Shipped
 
+### 0.7.0 (6 November 2026)
+Every remaining open card on the roadmap, and the AI settings rework:
+- **Timeline.** Track groups; solo for video tracks; tracks dragged into a new order; track label colours, named clip
+  labels and Select Label Group; locked clips; clip notes; a pacing strip that shows where an edit drags; background
+  rendering while Wabcut is idle; Render and Replace for nests; slip trim; keys for track eye, mute and solo and for
+  Overlay, Insert Before / After and Append; Alt-drag then Ctrl to insert a copy; middle-button panning and held H / Z
+  tools; selecting, moving and importing several markers, Add Marker from In/Out and markers that follow Track Select;
+  snap options; Close Gaps, Remove Transitions and Remove Disabled Clips; clip duration and audio stream names on clips;
+  a setting that stops edits adding tracks; Match Frame on nests; copying clips between projects with the files they
+  use.
+- **Monitors.** 360 and VR180 video with a VR viewer and VR Reorient; pixel aspect ratio in the monitors and exports;
+  mirrored footage flipped; Copy Frame to the clipboard; Shift+Space plays In to Out with rolls; composition guides; a
+  Source Monitor mute; multicam sync nudges; Video Output Settings for a second display (hardware video cards need
+  vendor SDKs and are not supported).
+- **Effects and colour.** Track Motion; Motion Blur (the footage of a retimed clip is not yet blurred); Scale Width and
+  Uniform Scale; Nearest Neighbor scaling; Warp Stabilizer with GoPro and Sony gyro data, with speed changes, Analyze
+  All and a keyframable Smoothness; ColorChecker matching; effects on a whole video track; Skin Smoothing; a Graph
+  Editor; keyframes pinned to a clip's ends and Ripple Track Keyframes; a clip's keyframes shown from its fx badge; a
+  Blend Mode picker; arithmetic in number fields; folders of LUTs and LUTs that follow a replaced file; shortcuts for
+  any effect or preset; favourite effects pinned in Effect Controls.
+- **AI video effects.** AI Denoise, AI Restore (upscale and deblur), AI Refocus, AI Face Retouch, AI Eye Contact and AI
+  Frame Interpolation, running locally with downloaded models; Morph Cut that lines up faces; Auto B-roll that skips
+  hidden tracks.
+- **Graphics and text.** A Sources panel and bibliography for video essays; one font picker with script filters and
+  smart search; OpenType features and optical kerning; styles for part of a text and a Styles tab; keyframable template
+  fields; template folders and Install folder; Lottie templates with editable fields and dotLottie, and OGraf packages
+  that ship a Lottie version (HTML OGraf needs a web engine); crop handles on titles.
+- **Audio.** A 7.1 master; Dynamics Processing with a graph; spectral repair; EQ Match and Level Match; a Loudness panel
+  with a radar; Auto-Mix Voices; mixer effect chains saved as presets; Premiere's mixer panel menu; bleeping with your
+  own sound; poly WAV channel names; long voice-over takes that end cleanly; loudness QC that keeps the overs of very
+  hot programmes.
+- **Captions and transcripts.** Transcription in 100 languages and clips that switch languages; custom words; Transcribe
+  again and Delete transcript; six new animated looks with emphasis; caption text rules; caption looks kept across
+  projects; bilingual subtitles; captions converted to graphics; an audio description generator; TTML time fixes.
+- **Library and media.** Reload Footage; Consolidate Duplicates; a rights and clearance log with a credits roll; capture
+  from a capture card or webcam (Windows); search across a production; SVG, AI and EPS artwork; newer codecs listed and
+  played; a new sequence per clip; nested sequences filed in a bin; Date created and saved column layouts; list
+  thumbnails; Tab through cells; Copy and Create Proxies on ingest; a ProRes RAW ISO; drops anywhere on the editor;
+  "Open with" handing files to the running Wabcut.
+- **Export and delivery.** Smart Render for H.264 and HEVC; a check before every export; HDR10+ metadata for HEVC (Dolby
+  Vision needs a licence and is not written); export history; a default export folder; a Streaming -14 LUFS target;
+  Collect Files with handles, a sequence checklist, folder layouts and everything keyed to the media trimmed with it;
+  cloud projects, review links and stock media on storage you own; safer spreadsheets, preset names and target-size
+  exports.
+- **Interchange.** File > Save for an Older Version (Wabcut 0.6 and 0.2 to 0.5); the work area and J / L cuts carried
+  through FCP7 XML, FCPXML and OTIO; OMF with embedded audio refused before it renders when it would pass 2 GB; OTIO and
+  EDL files with a byte order mark.
+- **Shell, settings and keys.** Back up, move and reset your settings; autosaves and backups in an Auto-Save folder;
+  named versions and a version-history key; Report a Bug with system information; a Gaming workspace; hidden workspace
+  tabs; keyboard shortcuts you can copy and print; positional workspace keys; a read-only badge; Edit > Undo naming the
+  edit; real plurals.
+- **Scripting and plug-ins.** A Python API (`import wabcut`) and File > Run Python Script…; OpenFX video effect plug-ins
+  on Windows; extension updates that cannot destroy a working extension.
+- **Platforms.** A Windows on ARM64 preview build (not yet run on ARM64 hardware); Linux with test numbers, a
+  smoke-tested tar.gz and a .wabcut file type; macOS Finder integration and a signing and notarization pipeline (needs
+  an Apple Developer ID); the Windows taskbar jump list and Snap Layouts.
+- **AI settings and providers.** Settings > AI rebuilt with Features, Providers, Local models, Privacy and Usage tabs; a
+  model for each of seven AI features; 35 new providers (49 in all); your own OpenAI-, Anthropic- or Gemini-compatible
+  providers; a library of local models with Hugging Face search and a download queue; Audio Track Mixer effect fixes,
+  settings popups and reordering; Sequence Settings frame size; the Library's Text tab removed.
+
+The full list is in the [0.7 release notes](release-notes-0.7.md).
+
 ### 0.6.0 (1 November 2026)
 Every open P0 and P1 card on the roadmap, and a settings and accessibility pass:
 - **Timeline.** Selected edit points drive E, Ctrl+D / Ctrl+Shift+D and Effects-panel transitions; Edit Marker and Add
@@ -175,7 +238,7 @@ The full list is in the [release notes](release-notes-0.1.md).
 ## Next: toward a beta
 
 Make Wabcut safe to trust with real projects:
-- Fix what people find in real projects, starting with the [pilot](pilot.md). 0.1 to 0.6 were tested with a demo
+- Fix what people find in real projects, starting with the [pilot](pilot.md). 0.1 to 0.7 were tested with a demo
   project and scripted test media, not yet with real users' projects.
 - Check AAF, OMF and broadcast caption files in Pro Tools, Media Composer and Resolve.
 - A code-signing certificate, so Windows SmartScreen stops warning (0.6 has the signing steps and opt-in updates).
@@ -188,12 +251,9 @@ Make Wabcut safe to trust with real projects:
 
 - macOS and Linux beyond the preview builds: local transcription, audio plug-ins and the managed local assistant
   there, testing on real machines, and Intel Macs. Windows comes first.
-- OpenFX video plug-ins (CLAP and VST3 audio plug-ins already work).
-- Face-aware Morph Cut, and Warp Stabilizer's mesh warp.
+- Warp Stabilizer's mesh warp.
 - Live references between open projects (items imported from another project are copies today).
 - R3D, BRAW and ARRIRAW decoding (each needs a decoder helper built with the camera maker's SDK).
-- Shared review links, cloud projects and stock media (version history, review notes and merge are local today).
-- VR / 360 video.
 
 ## Not planned for now
 

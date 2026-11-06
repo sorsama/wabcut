@@ -115,6 +115,34 @@ TEST_CASE("A helper that hangs in native code is cancelled; then killed; the edi
     CHECK(std::chrono::steady_clock::now() - before < 5s);
 }
 
+// Card 165: stop() waited for the helper to exit and then, as the pipe of a helper that never read the shutdown does not
+// close, drained its storage for the whole second wait too - twice the stall of the GUI thread per stuck extension.
+TEST_CASE("Stopping a helper that does not read the shutdown waits once, then kills it", "[script][host]") {
+    HostLimits limits;
+    limits.stopGrace = 400ms;
+    FakeRig hang("hang", {"Read"}, limits);
+    REQUIRE(hang.ready());
+    hang.host->invoke("go", Json::object(), {}); // the helper sleeps in "native code": it reads nothing more
+    std::this_thread::sleep_for(150ms);          // ... once it has the call
+    const auto before = std::chrono::steady_clock::now();
+    hang.host->stop();
+    const auto took = std::chrono::steady_clock::now() - before;
+    CHECK(hang.host->state() == HostState::Stopped);
+    CHECK(took >= 350ms);  // it was given its grace to exit on its own
+    CHECK(took < 700ms);   // ... and no second grace (before: >= 2 x 400 ms) to read a pipe that cannot close
+    // The helper is gone for real.
+    REQUIRE(hang.host->stopReport());
+    CHECK(hang.host->stopReport()->state == HostState::Stopped);
+
+    // A helper that does read the shutdown still exits at once (nothing waits out the grace).
+    FakeRig polite("ok", {"Read"}, limits);
+    REQUIRE(polite.ready());
+    const auto politeBefore = std::chrono::steady_clock::now();
+    polite.host->stop();
+    CHECK(std::chrono::steady_clock::now() - politeBefore < 300ms);
+    CHECK(polite.host->state() == HostState::Stopped);
+}
+
 TEST_CASE("A crashing helper fails its calls and ends only itself", "[script][host]") {
     FakeRig crash("crash");
     REQUIRE(crash.ready());

@@ -220,13 +220,18 @@ std::string trackName(const Track& track, TrackKind kind, std::size_t index) {
     return (kind == TrackKind::Video ? "Video " : "Audio ") + std::to_string(index + 1);
 }
 
-/// "Left" / "Right" (stereo), "L R C LFE Ls Rs" (5.1), "1".."n" (adaptive).
+/// "Left" / "Right" (stereo), "L R C LFE Ls Rs" (5.1), "L R C LFE Lrs Rrs Ls Rs" (7.1, 0.7: the order of a 7.1 file),
+/// "1".."n" (adaptive).
 std::string channelSuffix(int channels, int channel) {
     if (channels == 2) {
         return channel == 0 ? "Left" : "Right";
     }
     if (channels == 6) {
         static constexpr std::string_view kNames[6] = {"L", "R", "C", "LFE", "Ls", "Rs"};
+        return std::string(kNames[channel]);
+    }
+    if (channels == 8) {
+        static constexpr std::string_view kNames[8] = {"L", "R", "C", "LFE", "Lrs", "Rrs", "Ls", "Rs"};
         return std::string(kNames[channel]);
     }
     return std::to_string(channel + 1);
@@ -239,6 +244,10 @@ double channelPan(int channels, int channel) {
     }
     if (channels == 6) {
         static constexpr double kPan[6] = {0.0, 1.0, 0.5, 0.5, 0.0, 1.0};
+        return kPan[channel];
+    }
+    if (channels == 8) {
+        static constexpr double kPan[8] = {0.0, 1.0, 0.5, 0.5, 0.0, 1.0, 0.0, 1.0};
         return kPan[channel];
     }
     return 0.5;
@@ -352,9 +361,10 @@ std::expected<Plan, Error> makePlan(const ProjectState& project, SequenceId sequ
     if (!(seq->masterVolume == ParamValue(0.0))) {
         add(ReportOutcome::Dropped, ReportCategory::SequenceSetting, "The master fader is not written", sequenceLocation());
     }
-    if (seq->masterFormat == ChannelFormat::Surround51) {
+    if (seq->masterFormat == ChannelFormat::Surround51 || seq->masterFormat == ChannelFormat::Surround71) {
         add(ReportOutcome::Approximated, ReportCategory::AudioMapping,
-            "The 5.1 master is not written: each track keeps its own channels (its 5.1 panner is left out)",
+            "The " + std::string(toString(seq->masterFormat)) +
+                " master is not written: each track keeps its own channels (its surround panner is left out)",
             sequenceLocation());
     }
 

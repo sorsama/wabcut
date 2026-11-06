@@ -291,25 +291,27 @@ WabcutDialog {
                                 text = fontRow.entry.family ?? ""
                         }
                     }
-                    // The families of this computer that start with what is typed.
+                    // card 053: the shared font picker (search by name, language or script, filters).
                     IconButton {
                         id: familyButton
                         objectName: "brandFontFamilies_" + fontRow.index
                         compact: true
                         iconName: "chevron-down"
                         tooltip: qsTr("Choose an installed font")
-                        onClicked: familyMenu.popup(familyButton, 0, familyButton.height + Theme.space(1))
-                        OptionsMenu {
-                            id: familyMenu
-                            options: {
-                                const typed = familyField.text.trim().toLowerCase()
-                                const all = Brand.fontFamilies
-                                const matches = all.filter(f => typed === "" || f.toLowerCase().startsWith(typed)
-                                                           || f === fontRow.entry.family)
-                                return (matches.length > 0 ? matches : all).slice(0, 40).map(f => ({ id: f, name: f }))
-                            }
+                        onClicked: familyPicker.open()
+                        FontPicker {
+                            id: familyPicker
+                            objectName: "brandFontPicker_" + fontRow.index
+                            parent: familyButton
+                            x: 0
+                            y: familyButton.height + Theme.space(1)
                             current: fontRow.entry.family ?? ""
-                            onChosen: id => Brand.setFont(fontRow.index, "", id, fontRow.entry.style ?? "", 0)
+                            onChosen: id => {
+                                if (id !== "") {
+                                    Fonts.noteUsed(id)
+                                    Brand.setFont(fontRow.index, "", id, fontRow.entry.style ?? "", 0)
+                                }
+                            }
                         }
                     }
                     ChoicePill {

@@ -417,6 +417,12 @@ void PrprojParser::parseSequence(const pugi::xml_node& sequence) {
     if (const auto out = childInt(properties, "MZ.OutPoint"); out && *out > 0) {
         seq.markOut = Ticks{*out};
     }
+    // 0.7 (card 046): the work area (Premiere's tick, the same as Wabcut's).
+    if (const auto workIn = childInt(properties, "MZ.WorkInPoint"), workOut = childInt(properties, "MZ.WorkOutPoint");
+        workIn && workOut && *workIn >= 0 && *workOut > *workIn) {
+        seq.workIn = Ticks{*workIn};
+        seq.workOut = Ticks{*workOut};
+    }
 
     ItemPlaces places;
     auto tracksOf = [&](const pugi::xml_node& group) {

@@ -81,8 +81,8 @@ EditOutcome setMasterFormat(const ProjectState& state, SequenceId sequence, Chan
     if (!seq) {
         return std::unexpected(seq.error());
     }
-    if (format != ChannelFormat::Stereo && format != ChannelFormat::Surround51) {
-        return std::unexpected(invalidArgument("the master is stereo or 5.1, not " + std::string(toString(format))));
+    if (!isMasterFormat(format)) {
+        return std::unexpected(invalidArgument("the master is stereo, 5.1 or 7.1, not " + std::string(toString(format))));
     }
     SequenceEditor ed(state, **seq);
     if ((*seq)->masterFormat != format) {

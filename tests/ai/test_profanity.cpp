@@ -8,8 +8,13 @@
 #include <wabcut/ai/edit/Profanity.h>
 #include <wabcut/ai/edit/TranscriptCommands.h>
 
+#include <wabcut/model/MediaLocator.h>
+
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -157,4 +162,102 @@ TEST_CASE("audio.bleepProfanity bleeps the words in the sound only and captions 
     auto again = f.h.ok("audio.bleepProfanity");
     CHECK(again.data["words"].empty());
     CHECK(f.h.errorOf("audio.bleepProfanity", {{"mode", "none"}}) == "InvalidParams");
+}
+
+// ---- 0.7 (card 102): a sound file of the user's instead of the bleep tone --------------------------------------------
+
+namespace {
+
+/// A tiny mono 16-bit WAV (silence is fine: the command only needs a readable file) in the test output folder.
+std::string writeSoundFile(const char* name, bool riff = true) {
+    const std::filesystem::path dir = std::filesystem::path(WABCUT_TEST_OUTPUT_DIR) / "replace-profanity";
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path file = dir / name;
+    std::ofstream out(file, std::ios::binary);
+    if (riff) {
+        const std::uint32_t samples = 4800;
+        const auto u32 = [&](std::uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+        const auto u16 = [&](std::uint16_t v) { out.write(reinterpret_cast<const char*>(&v), 2); };
+        out.write("RIFF", 4);
+        u32(36 + samples * 2);
+        out.write("WAVEfmt ", 8);
+        u32(16);
+        u16(1);
+        u16(1);
+        u32(48000);
+        u32(96000);
+        u16(2);
+        u16(16);
+        out.write("data", 4);
+        u32(samples * 2);
+        for (std::uint32_t i = 0; i < samples; ++i) {
+            u16(static_cast<std::uint16_t>(1000 + i % 50));
+        }
+    } else {
+        out << "not a sound";
+    }
+    return pathToUtf8(file);
+}
+
+} // namespace
+
+TEST_CASE("audio.replaceProfanity plays the user's sound file on the words instead of the tone", "[ai][edit][profanity][redaction]") {
+    const command::CommandSpec* spec = editingCommands().find("audio.replaceProfanity");
+    REQUIRE(spec);
+    CHECK(spec->touchesFiles); // it reads a file the caller names: held back from hosts that have no file access
+    CHECK(spec->fileParams == std::vector<std::string>{"sound"});
+    CHECK_FALSE(editingCommands().find("audio.bleepProfanity")->touchesFiles); // as before
+
+    Fixture f;
+    f.h.ok("captions.generateFromTranscript", {{"name", "Captions"}});
+    const std::string sound = writeSoundFile("boing.wav");
+    const std::size_t undo = f.h.session.undoCount();
+
+    const auto dry = f.h.run(Json{{"command", "audio.replaceProfanity"}, {"params", Json{{"sound", sound}}}, {"dryRun", true}});
+    REQUIRE(dry.ok());
+    CHECK(f.h.state()->redactions.empty());
+    CHECK(f.h.state()->assets.empty());
+
+    const auto r = f.h.ok("audio.replaceProfanity", {{"sound", sound}, {"padding", 0.0}});
+    CHECK(f.h.session.undoCount() == undo + 1); // one step: the file and the redaction together
+    REQUIRE(r.data["words"].size() == 2);
+    CHECK(std::filesystem::path(r.data["sound"].get<std::string>()) == std::filesystem::path(sound)); // (separators may differ)
+    REQUIRE(f.h.state()->assets.size() == 1);
+    const ProjectAsset& asset = f.h.state()->assets.front();
+    CHECK(asset.kind == kAssetKindSound);
+    CHECK(asset.name == "boing.wav");
+    CHECK(std::filesystem::path(asset.locator.path) == std::filesystem::path(sound));
+    REQUIRE(f.h.state()->redactions.size() == 1);
+    const Redaction& red = *f.h.state()->redactions.begin();
+    CHECK(red.audio == RedactionAudio::Bleep);
+    CHECK(red.sound == asset.id);
+    CHECK(red.audioRanges.size() == 2);
+    // Captions over the replaced words read [bleep], as for a bleep.
+    const std::string text = allText(f.h.sequence(f.h.state()).captionTracks.back());
+    CHECK(text.find("fuck") == std::string::npos);
+    CHECK(text.find(std::string(kRedactedWordText)) != std::string::npos);
+
+    SECTION("undo takes the file and the redaction back") {
+        REQUIRE(f.h.session.undo());
+        CHECK(f.h.state()->redactions.empty());
+        CHECK(f.h.state()->assets.empty());
+    }
+    SECTION("the same file is one asset however often it is used") {
+        // Another media item with its own words would add a redaction, not an asset: bleep again with the same file.
+        REQUIRE(f.h.ok("audio.replaceProfanity", {{"sound", sound}}).data["words"].empty()); // already replaced
+        CHECK(f.h.state()->assets.size() == 1);
+    }
+}
+
+TEST_CASE("audio.replaceProfanity refuses a file it cannot use and changes nothing", "[ai][edit][profanity][redaction]") {
+    Fixture f;
+    const auto before = f.h.state();
+    CHECK(f.h.errorOf("audio.replaceProfanity") == "InvalidParams"); // "sound" is required
+    CHECK(f.h.errorOf("audio.replaceProfanity", {{"sound", "C:/does/not/exist.wav"}}) == "InvalidParams");
+    CHECK(f.h.errorOf("audio.replaceProfanity", {{"sound", ""}}) == "InvalidParams");
+    // A folder is not a sound file.
+    CHECK(f.h.errorOf("audio.replaceProfanity", {{"sound", pathToUtf8(std::filesystem::path(WABCUT_TEST_OUTPUT_DIR))}}) == "InvalidParams");
+    CHECK(f.h.state() == before);
+    // The old command did not learn the parameter: it still bleeps with the tone only.
+    CHECK(f.h.errorOf("audio.bleepProfanity", {{"sound", writeSoundFile("late.wav")}}) == "InvalidParams");
 }

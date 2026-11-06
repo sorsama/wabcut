@@ -24,6 +24,10 @@ import QtQuick.Controls.Basic
 // prompt before the first upload) and transcribe the sequence or the selected clips, with progress and Cancel.
 // 0.4: the audio tracks to transcribe are switches (the mic and dialogue tracks by default; the choice is remembered by
 // track name).
+// 0.7: the language spoken is chosen above Transcribe (card 073: auto-detect or any of the recogniser's languages, with
+// an optional translation to English), words of right-to-left languages (Hebrew, Arabic, ...) read from the right, and
+// the ... menu next to Find is Transcribe again (in another language, say; the old transcript is replaced when the new
+// one is done) and Delete transcript (card 080), each confirmed in a row under the toolbar.
 FocusScope {
     id: root
     objectName: "transcriptPage"
@@ -36,7 +40,48 @@ FocusScope {
     readonly property bool tracksReady: chosenTracks > 0 || Transcript.audioTracks.length === 0
     /// What the word menu runs once it has closed ("fix", "find"): a row that moves the focus waits for the menu.
     property string pendingMenuAction: ""
+    /// card 080: the question open under the toolbar: "" (none), "redo" or "delete", for `taskScope` ("sequence" or
+    /// "selection"), and how many audio files it concerns.
+    property string transcriptTask: ""
+    property string taskScope: "sequence"
+    property int taskCount: 0
+    /// The menu's choice, run once the menu has closed (a row that takes the focus waits for the menu).
+    property string pendingTask: ""
 
+    /// Opens the Transcribe again / Delete transcript question for a scope.
+    function openTask(task: string, scope: string) {
+        taskScope = scope
+        taskCount = Transcript.transcriptCount(scope)
+        transcriptTask = task
+    }
+    function runTask() {
+        const scope = taskScope
+        if (transcriptTask === "delete") {
+            Transcript.deleteTranscript(scope)
+            transcriptTask = ""
+        } else if (transcriptTask === "redo") {
+            const prompt = Transcript.consentFor(scope, true)
+            if (prompt.needed) {
+                consent.scope = scope
+                consent.redo = true
+                consent.ask(prompt)
+            } else {
+                Transcript.transcribe(scope, false, true)
+            }
+            transcriptTask = ""
+        }
+    }
+    function taskMenuOptions(): var {
+        const out = []
+        const selected = ProjectController.selectedClips.length > 0
+        out.push({ id: "redo:sequence", name: qsTr("Transcribe again…") })
+        if (selected && Transcript.transcriptCount("selection") > 0)
+            out.push({ id: "redo:selection", name: qsTr("Transcribe selected clips again…") })
+        out.push({ id: "delete:sequence", name: qsTr("Delete transcript…") })
+        if (selected && Transcript.transcriptCount("selection") > 0)
+            out.push({ id: "delete:selection", name: qsTr("Delete transcript of selected clips…") })
+        return out
+    }
     /// P1 round (#30): Edit > Find (Ctrl+F) - the Find field, its text selected.
     function focusFind() {
         search.forceActiveFocus(Qt.ShortcutFocusReason)
@@ -451,6 +496,12 @@ FocusScope {
                 }
             }
 
+            // card 073: the language the recording is spoken in, and translating it to English.
+            GroupLabel { text: qsTr("Language") }
+            SpokenLanguageRow {
+                Layout.fillWidth: true
+            }
+
             RowLayout {
                 Layout.fillWidth: true
                 spacing: Theme.space(2)
@@ -583,9 +634,105 @@ FocusScope {
                 command: "transcript.correctFromScript"
                 onClicked: KeymapDispatcher.trigger("transcript.correctFromScript")
             }
+            // card 080: Transcribe again and Delete transcript.
+            IconButton {
+                id: taskButton
+                objectName: "transcriptMore"
+                compact: true
+                iconName: "ellipsis"
+                enabled: Transcript.jobStatus !== "running"
+                tooltip: qsTr("Transcribe again or delete the transcript")
+                Accessible.name: qsTr("Transcript options")
+                onClicked: {
+                    taskMenu.options = root.taskMenuOptions()
+                    taskMenu.popup(taskButton, 0, taskButton.height + Theme.space(1))
+                }
+                OptionsMenu {
+                    id: taskMenu
+                    objectName: "transcriptTaskMenu"
+                    onChosen: id => root.pendingTask = id
+                    onClosed: {
+                        if (root.pendingTask !== "") {
+                            const parts = root.pendingTask.split(":")
+                            root.pendingTask = ""
+                            root.openTask(parts[0], parts[1])
+                        }
+                    }
+                }
+            }
+        }
+
+        // card 080: the question behind Transcribe again / Delete transcript.
+        Rectangle {
+            objectName: "transcriptTaskPanel"
+            Layout.fillWidth: true
+            visible: root.transcriptTask !== ""
+            implicitHeight: taskColumn.implicitHeight + Theme.space(3)
+            radius: Theme.radiusField
+            color: Theme.sunken
+            border.width: Theme.hairline
+            border.color: root.transcriptTask === "delete" ? Theme.danger : Theme.border
+
+            ColumnLayout {
+                id: taskColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.margins: Theme.space(2)
+                spacing: Theme.space(2)
+
+                Text {
+                    objectName: "transcriptTaskText"
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    color: Theme.textPrimary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textMd
+                    text: root.transcriptTask === "delete"
+                          ? qsTr("Delete the transcript of %n audio file(s)? Captions made from it and cuts made by editing its text stay. You can transcribe the audio again afterwards.", "", root.taskCount)
+                          : qsTr("Transcribe %n audio file(s) again? The new transcript replaces the old one when it is done; the old one stays if you cancel.", "", root.taskCount)
+                }
+                SpokenLanguageRow {
+                    Layout.fillWidth: true
+                    visible: root.transcriptTask === "redo"
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.space(1)
+                    PillButton {
+                        objectName: "transcriptTaskConfirm"
+                        variant: root.transcriptTask === "delete" ? "danger" : "primary"
+                        compact: true
+                        iconName: root.transcriptTask === "delete" ? "trash-2" : "rotate-ccw"
+                        text: root.transcriptTask === "delete" ? qsTr("Delete transcript") : qsTr("Transcribe again")
+                        enabled: root.taskCount > 0 && (root.transcriptTask === "delete" || (!Transcript.setupNeeded && root.tracksReady))
+                        onClicked: root.runTask()
+                    }
+                    PillButton {
+                        objectName: "transcriptTaskCancel"
+                        compact: true
+                        text: qsTr("Cancel")
+                        onClicked: root.transcriptTask = ""
+                    }
+                }
+            }
         }
 
         JobRow { Layout.fillWidth: true }
+
+        // 0.7 (card 111): a recording that switches language names the languages and how its words divide among them.
+        Text {
+            objectName: "transcriptLanguages"
+            Layout.fillWidth: true
+            visible: Transcript.languageSummary !== ""
+            text: qsTr("Languages: %1").arg(Transcript.languageSummary)
+            elide: Text.ElideRight
+            color: Theme.textTertiary
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.textSm
+            Accessible.role: Accessible.StaticText
+            Accessible.name: text
+        }
 
         // The words. A press picks the word under the pointer; dragging extends the selection across paragraphs.
         FocusScope {
@@ -667,6 +814,8 @@ FocusScope {
                     required property int speakerIndex
                     required property string speakerKey   // 0.6 (#36): "v…", "" while the label has no speaker
                     required property string speakerColor // 0.6 (#36): "#RRGGBB", "" while the label has no speaker
+                    required property string language     // 0.7 (card 111): the paragraph's language code
+                    required property string languageName // 0.7 (card 111): its name, only in a transcript of mixed languages
                     required property string timeText
                     required property int first
                     required property int last
@@ -815,6 +964,25 @@ FocusScope {
                                     visible: speakerButton.visualFocus
                                 }
                             }
+                            // 0.7 (card 111): the language of this paragraph, in a transcript that switches between several.
+                            Rectangle {
+                                objectName: "transcriptLanguage_" + para.index
+                                visible: para.languageName !== ""
+                                implicitWidth: languageText.implicitWidth + Theme.space(4)
+                                implicitHeight: languageText.implicitHeight + Theme.space(1)
+                                radius: height / 2
+                                color: Theme.raised
+                                Accessible.role: Accessible.StaticText
+                                Accessible.name: qsTr("Language: %1").arg(para.languageName)
+                                Text {
+                                    id: languageText
+                                    anchors.centerIn: parent
+                                    text: para.languageName
+                                    color: Theme.textSecondary
+                                    font.family: Theme.fontSans
+                                    font.pixelSize: Theme.textXs
+                                }
+                            }
                             Text {
                                 text: para.timeText
                                 color: Theme.textTertiary
@@ -877,6 +1045,9 @@ FocusScope {
                         Flow {
                             id: flow
                             width: column.width
+                            // card 073: Hebrew, Arabic and the other right-to-left languages read from the right.
+                            LayoutMirroring.enabled: Transcript.rtl
+                            LayoutMirroring.childrenInherit: false
 
                             Repeater {
                                 model: para.words
@@ -1181,10 +1352,13 @@ FocusScope {
     AiConsentDialog {
         id: consent
         property string scope: "sequence"
+        property bool redo: false // card 080: Transcribe again
         onAllowed: always => {
             if (always)
                 AiController.grantConsent(consent.prompt.provider, "transcribe")
-            Transcript.transcribe(consent.scope, true) // the user's answer: allowed for this job
+            const again = consent.redo
+            consent.redo = false
+            Transcript.transcribe(consent.scope, true, again) // the user's answer: allowed for this job
         }
     }
 }

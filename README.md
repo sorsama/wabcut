@@ -9,7 +9,7 @@
 Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve and Final Cut · AI that runs on your own machine
 
 [![Status: alpha](https://img.shields.io/badge/status-alpha-D6F54C)](#project-status)
-[![Version 0.6.0](https://img.shields.io/badge/version-0.6.0-9B6CFF)](docs/release-notes-0.6.md)
+[![Version 0.7.0](https://img.shields.io/badge/version-0.7.0-9B6CFF)](docs/release-notes-0.7.md)
 [![Platforms: Windows, with Linux and macOS previews](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS%20%28preview%29-1D1D20)](#install)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white)](docs/building.md)
@@ -21,7 +21,7 @@ Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve an
 </div>
 
 > [!WARNING]
-> **Wabcut is in development. This is an alpha version (0.6.0).**
+> **Wabcut is in development. This is an alpha version (0.7.0).**
 > Expect bugs, missing features and changes between versions, including to shortcuts, settings and the project format.
 > Keep backups of your projects and media, and don't rely on it yet for deadline work or sensitive material.
 
@@ -101,9 +101,17 @@ captured by the automated UI tests.</sub>
 
 ## Project status
 
-Wabcut is an **alpha**. The current release is **0.6.0**.
+Wabcut is an **alpha**. The current release is **0.7.0**.
 
-0.6 brought text you edit in Effect Controls, auditions that keep several takes at one cut, a beat grid to cut music
+0.7 works through the rest of the roadmap: track groups, video solo, locked clips, clip notes, a pacing strip,
+background rendering, Render and Replace for nests and a graph editor; Motion Blur, Track Motion, Scale Width, gyro
+stabilization (GoPro, Sony), ColorChecker matching, track effects and OpenFX plug-ins; six local AI video effects
+(Denoise, Restore, Refocus, Face Retouch, Eye Contact, Frame Interpolation); OpenType text, a font picker with script
+filters and a Sources panel; animated captions, 100 transcription languages and bilingual subtitles; a 7.1 master,
+Dynamics Processing, spectral repair and EQ Match; H.264/HEVC smart render, HDR10+, a check before export, cloud
+projects and review links on your own storage, a Stock panel, capture from a camera, a Python API, VR / 360 video and
+Save for an Older Version, plus the rebuilt Settings > AI with 35 more providers and a local model library
+([0.7 release notes](docs/release-notes-0.7.md)). 0.6 brought text you edit in Effect Controls, auditions that keep several takes at one cut, a beat grid to cut music
 to, HDR finishing and SDR Conform, seven new effects and Master Clip Effects, an export queue that survives a restart,
 several sequences or every marker as separate files, MXF OP1a and OP-Atom delivery with CEA-608/708 captions,
 dialogue, music and effects stems, caption files beside timeline hand-offs, Library usage counts, bins that open in
@@ -119,21 +127,23 @@ Premiere Pro has for gaming videos, video essays and documentaries ([0.2 release
 Most of the editor works, but it has only been tested on a small number of machines and projects. Known gaps in this
 version:
 
-- **Made and tested on Windows.** Wabcut is built by a solo developer who works only on Windows 10 and 11. The Linux
-  and macOS (Apple silicon) downloads are **previews**: GitHub's machines build, install, start and smoke-test them
-  for every release, but nobody has edited real projects with them yet. Local transcription and audio plug-ins are
-  Windows-only for now.
-- **Not code-signed yet.** Windows SmartScreen may warn on first run, and macOS asks you to allow the first start.
+- **Made and tested on Windows.** Wabcut is built by a solo developer who works only on Windows 10 and 11. The Windows on
+  ARM64, Linux and macOS (Apple silicon) downloads are **previews**: GitHub's machines build, install, start and
+  smoke-test them for every release, but nobody has edited real projects with them yet. Local transcription and audio
+  plug-ins are Windows x64 only for now.
+- **Not code-signed yet.** Windows SmartScreen may warn on first run, and macOS asks you to allow the first start until
+  a release is signed and notarized.
   Updates are opt-in (Settings > General > Updates); on Windows, a copy installed with the MSI can install them when
   you quit.
 - **AI quality is not benchmarked yet.** Local models and live cloud providers have not been measured on real projects.
 - **The features since 0.2 are tested by automated tests only.** None has been through a release run with real
   projects yet, an AAF or OMF hand-off has not been through a full mix session, and an MXF has not been through a
   broadcaster's QC tool.
-- **Not built yet:** OpenFX video plug-ins, VR / 360 video, and cloud collaboration (review links, shared projects).
+- **Not built yet:** hardware video I/O cards (DeckLink, AJA, NDI), writing Dolby Vision, HTML-only OGraf templates,
+  and live co-editing.
 - **Privacy redaction:** check every redacted export by eye before you share it.
 
-The full list is in the [release notes](docs/release-notes-0.6.md#known-issues).
+The full list is in the [release notes](docs/release-notes-0.7.md#known-limitations).
 
 Need something that isn't here? [Open an issue](../../issues) and say what you're trying to make.
 
@@ -144,8 +154,9 @@ Download the latest release from the [Releases page](../../releases/latest):
 | Platform | Download | First start |
 |---|---|---|
 | **Windows** 10 (22H2) or 11, x64 | per-user **MSI** (no administrator rights) or **portable ZIP** | Not code-signed yet: if SmartScreen stops it, choose **More info**, then **Run anyway**. |
+| **Windows** 11 on ARM64, preview (Snapdragon X and similar) | per-user **MSI** or **portable ZIP** (`-windows-arm64`) | As on x64. A native ARM64 build; it has no local transcription or audio plug-ins yet. |
 | **Linux** x64, preview (Ubuntu 24.04 or as new; X11 or Wayland) | **AppImage** or **tar.gz** | `chmod +x` the AppImage and run it, or unpack the tar.gz and run `bin/wabcut`. Nothing else to install: Qt and its libraries come with it. |
-| **macOS** 15 or newer, Apple silicon, preview | **DMG** | Drag Wabcut to Applications. Not notarized yet: allow it once in **System Settings > Privacy & Security > Open Anyway**. |
+| **macOS** 15 or newer, Apple silicon, preview | **DMG** | Drag Wabcut to Applications. When the release says it is signed and notarized it opens normally; otherwise allow it once in **System Settings > Privacy & Security > Open Anyway**. |
 
 You need a GPU with current drivers and 16 GB of RAM (8 GB minimum). Then follow
 **[Getting started](docs/getting-started.md)**. It walks through four example projects: a gaming video, a Short, a
@@ -169,7 +180,7 @@ after a one-time download. See [AI with your own key](docs/getting-started.md#ai
 |---|---|---|
 | [Getting started](docs/getting-started.md) | [Commands](docs/commands.md): every edit as a typed, previewed, undoable command | [Building](docs/building.md) |
 | [Keymap](docs/keymap.md): Premiere shortcuts, `.kys` import | [MCP](docs/mcp.md): `wabcut-cli mcp`, a local server for Claude, Codex and other agents | [Architecture](docs/architecture.md) |
-| [Export](docs/export.md) | [Extensions](docs/extensions.md): add commands in JavaScript | [Design language](docs/design-language.md) and [design system](docs/design-system.md) |
+| [Export](docs/export.md) | [Extensions](docs/extensions.md): add commands in JavaScript<br>[Python](docs/python.md): script a project from your own Python | [Design language](docs/design-language.md) and [design system](docs/design-system.md) |
 | [Interchange](docs/interchange.md): Premiere, Resolve, Final Cut, OTIO, EDL | | [Performance](docs/performance.md) |
 | [Graphics and templates](docs/graphics.md) | | [Release process](docs/release.md) |
 | [Colour](docs/color.md) | | [Roadmap](docs/roadmap.md) |
@@ -180,6 +191,8 @@ after a one-time download. See [AI with your own key](docs/getting-started.md#ai
 | [Audio](docs/audio.md): submixes, the clip mixer | | |
 | [Captions and transcripts](docs/captions.md) | | |
 | [Audio plug-ins](docs/plugins.md) | | |
+| [Capture](docs/capture.md): cameras, capture cards, tape | | |
+| [Cloud projects, review links, stock media](docs/cloud.md) | | |
 | [Premiere Pro comparison](docs/premiere-parity.md) | | |
 
 ## Building from source

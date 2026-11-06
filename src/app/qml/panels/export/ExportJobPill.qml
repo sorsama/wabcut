@@ -140,6 +140,8 @@ Item {
 
 
                 Text {
+                    id: detailText
+                    objectName: "exportJobSummary"
                     text: root.running && root.phaseText !== "" && root.fpsText !== ""
                           ? qsTr("%1% · %2 · %3").arg(Math.round(root.progress * 100)).arg(root.fpsText).arg(root.etaText)
                           : root.jobState === "done" ? root.detail
@@ -147,6 +149,18 @@ Item {
                     color: root.jobState === "failed" ? Theme.danger : Theme.textSecondary
                     font.family: Theme.fontMono
                     font.pixelSize: Theme.textSm
+                    // 0.7 (card 049): why frames of a smart-rendered export were encoded again, and where it starts.
+                    readonly property string smartNotes: root.jobState === "done" ? (ExportController.job(root.jobId).smartNotes ?? "") : ""
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: text
+                    Accessible.description: smartNotes
+                    HoverHandler {
+                        id: detailHover
+                    }
+                    Tooltip {
+                        visible: detailHover.hovered && detailText.smartNotes !== ""
+                        text: detailText.smartNotes
+                    }
                 }
 
                 IconButton {

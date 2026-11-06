@@ -1,8 +1,8 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 
-// Onboarding (M5j; fun, skippable, never in the way): the first-run welcome ("Coming from Premiere?"), the three-step
-// tour, the Keyboard Trainer and What's new. Main places it over the window, gives it the tour's targets and runs
+// Onboarding (M5j; fun, skippable, never in the way): the first-run welcome ("Coming from Premiere?"), the seven-step
+// tour (Library, Timeline, menu bar, Program Monitor, Effects, command palette, Export), the Keyboard Trainer and What's new. Main places it over the window, gives it the tour's targets and runs
 // what it asks for (a workspace, the Library). The Help menu and the command palette run any of it again
 // (run()).
 //   * firstRun(): the welcome, once, when it was never completed or skipped (Preferences.welcomeDone). Main calls it
@@ -14,12 +14,18 @@ Item {
     // The tour's targets (Main's items).
     property Item libraryTarget: null
     property Item timelineTarget: null
+    property Item menuBarTarget: null
+    property Item programTarget: null
+    property Item effectsTarget: null
     property Item exportTarget: null
     /// Main's workspace (0 Edit, 1 Audio, 2 Export, 3 Color, 4 Captions).
     property int workspace: 0
 
     signal workspaceRequested(int workspace)
     signal libraryRequested()
+    /// A step points at a panel that may be closed or sit in a hidden tab ("program", "effects"): Main shows it (without
+    /// moving the keyboard focus off the tour card).
+    signal panelRequested(string key)
     /// A dialog closed or the tour ended (Main puts focus back in the editor if it was left on nothing).
     signal dialogClosed()
 
@@ -92,6 +98,20 @@ Item {
               //: Tour; %1 = Add Edit's shortcut, %2 = Ripple Delete's
               text: qsTr("Cut with the keys you know: %1 adds an edit, %2 ripple deletes, and J, K and L shuttle. The List button shows it as a list for screen readers.")
                         .arg(root.shortcut("sequence.addEdit")).arg(root.shortcut("edit.rippleDelete")) },
+            { key: "menubar", target: root.menuBarTarget, action: "",
+              title: qsTr("The menu bar"),
+              text: qsTr("Every command is in these menus, with its shortcut beside it. Window opens any panel as a tab of the panel group you clicked last. In a narrow window the menus fold into one Menu button.") },
+            { key: "program", target: root.programTarget, action: "",
+              title: qsTr("The Program Monitor"),
+              text: qsTr("This is your cut. The playback resolution button in its header trades sharpness for speed on a slow machine, and clicking the timecode lets you type a time to jump to.") },
+            { key: "effects", target: root.effectsTarget, action: "",
+              title: qsTr("The Effects panel"),
+              text: qsTr("Search the effects and transitions here, then drag one onto a clip or double-click it to put it on the selected clips.") },
+            { key: "palette", target: null, action: "",
+              title: qsTr("The command palette"),
+              //: Tour; %1 = the command palette's shortcut
+              text: qsTr("Press %1 and type what you want to do: it finds any command, panel or setting, and shows its shortcut when it has one.")
+                        .arg(Qt.platform.os === "osx" ? "⇧⌘P" : "Ctrl+Shift+P") },
             { key: "export", target: root.exportTarget, action: qsTr("Open Export"),
               title: qsTr("Export"),
               //: Tour; %1 = the Export Media shortcut
@@ -103,6 +123,8 @@ Item {
                 root.libraryRequested()
             else if (key === "timeline" && root.workspace === 2)
                 root.workspaceRequested(0)
+            else if (key === "program" || key === "effects")
+                root.panelRequested(key)
         }
         onActionRequested: key => {
             if (key === "export")

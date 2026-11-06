@@ -161,6 +161,8 @@ std::vector<Presented> consume(render::CompositeMailbox& mailbox, std::chrono::m
             p.target = sel.composite->targetTime;
             p.epoch = sel.composite->seekEpoch;
             p.layers = static_cast<int>(sel.composite->layers.size());
+            p.canvas = sel.composite->canvas;
+            p.pixelAspect = sel.composite->canvas.pixelAspect;
             // The topmost decoded picture (a burned-in caption on top carries no frame).
             for (auto it = sel.composite->layers.rbegin(); it != sel.composite->layers.rend(); ++it) {
                 if (it->frame.isValid()) {

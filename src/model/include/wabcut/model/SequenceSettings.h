@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,13 @@ struct SequenceSettingsChange {
     std::optional<std::int32_t> colorIndex;
     /// 0.4: Markers > Ripple Sequence Markers (Sequence::rippleMarkers): the sequence's markers follow ripple edits.
     std::optional<bool> rippleMarkers;
+    /// 0.7 (card 120): Sequence::rippleTrackKeyframes: track keyframes follow ripple edits.
+    std::optional<bool> rippleTrackKeyframes;
+    /// 0.7 (card 046): Premiere's work area. A range sets it (non-empty, inside [0, duration]); an engaged empty optional
+    /// clears it; unset keeps it.
+    std::optional<std::optional<TimeRange>> workArea;
+    /// 0.7: VR / 360 video: the projection and eye layout of the sequence's frame (VrProjection::None = a flat sequence).
+    std::optional<VrFormat> vr;
 };
 
 /// Sequence > Sequence Settings. Errors: NotFound, InvalidArgument (a value out of range). One ChangeSet.
@@ -81,6 +89,12 @@ std::expected<Created<MediaId>, Error> duplicateMedia(const ProjectState& state,
 /// from).
 std::expected<Created<SequenceId>, Error> newSequenceFromClip(const ProjectState& state, MediaId media,
                                                               std::string name = {});
+
+/// 0.7 (card 055): one sequence from several items: settings as newSequenceFromClip makes them for the first item (named
+/// after it unless `name` is given), then every other item edited in after the one before it, between its Source
+/// Monitor marks. Errors as newSequenceFromClip; an empty list is InvalidArgument.
+std::expected<Created<SequenceId>, Error> newSequenceFromClips(const ProjectState& state, std::span<const MediaId> media,
+                                                               std::string name = {});
 
 /// 0.6 (Premiere's Clip Mismatch Warning): the Sequence Settings change that makes `sequence` match `media` the way New
 /// Sequence From Clip would make it (frame size as displayed, frame rate, pixel aspect, audio sample rate), or nullopt

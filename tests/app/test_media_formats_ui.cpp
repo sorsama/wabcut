@@ -319,7 +319,16 @@ TEST_CASE("Media formats in the shell: the Field Options dialog, Import Layered 
         library->setIngestAction(QStringLiteral("proxies"));
         REQUIRE(QMetaObject::invokeMethod(browser, "importSelected"));
         CHECK(controller->snapshot()->media.size() == items + 1);
-        CHECK(library->message() == QStringLiteral("Creating proxies of 1 clip(s)."));
+        CHECK(library->message() == QStringLiteral("Creating proxies of 1 clip."));
+        // 0.7 (card 022): Copy and Create Proxies copies first, then asks for the proxies of the copies.
+        QTemporaryDir copyTo;
+        REQUIRE(copyTo.isValid());
+        library->setIngestAction(QStringLiteral("copyProxies"));
+        library->setIngestFolder(QUrl::fromLocalFile(copyTo.path()).toString());
+        REQUIRE(QMetaObject::invokeMethod(browser, "importSelected"));
+        CHECK(controller->snapshot()->media.size() == items + 2);
+        CHECK(library->message() ==
+              QStringLiteral("Copied to %1; creating proxies of 1 clip.").arg(QDir::toNativeSeparators(copyTo.path())));
         library->setIngest(false);
         source->unload();
     }
@@ -413,6 +422,48 @@ TEST_CASE("Media Browser Ingest: Copy needs a folder and imports the copies; the
     CHECK(r.undo() == before + 1);
     CHECK(r.library.browserFileInfo(folder.notes()).isEmpty());
     CHECK_FALSE(r.library.message().isEmpty());
+}
+
+// 0.7 (card 022): Premiere's Ingest "Copy and Create Proxies" in one action.
+TEST_CASE("Media Browser Ingest: Copy and Create Proxies copies into the folder and imports the copies (022)",
+          "[app][library][media-browser][ingest]") {
+    if (!haveBrowserMedia()) {
+        SKIP("test clips were not generated (tools/gen_test_media.py)");
+    }
+    BrowserFolder folder;
+    BrowserRig r;
+    const std::size_t before = r.undo();
+    r.library.setIngest(true);
+    r.library.setIngestAction(QStringLiteral("copyProxies"));
+    CHECK(r.library.ingestAction() == QStringLiteral("copyProxies")); // a known action: kept
+    // Like Copy it needs a folder, and refuses without one.
+    CHECK(r.library.importFromBrowser({folder.single()}).isEmpty());
+    CHECK_FALSE(r.library.message().isEmpty());
+    CHECK(r.undo() == before);
+
+    QTemporaryDir to;
+    REQUIRE(to.isValid());
+    r.library.setIngestFolder(QUrl::fromLocalFile(to.path()).toString());
+    const QString key = r.library.importFromBrowser({folder.single()});
+    INFO(r.library.message().toStdString());
+    REQUIRE_FALSE(key.isEmpty());
+    CHECK(r.undo() == before + 1);
+    const MediaItem* item = r.item(key);
+    REQUIRE(item);
+    // The item is the copy (the proxies are made of what the project plays), not the card's file.
+    const std::filesystem::path copied = std::filesystem::path(to.path().toStdWString()) / "interview" / "interview.mp4";
+    CHECK(std::filesystem::is_regular_file(copied));
+    CHECK(pathFromUtf8(item->locator.path).lexically_normal() == copied.lexically_normal());
+    // This rig has no proxy manager: the message still says where the copy went and that nothing could be made.
+    CHECK(r.library.message().startsWith(QStringLiteral("Copied to ")));
+
+    // Plain Create Proxies and Copy are unchanged next to it: the settings round trip names all four.
+    for (const char* action : {"copy", "transcode", "proxies", "copyProxies"}) {
+        r.library.setIngestAction(QString::fromLatin1(action));
+        CHECK(r.library.ingestAction() == QString::fromLatin1(action));
+    }
+    r.library.setIngestAction(QStringLiteral("copyProxy"));
+    CHECK(r.library.ingestAction() == QStringLiteral("copyProxies")); // an unknown name changes nothing
 }
 
 TEST_CASE("Media Browser Ingest: Transcode imports the original and switches it to its transcoded file",

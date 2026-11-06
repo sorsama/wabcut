@@ -1,6 +1,7 @@
 #include "MaskBridge.h"
 
 #include "BridgeIds.h"
+#include "FramePlacement.h"
 #include "ProjectController.h"
 #include "ProjectLifecycle.h"
 #include "SourceMonitorBridge.h"
@@ -214,24 +215,12 @@ struct MaskBridge::Located {
     double aspect = 16.0 / 9.0;
 };
 
-struct MaskBridge::Placement {
-    render::Affine2D frameToCanvas;
-    render::Affine2D canvasToFrame;
-    double frameWidth = 1.0;
-    double frameHeight = 1.0;
-    double canvasWidth = 1.0;
-    double canvasHeight = 1.0;
-    double aspect = 16.0 / 9.0;
-    Ticks curveTime;
-
+struct MaskBridge::Placement : FramePlacement {
     QPointF toCanvas(double u, double v) const {
-        const render::Vec2 p = frameToCanvas.map({u * frameWidth, v * frameHeight});
-        return {p.x / canvasWidth, p.y / canvasHeight};
+        const auto p = toCanvasFraction(u, v);
+        return {p.first, p.second};
     }
-    std::pair<double, double> toFrame(double fx, double fy) const {
-        const render::Vec2 p = canvasToFrame.map({fx * canvasWidth, fy * canvasHeight});
-        return {p.x / frameWidth, p.y / frameHeight};
-    }
+    std::pair<double, double> toFrame(double fx, double fy) const { return toFrameFraction(fx, fy); }
 };
 
 MaskBridge::MaskBridge(QObject* parent) : QObject(parent) {
@@ -489,40 +478,13 @@ std::optional<MaskBridge::Placement> MaskBridge::placement() const {
 
 std::optional<MaskBridge::Placement> MaskBridge::placementOf(const ProjectState& project, const Sequence& seq,
                                                              const Clip& clip, Ticks t) {
-    const MediaItem* item = project.findMedia(clip.media);
-    if (!item || clip.stream.index < 0 || clip.stream.index >= static_cast<int>(item->info.video.size())) {
+    // The one shared placement (FramePlacement.h): the same maths as playback, so every tool agrees with the picture.
+    const std::optional<FramePlacement> shared = framePlacementOf(project, seq, clip, t);
+    if (!shared) {
         return std::nullopt;
     }
-    const VideoStreamInfo& v = item->info.video[static_cast<std::size_t>(clip.stream.index)];
-    if (v.width <= 0 || v.height <= 0 || seq.width <= 0 || seq.height <= 0) {
-        return std::nullopt;
-    }
-    const ClipProperties& p = clip.properties();
-    render::LayerTransform transform;
-    transform.position = {p.value(ParamId::PositionX, t), p.value(ParamId::PositionY, t)};
-    transform.scale = p.value(ParamId::Scale, t) * scaleToFrameFactor(project, clip, seq.width, seq.height); // P.2
-    transform.rotationDegrees = p.value(ParamId::Rotation, t);
-    transform.anchor = {p.value(ParamId::AnchorX, t), p.value(ParamId::AnchorY, t)};
-    // As playback places it (Evaluate.cpp): the stream's display rotation before the clip's own motion.
-    const int quarter = ((v.rotationDegrees / 90) % 4 + 4) % 4;
-    if (quarter != 0) {
-        transform.rotationDegrees += 90.0 * quarter;
-        const render::Vec2 a = transform.anchor;
-        transform.anchor = quarter == 1 ? render::Vec2{a.y, -a.x} : quarter == 2 ? render::Vec2{-a.x, -a.y} : render::Vec2{-a.y, a.x};
-    }
-    const double par = v.sampleAspect.isValid() ? v.sampleAspect.toDouble() : 1.0;
     Placement out;
-    out.frameToCanvas = render::layerToCanvas(transform, v.width, v.height, par, {seq.width, seq.height});
-    if (std::abs(out.frameToCanvas.determinant()) < 1e-12) {
-        return std::nullopt;
-    }
-    out.canvasToFrame = out.frameToCanvas.inverted();
-    out.frameWidth = v.width;
-    out.frameHeight = v.height;
-    out.canvasWidth = seq.width;
-    out.canvasHeight = seq.height;
-    out.aspect = v.width * par / v.height;
-    out.curveTime = t;
+    static_cast<FramePlacement&>(out) = *shared;
     return out;
 }
 

@@ -22,6 +22,9 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <QDir>
+#include <QImage>
+
 
 #include <array>
 #include <string>
@@ -103,6 +106,18 @@ TEST_CASE("Editing: Video Options scale the selected clip to the frame in one un
     REQUIRE(r.editing.runCommand(QStringLiteral("clip.scaleToFrameSize")));
     CHECK_FALSE(r.now("V1@0").content().scaleToFrame);
 
+    // 0.7 (card #98): Nearest Neighbor Scaling, one undo step, toggled by its key too, next to Scale to Frame Size.
+    CHECK_FALSE(r.editing.clipVideoInfo(r.key("V1@0")).value(QStringLiteral("nearestNeighbor")).toBool());
+    before = r.undo();
+    REQUIRE(r.editing.nearestNeighborScaling(r.key("V1@0"), true).isEmpty());
+    CHECK(r.undo() == before + 1);
+    CHECK(r.now("V1@0").content().nearestNeighbor);
+    CHECK(r.editing.clipVideoInfo(r.key("V1@0")).value(QStringLiteral("nearestNeighbor")).toBool());
+    CHECK(r.editing.clipVideoInfo(r.key("A1@0")).value(QStringLiteral("nearestNeighbor")).toBool()); // via its partner
+    CHECK_FALSE(r.now("A1@0").content().nearestNeighbor);
+    REQUIRE(r.editing.runCommand(QStringLiteral("clip.nearestNeighborScaling"))); // the key toggles it off
+    CHECK_FALSE(r.now("V1@0").content().nearestNeighbor);
+
     before = r.undo();
     REQUIRE(r.editing.setToFrameSize({}).isEmpty());
     CHECK(r.undo() == before + 1);
@@ -151,8 +166,8 @@ TEST_CASE("Editing: the History steps list the undo steps and a click goes back 
     REQUIRE(steps.size() == 4);
     const auto state = [&](int i) { return r.editing.historySteps().at(i).toMap().value(QStringLiteral("state")).toString(); };
     const auto label = [&](int i) { return r.editing.historySteps().at(i).toMap().value(QStringLiteral("label")).toString(); };
-    CHECK(label(1) == QStringLiteral("Scale to Frame Size"));
-    CHECK(label(3) == QStringLiteral("Set to Frame Size"));
+    CHECK(label(1) == QStringLiteral("Auto Fit to Frame"));
+    CHECK(label(3) == QStringLiteral("Set Scale to Fit Frame"));
     CHECK(state(3) == QStringLiteral("current"));
 
     // Back to the first step: two undos at once; the later steps stay, dimmed, and redo.
@@ -377,7 +392,7 @@ TEST_CASE("Editing: Merge Clips, Interpret Footage, Timecode and Make Offline on
 
 TEST_CASE("Editing: the keymap commands it runs are the ones it says", "[app][editing]") {
     for (const char* id :
-         {"clip.scaleToFrameSize", "clip.setToFrameSize", "clip.setToFillFrame", "clip.frameHoldOptions", "clip.addFrameHold",
+         {"clip.scaleToFrameSize", "clip.nearestNeighborScaling", "clip.setToFrameSize", "clip.setToFillFrame", "clip.frameHoldOptions", "clip.addFrameHold",
           "clip.insertFrameHoldSegment", "edit.preferencesMedia", "edit.preferencesTimeline", "edit.duplicate",
           "edit.editOriginal", "file.newSequenceFromClip", "sequence.settings", "sequence.replaceFromSourceMonitor",
           "sequence.replaceFromSourceMonitorMatchFrame", "sequence.replaceFromBin", "sequence.makeSubsequence",
@@ -416,6 +431,7 @@ TEST_CASE("Editing: the menus, dialogs and History panel in the shell", "[app][e
     for (const char* name : {"newSequenceFromClipMenuItem", "sequenceSettingsMenuItem", "windowMenu_history",
                              "editingPreferencesMenuItem", "videoOptionsSubmenu", "replaceWithClipSubmenu",
                              "makeSubsequenceMenuItem", "joinThroughEditsMenuItem", "scaleToFrameSizeMenuItem",
+                             "nearestNeighborMenuItem",
                              "frameHoldOptionsMenuItem", "replaceMatchFrameMenuItem"}) {
         INFO(name);
         CHECK(shell.window->findChild<QObject*>(QString::fromLatin1(name)));
@@ -549,10 +565,38 @@ TEST_CASE("Editing: the menus, dialogs and History panel in the shell", "[app][e
     source->setProperty("exposure", -1.25);
     source->setProperty("custom", true);
     source->setProperty("temperature", 4300.0);
+    // 0.7 (card #108): ISO is As Shot until Custom; then shot-at / develop-for fields and their stops show.
+    CHECK(source->property("isoCustom").toBool() == false);
+    CHECK(source->findChild<QObject*>(QStringLiteral("rawIso")));
+    CHECK(source->findChild<QObject*>(QStringLiteral("rawIsoShot")));
+    CHECK(source->findChild<QObject*>(QStringLiteral("rawIsoDevelop")));
     REQUIRE(QMetaObject::invokeMethod(source, "apply"));
     CHECK(source->property("errorText").toString().isEmpty());
     CHECK(controller->snapshot()->findMedia(raw.media('A'))->locator.path ==
           "D:/Shoot/A001.mov?raw=exposure:-1.25,white:4300:0");
+    editing->openRawSourceSettings({mediaKey(raw.media('A'))});
+    source = opened("rawSourceSettingsDialog");
+    source->setProperty("isoCustom", true);
+    source->setProperty("isoShot", 400.0);
+    source->setProperty("isoDevelop", 1600.0);
+    CHECK(source->property("isoStops").toDouble() == Catch::Approx(2.0));
+    {
+        // The ISO section with its fields and the stops it adds, in both themes (screenshots).
+        spin(100);
+        for (const bool dark : {true, false}) {
+            shell.setAppearance(dark, "ultraviolet");
+            REQUIRE(shell.settle(dark, shell.themeColor("accentFill"))); // the palette cross-fade has finished
+            const QImage image = shell.grab();
+            REQUIRE_FALSE(image.isNull());
+            REQUIRE(image.save(QDir(outputDir()).filePath(dark ? QStringLiteral("raw-source-settings-iso-dark.png")
+                                                               : QStringLiteral("raw-source-settings-iso-light.png"))));
+        }
+        shell.setAppearance(true, "ultraviolet");
+    }
+    REQUIRE(QMetaObject::invokeMethod(source, "apply"));
+    CHECK(source->property("errorText").toString().isEmpty());
+    CHECK(controller->snapshot()->findMedia(raw.media('A'))->locator.path ==
+          "D:/Shoot/A001.mov?raw=exposure:-1.25,white:4300:0,iso:400:1600");
 
     const QStringList messages = takeMessages();
     INFO(join(messages));
@@ -602,6 +646,23 @@ TEST_CASE("Editing: RAW Source Settings on camera RAW Library items, one undo st
     CHECK(path() == "D:/Shoot/A001.mov");
     CHECK_FALSE(editing.applyRawSourceSettings({b}, {{QStringLiteral("exposure"), 1.0}}).isEmpty());
     CHECK(controller.session().undoCount() == before);
+
+    // 0.7 (card #108): ISO - As Shot by default; Custom is shot at / develop for, one undo step, back with As Shot.
+    CHECK(shown.value(QStringLiteral("iso")).toString() == QStringLiteral("asShot"));
+    REQUIRE(editing.applyRawSourceSettings({a}, {{QStringLiteral("exposure"), 0.0}, {QStringLiteral("iso"), QStringLiteral("custom")},
+                                                  {QStringLiteral("isoShot"), 800}, {QStringLiteral("isoDevelop"), 3200}})
+                .isEmpty());
+    CHECK(controller.session().undoCount() == before + 1);
+    CHECK(path() == "D:/Shoot/A001.mov?raw=exposure:+0.00,iso:800:3200");
+    shown = editing.rawSourceSettings({a});
+    CHECK(shown.value(QStringLiteral("iso")).toString() == QStringLiteral("custom"));
+    CHECK(shown.value(QStringLiteral("isoShot")).toInt() == 800);
+    CHECK(shown.value(QStringLiteral("isoDevelop")).toInt() == 3200);
+    REQUIRE(editing.applyRawSourceSettings({a}, {{QStringLiteral("exposure"), 0.0}, {QStringLiteral("iso"), QStringLiteral("asShot")},
+                                                  {QStringLiteral("isoShot"), 800}, {QStringLiteral("isoDevelop"), 3200}})
+                .isEmpty());
+    CHECK(path() == "D:/Shoot/A001.mov");
+    CHECK(editing.rawSourceSettings({a}).value(QStringLiteral("iso")).toString() == QStringLiteral("asShot"));
 }
 
 TEST_CASE("Editing: a drop with the replace modifier is a Replace Edit; Edit Original needs the file", "[app][editing][replace]") {

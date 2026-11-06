@@ -1,5 +1,7 @@
 #include <wabcut/script/Manifest.h>
 
+#include <wabcut/script/Extension.h>
+
 #include <wabcut/model/ProjectIO.h>
 
 #include <algorithm>
@@ -298,6 +300,12 @@ command::CapabilitySet grantableCapabilities() {
 bool isValidExtensionId(std::string_view id) {
     // Reverse-DNS: two or more labels of [a-z0-9] with inner '-', separated by dots.
     if (id.empty() || id.size() > kMaxExtensionIdBytes || id.find('.') == std::string_view::npos) {
+        return false;
+    }
+    // 0.7 review (card 164): "<id>.wabcut-new" / "<id>.wabcut-old" are the folders of an install in progress (and are
+    // never listed as extensions), so an id that is spelled like one would install into a folder that is invisible and
+    // would be cleaned away by the install of the id it looks like.
+    if (id.ends_with(kStagingSuffix) || id.ends_with(kReplacedSuffix)) {
         return false;
     }
     std::size_t start = 0;

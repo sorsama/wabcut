@@ -26,6 +26,11 @@ struct LoudnessTap::Worker {
     dsp::LoudnessMeter meter;
     std::vector<float> buffer;
     std::uint64_t appliedResets = 0;
+    std::size_t copiedSeries = 0; ///< entries of the meter's series already in `history`
+    double rangeLu = 0.0;
+
+    std::mutex historyLock; ///< guards `history` (the worker once a second, readers; never the audio thread)
+    std::vector<float> history;
 
     rt::CheckedMutex lock; ///< guards `quit` (never taken on the audio thread)
     std::condition_variable_any wake;
@@ -83,6 +88,15 @@ LoudnessReading LoudnessTap::reading() const noexcept { return m_reading.load();
 
 void LoudnessTap::setEnabled(bool enabled) noexcept { m_enabled.store(enabled, std::memory_order_relaxed); }
 
+std::vector<float> LoudnessTap::shortTermHistory(std::size_t maxPoints) const {
+    std::lock_guard guard(m_worker->historyLock);
+    const std::vector<float>& h = m_worker->history;
+    if (h.size() <= maxPoints) {
+        return h;
+    }
+    return std::vector<float>(h.end() - static_cast<std::ptrdiff_t>(maxPoints), h.end());
+}
+
 void LoudnessTap::update() {
     if (!m_options.workerThread) {
         drain();
@@ -97,6 +111,10 @@ void LoudnessTap::drain() {
         m_ring.discardAll();
         w.meter.reset();
         w.appliedResets = resets;
+        w.copiedSeries = 0;
+        w.rangeLu = 0.0;
+        std::lock_guard guard(w.historyLock);
+        w.history.clear();
     }
     const auto ch = static_cast<std::size_t>(m_channels);
     for (;;) {
@@ -109,7 +127,16 @@ void LoudnessTap::drain() {
             break;
         }
     }
+    // 0.7: a new second of short-term loudness is copied out for the radar, and the range refreshed with it.
+    const std::vector<float>& series = w.meter.shortTermSeries();
+    if (series.size() > w.copiedSeries) {
+        w.rangeLu = w.meter.rangeLu();
+        std::lock_guard guard(w.historyLock);
+        w.history.insert(w.history.end(), series.begin() + static_cast<std::ptrdiff_t>(w.copiedSeries), series.end());
+        w.copiedSeries = series.size();
+    }
     LoudnessReading r;
+    r.rangeLu = w.rangeLu;
     r.momentaryLufs = w.meter.momentaryLufs();
     r.shortTermLufs = w.meter.shortTermLufs();
     r.integratedLufs = w.meter.integratedLufs();

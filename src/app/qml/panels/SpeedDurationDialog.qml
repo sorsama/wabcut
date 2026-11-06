@@ -17,9 +17,10 @@ WabcutDialog {
     property bool reverse: false
     property bool maintainPitch: false
     property bool ripple: false
-    /// P.2: Time Interpolation of the video clips ("frameSampling", "frameBlending", "opticalFlow"; docs/motion.md).
+    /// P.2: Time Interpolation of the video clips ("frameSampling", "frameBlending", "opticalFlow", and 0.7 "aiInterpolation";
+    /// docs/motion.md).
     property string interpolation: "frameSampling"
-    readonly property var interpolationIds: ["frameSampling", "frameBlending", "opticalFlow"]
+    readonly property var interpolationIds: ["frameSampling", "frameBlending", "opticalFlow", "aiInterpolation"]
     /// The field typed last decides the request: "speed" or "duration".
     property string driver: "speed"
     property var preview: ({})
@@ -218,13 +219,33 @@ WabcutDialog {
             objectName: "timeInterpolationTabs"
             Layout.fillWidth: true
             compact: true
-            model: [qsTr("Frame Sampling"), qsTr("Frame Blending"), qsTr("Optical Flow")]
+            model: [qsTr("Frame Sampling"), qsTr("Frame Blending"), qsTr("Optical Flow"), qsTr("AI Frame Interpolation")]
             currentIndex: Math.max(0, dialog.interpolationIds.indexOf(dialog.interpolation))
             Accessible.name: qsTr("Time Interpolation")
             onActivated: index => {
                 dialog.interpolation = dialog.interpolationIds[index]
                 dialog.refreshPreview()
             }
+        }
+        // 0.7 (card #133): what AI Frame Interpolation needs and how far it is: the model (downloaded on request, run on this
+        // computer), Process (pictures made ahead of time and kept for the media), and the state of the clip's pictures.
+        Text {
+            objectName: "aiInterpolationHint"
+            Layout.fillWidth: true
+            visible: dialog.interpolation === "aiInterpolation"
+            wrapMode: Text.Wrap
+            text: (dialog.info.timeInterpolation ?? "") === "aiInterpolation"
+                      ? qsTr("A local AI model makes the frames between the clip's frames. Process the clip so playback and the export show them; until then the clip plays with Optical Flow.")
+                      : qsTr("A local AI model makes the frames between the clip's frames. Press OK, then process the clip here.")
+            color: Theme.textTertiary
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.textSm
+        }
+        AiEffectStatus {
+            objectName: "aiInterpolationStatus"
+            Layout.fillWidth: true
+            section: (dialog.info.timeInterpolation ?? "") === "aiInterpolation" && (dialog.info.videoClip ?? 0) > 0
+                         ? "i" + dialog.info.videoClip : ""
         }
     }
 

@@ -128,8 +128,9 @@ public:
     Q_INVOKABLE void toggleCrop();
 
     /// Where a clip's frame sits on the canvas (render::layerToCanvas): `frameToCanvas` maps frame pixels (top-left
-    /// origin) to sequence pixels. `quarter` is the stream's display rotation in quarter turns (the anchor is stored
-    /// in displayed pixels and turned like playback does).
+    /// origin) to sequence pixels. `quarter` is the stream's display rotation in quarter turns, `mirrored` its
+    /// horizontal flip (card 154; a mirrored stream's `quarter` is render::transformQuarterTurns', turned the other way
+    /// round); the anchor is stored in displayed pixels and turned like playback does.
     struct Geometry {
         ClipId clip;
         SequenceId sequence;
@@ -137,7 +138,9 @@ public:
         double frameWidth = 0, frameHeight = 0;
         double pixelAspect = 1.0;
         int quarter = 0;
+        bool mirrored = false;
         double canvasWidth = 1920, canvasHeight = 1080;
+        double canvasPixelAspect = 1.0; ///< the sequence's (156): pictures drawn in canvas pixels (titles, graphics) carry it as theirs
         /// P.2 (E5) Scale to Frame Size: the fit of the picture into the sequence frame, applied before Motion's Scale
         /// (scaleToFrameFactor; 1 without it), as playback draws it.
         double frameScale = 1.0;

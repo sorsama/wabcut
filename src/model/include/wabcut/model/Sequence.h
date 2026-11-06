@@ -53,6 +53,10 @@ struct CaptionTrack {
     /// 0.2: Premiere's Track Style - the caption preset (the project's or a built-in, CaptionStyle.h) the track follows;
     /// saving that preset again restyles every track that follows it (edit::saveCaptionPreset). "" = none.
     std::string trackStyle;
+    /// 0.7 (card 116, bilingual captions): the track is drawn on screen together with the main caption track (the one
+    /// chosen for the monitor or the export, else the first enabled), stacked with it in track order, each in its own
+    /// style. Written only when set, so an older build opens the project and draws one track.
+    bool showTogether = false;
 
     bool operator==(const CaptionTrack&) const = default;
 };
@@ -92,7 +96,8 @@ struct BeatGrid {
 
 /// What a marker is for (Premiere's marker types). Comment markers are the default; the others are metadata that
 /// exports and encoders read: chapters, segmentation, and web links (a URL with an optional frame target).
-enum class MarkerType : std::uint8_t { Comment, Chapter, Segmentation, WebLink };
+/// 0.7 (card 177): Source marks a citation - a claim on the timeline and the source behind it (Marker::citation).
+enum class MarkerType : std::uint8_t { Comment, Chapter, Segmentation, WebLink, Source };
 
 /// A marker: on a sequence (in sequence time) or on a media item (a clip marker, in source time; Premiere shows a
 /// master clip's markers on every instance). A duration of 0 is a point marker.
@@ -118,6 +123,24 @@ struct MarkerHighlight {
 std::string_view toString(HighlightConfidence confidence);
 std::optional<HighlightConfidence> highlightConfidenceFromString(std::string_view text);
 
+/// 0.7 (card 177, sources and citations for video essays): the source behind a claim. The marker's name is the claim,
+/// its comment a note, its url the source's address (http or https); this holds the rest of the reference. A marker with
+/// `needed` is a claim that still lacks a source (the Sources panel lists those first). All fields optional; bounded
+/// (project files and commands are untrusted).
+struct MarkerCitation {
+    static constexpr std::size_t kMaxFieldBytes = 1024;
+
+    std::string title;      ///< the work: an article, a video, a paper, a book
+    std::string author;     ///< who wrote or made it
+    std::string publisher;  ///< the outlet or site
+    std::string date;       ///< when it was published, as the person writes it (an ISO date is best)
+    std::string archive;    ///< an archive link (http or https), in case the page goes away
+    std::string screenshot; ///< a screenshot of the source: a file path or address, as written
+    bool needed = false;    ///< an uncited claim: it still wants a source
+
+    bool operator==(const MarkerCitation&) const = default;
+};
+
 struct Marker {
     Ticks start;
     Ticks duration;
@@ -130,6 +153,8 @@ struct Marker {
     std::string target; ///< web link: the frame target
     /// C.15: a highlight finder's verdict on the moment (MarkerHighlight). Saved only when set.
     std::optional<MarkerHighlight> highlight;
+    /// 0.7 (card 177): the source of a claim (type Source). Saved only when set; a build before it keeps a comment marker.
+    std::optional<MarkerCitation> citation;
 
     Ticks end() const { return start + duration; }
     bool operator==(const Marker&) const = default;
@@ -196,6 +221,11 @@ struct MulticamAngle {
     /// Where the angle's material starts in the source sequence's time: its clips lie this far after 0 (the sync).
     /// 0 to kMaxMulticamOffset; multicam.setSync moves the angle's clips by the difference.
     Ticks offset;
+    /// 0.7 (card 009): the offset the sync method measured, kept while the angle is nudged by hand. multicam.setSync
+    /// records it the first time it moves an angle and clears it when the offset is back at it, so a Multi-Camera view can
+    /// say "+2 f" on an angle that is not where its sync put it. Unset: the angle is where its sync method put it.
+    /// Saved only when set (an older build ignores it).
+    std::optional<Ticks> autoOffset;
 
     bool operator==(const MulticamAngle&) const = default;
 };
@@ -235,6 +265,26 @@ inline constexpr std::size_t kMaxSubmixTracks = 32;
 /// The latest start timecode a sequence may have: just under 24 hours (X.1).
 inline constexpr Ticks kMaxStartTimecode{24LL * 3600 * kTicksPerSecond - 1};
 
+/// 0.7 (card 124): a named set of tracks of one kind that collapse, mute, solo, lock, target and route together (Dialogue,
+/// SFX, Music). The group is a header row in the timeline above its tracks; collapsed, the member tracks fold into that row.
+/// Members are video or audio tracks (never submix tracks), a track belongs to at most one group, and the operations keep a
+/// group's tracks next to each other in their stack (`members` lists them in stack order). Saved only when a sequence has
+/// some (an optional key: a build before it opens the project and shows the tracks ungrouped).
+struct TrackGroup {
+    TrackGroupId id;
+    TrackKind kind = TrackKind::Audio;
+    std::string name;                 ///< 1..kMaxTrackGroupNameBytes bytes
+    std::int32_t colorIndex = -1;     ///< one of the 16 labels (0..15), or -1: none
+    bool collapsed = false;           ///< the member tracks are folded into the group's header row
+    std::vector<TrackId> members;     ///< tracks of `kind`, in stack order; at least one
+
+    bool operator==(const TrackGroup&) const = default;
+};
+
+/// Bounds for track groups (project files and commands are untrusted).
+inline constexpr std::size_t kMaxTrackGroups = 256;       ///< per sequence
+inline constexpr std::size_t kMaxTrackGroupNameBytes = 128;
+
 struct Sequence {
     SequenceId id;
     /// Bin that holds the sequence; invalid = the project's root bin.
@@ -269,6 +319,16 @@ struct Sequence {
     /// markers follow every ripple edit (insert, extract, ripple delete, ripple trims, speed changes with ripple) in the
     /// same undo step, through SequenceEditor's caption hooks. Saved only when off (an optional field: no schema bump).
     bool rippleMarkers = true;
+    /// 0.7 (card 120): Sequence > Ripple Track Keyframes: while on, the keyframes of the sequence's TRACKS (the track
+    /// fader and panner, the track's effects and sends: they are in timeline time, not tied to a clip) follow the same
+    /// ripple edits as the markers do (insert, extract, ripple delete, ripple trims, speed changes with ripple), on the
+    /// tracks that ripple with the edit (unlocked, sync-locked), in the same undo step. Off by default (they stay where
+    /// they are, as before). Saved only when on (an optional field: no schema bump).
+    bool rippleTrackKeyframes = false;
+    /// 0.7 (VR / 360 video): the sequence is a VR picture of this projection and eye layout. Its frame is the whole
+    /// equirectangular picture (2:1 for one eye), the Program Monitor can look around in it and an export writes the
+    /// spherical metadata. Saved only when VR.
+    VrFormat vr;
     /// V1..Vn, bottom to top.
     std::vector<TrackPtr> videoTracks;
     /// A1..An.
@@ -279,6 +339,8 @@ struct Sequence {
     /// stereo, 5.1 or adaptive), effects, fader, panner, mute and solo work as on an audio track, and their output is
     /// the Mix or another submix. At most kMaxSubmixTracks. Saved only when there are some.
     std::vector<TrackPtr> submixTracks;
+    /// 0.7 (card 124): the track groups (TrackGroup), in the order they were made. Saved only when there are some.
+    std::vector<TrackGroup> trackGroups;
     /// Sequence In mark (inclusive tick).
     std::optional<Ticks> markIn;
     /// Sequence Out mark (exclusive tick: the end of the last marked frame).
@@ -313,6 +375,10 @@ struct Sequence {
     std::optional<MulticamInfo> multicam;
     /// 0.2 (P.3): set on a copy imported from another project (ImportSource). Saved only when set.
     std::optional<ImportSource> importSource;
+    /// 0.7 (card 144): when the sequence was made, ISO-8601 UTC ("2026-11-04T09:30:00Z"): the Library's Date created
+    /// column. Stamped by the edit session on the commit that adds the sequence (EditSession), not by the edit
+    /// operations, which stay pure. Empty for sequences of projects saved before this field. Saved only when set.
+    std::string createdAt;
 
     struct TrackPosition {
         TrackKind kind = TrackKind::Video;
@@ -350,6 +416,10 @@ struct Sequence {
     const Track* findAudioBus(TrackId trackId) const;
     /// p02 audio: index of a submix track in submixTracks.
     std::optional<std::size_t> submixIndex(TrackId trackId) const;
+    /// 0.7 (card 124): a track group, or null.
+    const TrackGroup* findTrackGroup(TrackGroupId groupId) const;
+    /// 0.7 (card 124): the group a video or audio track belongs to, or null.
+    const TrackGroup* trackGroupOf(TrackId trackId) const;
     /// Linear in the number of clips.
     std::optional<ClipLocation> findClip(ClipId clipId) const;
     /// End of the last clip on any track (O(tracks)).

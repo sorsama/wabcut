@@ -94,6 +94,9 @@ class PlaybackBridge : public QObject {
     Q_PROPERTY(int droppedFrames READ droppedFrames NOTIFY statsChanged FINAL)
     /// Effects in the picture that cannot be rendered (unknown or from a newer version): a warning badge.
     Q_PROPERTY(int bypassedEffects READ bypassedEffects NOTIFY statsChanged FINAL)
+    /// 0.7 (AI video effects): layers of the picture on the monitor whose AI effects have no processed picture yet, so they show
+    /// the unprocessed one (the monitor's badge).
+    Q_PROPERTY(int aiUnprocessedLayers READ aiUnprocessedLayers NOTIFY statsChanged FINAL)
     /// P.2: motion is being analysed (Morph Cut, Optical Flow; playback::MotionAnalyzer): Premiere's "Analyzing in
     /// background" banner on the program monitor.
     Q_PROPERTY(bool analyzingMotion READ analyzingMotion NOTIFY statsChanged FINAL)
@@ -156,6 +159,7 @@ public:
     QString fpsText() const { return m_fpsText; }
     int droppedFrames() const { return m_dropped; }
     int bypassedEffects() const { return m_bypassedEffects; }
+    int aiUnprocessedLayers() const { return m_aiUnprocessedLayers; }
     bool analyzingMotion() const { return m_analyzingMotion; }
     QString decodeBackend() const { return m_decodeBackend; }
     QString audioBackend() const { return m_audioBackend; }
@@ -190,6 +194,11 @@ public:
     Q_INVOKABLE void detachMirror(QObject* monitor);
     /// The mirror controller while a mirror is attached (tests).
     playback::PlaybackController* mirror() const { return m_mirror.get(); }
+    /// 0.7 (card 110): how late the output display shows a picture, in ms (-500..500): the mirror chooses its frames that much
+    /// ahead of the monitor's (its scheduler's display latency is the monitor's plus this), so the picture meets the sound.
+    /// A mirror that is attached is made again with it (a few frames of black while it fills).
+    void setMirrorSyncOffsetMs(int ms);
+    int mirrorSyncOffsetMs() const { return m_mirrorSyncOffsetMs; }
     Q_INVOKABLE void togglePlay();
     Q_INVOKABLE void play();
     Q_INVOKABLE void pause();
@@ -204,6 +213,10 @@ public:
     /// `postrollSeconds` once (Loop ignored; clamped at 0 and the sequence end), then parks back on the playhead it
     /// started from. Space / K / J / L or a seek during it stop it where it is (no park-back).
     Q_INVOKABLE void playAround(double prerollSeconds, double postrollSeconds);
+    /// 0.7, Play In to Out with Preroll and Postroll (Shift+Space): plays from the In (no In: the start) minus
+    /// `prerollSeconds` to the Out (no Out: the end) plus `postrollSeconds` once (Loop ignored; clamped at 0 and the
+    /// sequence end), then parks back on the playhead it started from, like Play Around.
+    Q_INVOKABLE void playInToOutAround(double prerollSeconds, double postrollSeconds);
     /// 0.4, Premiere's Play from Playhead to Out (Ctrl+Space): plays from the playhead to the sequence Out (no Out: the
     /// sequence end) once and stops on the last marked frame. At or past the Out: nothing. Loop is ignored.
     Q_INVOKABLE void playToOut();
@@ -272,6 +285,7 @@ private:
     // P.2: the second output (full screen / transmit)
     std::unique_ptr<playback::PlaybackController> m_mirror;
     QPointer<ProgramMonitor> m_mirrorMonitor;
+    int m_mirrorSyncOffsetMs = 0;
 
     // Source view
     std::unique_ptr<EditSession> m_sourceSession;
@@ -301,6 +315,7 @@ private:
     std::uint64_t m_presentedAtLastSample = 0;
     std::uint64_t m_droppedAtLastSample = 0;
     int m_bypassedEffects = 0;
+    int m_aiUnprocessedLayers = 0;
     bool m_analyzingMotion = false;
     double m_measuredFps = 0.0;
     int m_dropped = 0;

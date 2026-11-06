@@ -59,6 +59,12 @@ MenuBarMenu {
         text: qsTr("Add Marker")
         command: "marker.add"
     }
+    // 0.7 (card 105): a range marker as long as the In to Out range.
+    BarMenuItem {
+        objectName: "markersMenuAddFromInOut"
+        text: qsTr("Add Marker from In/Out")
+        command: "marker.addFromInOut"
+    }
     // 0.6 (stream 1A): a chapter marker at the playhead (its editor opens), and the marker at the playhead's editor.
     BarMenuItem {
         objectName: "markersMenuAddChapter"

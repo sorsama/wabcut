@@ -33,6 +33,29 @@ MenuBarMenu {
         text: qsTr("Audio Channels…")
         command: "clip.audioChannels"
     }
+    // 0.7 (card 047): the spectrogram of the selected audio clip and the tools that repair a cough, a squeak or a hum in it.
+    BarMenuItem {
+        objectName: "clipMenuSpectralRepair"
+        text: qsTr("Spectral Repair…")
+        command: "clip.spectralRepair"
+    }
+    // 0.7 (card #83): pin a graphic, title or censor bar to something that moves in the shot (Effect Controls' Track Motion).
+    BarMenuItem {
+        objectName: "clipMenuTrackMotion"
+        text: qsTr("Track Motion…")
+        command: "clip.trackMotion"
+    }
+    // 0.7 (card 069): bake a selected nested sequence into a file the clip plays (smooth playback), and the way back.
+    BarMenuItem {
+        objectName: "clipMenuRenderAndReplace"
+        text: qsTr("Render and Replace…")
+        command: "clip.renderAndReplace"
+    }
+    BarMenuItem {
+        objectName: "clipMenuRestoreUnrendered"
+        text: qsTr("Restore Unrendered")
+        command: "clip.restoreUnrendered"
+    }
     // 0.6 (P1 round, D9 #8): Detect Beats… on a selected clip with sound (its dialog has the optional BPM range); the
     // row greys out with "Select a clip with sound" otherwise.
     BarMenuItem {
@@ -64,15 +87,22 @@ MenuBarMenu {
         }
         ContextMenuSeparator {}
         BarMenuItem {
-            text: qsTr("Scale to Frame Size")
+            text: qsTr("Auto Fit to Frame")
+            hint: qsTr("Fits the whole picture into the frame and keeps Motion > Scale at 100 %. Stays fitted if the frame size changes. Premiere: Scale to Frame Size.")
             command: "clip.scaleToFrameSize"
         }
         BarMenuItem {
-            text: qsTr("Set to Frame Size")
+            text: qsTr("Nearest Neighbor Scaling")
+            command: "clip.nearestNeighborScaling"
+        }
+        BarMenuItem {
+            text: qsTr("Set Scale to Fit Frame")
+            hint: qsTr("Writes the Motion > Scale that makes the whole picture fit the frame. You can change it afterwards. Premiere: Set to Frame Size.")
             command: "clip.setToFrameSize"
         }
         BarMenuItem {
-            text: qsTr("Set to Fill Frame")
+            text: qsTr("Set Scale to Fill Frame")
+            hint: qsTr("Writes the Motion > Scale that makes the picture cover the whole frame; what overhangs is cropped. Premiere: Fill Frame.")
             command: "clip.setToFillFrame"
         }
     }
@@ -136,10 +166,37 @@ MenuBarMenu {
         text: qsTr("Overwrite")
         command: "clip.overwrite"
     }
+    // 0.7 (card 109): the Program Monitor edit overlay's other zones as commands, for the Source Monitor's clip.
+    BarMenuItem {
+        objectName: "clipMenuOverlay"
+        text: qsTr("Overlay")
+        command: "clip.overlayEdit"
+    }
+    BarMenuItem {
+        objectName: "clipMenuInsertBefore"
+        text: qsTr("Insert Before Clip at Playhead")
+        command: "clip.insertBefore"
+    }
+    BarMenuItem {
+        objectName: "clipMenuInsertAfter"
+        text: qsTr("Insert After Clip at Playhead")
+        command: "clip.insertAfter"
+    }
+    BarMenuItem {
+        objectName: "clipMenuAppend"
+        text: qsTr("Append at End")
+        command: "clip.appendEdit"
+    }
     ContextMenuSeparator {}
     BarMenuItem {
         text: qsTr("Enable")
         command: "clip.enable"
+    }
+    // 0.7 (card 064): locks the selected clips (not their track); the item reads Unlock Clip when they are all locked.
+    BarMenuItem {
+        objectName: "clipMenuLock"
+        text: ProjectController.selectionLocked ? qsTr("Unlock Clip") : qsTr("Lock Clip")
+        command: "clip.lock"
     }
     BarMenuItem {
         text: qsTr("Link")
@@ -177,6 +234,12 @@ MenuBarMenu {
     BarMenuItem {
         text: qsTr("Make Offline")
         command: "clip.makeOffline"
+    }
+    // 0.7 (card 143): read a file that was changed by another program again, in place.
+    BarMenuItem {
+        objectName: "reloadFootageMenuItem"
+        text: qsTr("Reload Footage")
+        command: "clip.reloadFootage"
     }
     ContextMenuSeparator {}
     BarMenuItem {

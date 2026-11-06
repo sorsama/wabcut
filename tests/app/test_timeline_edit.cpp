@@ -18,6 +18,7 @@
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/ProjectOps.h>
+#include <wabcut/model/SequenceSettings.h>
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -698,6 +699,105 @@ TEST_CASE("A selects every clip from the click on", "[app][timeline][edit]") {
     CHECK(selected == expected);
 }
 
+TEST_CASE("Track Select Forward drags the markers after the selection along, in the same undo step (card 095)",
+          "[app][timeline][edit][markers]") {
+    const char* picture = R"(
+        V2 |Cc....Dd....|
+        V1 |AaaaBbbb....|
+        A1 |AaaaBbbb....|
+    )";
+    const auto marked = [&](Rig& rig, bool ripple, std::initializer_list<int> frames = {2, 6, 10}) {
+        for (const int frame : frames) {
+            Marker m;
+            m.start = f(frame);
+            m.name = "at " + std::to_string(frame);
+            rig.tl.state = ok(edit::addMarker(rig.tl.state, rig.tl.seq, m)).state;
+        }
+        if (!ripple) {
+            edit::SequenceSettingsChange change;
+            change.rippleMarkers = false;
+            rig.tl.state = ok(edit::setSequenceSettings(rig.tl.state, rig.tl.seq, change)).state;
+        }
+        rig.controller.resetProject(rig.tl.state, rig.tl.seq);
+        rig.harness.frame();
+    };
+    const auto markerFrames = [](Rig& rig) {
+        std::vector<std::int64_t> frames;
+        for (const Marker& m : rig.controller.snapshot()->findSequence(rig.tl.seq)->markers)
+            frames.push_back(ticksToFrames(m.start, kRate25));
+        return frames;
+    };
+
+    SECTION("the markers at or after the first clip moved follow it; earlier ones stay") {
+        Rig rig(picture);
+        marked(rig, true);
+        rig.view->setSnapping(false);
+        rig.view->setTool(QStringLiteral("trackForward"));
+        const std::size_t steps = rig.undoSteps();
+        rig.drag({rig.x(5.5), rig.y("V1")}, {rig.x(8.5), rig.y("V1")}); // 3 frames later
+        CHECK(rig.picture() == normalize(R"(
+            V2 |Cc.......Dd.|
+            V1 |Aaaa...Bbbb.|
+            A1 |Aaaa...Bbbb.|
+        )"));
+        CHECK(markerFrames(rig) == std::vector<std::int64_t>{2, 9, 13}); // the marker at 2 is before the first moved clip
+        CHECK(rig.undoSteps() == steps + 1);
+        CHECK(rig.controller.undoText() == QStringLiteral("Undo Move"));
+        // One undo puts the clips and the markers back.
+        REQUIRE(rig.controller.undo());
+        CHECK(rig.picture() == normalize(picture));
+        CHECK(markerFrames(rig) == std::vector<std::int64_t>{2, 6, 10});
+        CHECK(rig.undoSteps() == steps);
+        // Redo: both again.
+        REQUIRE(rig.controller.redo());
+        CHECK(markerFrames(rig) == std::vector<std::int64_t>{2, 9, 13});
+    }
+    SECTION("dragging back earlier pulls them back") {
+        Rig rig(picture);
+        marked(rig, true);
+        rig.view->setSnapping(false);
+        rig.view->setTool(QStringLiteral("trackForward"));
+        rig.drag({rig.x(5.5), rig.y("V1")}, {rig.x(3.5), rig.y("V1")}); // 2 frames earlier (A ends at 4: B overwrites its tail)
+        CHECK(markerFrames(rig) == std::vector<std::int64_t>{2, 4, 8});
+    }
+    SECTION("with Ripple Sequence Markers off the markers stay") {
+        Rig rig(picture);
+        marked(rig, false);
+        rig.view->setSnapping(false);
+        rig.view->setTool(QStringLiteral("trackForward"));
+        rig.drag({rig.x(5.5), rig.y("V1")}, {rig.x(8.5), rig.y("V1")});
+        CHECK(rig.picture() == normalize(R"(
+            V2 |Cc.......Dd.|
+            V1 |Aaaa...Bbbb.|
+            A1 |Aaaa...Bbbb.|
+        )"));
+        CHECK(markerFrames(rig) == std::vector<std::int64_t>{2, 6, 10});
+    }
+    SECTION("the plain selection tool moves clips without the markers") {
+        Rig rig(picture);
+        marked(rig, true);
+        rig.view->setSnapping(false);
+        rig.drag({rig.x(5.5), rig.y("V1")}, {rig.x(8.5), rig.y("V1")});
+        CHECK(rig.picture() == normalize(R"(
+            V2 |Cc....Dd....|
+            V1 |Aaaa...Bbbb.|
+            A1 |Aaaa...Bbbb.|
+        )"));
+        CHECK(markerFrames(rig) == std::vector<std::int64_t>{2, 6, 10});
+    }
+    SECTION("no marker at or after the first clip moved: the markers stay and the move is still one step") {
+        Rig rig("V1 |AaaaBbbbCccc|");
+        marked(rig, true, {1, 5});
+        rig.view->setSnapping(false);
+        rig.view->setTool(QStringLiteral("trackForward"));
+        const std::size_t steps = rig.undoSteps();
+        rig.drag({rig.x(9.5), rig.y("V1")}, {rig.x(11.5), rig.y("V1")}); // C only, 2 frames later
+        CHECK(rig.picture() == normalize("V1 |AaaaBbbb..Cccc|"));
+        CHECK(markerFrames(rig) == std::vector<std::int64_t>{1, 5});
+        CHECK(rig.undoSteps() == steps + 1);
+    }
+}
+
 // ---- Snapping, Esc, locked tracks -----------------------------------------------------------------------------------
 
 TEST_CASE("Drags snap to clip edges within the pixel threshold", "[app][timeline][edit]") {
@@ -1037,7 +1137,7 @@ TEST_CASE("Drag screenshots: an Alt-drag copy and a Ctrl and Alt rearrange and a
         const Clip& clip = what == "rearrange" ? seq->videoTracks[0]->clips[1] : seq->videoTracks[2]->clips.front();
         const double y = rows[row].y + rows[row].height / 2 - view->scrollY();
         const double startX = what == "trim" ? clip.end().toSeconds() * view->pixelsPerSecond() - view->scrollX() - 3
-                                             : (clip.start().toSeconds() + 1.0) * view->pixelsPerSecond() - view->scrollX();
+                                             : (clip.start().toSeconds() + 0.5) * view->pixelsPerSecond() - view->scrollX();
         const double toFirst = (seq->videoTracks[0]->clips.front().start() - clip.start()).toSeconds() * view->pixelsPerSecond();
         const double dx = what == "copy" ? 150 : what == "rearrange" ? toFirst : 90;
         const Qt::KeyboardModifiers mods = what == "copy"        ? Qt::KeyboardModifiers(Qt::AltModifier)

@@ -186,7 +186,8 @@ TEST_CASE("Caption presets: built in and the project's; apply, save the track's 
     Fixture fx;
     fx.threeCues();
     QVariantList presets = fx.captions.presets();
-    REQUIRE(presets.size() == 5);
+    const qsizetype builtins = static_cast<qsizetype>(builtinCaptionPresets().size()); // 0.7: more built-in looks
+    REQUIRE(presets.size() == builtins);
     CHECK(presets[0].toMap().value(QStringLiteral("builtin")).toBool());
     const auto before = fx.undo();
     REQUIRE(fx.captions.applyPreset(QStringLiteral("Bold Box")).isEmpty());
@@ -204,7 +205,7 @@ TEST_CASE("Caption presets: built in and the project's; apply, save the track's 
     REQUIRE(fx.captions.savePreset(QStringLiteral("Channel look")).isEmpty());
     REQUIRE(fx.controller.snapshot()->captionPresets.size() == 1);
     presets = fx.captions.presets();
-    REQUIRE(presets.size() == 6);
+    REQUIRE(presets.size() == builtins + 1);
     CHECK(presets.back().toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Channel look"));
     CHECK_FALSE(presets.back().toMap().value(QStringLiteral("builtin")).toBool());
     CHECK(presets.back().toMap().value(QStringLiteral("current")).toBool());
@@ -406,7 +407,7 @@ TEST_CASE("Captions page 0.2: Find and Replace in captions and the transcript, I
     REQUIRE(fx.captions.findReplace(QStringLiteral("two"), QStringLiteral("2"), false, false, QStringLiteral("track")).isEmpty());
     CHECK(fx.undo() == before + 1);
     CHECK(fx.captions.cues()[1].toMap().value(QStringLiteral("text")).toString() == QStringLiteral("2 words here"));
-    CHECK(fx.captions.message() == QStringLiteral("Replaced 1 match(es)"));
+    CHECK(fx.captions.message() == QStringLiteral("Replaced 1 match"));
     // Whole word: "here" but not inside "Three".
     REQUIRE(fx.captions.findReplace(QStringLiteral("re"), QStringLiteral("X"), false, true, QStringLiteral("all")).isEmpty());
     CHECK(fx.captions.message().contains(QStringLiteral("was not found")));

@@ -15,6 +15,8 @@
 
 #include <cmath>
 #include <initializer_list>
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -32,6 +34,11 @@ Json rawSettingsJson(const MediaItem& item) {
     if (s.white) {
         out["temperature"] = s.white->temperature;
         out["tint"] = s.white->tint;
+    }
+    if (s.iso) { // 0.7 (card #108)
+        out["isoShot"] = s.iso->shot;
+        out["isoDevelop"] = s.iso->develop;
+        out["isoStops"] = std::round(s.iso->stops() * 1000.0) / 1000.0;
     }
     return out;
 }
@@ -88,6 +95,7 @@ Json settingsJson(const Sequence& s) {
                 {"height", s.height},
                 {"pixelAspect", Json{{"num", s.pixelAspect.num}, {"den", s.pixelAspect.den}, {"ratio", s.pixelAspect.toDouble()}}},
                 {"fields", std::string(toString(s.fields))},
+                {"vr", vrFormatJson(s.vr)}, // 0.7
                 {"audioRate", s.audioRate.num / std::max(1, s.audioRate.den)},
                 {"dropFrame", s.dropFrame},
                 {"previewFormat", s.previewFormat},
@@ -97,7 +105,8 @@ Json settingsJson(const Sequence& s) {
                 {"startTimecodeTicks", s.startTimecode.value},
                 {"duration", ticksToTimecode(s.duration, s.frameRate, s.dropFrame)},
                 {"label", s.colorIndex},
-                {"rippleMarkers", s.rippleMarkers}};
+                {"rippleMarkers", s.rippleMarkers},
+                {"rippleTrackKeyframes", s.rippleTrackKeyframes}};
 }
 
 CommandOutput created(ProjectState state, std::uint64_t id, Json data) {
@@ -235,6 +244,77 @@ void registerReplaceCommands(CommandRegistry& registry) {
              const std::vector<MediaId> media = c.mediaList("media");
              return projectChange(c.take(edit::makeOffline(c.state(), media)), Json{{"media", media.size()}});
          }});
+    addBuiltin(
+        registry,
+        {"media.reload", 1, "Reload Footage",
+         "Reload Footage (Project panel): reads the items' files again where they are, for a clip or image sequence that "
+         "was re-exported or changed by another program. Each item takes the file's new length, streams, frame size and "
+         "rate in place; its clips, marks, markers, effects and settings stay, and a proxy made of the old file is "
+         "dropped. Items that share the file with a selected one are reloaded with it. Titles and other generated items "
+         "are skipped. An item whose file reads the same as before changes nothing (no undo step); an offline item "
+         "whose file is back comes online. Refused when a clip plays a stream the new file lacks; clips that now run "
+         "past the end of a shorter file are listed in \"warnings\" and play what the file has. Needs a host that reads "
+         "media files (the app, wabcut-cli). One undo step.",
+         Capability::EditProject,
+         withSequence({{"media", schema::array(mediaParam("A media item."), "The items.", 1)}}, {"media"}),
+         Json{{"media", Json::array({3})}}, {},
+         [](ExecutionContext& c) {
+             const auto* probe = findService<MediaProbeServices>(c.services());
+             if (!probe) {
+                 fail(ErrorCode::InvalidRequest, "reloading footage needs a host that reads media files (the app, wabcut-cli)");
+             }
+             const std::vector<MediaId> requested = c.mediaList("media");
+             // One read per file: the items that share it (copies, subclips) all take it.
+             std::map<std::string, std::expected<MediaItem, wabcut::Error>> read;
+             std::vector<edit::ReloadedFootage> files;
+             std::set<std::uint64_t> listed;
+             Json failed = Json::array();
+             std::size_t skipped = 0;
+             for (std::size_t at = 0; at < requested.size(); ++at) {
+                 const MediaId id = requested[at];
+                 const MediaItem& item = *c.state().findMedia(id);
+                 if (item.isGenerator() || item.locator.path.empty()) {
+                     ++skipped;
+                     continue;
+                 }
+                 auto found = read.find(item.locator.path);
+                 if (found == read.end()) {
+                     // A probe opens the file (a network drive can take seconds): a checkpoint before each one reports the
+                     // progress and lets the host stop the job between two files.
+                     c.checkpoint("Reading " + item.name + " (" + std::to_string(100 * at / requested.size()) + "%)");
+                     found = read.emplace(item.locator.path, probe->describe(pathFromUtf8(item.locator.path))).first;
+                 }
+                 if (!found->second) {
+                     failed.push_back(Json{{"media", id.value}, {"name", item.name}, {"error", found->second.error().message}});
+                     continue;
+                 }
+                 for (const MediaPtr& other : c.state().media) {
+                     if (other && !other->isGenerator() && other->locator.path == item.locator.path &&
+                         listed.insert(other->id.value).second) {
+                         files.push_back({other->id, *found->second});
+                     }
+                 }
+             }
+             if (files.empty()) {
+                 if (!failed.empty()) {
+                     fail(ErrorCode::NotFound, "cannot read " + failed.front()["name"].get<std::string>() + ": " +
+                                                   failed.front()["error"].get<std::string>());
+                 }
+                 fail(ErrorCode::EditRejected, "titles and other generated items have no file to reload");
+             }
+             edit::ReloadOutcome outcome = c.take(edit::reloadFootage(c.state(), files));
+             Json names = Json::array();
+             for (const MediaId id : outcome.reloaded) {
+                 names.push_back(outcome.state.findMedia(id)->name);
+             }
+             Json data{{"reloaded", outcome.reloaded.size()},
+                       {"unchanged", files.size() - outcome.reloaded.size()},
+                       {"skipped", skipped},
+                       {"names", std::move(names)},
+                       {"failed", std::move(failed)},
+                       {"warnings", outcome.warnings}};
+             return projectChange(std::move(outcome.state), std::move(data));
+         }});
 }
 
 // --- Make Subsequence, through edits, gaps, Frame Hold Options (EditingOps.h) -------------------------------------
@@ -325,6 +405,45 @@ void registerSequenceToolCommands(CommandRegistry& registry) {
          Json::object(), {},
          [](ExecutionContext& c) {
              return edited(c.take(edit::closeGaps(c.state(), c.sequenceId(), optionalClips(c))));
+         }});
+    // 0.7 (cards 123, 122): clean-up before delivery or an AAF hand-off.
+    addBuiltin(
+        registry,
+        {"sequence.removeTransitions", 1, "Remove Transitions",
+         "Deletes the transitions of the clips - one goes when the clip on either side of it is listed (a fade or dip "
+         "at one clip's edge belongs to that clip) - or, with no clips, every transition of the sequence's unlocked "
+         "tracks. The edit points become plain cuts; clips, their effects and the other tracks stay. Linked partners "
+         "are not added: list them too. Transitions on locked tracks stay. data.removed is how many went. One undo step.",
+         Capability::EditSequence,
+         withSequence({{"clips", clipsParam("The clips whose transitions go. Empty or absent: every transition of the sequence.", 0)}}),
+         Json::object(), {},
+         [](ExecutionContext& c) {
+             const auto transitionsIn = [&c](const ProjectState& state) {
+                 std::size_t count = 0;
+                 if (const Sequence* s = state.findSequence(c.sequenceId())) {
+                     s->forEachTrack([&](const Track& t) { count += t.transitions.size(); });
+                 }
+                 return count;
+             };
+             const std::size_t before = transitionsIn(c.state());
+             edit::EditResult r = c.take(edit::removeTransitions(c.state(), c.sequenceId(), optionalClips(c)));
+             Json data{{"removed", before - transitionsIn(r.state)}};
+             return edited(std::move(r), std::move(data));
+         }});
+    addBuiltin(
+        registry,
+        {"sequence.removeDisabledClips", 1, "Remove Disabled Clips",
+         "Deletes every disabled clip (clip.enable false) of the sequence's unlocked tracks, each on its own - a disabled "
+         "picture's enabled sound stays - and leaves gaps; with \"ripple\" the time they occupied closes like Ripple "
+         "Delete (refused when that would take an unselected clip off a track). Disabled clips on locked tracks stay. "
+         "data.removed is how many clips went. One undo step.",
+         Capability::EditSequence,
+         withSequence({{"ripple", schema::boolean("Close the gaps they leave (Ripple Delete). Default: leave gaps.")}}),
+         Json::object(), {},
+         [](ExecutionContext& c) {
+             edit::EditResult r = c.take(edit::removeDisabledClips(c.state(), c.sequenceId(), c.boolean("ripple", false)));
+             Json data{{"removed", r.removed.size()}};
+             return edited(std::move(r), std::move(data));
          }});
     addBuiltin(
         registry,
@@ -434,8 +553,9 @@ void registerFootageCommands(CommandRegistry& registry) {
          "(a 120, 144 or 240 fps game capture as 30 or 60 fps plays every frame in slow motion: its clips, new and "
          "placed, run at that speed through the speed engine and its frame interpolation; placed clips keep their source "
          "In and grow into the gap after them), \"pixelAspect\" conforms the pixel aspect ratio, \"fieldOrder\" the "
-         "fields, and \"ignoreAlpha\" / \"invertAlpha\" / \"premultiplication\" the alpha channel. A field that is "
-         "absent keeps its interpretation; null goes back to what the file says.",
+         "fields, and \"ignoreAlpha\" / \"invertAlpha\" / \"premultiplication\" the alpha channel; \"vr\" says the "
+         "picture is VR / 360 video (its projection and eye layout) or flat, whatever the file's spherical metadata says. "
+         "A field that is absent keeps its interpretation; null goes back to what the file says.",
          Capability::EditProject,
          withSequence({{"media", schema::array(mediaParam("A media item."), "The items.", 1)},
                        {"frameRate", Json{{"type", Json::array({"number", "object", "null"})},
@@ -450,7 +570,9 @@ void registerFootageCommands(CommandRegistry& registry) {
                        {"invertAlpha", schema::boolean("Invert the alpha channel.")},
                        {"premultiplication", Json{{"type", Json::array({"string", "null"})},
                                                   {"enum", Json::array({"straight", "premultiplied", nullptr})},
-                                                  {"description", "Conform the alpha premultiplication; null: the file's."}}}},
+                                                  {"description", "Conform the alpha premultiplication; null: the file's."}}},
+                       {"vr", vrParam("Treat the picture as this VR format (projection none is a flat picture); null: what the "
+                                      "file's spherical metadata says.")}},
                       {"media"}),
          Json{{"media", Json::array({3})}, {"frameRate", 30}}, {},
          [](ExecutionContext& c) {
@@ -489,6 +611,9 @@ void registerFootageCommands(CommandRegistry& registry) {
                                         : v == "premultiplied" ? std::optional(AlphaMode::Premultiplied)
                                                                : std::nullopt;
              }
+             if (p.contains("vr")) {
+                 in.vr = p["vr"].is_null() ? std::nullopt : std::optional<VrFormat>(vrFormatValue(p["vr"], "/vr"));
+             }
              edit::EditResult r = c.take(edit::interpretFootage(c.state(), media, in));
              const MediaItem& item = *r.state.findMedia(media.front());
              const Speed conform = edit::conformSpeed(item);
@@ -507,7 +632,8 @@ void registerFootageCommands(CommandRegistry& registry) {
         {"media.rawSourceSettings", 1, "RAW Source Settings",
          "The Source Settings a camera RAW item (ProRes RAW, CinemaDNG) is developed with: \"raw\" whether the item is "
          "camera RAW at all, \"exposure\" in stops, \"whiteBalance\" \"asShot\" (the camera's) or \"custom\" with the "
-         "\"temperature\" (K) and \"tint\" of the light it is balanced for.",
+         "\"temperature\" (K) and \"tint\" of the light it is balanced for, and \"isoShot\" / \"isoDevelop\" / \"isoStops\" "
+         "when the item is developed for another ISO than it was shot at.",
          Capability::Read, withSequence({{"media", mediaParam("A media item.")}}, {"media"}), Json{{"media", 3}}, {},
          [](ExecutionContext& c) {
              const MediaItem* item = c.state().findMedia(c.media("media"));
@@ -522,16 +648,23 @@ void registerFootageCommands(CommandRegistry& registry) {
          "Premiere's Clip > Modify > Source Settings for camera RAW items (ProRes RAW, CinemaDNG): develops the items "
          "with \"exposure\" (stops, -5 to +5) and a white balance - \"asShot\" (the camera's) or \"custom\": the "
          "\"temperature\" (2000 to 15000 K; lower turns the picture bluer) and \"tint\" (-100 to +100, toward magenta) "
-         "of the light to balance for, from the as-shot light (ProRes RAW's temperature; 6500 K for CinemaDNG). Absent "
-         "fields keep the first item's. Playback, thumbnails and export all develop the items so; their proxies are "
-         "dropped (made from the old development). Items that are not camera RAW are refused. One undo step.",
+         "of the light to balance for, from the as-shot light (ProRes RAW's temperature; 6500 K for CinemaDNG). ISO: "
+         "\"isoShot\" (the ISO the camera recorded at, which Wabcut cannot read from the file) and \"isoDevelop\" (the ISO "
+         "to develop for) add log2(develop / shot) stops, a stop per doubling; \"isoShot\" alone, or equal ISOs, put it "
+         "back to the camera's. Absent fields keep the first item's. Playback, thumbnails and export all develop the "
+         "items so; their proxies are dropped (made from the old development). Items that are not camera RAW are "
+         "refused. One undo step.",
          Capability::EditProject,
          withSequence({{"media", schema::array(mediaParam("A camera RAW item."), "The items.", 1)},
                        {"exposure", schema::number("Exposure, stops.", -kMaxRawExposureStops, kMaxRawExposureStops)},
                        {"whiteBalance", schema::enumeration({"asShot", "custom"}, "White balance.")},
                        {"temperature", schema::integer("Colour temperature of the light to balance for, K (custom).",
                                                        kMinRawTemperature, kMaxRawTemperature)},
-                       {"tint", schema::integer("Tint, + toward magenta (custom).", -kMaxRawTint, kMaxRawTint)}},
+                       {"tint", schema::integer("Tint, + toward magenta (custom).", -kMaxRawTint, kMaxRawTint)},
+                       {"isoShot", schema::integer("The ISO the camera recorded at.", kMinRawIso, kMaxRawIso)},
+                       {"isoDevelop", schema::integer("The ISO to develop for; with \"isoShot\" it adds log2(develop / shot) "
+                                                      "stops of exposure.",
+                                                      kMinRawIso, kMaxRawIso)}},
                       {"media"}),
          Json{{"media", Json::array({3})}, {"exposure", 0.5}, {"whiteBalance", "custom"}, {"temperature", 3200}}, {},
          [](ExecutionContext& c) {
@@ -552,6 +685,16 @@ void registerFootageCommands(CommandRegistry& registry) {
                  balance.temperature = static_cast<int>(c.integer("temperature", balance.temperature));
                  balance.tint = static_cast<int>(c.integer("tint", balance.tint));
                  settings.white = balance;
+             }
+             if (c.has("isoShot") || c.has("isoDevelop")) { // 0.7 (card #108)
+                 RawIso iso = settings.iso.value_or(RawIso{});
+                 iso.shot = static_cast<int>(c.integer("isoShot", iso.shot));
+                 iso.develop = static_cast<int>(c.integer("isoDevelop", c.has("isoShot") && !c.has("isoDevelop") ? iso.shot : iso.develop));
+                 if (iso.shot == iso.develop) {
+                     settings.iso.reset(); // the camera's ISO: nothing to store
+                 } else {
+                     settings.iso = iso;
+                 }
              }
              edit::EditResult r = c.take(edit::setRawSourceSettings(c.state(), media, settings));
              Json data = rawSettingsJson(*r.state.findMedia(media.front()));
@@ -629,8 +772,9 @@ void registerEditingCommands(CommandRegistry& registry) {
     // --- Scale to Frame Size / Set to Frame Size / Set to Fill Frame (FrameScaling.h) -------------------------------
     addBuiltin(
         registry,
-        {"clip.scaleToFrameSize", 1, "Scale to Frame Size",
-         "Premiere's Clip > Video Options > Scale to Frame Size (also the clip's right-click menu): fits each video "
+        {"clip.scaleToFrameSize", 1, "Auto Fit to Frame",
+         "Premiere's Clip > Video Options > Scale to Frame Size (also the clip's right-click menu; Wabcut names it Auto "
+         "Fit to Frame, since the fit is automatic and Motion > Scale is not touched): fits each video "
          "clip's picture into the sequence frame (whole picture visible, letterboxed when the aspect differs) before its "
          "Motion, so Motion > Scale stays 100 % and a later Scale applies to the fitted picture. \"enabled\": false turns "
          "it off (the picture shows at its pixel size again). Audio clips in the list (or linked) are skipped.",
@@ -644,6 +788,26 @@ void registerEditingCommands(CommandRegistry& registry) {
              const std::vector<ClipId> clips = clipsWithLinks(c);
              const bool enabled = c.boolean("enabled", true);
              return edited(c.take(edit::setScaleToFrameSize(c.state(), c.sequenceId(), clips, enabled)),
+                           Json{{"enabled", enabled}, {"clips", clips.size()}});
+         }});
+    // --- Nearest Neighbor Scaling (0.7, card #98) ------------------------------------------------------------------
+    addBuiltin(
+        registry,
+        {"clip.nearestNeighborScaling", 1, "Nearest Neighbor Scaling",
+         "Clip > Video Options > Nearest Neighbor Scaling: the clip's picture is resized without smoothing, so pixel art "
+         "and low-resolution game captures keep hard pixel edges when Motion > Scale (or Scale to Frame Size) enlarges "
+         "them. \"enabled\": false goes back to smooth scaling. Audio clips in the list (or linked) are skipped. One "
+         "undo step.",
+         Capability::EditSequence,
+         withSequence({{"clips", clipsParam("The clips (their video clips change).")},
+                       {"enabled", schema::boolean("On (default) or off.", true)},
+                       {"linked", linkedParam(true)}},
+                      {"clips"}),
+         Json{{"clips", Json::array({42})}}, {},
+         [](ExecutionContext& c) {
+             const std::vector<ClipId> clips = clipsWithLinks(c);
+             const bool enabled = c.boolean("enabled", true);
+             return edited(c.take(edit::setNearestNeighbor(c.state(), c.sequenceId(), clips, enabled)),
                            Json{{"enabled", enabled}, {"clips", clips.size()}});
          }});
     // --- Field Options (0.2, FieldOptions.h) ---------------------------------------------------------------------
@@ -680,11 +844,12 @@ void registerEditingCommands(CommandRegistry& registry) {
          }});
     addBuiltin(
         registry,
-        {"clip.setToFrameSize", 1, "Set to Frame Size",
+        {"clip.setToFrameSize", 1, "Set Scale to Fit Frame",
          "Premiere's Set to Frame Size (Fit to Frame Size in Premiere 25 and later; Clip > Video Options and the "
-         "right-click menu): sets each video clip's Motion > Scale so its whole picture fits the sequence frame, so the "
-         "Effect Controls show how much it was scaled. Keys on Scale are replaced by the constant; Scale to Frame Size "
-         "goes off. data.scale: the first clip's new Scale in percent.",
+         "right-click menu; Wabcut names it Set Scale to Fit Frame): sets each video clip's Motion > Scale so its whole "
+         "picture fits the sequence frame, so the Effect Controls show how much it was scaled. Keys on Scale are "
+         "replaced by the constant; Auto Fit to Frame (clip.scaleToFrameSize) goes off. data.scale: the first clip's "
+         "new Scale in percent.",
          Capability::EditSequence,
          withSequence({{"clips", clipsParam("The clips (their video clips are scaled).")}, {"linked", linkedParam(true)}},
                       {"clips"}),
@@ -697,11 +862,11 @@ void registerEditingCommands(CommandRegistry& registry) {
          }});
     addBuiltin(
         registry,
-        {"clip.setToFillFrame", 1, "Set to Fill Frame",
-         "Premiere's Fill Frame (the clip's right-click menu): sets each video clip's Motion > Scale so its picture covers "
-         "the whole sequence frame, cropping what overhangs (a 16:9 clip in a 9:16 Short fills the height). Keys on "
-         "Scale are replaced by the constant; Scale to Frame Size goes off. data.scale: the first clip's new Scale in "
-         "percent.",
+        {"clip.setToFillFrame", 1, "Set Scale to Fill Frame",
+         "Premiere's Fill Frame (the clip's right-click menu; Wabcut names it Set Scale to Fill Frame): sets each video "
+         "clip's Motion > Scale so its picture covers the whole sequence frame, cropping what overhangs (a 16:9 clip in "
+         "a 9:16 Short fills the height). Keys on Scale are replaced by the constant; Auto Fit to Frame "
+         "(clip.scaleToFrameSize) goes off. data.scale: the first clip's new Scale in percent.",
          Capability::EditSequence,
          withSequence({{"clips", clipsParam("The clips (their video clips are scaled).")}, {"linked", linkedParam(true)}},
                       {"clips"}),
@@ -787,6 +952,50 @@ void registerEditingCommands(CommandRegistry& registry) {
          }});
     addBuiltin(
         registry,
+        {"sequence.newFromClips", 1, "New Sequences From Clips",
+         "File > New Sequence From Clip for several items at once (the Project panel's selection). mode \"each\" (default): "
+         "one sequence per item, each as sequence.newFromClip makes it (named after its item, in its bin, matching its "
+         "picture and sound). mode \"together\": ONE sequence matching the first item, with every item edited in one "
+         "after another (\"name\" names it; default the first item's name). All in one undo step. createdIds: the "
+         "sequences, in the order of \"media\".",
+         Capability::EditProject,
+         withSequence({{"media", schema::array(mediaParam("A media item."), "The items.", 1)},
+                       {"mode", schema::enumeration({"each", "together"}, "One sequence per item (default), or all in one.")},
+                       {"name", schema::string("The sequence's name with mode \"together\".")}},
+                      {"media"}),
+         Json{{"media", Json::array({3, 4})}}, {},
+         [](ExecutionContext& c) {
+             const std::vector<MediaId> media = c.mediaList("media");
+             const bool together = c.has("mode") && c.string("mode") == "together";
+             ProjectState state = c.state();
+             std::vector<std::uint64_t> created;
+             Json sequences = Json::array();
+             const auto note = [&](const edit::Created<SequenceId>& made) {
+                 const Sequence& seq = *made.state.findSequence(made.id);
+                 std::size_t clips = 0;
+                 seq.forEachTrack([&](const Track& t) { clips += t.clips.size(); });
+                 created.push_back(made.id.value);
+                 sequences.push_back(Json{{"sequence", made.id.value}, {"name", seq.name}, {"clips", clips}});
+             };
+             if (together) {
+                 auto made = c.take(edit::newSequenceFromClips(state, media, c.has("name") ? c.string("name") : std::string{}));
+                 note(made);
+                 state = std::move(made.state);
+             } else {
+                 for (const MediaId id : media) {
+                     auto made = c.take(edit::newSequenceFromClip(state, id));
+                     note(made);
+                     state = std::move(made.state);
+                 }
+             }
+             CommandOutput out;
+             out.state = std::move(state);
+             out.data = Json{{"sequences", std::move(sequences)}};
+             out.createdIds = std::move(created);
+             return out;
+         }});
+    addBuiltin(
+        registry,
         {"sequence.settings", 1, "Sequence Settings Info",
          "A sequence's settings as Premiere's Sequence Settings shows them: timebase, frame size, pixel aspect, fields, "
          "audio sample rate, drop-frame display, preview file format, video and audio display formats and the start "
@@ -808,13 +1017,20 @@ void registerEditingCommands(CommandRegistry& registry) {
          "without media to reach it gets the frame inside instead), clips keep the picture under them, adjacent clips "
          "stay adjacent and locked tracks are left alone. Frame size changes keep each clip's Motion. Drop-frame display "
          "applies at 29.97 and 59.94 only. \"label\" is the sequence's label colour (Premiere's Label: the Project "
-         "panel and its timeline tab). \"rippleMarkers\" is Markers > Ripple Sequence Markers. One undo step.",
+         "panel and its timeline tab). \"rippleMarkers\" is Markers > Ripple Sequence Markers. \"rippleTrackKeyframes\" "
+         "(0.7) makes the keyframes of the tracks (their faders, panners, effects and sends) and of the master bus follow "
+         "ripple edits like the markers do: later keys move with the material, keys inside a removed stretch go with it. "
+         "\"workAreaIn\" and "
+         "\"workAreaOut\" set Premiere's work area (the range used for playback and export; interchange files carry it), "
+         "\"clearWorkArea\" removes it. One undo step.",
          Capability::EditProject,
          withSequence(
              {{"preset", schema::string("A preset id from sequence.presets (\"1080p23.976\", \"2160p29.97df\", ...).")},
               {"label", schema::integer("The label colour, 0 to 15 (the Project panel's 16 label colours).", 0, 15)},
               {"rippleMarkers", schema::boolean("Markers > Ripple Sequence Markers: sequence markers move with insert, "
                                                 "extract, ripple delete and ripple trims.")},
+              {"rippleTrackKeyframes", schema::boolean("Sequence > Ripple Track Keyframes: the keyframes of the tracks and "
+                                                       "the master bus move with the same ripple edits. Default off.")},
               {"name", schema::string("The sequence's name (not empty).")},
               {"frameRate", rateParam("Timebase.")},
               {"width", schema::integer("Frame width, pixels.", 16, 16384)},
@@ -825,6 +1041,9 @@ void registerEditingCommands(CommandRegistry& registry) {
                                              "Fields: progressive (no fields), upper or lower field first.")},
               {"audioRate", schema::integer("Audio sample rate in Hz (32000, 44100, 48000, 96000 ...).", 8000, 384000)},
               {"dropFrame", schema::boolean("Drop-frame timecode display (29.97 and 59.94).")},
+              {"vr", vrParam("0.7: the sequence is VR / 360 video of this projection and eye layout (its frame is the whole "
+                             "equirectangular picture): the Program Monitor can look around in it and exports write the "
+                             "spherical metadata. projection none (or null) makes it a flat sequence.")},
               {"previewFormat", schema::string("Preview file format id (\"\" = default; \"prores\", \"dnxhr\", \"h264\").")},
               {"videoDisplay",
                schema::enumeration(names({VideoTimeDisplay::Timecode, VideoTimeDisplay::Frames, VideoTimeDisplay::Feet16mm,
@@ -833,6 +1052,10 @@ void registerEditingCommands(CommandRegistry& registry) {
               {"audioDisplay",
                schema::enumeration(names({AudioTimeDisplay::AudioSamples, AudioTimeDisplay::Milliseconds}),
                                    "Audio display format.")},
+              {"workAreaIn", timeParam("0.7: the work area's In (Premiere's work area bar: the range used for playback and "
+                                       "export). Pass with workAreaOut.")},
+              {"workAreaOut", timeParam("0.7: the work area's Out (exclusive). Pass with workAreaIn.")},
+              {"clearWorkArea", schema::boolean("0.7: remove the work area (the whole sequence again).")},
               {"startTimecode", Json{{"type", Json::array({"integer", "string"})},
                                      {"description", "Start time: the timecode of the first frame (\"01:00:00:00\") or "
                                                      "ticks."}}}}),
@@ -859,6 +1082,9 @@ void registerEditingCommands(CommandRegistry& registry) {
              if (c.has("rippleMarkers")) { // 0.4
                  change.rippleMarkers = c.boolean("rippleMarkers", true);
              }
+             if (c.has("rippleTrackKeyframes")) { // 0.7 (card 120)
+                 change.rippleTrackKeyframes = c.boolean("rippleTrackKeyframes", false);
+             }
              if (c.has("frameRate")) {
                  change.frameRate = frameRateValue(c.params()["frameRate"], "/frameRate");
              }
@@ -883,6 +1109,9 @@ void registerEditingCommands(CommandRegistry& registry) {
              }
              if (c.has("fields")) {
                  change.fields = fieldOrderFromString(c.string("fields"));
+             }
+             if (c.params().contains("vr")) { // 0.7 (null makes it flat)
+                 change.vr = c.params()["vr"].is_null() ? VrFormat{} : vrFormatValue(c.params()["vr"], "/vr");
              }
              if (c.has("audioRate")) {
                  change.audioRate = Rate{static_cast<std::int32_t>(c.integer("audioRate")), 1};
@@ -912,6 +1141,15 @@ void registerEditingCommands(CommandRegistry& registry) {
                  } else {
                      change.startTimecode = Ticks{v.get<std::int64_t>()};
                  }
+             }
+             if (c.has("clearWorkArea") && c.boolean("clearWorkArea", false)) {
+                 change.workArea = std::optional<TimeRange>{};
+             } else if (c.has("workAreaIn") || c.has("workAreaOut")) {
+                 if (!c.has("workAreaIn") || !c.has("workAreaOut")) {
+                     fail(ErrorCode::InvalidParams, "pass workAreaIn and workAreaOut together",
+                          Json{{"path", c.has("workAreaIn") ? "/workAreaOut" : "/workAreaIn"}});
+                 }
+                 change.workArea = std::optional<TimeRange>{TimeRange::fromStartEnd(c.time("workAreaIn"), c.time("workAreaOut"))};
              }
              edit::EditResult r = c.take(edit::setSequenceSettings(c.state(), seq.id, change));
              const Sequence& after = *r.state.findSequence(seq.id);

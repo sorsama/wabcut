@@ -21,7 +21,10 @@ namespace wabcut::app {
 
 MarkersBridge::MarkersBridge(QObject* parent) : QObject(parent) {
     // What onPlayhead() compares with: the markers under the playhead as of the last listing.
-    connect(this, &MarkersBridge::markersChanged, this, [this] { m_atPlayhead = markersAtPlayhead(); });
+    connect(this, &MarkersBridge::markersChanged, this, [this] {
+        m_atPlayhead = markersAtPlayhead();
+        pruneSelection(); // 0.7: a selection means indices of the list it was made on
+    });
 }
 
 MarkersBridge* MarkersBridge::create(QQmlEngine* qmlEngine, QJSEngine*) {
@@ -381,6 +384,9 @@ bool MarkersBridge::remove(int index) {
 }
 
 bool MarkersBridge::clearAtPlayhead() {
+    // 0.7 (card 119): with markers selected (the Markers panel, the ruler), Clear Selected Marker clears those.
+    if (!m_selected.empty())
+        return removeSelectedAs(m_clipScope ? "Clear Selected Clip Markers" : "Clear Selected Markers");
     const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
     if (!seq)
         return false;
@@ -446,6 +452,264 @@ bool MarkersBridge::seek(int index) {
     if (!t)
         return false;
     m_controller->setPlayhead(*t);
+    return true;
+}
+
+// ---- 0.7 (card 119): several markers at once --------------------------------------------------------------------------
+
+QVariantList MarkersBridge::selection() const {
+    QVariantList out;
+    out.reserve(static_cast<qsizetype>(m_selected.size()));
+    for (const int i : m_selected)
+        out << i;
+    return out;
+}
+
+bool MarkersBridge::isSelected(int index) const {
+    return std::binary_search(m_selected.begin(), m_selected.end(), index);
+}
+
+void MarkersBridge::setSelection(std::vector<int> indices) {
+    const Scoped s = scoped();
+    std::sort(indices.begin(), indices.end());
+    indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+    if (!s.markers) {
+        indices.clear();
+    } else {
+        const int count = static_cast<int>(s.markers->size());
+        std::erase_if(indices, [count](int i) { return i < 0 || i >= count; });
+    }
+    if (indices == m_selected && (indices.empty() || (s.media == m_selectedMedia && *s.markers == m_selectedFor)))
+        return;
+    m_selected = std::move(indices);
+    if (m_selected.empty()) {
+        m_selectedFor.clear();
+        m_selectedMedia = MediaId{};
+        m_anchor = -1;
+    } else {
+        m_selectedFor = *s.markers;
+        m_selectedMedia = s.media;
+    }
+    emit selectionChanged();
+}
+
+void MarkersBridge::pruneSelection() {
+    if (m_selected.empty())
+        return;
+    const Scoped s = scoped();
+    if (s.markers && s.media == m_selectedMedia && *s.markers == m_selectedFor)
+        return;
+    m_selected.clear();
+    m_selectedFor.clear();
+    m_selectedMedia = MediaId{};
+    m_anchor = -1;
+    emit selectionChanged();
+}
+
+std::vector<Marker> MarkersBridge::selectedMarkers() const {
+    std::vector<Marker> out;
+    const Scoped s = scoped();
+    if (!s.markers)
+        return out;
+    for (const int i : m_selected) {
+        if (i >= 0 && i < static_cast<int>(s.markers->size()))
+            out.push_back((*s.markers)[static_cast<std::size_t>(i)]);
+    }
+    return out;
+}
+
+void MarkersBridge::select(int index, const QString& mode) {
+    const Scoped s = scoped();
+    if (!s.markers || index < 0 || index >= static_cast<int>(s.markers->size()))
+        return;
+    if (mode == QLatin1String("toggle")) {
+        std::vector<int> next = m_selected;
+        const auto it = std::find(next.begin(), next.end(), index);
+        if (it != next.end())
+            next.erase(it);
+        else
+            next.push_back(index);
+        m_anchor = index;
+        setSelection(std::move(next));
+        return;
+    }
+    if (mode == QLatin1String("extend") && m_anchor >= 0) {
+        // Every listed marker (the filters apply) between the anchor and this one, in the list's order.
+        std::vector<int> listed;
+        for (const QVariant& item : list(true))
+            listed.push_back(item.toMap().value(QStringLiteral("index")).toInt());
+        const auto a = std::find(listed.begin(), listed.end(), m_anchor);
+        const auto b = std::find(listed.begin(), listed.end(), index);
+        if (a != listed.end() && b != listed.end()) {
+            const auto [first, last] = std::minmax(a, b);
+            const int anchor = m_anchor;
+            setSelection(std::vector<int>(first, last + 1));
+            m_anchor = anchor; // Shift-clicks keep extending from the same place
+            return;
+        }
+    }
+    m_anchor = index;
+    setSelection({index});
+}
+
+void MarkersBridge::selectAll() {
+    std::vector<int> all;
+    for (const QVariant& item : list(true))
+        all.push_back(item.toMap().value(QStringLiteral("index")).toInt());
+    if (!all.empty())
+        m_anchor = all.front();
+    setSelection(std::move(all));
+}
+
+void MarkersBridge::clearSelection() {
+    setSelection({});
+}
+
+int MarkersBridge::selectBetween(const QString& fromKey, const QString& toKey, bool add) {
+    bool okFrom = false;
+    bool okTo = false;
+    qint64 a = fromKey.toLongLong(&okFrom);
+    qint64 b = toKey.toLongLong(&okTo);
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!okFrom || !okTo || !seq || m_clipScope)
+        return selectionCount();
+    if (a > b)
+        std::swap(a, b);
+    std::vector<int> next = add ? m_selected : std::vector<int>{};
+    for (std::size_t i = 0; i < seq->markers.size(); ++i) {
+        const qint64 start = seq->markers[i].start.value;
+        if (start >= a && start <= b)
+            next.push_back(static_cast<int>(i));
+    }
+    if (!next.empty())
+        m_anchor = *std::min_element(next.begin(), next.end());
+    setSelection(std::move(next));
+    return selectionCount();
+}
+
+std::optional<Rate> MarkersBridge::scopeRate() const {
+    if (!m_controller)
+        return std::nullopt;
+    if (!m_clipScope) {
+        const SequencePtr seq = m_controller->currentSequence();
+        return seq ? std::optional<Rate>(seq->frameRate) : std::nullopt;
+    }
+    const Scoped s = scoped();
+    const ProjectSnapshot snap = m_controller->snapshot();
+    const MediaItem* media = s.media ? snap->findMedia(s.media) : nullptr;
+    return media ? std::optional<Rate>(command::sourceTimecodeRate(*snap, *media)) : std::nullopt;
+}
+
+std::optional<Ticks> MarkersBridge::pasteTarget() const {
+    const auto rate = scopeRate();
+    if (!rate || !m_controller)
+        return std::nullopt;
+    if (!m_clipScope)
+        return snapToFrame(m_controller->playhead(), *rate);
+    // Clip scope: the media time the selected clip shows under the playhead (its first frame when the playhead is off it).
+    const Scoped s = scoped();
+    const SequencePtr seq = m_controller->currentSequence();
+    const auto loc = seq && s.clip ? seq->findClip(s.clip) : std::nullopt;
+    if (!loc)
+        return std::nullopt;
+    const Clip& clip = loc->clip();
+    const Ticks t = std::clamp(m_controller->playhead(), clip.start(), clip.end() - Ticks{1});
+    return snapToFrame(clip.sourceTimeAt(t), *rate);
+}
+
+bool MarkersBridge::applyGroup(const char* label, std::expected<edit::MarkerGroupEdit, Error> group) {
+    if (!group) {
+        setMessage(QString::fromStdString(group.error().message));
+        return false;
+    }
+    std::vector<int> touched;
+    touched.reserve(group->touched.size());
+    for (const std::size_t i : group->touched)
+        touched.push_back(static_cast<int>(i));
+    if (!replaceMarkers(label, std::move(group->markers)))
+        return false;
+    setSelection(std::move(touched)); // the edit itself dropped the old indices; these are the new list's
+    return true;
+}
+
+bool MarkersBridge::removeSelectedAs(const char* label) {
+    const Scoped s = scoped();
+    if (!s.markers || m_selected.empty())
+        return false;
+    const std::vector<std::size_t> indices(m_selected.begin(), m_selected.end());
+    return applyGroup(label, edit::removeMarkersAt(*s.markers, indices));
+}
+
+bool MarkersBridge::removeSelected() {
+    return removeSelectedAs(m_clipScope ? "Remove Clip Markers" : "Remove Markers");
+}
+
+bool MarkersBridge::moveSelectedBy(const QString& deltaKey) {
+    bool ok = false;
+    const qint64 ticks = deltaKey.toLongLong(&ok);
+    const Scoped s = scoped();
+    const auto rate = scopeRate();
+    if (!ok || !s.markers || m_selected.empty() || !rate)
+        return false;
+    const Ticks magnitude = snapToFrame(Ticks{ticks < 0 ? -ticks : ticks}, *rate);
+    const Ticks delta = ticks < 0 ? -magnitude : magnitude;
+    if (delta.value == 0)
+        return false;
+    const std::vector<std::size_t> indices(m_selected.begin(), m_selected.end());
+    return applyGroup(m_clipScope ? "Move Clip Markers" : "Move Markers", edit::moveMarkersBy(*s.markers, indices, delta));
+}
+
+bool MarkersBridge::nudgeSelected(int frames) {
+    const auto rate = scopeRate();
+    if (!rate || frames == 0)
+        return false;
+    const Ticks magnitude = framesToTicks(frames < 0 ? -frames : frames, *rate);
+    return moveSelectedBy(QString::number(frames < 0 ? -magnitude.value : magnitude.value));
+}
+
+int MarkersBridge::copySelected() {
+    std::vector<Marker> picked = selectedMarkers();
+    if (picked.empty()) {
+        setMessage(tr("Select markers to copy first"));
+        return 0;
+    }
+    const int count = static_cast<int>(picked.size());
+    m_clipboard = std::move(picked);
+    emit clipboardChanged();
+    setMessage(tr("Copied %n marker(s)", "", count));
+    return count;
+}
+
+bool MarkersBridge::cutSelected() {
+    std::vector<Marker> picked = selectedMarkers();
+    if (picked.empty()) {
+        setMessage(tr("Select markers to cut first"));
+        return false;
+    }
+    const int count = static_cast<int>(picked.size());
+    if (!removeSelectedAs(m_clipScope ? "Cut Clip Markers" : "Cut Markers"))
+        return false;
+    m_clipboard = std::move(picked);
+    emit clipboardChanged();
+    setMessage(tr("Cut %n marker(s)", "", count));
+    return true;
+}
+
+bool MarkersBridge::paste() {
+    if (m_clipboard.empty()) {
+        setMessage(tr("There are no copied markers to paste"));
+        return false;
+    }
+    const Scoped s = scoped();
+    const auto at = pasteTarget();
+    if (!s.markers || !at) {
+        setMessage(m_clipScope ? tr("Select a clip to paste markers into its media") : tr("Open a sequence first"));
+        return false;
+    }
+    const int count = static_cast<int>(m_clipboard.size());
+    if (!applyGroup(m_clipScope ? "Paste Clip Markers" : "Paste Markers", edit::pasteMarkersAt(*s.markers, m_clipboard, *at)))
+        return false;
+    setMessage(tr("Pasted %n marker(s)", "", count));
     return true;
 }
 
@@ -525,6 +789,53 @@ QString MarkersBridge::exportToFile(const QString& format, const QUrl& file, con
     setMessage(warnings.isEmpty() ? tr("Markers exported: %1").arg(QFileInfo(path).fileName())
                                   : tr("Markers exported with warnings: %1").arg(warnings.join(QStringLiteral("; "))));
     return path;
+}
+
+QString MarkersBridge::importFromFile(const QUrl& file, bool atPlayhead, bool replace) {
+    if (!m_controller || !m_controller->currentSequenceId().isValid()) {
+        setMessage(tr("Open a sequence first"));
+        return m_message;
+    }
+    const QString path = file.isLocalFile() ? file.toLocalFile() : file.toString();
+    command::CommandRequest request;
+    command::Json params{{"path", path.toStdString()}};
+    if (replace)
+        params["replace"] = true;
+    if (m_clipScope) {
+        const Scoped s = scoped();
+        if (!s.media.isValid()) {
+            setMessage(tr("Select a clip to read markers into its media"));
+            return m_message;
+        }
+        request.command = "source.importMarkers";
+        params["media"] = s.media.value;
+    } else {
+        request.command = "marker.import";
+        params["sequence"] = m_controller->currentSequenceId().value;
+        if (atPlayhead)
+            params["offset"] = m_controller->playhead().value;
+    }
+    request.params = std::move(params);
+    command::CommandEngine engine(m_controller->session(), command::builtinCommands(), command::EnginePolicy{});
+    const command::CommandResult r = engine.execute(request);
+    if (!r.ok()) {
+        setMessage(QString::fromStdString(r.error->message));
+        return m_message;
+    }
+    const int imported = r.data.value("imported", 0);
+    const int skipped = r.data.value("skipped", 0);
+    const int duplicates = r.data.value("duplicates", 0);
+    QString text = imported == 0 && duplicates > 0
+                       ? tr("Nothing new: the %n marker(s) in the file are already there", "", duplicates)
+                       : tr("Imported %n marker(s)", "", imported);
+    if (skipped > 0) {
+        text += QStringLiteral(" · ") + tr("%n line(s) skipped", "", skipped);
+        const auto warnings = r.data.value("warnings", command::Json::array());
+        if (warnings.is_array() && !warnings.empty() && warnings.front().is_string())
+            text += QStringLiteral(": ") + QString::fromStdString(warnings.front().get<std::string>());
+    }
+    setMessage(text);
+    return {};
 }
 
 bool MarkersBridge::runCommand(const QString& commandId) {

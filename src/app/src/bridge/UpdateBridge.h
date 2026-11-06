@@ -102,6 +102,10 @@ public:
         std::optional<bool> installedByMsi;
         /// The install folder the upgrade keeps ("" = the remembered one).
         QString installRoot;
+        /// This is a native Windows ARM64 build; nullopt = whatever the program was compiled for. The release's manifest
+        /// names the x64 installer only, so an ARM64 build never installs from it (it would swap itself for the x64 build
+        /// running under emulation): it is told a version is out and opens the release page, like a portable copy.
+        std::optional<bool> nativeArm64;
     };
     /// The built-in configuration (CMake: WABCUT_UPDATE_RELEASES_URL, WABCUT_UPDATE_PUBLIC_KEY).
     static Config defaultConfig();
@@ -164,6 +168,7 @@ public:
     QString progressText() const;
     QString error() const { return m_error; }
     bool canInstall() const;
+    bool isArm64Build() const;
     QString installHint() const;
     bool installScheduled() const;
     QString scheduledVersion() const;

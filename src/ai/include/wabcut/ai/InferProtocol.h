@@ -83,6 +83,7 @@ struct TranscribeRequest {
     int beamSize = 5; ///< 1 = greedy
     bool vad = false; ///< run whisper's own VAD inside the range (needs load_vad first)
     std::string initialPrompt;
+    bool translate = false; ///< whisper's translate task: the text comes out in English (card 073)
 };
 struct Cancel {
     std::string id;

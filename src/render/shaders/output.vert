@@ -16,6 +16,8 @@ layout(std140, binding = 0) uniform OutputParams {
     mat4 conformIn; // fragment stage only (0.6: SDR Conform)
     vec4 conform0;
     vec4 conform1;
+    vec4 vr0;       // fragment stage only (0.7, VR / 360 viewer)
+    vec4 vr1;       // fragment stage only (0.7, VR / 360 viewer)
 } p;
 
 out gl_PerVertex { vec4 gl_Position; };

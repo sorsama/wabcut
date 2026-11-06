@@ -11,7 +11,15 @@ list(APPEND VCPKG_OVERLAY_PORTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ports")
 # the Vulkan loader) restores from a vcpkg binary cache in seconds, and a cold build of it took 19.6 min and 2.1 GB at
 # -j 1 (docs/building.md). OFF by default elsewhere (not measured yet) and in core builds; -DWABCUT_WITH_LOCAL_AI=OFF
 # keeps the dependency set without it. A build dir configured before keeps its cached value.
-if(CMAKE_HOST_WIN32 AND NOT WABCUT_CORE_ONLY)
+cmake_host_system_information(RESULT wabcut_host_arch QUERY OS_PLATFORM) # before project(): the host's
+# Windows on ARM64 (the win-msvc-arm64 preset; docs/building.md, "Windows on ARM64"): a native build on an ARM64 machine,
+# or a build for it with the arm64-windows-release vcpkg triplet. The vcpkg ports of local transcription (ggml,
+# whisper.cpp) and of audio plug-in hosting (the VST3 SDK) do not support ARM64 Windows, so both are off there by default.
+set(wabcut_win_arm64 OFF)
+if(CMAKE_HOST_WIN32 AND (wabcut_host_arch MATCHES "[Aa][Rr][Mm]64|aarch64" OR VCPKG_TARGET_TRIPLET MATCHES "^arm64-windows"))
+    set(wabcut_win_arm64 ON)
+endif()
+if(CMAKE_HOST_WIN32 AND NOT WABCUT_CORE_ONLY AND NOT wabcut_win_arm64)
     set(_wabcut_local_ai_default ON)
 else()
     set(_wabcut_local_ai_default OFF)
@@ -25,7 +33,6 @@ endif()
 # Microsoft's official release binaries by the overlay port cmake/ports/onnxruntime-prebuilt (nothing is compiled; a
 # 12.5 MB download on Windows, 8 MB on Linux, 31 MB on macOS). ON wherever Microsoft publishes binaries (not Intel
 # Macs). OFF: transcript search still works, visual search reports that it is not built.
-cmake_host_system_information(RESULT wabcut_host_arch QUERY OS_PLATFORM) # before project(): the host's
 if(CMAKE_HOST_APPLE AND NOT wabcut_host_arch MATCHES "arm64|aarch64")
     set(wabcut_onnx_default OFF)
 else()
@@ -49,7 +56,7 @@ endif()
 # wabcut-plughost (src/plughost), so a crashing plugin never takes the editor down. The SDKs come from the vcpkg
 # feature "audio-plugins" (the clap headers and the VST3 SDK, both MIT). ON by default in full Windows builds (the
 # helper's process, shared memory and windowing code is Win32 for now; AU and LV2 are a macOS/Linux follow-up).
-if(CMAKE_HOST_WIN32 AND NOT WABCUT_CORE_ONLY)
+if(CMAKE_HOST_WIN32 AND NOT WABCUT_CORE_ONLY AND NOT wabcut_win_arm64)
     set(_wabcut_plugins_default ON)
 else()
     set(_wabcut_plugins_default OFF)
@@ -60,7 +67,7 @@ if(WABCUT_WITH_AUDIO_PLUGINS AND NOT WABCUT_CORE_ONLY)
 endif()
 
 project(Wabcut
-    VERSION 0.6.0
+    VERSION 0.7.0
     DESCRIPTION "Open-source cross-platform non-linear video editor"
     LANGUAGES C CXX)
 
@@ -155,9 +162,11 @@ add_subdirectory(src/audio/edit)  # pure C++: dialogue-first audio commands (rol
 add_subdirectory(src/render/color) # pure C++: colour grade core - LUTs, grade math, CDL, scopes stats, Auto/Match, colour commands; core too
 add_subdirectory(src/render/masks) # pure C++: region tracker and the mask / track / redaction commands (I.6); core too
 add_subdirectory(src/render/motion) # pure C++: dense optical flow and flow interpolation (P.2); core too
+add_subdirectory(src/gyro)      # pure C++: camera gyro metadata (GoPro GPMF, Sony rtmd) and rotation maths (0.7); core too
 add_subdirectory(src/render/reference) # pure C++: CPU reference renders (C.16), the GPU shaders' test oracles; core too
 add_subdirectory(src/script)      # extensions (C.12): manifests, permissions, the editor's side in pure C++ (core too);
                                   # the wabcut-scripthost helper (QJSEngine) in full builds
+add_subdirectory(src/cloud)       # pure C++: review links, cloud projects on the user's own storage, stock media (0.7); core too
 if(NOT WABCUT_CORE_ONLY)
     add_subdirectory(src/media)      # FFmpeg: probe, decode (HW + SW fallback), frame cache, thumbnails, peaks
     add_subdirectory(src/audio)      # miniaudio: device, mixer, master clock
@@ -165,8 +174,10 @@ if(NOT WABCUT_CORE_ONLY)
     add_subdirectory(src/playback)   # playback controller: JKL, scheduling, A/V sync
     if(WABCUT_WITH_AUDIO_PLUGINS AND WIN32)
         add_subdirectory(src/plughost) # audio plugins (CLAP, VST3): the wabcut-plughost helper and the editor side
+        add_subdirectory(src/ofxhost)  # OpenFX video plug-ins (0.7): the wabcut-ofxhost helper and the editor side
     endif()
     add_subdirectory(src/export)     # encoders/muxer, presets
+    add_subdirectory(src/capture)    # capture from cameras and capture cards: device layer, recorder, repair (0.7)
     add_subdirectory(src/editor)     # editor services: import, project lifecycle, relink, playback session (I.1);
                                      # links audio, playback, export and media, so full builds only
     add_subdirectory(src/cli)        # wabcut-cli: headless probe/render used by tests

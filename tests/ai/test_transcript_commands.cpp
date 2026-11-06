@@ -85,7 +85,14 @@ TEST_CASE("The editing catalog is the built-in one plus the transcript and analy
     // mask.propagate (AI-14), highlights.find / importChat / toReel / toShort (G.2), and effect.analyzeStabilization /
     // effect.analyzeRollingShutter (P.2), and gen.sfx / redaction.detectFaces (0.2), and 0.6's
     // transcript.correctFromScript (P1 round #37), and autopilot.broll / autopilot.publishKit / autopilot.pacing (P1 #62).
-    CHECK(registry.all().size() == command::builtinCommands().all().size() + 21 + 3 + 44 + 2 + 16 + 5 + 11 + 8 + 5 + 3 + 3 + 3 + 4 + 2 + 2 + 1 + 3);
+    CHECK(registry.all().size() == command::builtinCommands().all().size() + 21 + 3 + 44 + 2 + 17 + 5 + 11 + 8 + 5 + 3 + 3 + 3 + 4 + 2 + 2 + 1 + 3
+                                                                       + 1 /* audio.autoMix */ + 1 /* transcript.delete */ + 1 /* audio.replaceProfanity, 0.7 */
+                                                                       + 3 /* audio.eqMatch / eqMatchReset / levelMatch, 0.7 */
+                                                                       + 2 /* audioDescription.findGaps / createTrack, 0.7 */
+                                                                       + 1 /* effect.analyzeAll, 0.7 */
+                                                                       + 2 /* effect.aiStatus and effect.processAi (AI video effects), 0.7 */
+                                                                       + 7 /* audio.spectralAttenuate / Heal / NoiseFloor / RemoveTone / RepairRemove / RepairOptions / RepairEdits, 0.7 */
+                                                                       + 1 /* lut.importFolder, 0.7 */);
     for (const char* name : {"effect.analyzeStabilization", "effect.analyzeRollingShutter"}) {
         INFO(name);
         CHECK(registry.knows(name));

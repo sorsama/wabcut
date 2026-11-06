@@ -358,7 +358,7 @@ TEST_CASE("Library list: metadata columns, sorting, resizing, reordering and the
     CHECK(r.cell(a, LibraryColumn::FrameRate) == QStringLiteral("25 fps"));
     CHECK(r.cell(a, LibraryColumn::Resolution) == QStringLiteral("1920 × 1080"));
     CHECK(r.cell(a, LibraryColumn::Codec) == QStringLiteral("h264 / aac"));
-    CHECK(r.cell(a, LibraryColumn::AudioChannels) == QStringLiteral("48 kHz Stereo, 2 stream(s)"));
+    CHECK(r.cell(a, LibraryColumn::AudioChannels) == QStringLiteral("48 kHz Stereo, 2 streams"));
     CHECK(r.cell(a, LibraryColumn::Analysis) == QStringLiteral("Transcribed · Indexed"));
     CHECK(r.cell(key(r.media('B')), LibraryColumn::Analysis) == QStringLiteral("Shots"));
     CHECK(r.cell(a, LibraryColumn::Label) == QStringLiteral("Violet"));
@@ -976,7 +976,10 @@ TEST_CASE("Library keys: zoom keys step the card size and selection keys ask the
         CHECK(LibraryBridge::handlesCommand(QString::fromLatin1(id)));
         CHECK(r.library.commandAvailability(QString::fromLatin1(id)).value(QStringLiteral("handled")).toBool());
     }
-    CHECK_FALSE(LibraryBridge::handlesCommand(QStringLiteral("project.nextColumnField")));
+    // 0.7 (card 021): the field keys are the Library's now (they step between the cells of the list view being edited).
+    for (const char* id : {"project.nextColumnField", "project.previousColumnField", "project.nextRowField",
+                           "project.previousRowField"})
+        CHECK(LibraryBridge::handlesCommand(QString::fromLatin1(id)));
 
     // The slider's bounds, and the keys stepping between them.
     CHECK(r.library.thumbnailScaleMin() == 0.5);
@@ -1287,6 +1290,57 @@ TEST_CASE("Library: a folder dropped on the timeline comes in as bins and only t
     CHECK(clipsOnTimeline() == 0);
     CHECK(r.controller.session().undoCount() == before + 1);
     CHECK(r.controller.session().undoLabel() == "Import Folder");
+}
+
+// 0.7 (card 039): the timeline drop passes the Library's open bin, as File > Import does.
+TEST_CASE("Library: a folder dropped on the timeline comes in as bins inside the open bin (039)", "[app][library][import]") {
+    if (!haveLibraryTestMedia())
+        SKIP("test media missing");
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    const QString captures = dir.filePath(QStringLiteral("Captures"));
+    copyMedia("sine_48k.wav", captures + QStringLiteral("/a.wav"));
+    copyMedia("sine_48k.wav", captures + QStringLiteral("/Day2/b.wav"));
+    copyMedia("sine_48k.wav", dir.filePath(QStringLiteral("loose.wav")));
+    ImportRig r;
+    const QString target = r.library.newBin(QStringLiteral("Target"));
+    REQUIRE_FALSE(target.isEmpty());
+    r.library.openBin(target);
+    const BinId targetId = r.library.bin();
+    REQUIRE(targetId.isValid());
+    const auto clipsOnTimeline = [&] {
+        std::size_t n = 0;
+        if (const SequencePtr seq = r.controller.currentSequence())
+            seq->forEachTrack([&](const Track& t) { n += t.clips.size(); });
+        return n;
+    };
+    const std::size_t before = r.controller.session().undoCount();
+
+    // What Main.qml sends: the open bin's key. The folder's bins land there; the loose file's item too; the folder's
+    // files stay off the timeline and the loose one is edited in.
+    const QVariantMap result =
+        r.lifecycle.dropFiles({QUrl::fromLocalFile(captures), QUrl::fromLocalFile(dir.filePath(QStringLiteral("loose.wav")))},
+                              QStringLiteral("00:00:00:00"), QString(), true, r.library.currentBin());
+    CHECK(result.value("added").toInt() == 3);
+    CHECK(result.value("bins").toInt() == 2);
+    CHECK(result.value("placed").toInt() == 1);
+    CHECK(clipsOnTimeline() == 1);
+    REQUIRE(r.binIdNamed("Captures").isValid());
+    CHECK(r.parentOf("Captures") == targetId);
+    CHECK(r.parentOf("Day2") == r.binIdNamed("Captures"));
+    for (const MediaPtr& m : r.controller.snapshot()->media) {
+        INFO(m->name);
+        CHECK(m->bin == (m->name == "loose.wav" ? targetId : m->name == "a.wav" ? r.binIdNamed("Captures") : r.binIdNamed("Day2")));
+    }
+    CHECK(r.controller.session().undoCount() == before + 2); // the import (one step), then the loose file's edit
+
+    // A bin key that is not in the project (a closed tab, a stale key) puts everything at the root, as before.
+    REQUIRE(r.controller.undo());
+    REQUIRE(r.controller.undo());
+    const QVariantMap stale =
+        r.lifecycle.dropFiles({QUrl::fromLocalFile(captures)}, QStringLiteral("00:00:00:00"), QString(), true, QStringLiteral("b9999"));
+    CHECK(stale.value("added").toInt() == 2);
+    CHECK(r.parentOf("Captures") == BinId{});
 }
 
 namespace {

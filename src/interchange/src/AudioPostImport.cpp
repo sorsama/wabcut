@@ -10,6 +10,7 @@
 #include <wabcut/interchange/FileUrl.h>
 #include <wabcut/model/AudioChannels.h>
 #include <wabcut/model/Parameters.h>
+#include <wabcut/model/Plural.h>
 
 #include <algorithm>
 #include <cmath>
@@ -136,8 +137,8 @@ std::string dbLabel(double db) {
 }
 
 std::string suffixOfSpeaker(int speaker) {
-    static constexpr std::string_view kNames[6] = {"L", "R", "C", "LFE", "Ls", "Rs"};
-    return speaker >= 0 && speaker < 6 ? std::string(kNames[speaker]) : std::string();
+    static constexpr std::string_view kNames[8] = {"L", "R", "C", "LFE", "Ls", "Rs", "Lrs", "Rrs"}; // 0.7: 6 and 7 are 7.1's rear pair
+    return speaker >= 0 && speaker < 8 ? std::string(kNames[speaker]) : std::string();
 }
 
 class Engine {
@@ -427,7 +428,7 @@ void Engine::walk(const Component& c, Ticks pos, Rate rate, TrackOut& out, const
             if (c.alternates > 0) {
                 report(ReportOutcome::Approximated, ReportCategory::Clip,
                        "a " + (c.name.empty() ? std::string("selector") : c.name) + " at " + tc(pos) + " has " +
-                           std::to_string(c.alternates) + " alternative(s): the selected one is imported",
+                           counted(static_cast<std::int64_t>(c.alternates), "alternative") + ": the selected one is imported",
                        c.where);
             }
             walk(c.children.front(), pos, rate, out, cx, depth + 1, kind);
@@ -1236,16 +1237,17 @@ std::vector<IrTrack> Engine::makeTracks(const Slot& slot, TrackOut& out, TrackKi
         }
         if (kind == TrackKind::Audio) {
             track.format = widest <= 1 ? ChannelFormat::Mono : formatForChannels(std::min(widest, kMaxClipChannels));
-            if (track.format == ChannelFormat::Surround51) {
-                seq.masterFormat = ChannelFormat::Surround51;
-                report(ReportOutcome::Carried, ReportCategory::AudioMapping, "5.1 track " + label + " (the master is 5.1)",
-                       slot.segment.where);
+            if (track.format == ChannelFormat::Surround51 || track.format == ChannelFormat::Surround71) {
+                seq.masterFormat = *track.format;
+                const std::string layout(wabcut::toString(*track.format));
+                report(ReportOutcome::Carried, ReportCategory::AudioMapping,
+                       layout + " track " + label + " (the master is " + layout + ")", slot.segment.where);
             }
         }
         return {std::move(track)};
     }
 
-    // Separate files per channel: linked mono tracks, stereo panned left and right, 5.1 routed to a 5.1 master.
+    // Separate files per channel: linked mono tracks, stereo panned left and right, 5.1 and (0.7) 7.1 routed to a surround master.
     std::vector<int> speakers(channels, -1);
     bool named = true;
     for (const Piece& p : pieces) {
@@ -1255,7 +1257,8 @@ std::vector<IrTrack> Engine::makeTracks(const Slot& slot, TrackOut& out, TrackKi
         std::set<int> seen;
         for (std::size_t k = 0; k < channels; ++k) {
             const int sp = p.sources[k].speaker;
-            if (sp < 0 || !seen.insert(sp).second) {
+            // 5.1 knows speakers 0..5; the rear surrounds 6 and 7 only exist in 7.1.
+            if (sp < 0 || (channels == 6 && sp > 5) || !seen.insert(sp).second) {
                 named = false;
             }
             speakers[k] = sp;
@@ -1263,14 +1266,30 @@ std::vector<IrTrack> Engine::makeTracks(const Slot& slot, TrackOut& out, TrackKi
         break;
     }
     const bool stereo = channels == 2;
-    const bool surround = channels == 6;
+    const bool surround71 = channels == 8;
+    const bool surround = channels == 6 || surround71;
     if (stereo && !(named && speakers[0] <= 1 && speakers[1] <= 1)) {
         speakers = {0, 1};
     }
     if (surround && !named) {
-        speakers = {0, 1, 2, 3, 4, 5};
+        if (surround71) { // the order of a 7.1 file: L R C LFE Lrs Rrs Ls Rs (speakers 6 and 7 are the rear pair)
+            speakers = {0, 1, 2, 3, 6, 7, 4, 5};
+        } else {
+            speakers = {0, 1, 2, 3, 4, 5};
+        }
         report(ReportOutcome::Approximated, ReportCategory::AudioMapping,
-               "the channels of 5.1 track " + label + " do not name their speakers: taken as L R C LFE Ls Rs", slot.segment.where);
+               std::string("the channels of ") + (surround71 ? "7.1" : "5.1") + " track " + label +
+                   " do not name their speakers: taken as " + (surround71 ? "L R C LFE Lrs Rrs Ls Rs" : "L R C LFE Ls Rs"),
+               slot.segment.where);
+    }
+    if (surround71) { // a speaker outside the eight (or a doubled one) cannot be routed
+        std::set<int> seen;
+        for (const int sp : speakers) {
+            if (channelOf71Speaker(sp) < 0 || !seen.insert(sp).second) {
+                speakers = {0, 1, 2, 3, 6, 7, 4, 5};
+                break;
+            }
+        }
     }
     std::vector<IrTrack> tracks(channels);
     const std::string baseName = !slot.name.empty() ? slot.name
@@ -1308,15 +1327,22 @@ std::vector<IrTrack> Engine::makeTracks(const Slot& slot, TrackOut& out, TrackKi
             if (surround) {
                 AudioChannelMap map;
                 map.format = ChannelFormat::Adaptive;
-                map.channels.resize(6);
-                map.channels[static_cast<std::size_t>(speakers[k])].sources = {
+                map.channels.resize(surround71 ? 8 : 6);
+                const int target = surround71 ? channelOf71Speaker(speakers[k]) : speakers[k];
+                map.channels[static_cast<std::size_t>(target)].sources = {
                     p.sources[k].channel >= 0 && p.sources[k].fileChannels > 1 ? p.sources[k].channel : 0};
                 c.channels = std::move(map);
             }
             tracks[k].clips.push_back(std::move(c));
         }
     }
-    if (surround) {
+    if (surround71) {
+        seq.masterFormat = ChannelFormat::Surround71;
+        report(ReportOutcome::Approximated, ReportCategory::AudioMapping,
+               "7.1 track " + label +
+                   " plays eight mono files: it became eight linked tracks routed to the 7.1 master's L R C LFE Lrs Rrs Ls Rs",
+               slot.segment.where);
+    } else if (surround) {
         seq.masterFormat = ChannelFormat::Surround51;
         report(ReportOutcome::Approximated, ReportCategory::AudioMapping,
                "5.1 track " + label + " plays six mono files: it became six linked tracks routed to the 5.1 master's L R C LFE Ls Rs",
@@ -1328,50 +1354,55 @@ std::vector<IrTrack> Engine::makeTracks(const Slot& slot, TrackOut& out, TrackKi
     } else {
         report(ReportOutcome::Approximated, ReportCategory::AudioMapping,
                std::to_string(channels) + "-channel track " + label + " became " + std::to_string(channels) +
-                   " linked mono tracks (Wabcut mixes up to 5.1)",
+                   " linked mono tracks (Wabcut mixes up to 7.1)",
                slot.segment.where);
     }
     return tracks;
 }
 
 void Engine::routeSurroundGroups(IrSequence& seq) {
-    // Six neighbouring mono tracks named <name> L / R / C / LFE / Ls / Rs (a 5.1 track broken out to mono, as Wabcut,
-    // Premiere and Pro Tools export it): routed to the 5.1 master's channels.
+    // Eight (0.7: 7.1) or six (5.1) neighbouring mono tracks named <name> L / R / C / LFE / (Lrs / Rrs /) Ls / Rs (a surround
+    // track broken out to mono, as Wabcut, Premiere and Pro Tools export it): routed to the surround master's channels.
+    // The eight are looked for first, so that a 7.1 set is not read as a 5.1 one.
     auto& tracks = seq.audioTracks;
-    for (std::size_t i = 0; i + 6 <= tracks.size();) {
-        std::array<int, 6> speakers{};
-        std::set<int> seen;
-        const std::string base = withoutSpeaker(tracks[i].name);
-        bool group = !base.empty();
-        for (std::size_t k = 0; k < 6 && group; ++k) {
-            const IrTrack& t = tracks[i + k];
-            speakers[k] = speakerOfName(t.name);
-            group = speakers[k] >= 0 && seen.insert(speakers[k]).second && withoutSpeaker(t.name) == base &&
-                    (!t.format || *t.format == ChannelFormat::Mono) &&
-                    std::all_of(t.clips.begin(), t.clips.end(), [](const IrClip& c) { return !c.channels; });
-        }
-        if (!group) {
-            ++i;
-            continue;
-        }
-        for (std::size_t k = 0; k < 6; ++k) {
-            IrTrack& t = tracks[i + k];
-            t.format = ChannelFormat::Adaptive;
-            t.pan.reset();
-            for (IrClip& c : t.clips) {
-                AudioChannelMap map;
-                map.format = ChannelFormat::Adaptive;
-                map.channels.resize(6);
-                map.channels[static_cast<std::size_t>(speakers[k])].sources = {0};
-                c.channels = std::move(map);
+    for (const std::size_t size : {std::size_t{8}, std::size_t{6}}) {
+        const bool is71 = size == 8;
+        for (std::size_t i = 0; i + size <= tracks.size();) {
+            std::array<int, 8> speakers{};
+            std::set<int> seen;
+            const std::string base = withoutSpeaker(tracks[i].name);
+            bool group = !base.empty();
+            for (std::size_t k = 0; k < size && group; ++k) {
+                const IrTrack& t = tracks[i + k];
+                speakers[k] = speakerOfName(t.name);
+                group = speakers[k] >= 0 && speakers[k] < static_cast<int>(size) && seen.insert(speakers[k]).second &&
+                        withoutSpeaker(t.name) == base && (!t.format || *t.format == ChannelFormat::Mono) &&
+                        std::all_of(t.clips.begin(), t.clips.end(), [](const IrClip& c) { return !c.channels; });
             }
+            if (!group) {
+                ++i;
+                continue;
+            }
+            for (std::size_t k = 0; k < size; ++k) {
+                IrTrack& t = tracks[i + k];
+                t.format = ChannelFormat::Adaptive;
+                t.pan.reset();
+                const int target = is71 ? channelOf71Speaker(speakers[k]) : speakers[k];
+                for (IrClip& c : t.clips) {
+                    AudioChannelMap map;
+                    map.format = ChannelFormat::Adaptive;
+                    map.channels.resize(size);
+                    map.channels[static_cast<std::size_t>(target)].sources = {0};
+                    c.channels = std::move(map);
+                }
+            }
+            seq.masterFormat = is71 ? ChannelFormat::Surround71 : ChannelFormat::Surround51;
+            report(ReportOutcome::Carried, ReportCategory::AudioMapping,
+                   std::string(is71 ? "7.1" : "5.1") + " layout: tracks '" + tracks[i].name + "' to '" + tracks[i + size - 1].name +
+                       "' play to the " + (is71 ? "7.1" : "5.1") + " master's " + (is71 ? "L R C LFE Lrs Rrs Ls Rs" : "L R C LFE Ls Rs"),
+                   tracks[i].location.element);
+            i += size;
         }
-        seq.masterFormat = ChannelFormat::Surround51;
-        report(ReportOutcome::Carried, ReportCategory::AudioMapping,
-               "5.1 layout: tracks '" + tracks[i].name + "' to '" + tracks[i + 5].name +
-                   "' play to the 5.1 master's L R C LFE Ls Rs",
-               tracks[i].location.element);
-        i += 6;
     }
 }
 
@@ -1697,8 +1728,8 @@ std::expected<void, Error> Engine::buildSequence(const Mob& comp) {
     for (const auto& [rate, count] : mediaRates) {
         if (rate != audioRate.num) {
             report(ReportOutcome::Carried, ReportCategory::AudioMapping,
-                   std::to_string(count) + " clip(s) play " + std::to_string(rate) + " Hz media, converted to the sequence's " +
-                       std::to_string(audioRate.num) + " Hz as they play",
+                   "Media at " + std::to_string(rate) + " Hz, converted to the sequence's " + std::to_string(audioRate.num) +
+                       " Hz as it plays: " + counted(static_cast<std::int64_t>(count), "clip"),
                    comp.where);
         }
     }
@@ -1854,7 +1885,8 @@ constexpr SpeakerSuffix kSuffixes[] = {
     {"left surround", 4}, {"right surround", 5}, {"surround left", 4}, {"surround right", 5}, {"centre", 2},
     {"center", 2},        {"left", 0},           {"right", 1},         {"lfe", 3},          {"sub", 3},
     {"ls", 4},            {"rs", 5},             {"lss", 4},           {"rss", 5},          {"l", 0},
-    {"r", 1},             {"c", 2},
+    {"r", 1},             {"c", 2},              {"lrs", 6},           {"rrs", 7},          {"lsr", 6},
+    {"rsr", 7},           {"rear left", 6},      {"rear right", 7},
 };
 
 std::optional<std::size_t> suffixAt(std::string_view name, int& speaker) {
@@ -1884,6 +1916,24 @@ std::optional<std::size_t> suffixAt(std::string_view name, int& speaker) {
 int speakerOfName(std::string_view name) {
     int speaker = -1;
     return suffixAt(trim(name), speaker) ? speaker : -1;
+}
+
+int channelOf71Speaker(int speaker) {
+    switch (speaker) {
+    case 0:
+    case 1:
+    case 2:
+    case 3:
+        return speaker;
+    case 4: // Ls, Rs: the side pair of 7.1
+    case 5:
+        return speaker + 2;
+    case 6: // Lrs, Rrs
+    case 7:
+        return speaker - 2;
+    default:
+        return -1;
+    }
 }
 
 std::string withoutSpeaker(std::string_view name) {

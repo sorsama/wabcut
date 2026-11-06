@@ -424,8 +424,8 @@ QString ClipboardBridge::applyAttributes(const QString& mode, const QVariantMap&
         }
     }
     const int total = static_cast<int>(p.order.size());
-    setMessage(paste ? tr("Paste Attributes: %1 of %2 clips changed").arg(changed).arg(total)
-                     : tr("Remove Attributes: %1 of %2 clips changed").arg(changed).arg(total));
+    setMessage(paste ? tr("Paste Attributes: %1 of %n clip(s) changed", nullptr, total).arg(changed)
+                     : tr("Remove Attributes: %1 of %n clip(s) changed", nullptr, total).arg(changed));
     return {};
 }
 

@@ -287,6 +287,31 @@ TEST_CASE("Moments: speed presets act on the linked video of an audio clip and r
     CHECK(r.moments.apply(QStringLiteral("nothing")) != QString());
 }
 
+TEST_CASE("Moments: punch in zooms both axes of a clip with Uniform Scale off (card 12)", "[app][moments][scalewidth]") {
+    MomentsRig r;
+    {
+        command::CommandEngine engine(r.controller.session());
+        command::CommandRequest request;
+        request.command = "clip.setMotion";
+        request.params = {{"sequence", r.tl.seq.value}, {"clip", r.tl.clip("V1@0").value}, {"scale", 0.5}, {"scaleWidth", 1.0}};
+        REQUIRE(engine.execute(request).ok()); // 100 % wide, 50 % high: Uniform Scale off
+    }
+    r.controller.setPlayhead(f(100));
+    const std::size_t before = r.undo();
+    REQUIRE(r.moments.punchIn(130.0, false).isEmpty());
+    CHECK(r.undo() == before + 1); // both axes in one undo step
+    const Clip v = r.video();
+    const std::vector<Keyframe> height = keysOf(v, ParamId::Scale);
+    const std::vector<Keyframe> width = keysOf(v, ParamId::ScaleWidth);
+    REQUIRE(height.size() == 4);
+    REQUIRE(width.size() == 4);
+    CHECK(height[1].value == Catch::Approx(0.65));
+    CHECK(width[1].value == Catch::Approx(1.3));
+    CHECK(width[3].value == Catch::Approx(1.0));
+    CHECK_FALSE(v.properties().uniformScale());
+    r.controller.undo();
+    CHECK(keysOf(r.video(), ParamId::ScaleWidth).empty());
+}
 TEST_CASE("Moments: punch in keys the scale relative to the clip and comes back out", "[app][moments]") {
     MomentsRig r;
     // The clip is already at 50 %: the punch-in goes to 65 % and back to 50 %.

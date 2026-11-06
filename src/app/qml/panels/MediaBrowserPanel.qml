@@ -23,6 +23,9 @@ Panel {
 
     objectName: "mediaBrowserPanel"
     title: qsTr("Media Browser")
+    // 0.7 (card 024): Premiere's Media Browser keys (Open in Source Monitor Shift+O, Select Directory List Shift+Left, Select
+    // Media List Shift+Right) act while this panel has the focus.
+    KeymapScope.scope: "mediaBrowser"
 
     property string folder: ""
     property var entries: []
@@ -40,8 +43,13 @@ Panel {
     readonly property var ingestActions: [
         { id: "copy", label: qsTr("Copy") },
         { id: "transcode", label: qsTr("Transcode") },
-        { id: "proxies", label: qsTr("Create Proxies") }
+        { id: "proxies", label: qsTr("Create Proxies") },
+        { id: "copyProxies", label: qsTr("Copy and Create Proxies") }
     ]
+    /// Ingest actions that put the clips in a folder first (they need one chosen): everything but Create Proxies.
+    function ingestNeedsFolder(action: string): bool {
+        return action !== "proxies"
+    }
 
     /// 0.4: the chosen folders' URLs (Main imports them as bins: ProjectFile.importFiles), and the clips chosen with
     /// them (their paths; Main imports them through Library.importFromBrowser in the same undo step).
@@ -52,6 +60,25 @@ Panel {
 
     function focusContent() {
         list.forceActiveFocus(Qt.TabFocusReason)
+    }
+    // 0.7 (card 024): Select Media List (Shift+Right): the keyboard goes to the list of clips and folders.
+    function focusList() {
+        root.focusContent()
+    }
+    // 0.7 (card 024): Select Directory List (Shift+Left). This browser has one list, so the directories are its Drives and
+    // places menu (the video and home folders, capture folders, recent import folders, the drives): it opens, Up / Down and
+    // Enter choose, and the folder chosen is listed.
+    function openDirectoryList() {
+        placesMenu.options = root.placeOptions()
+        placesMenu.popup(placesButton, 0, placesButton.height + Theme.space(1))
+    }
+    // 0.7 (card 024): Open in Source Monitor (Shift+O): the current clip loads in the Source Monitor without being imported
+    // (what a double-click does). False when the current row is a folder or there is none.
+    function openInSourceMonitor(): bool {
+        if (!root.currentIsClip)
+            return false
+        root.activate(root.currentEntry)
+        return true
     }
     // Lists `path`; true when it could be read (Library.browseFolder leaves no message then), and then it is the folder
     // the panel reopens next time.
@@ -172,13 +199,14 @@ Panel {
             text: qsTr("Ingest")
             tooltip: !Library.ingest ? qsTr("Copy, transcode or make proxies of the clips as they are imported")
                      : Library.ingestAction === "proxies" ? qsTr("Creating proxies of the clips imported")
+                     : Library.ingestAction === "copyProxies" ? qsTr("Copying to %1 and creating proxies of the copies").arg(Library.ingestFolder)
                      : Library.ingestAction === "transcode" ? qsTr("Transcoding to %1 with %2").arg(Library.ingestFolder).arg(root.presetName(Library.ingestPreset))
                      : qsTr("Copying to %1").arg(Library.ingestFolder)
             checked: Library.ingest
             onToggled: {
                 Library.ingest = checked
                 // Copy and Transcode need a folder: the settings ask for it.
-                if (checked && Library.ingestAction !== "proxies" && Library.ingestFolder === "")
+                if (checked && root.ingestNeedsFolder(Library.ingestAction) && Library.ingestFolder === "")
                     ingestPopover.open()
                 checked = Qt.binding(() => Library.ingest)
             }
@@ -241,11 +269,12 @@ Panel {
         transformOrigin: Item.TopRight
 
         Column {
-            width: Theme.space(84)
+            width: Theme.space(124)
             spacing: Theme.space(3)
 
             PillTabs {
                 objectName: "mediaBrowserIngestAction"
+                compact: true
                 width: parent.width
                 model: root.ingestActions
                 currentIndex: Math.max(0, root.ingestActions.findIndex(a => a.id === Library.ingestAction))
@@ -257,6 +286,8 @@ Panel {
                 wrapMode: Text.WordWrap
                 text: Library.ingestAction === "proxies"
                       ? qsTr("The clips are imported where they are and proxies of them are made (the proxy settings' format).")
+                      : Library.ingestAction === "copyProxies"
+                        ? qsTr("The clips' files are copied into the folder, the copies are imported and proxies of the copies are made (the proxy settings' format).")
                       : Library.ingestAction === "transcode"
                         ? qsTr("The clips are imported at once and transcoded into the folder through the export queue; each switches to its new file when it is made.")
                         : qsTr("The clips' files are copied into the folder, then the copies are imported.")
@@ -265,7 +296,7 @@ Panel {
                 font.pixelSize: Theme.textSm
             }
             Row {
-                visible: Library.ingestAction !== "proxies"
+                visible: root.ingestNeedsFolder(Library.ingestAction)
                 width: parent.width
                 spacing: Theme.space(2)
                 Text {

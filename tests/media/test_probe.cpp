@@ -162,6 +162,23 @@ TEST_CASE("probe: display matrix rotation", "[media][probe]") {
     CHECK(info.video.front().height == 360);
 }
 
+TEST_CASE("probe: a display matrix with a reflection marks the stream as mirrored (card 154)", "[media][probe]") {
+    // rotated_90.mp4 is a plain quarter turn; transposed.mp4 is a turn and a flip (FFmpeg's transpose).
+    const MediaInfo turned = probeOk("rotated_90.mp4");
+    REQUIRE(turned.video.size() == 1);
+    CHECK(turned.video.front().rotationDegrees == 90);
+    CHECK_FALSE(turned.video.front().mirrored);
+    const MediaInfo flipped = probeOk("transposed.mp4");
+    REQUIRE(flipped.video.size() == 1);
+    CHECK(flipped.video.front().rotationDegrees == 90);
+    CHECK(flipped.video.front().mirrored);
+    CHECK(flipped.video.front().width == 640); // stored size
+    // Footage with no display matrix is neither.
+    const MediaInfo upright = probeOk("h264_1080p60_aac.mp4");
+    CHECK(upright.video.front().rotationDegrees == 0);
+    CHECK_FALSE(upright.video.front().mirrored);
+}
+
 TEST_CASE("probe: WAV files", "[media][probe]") {
     for (const char* name : {"sine_48k.wav", "ramp_48k.wav"}) {
         const MediaInfo info = probeOk(name);

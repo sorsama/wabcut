@@ -89,6 +89,8 @@ struct ClipLook {
 void applyLook(edit::detail::SequenceEditor& ed, Clip& clip, const ClipLook& look) {
     ClipContent content = clip.content();
     content.properties.set(ParamId::Scale, look.place.scale);
+    content.properties.set(ParamId::UniformScale, parameterInfo(ParamId::UniformScale).defaultValue); // 0.7 (card #12)
+    content.properties.set(ParamId::ScaleWidth, parameterInfo(ParamId::ScaleWidth).defaultValue);
     content.properties.set(ParamId::PositionX, look.place.positionX);
     content.properties.set(ParamId::PositionY, look.place.positionY);
     content.properties.set(ParamId::AnchorX, look.place.anchorX);

@@ -18,6 +18,9 @@ MenuItem {
     property string shortcut: command !== "" && KeymapDispatcher.revision >= 0 ? KeymapDispatcher.shortcutText(command) : ""
     /// Why the row cannot be chosen now ("Select a clip first"): its tooltip and accessible description while disabled.
     property string disabledReason: ""
+    /// 0.7: a line that says what the row does, in a tooltip while the pointer rests on it (and its accessible
+    /// description while it can be chosen). Empty: none.
+    property string hint: ""
 
     implicitHeight: Theme.controlHeightSmall + Theme.space(1)
     leftPadding: Theme.space(3.5)
@@ -26,7 +29,7 @@ MenuItem {
     hoverEnabled: true
     font.family: Theme.fontSans
     font.pixelSize: Theme.textMd
-    Accessible.description: !enabled ? disabledReason : ""
+    Accessible.description: !enabled ? disabledReason : hint
 
     indicator: null
     arrow: null
@@ -112,6 +115,16 @@ MenuItem {
             parent: control
             visible: true
             text: control.disabledReason
+        }
+    }
+    // 0.7: what an enabled row does, where its label alone would not say.
+    Loader {
+        objectName: "menuItemHintTip"
+        active: control.enabled && control.hint !== "" && hoverAll.hovered
+        sourceComponent: Tooltip {
+            parent: control
+            visible: true
+            text: control.hint
         }
     }
 }

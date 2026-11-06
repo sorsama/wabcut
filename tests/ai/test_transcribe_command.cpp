@@ -214,3 +214,54 @@ TEST_CASE("transcript.transcribe passes the project's audio redactions of each m
     CHECK(transcriber->options[0].redacted[0] == TimeRange::fromStartEnd(f(2), f(6)));
     CHECK(transcriber->options[1].redacted.empty()); // media B has none
 }
+
+// ---- 0.7 (card 061): custom words reach the transcriber ---------------------------------------------------------------
+
+TEST_CASE("transcript.transcribe listens for the project's custom words, or the ones the call names", "[ai][edit][transcribe][words]") {
+    Fixture fx;
+    const MediaId a = fx.h.tl.media('A');
+    const Json media = Json::array({fx.h.tl.state.findMedia(a)->name});
+
+    // No words: none are sent.
+    fx.h.ok("transcript.transcribe", Json{{"media", media}});
+    REQUIRE(fx.transcriber->options.size() == 1);
+    CHECK(fx.transcriber->options.back().vocabulary.empty());
+
+    // The project's words go with every file.
+    fx.h.ok("transcript.setCustomWords", Json{{"words", Json::array({"Malenia", "Elden Ring"})}});
+    fx.h.ok("transcript.transcribe", Json{{"media", media}, {"force", true}});
+    CHECK(fx.transcriber->options.back().vocabulary == std::vector<std::string>{"Malenia", "Elden Ring"});
+
+    // The call can name its own (or none).
+    fx.h.ok("transcript.transcribe", Json{{"media", media}, {"force", true}, {"vocabulary", Json::array({"Radahn"})}});
+    CHECK(fx.transcriber->options.back().vocabulary == std::vector<std::string>{"Radahn"});
+    fx.h.ok("transcript.transcribe", Json{{"media", media}, {"force", true}, {"vocabulary", Json::array()}});
+    CHECK(fx.transcriber->options.back().vocabulary.empty());
+
+    // The schema takes strings only.
+    CHECK(fx.h.errorOf("transcript.transcribe", Json{{"media", media}, {"vocabulary", Json::array({7})}}) == "InvalidParams");
+}
+
+// ---- 0.7 (card 111): mixed languages reach the transcriber ------------------------------------------------------------
+
+TEST_CASE("transcript.transcribe passes mixedLanguages on and takes only a boolean", "[ai][edit][transcribe][mixed]") {
+    Fixture fx;
+    const MediaId a = fx.h.tl.media('A');
+    const Json media = Json::array({fx.h.tl.state.findMedia(a)->name});
+
+    fx.h.ok("transcript.transcribe", Json{{"media", media}});
+    REQUIRE(fx.transcriber->options.size() == 1);
+    CHECK_FALSE(fx.transcriber->options.back().mixedLanguages); // off unless asked for
+    CHECK(fx.transcriber->options.back().language == "auto");
+
+    fx.h.ok("transcript.transcribe", Json{{"media", media}, {"force", true}, {"mixedLanguages", true}});
+    CHECK(fx.transcriber->options.back().mixedLanguages);
+    CHECK(fx.transcriber->options.back().language == "auto");
+
+    CHECK(fx.h.errorOf("transcript.transcribe", Json{{"media", media}, {"mixedLanguages", "yes"}}) == "InvalidParams");
+
+    // The schema documents it for agents.
+    const command::CommandSpec* spec = editingCommands().find("transcript.transcribe");
+    REQUIRE(spec);
+    CHECK(spec->params["properties"].contains("mixedLanguages"));
+}

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Entitlements of Wabcut.app's main executable (finish_bundle.py, option entitlements-app), the hardened runtime's exceptions
+     a Developer ID signature needs for notarization (https://developer.apple.com/documentation/security/hardened_runtime):
+
+     allow-jit        Qt Quick's QML engine (V4) compiles JavaScript to machine code in MAP_JIT memory; without this
+                      entitlement the app stops when its interface loads.
+     audio-input      voice-over recording (Info.plist: NSMicrophoneUsageDescription); without it macOS never asks and
+                      the recording is silent.
+
+     Nothing else is requested: the app is not sandboxed (a disk image, not the Mac App Store), loads only libraries the
+     same signature covers (no disable-library-validation), and needs no camera, location or contacts access. -->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

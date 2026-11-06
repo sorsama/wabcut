@@ -3,8 +3,10 @@
 // ProjectDocument: the project file behind an EditSession (File > New / Open / Save / Save As), its dirty
 // state, autosave with rotated recovery copies, and offline media + relinking.
 //
-//   * Saving goes through ProjectIO (atomic write, "<file>.bak1..5" rotation of earlier saves). Save As
-//     re-bases every media locator's relative path on the new location.
+//   * Saving goes through ProjectIO (atomic write, "<file>.bak1..N" rotation of earlier saves). Save As
+//     re-bases every media locator's relative path on the new location. 0.7 (card 029): the ".bakN" copies and the
+//     autosave files sit beside the project, in its "Wabcut Auto-Save" folder or in a chosen folder
+//     (ProjectDocumentOptions::backupLocation, setBackupPolicy); recovery looks in all of those places.
 //   * Dirty = the session's snapshot is not the one last opened/saved (an undo back to it is clean again).
 //   * Autosave (call autosave() from a timer): writes "<file>.autosave" only when the snapshot changed since the
 //     last write. The new copy is written first (atomically, over the current one); only when that succeeded do the
@@ -29,6 +31,7 @@
 #include <wabcut/model/EditSession.h>
 #include <wabcut/model/Error.h>
 #include <wabcut/model/Ids.h>
+#include <wabcut/model/ProjectDowngrade.h>
 #include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/ProjectState.h>
 
@@ -40,6 +43,7 @@
 #include <algorithm>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace wabcut::editor {
@@ -51,6 +55,9 @@ struct ProjectDocumentOptions {
     int autosaveCopies = 3;
     /// Where untitled projects autosave (empty: they do not autosave).
     std::filesystem::path untitledAutosaveDir;
+    /// 0.7 (card 029): where a saved project's ".bakN" copies and ".autosave" files are kept (beside it, in its
+    /// "Wabcut Auto-Save" folder, or in a folder of the user's choice). Recovery looks in all of them.
+    io::BackupLocation backupLocation;
 };
 
 /// Online/offline state of one media item, as checked on disk.
@@ -149,6 +156,11 @@ public:
     /// location, the save filter applied, like saveAs) and changes nothing here: the project file, the dirty state and
     /// the autosave stay as they were.
     std::expected<void, Error> saveCopy(const std::filesystem::path& file) const;
+    /// 0.7 (card 059), File > Save for an Older Version: like saveCopy, but written the way Wabcut `release` ("0.6", "0.5")
+    /// reads it (io::saveProjectForRelease); returns what that release cannot hold. Nothing here changes.
+    std::expected<io::DowngradeResult, Error> saveForRelease(const std::filesystem::path& file, std::string_view release) const;
+    /// What saving for `release` would leave out (no file is written): the same list saveForRelease returns.
+    std::expected<std::vector<io::DowngradeLoss>, Error> olderReleaseLosses(std::string_view release) const;
 
     // ---- Autosave and recovery ----
     /// Writes the autosave when the snapshot changed since the last write (or save). Returns true when a file was
@@ -164,10 +176,11 @@ public:
     struct AutosaveJob {
         ProjectSnapshot snapshot;              ///< the revision written
         ProjectState state;                    ///< what is written (rebased, filtered)
-        std::filesystem::path target;          ///< "<project>.autosave"
+        std::filesystem::path target;          ///< "<project>.autosave" (0.7: in the backup folder when there is one)
         int copies = 1;                        ///< ProjectDocumentOptions::autosaveCopies
         std::filesystem::path retire;          ///< an untitled session recovered from: deleted once written
         bool createFolder = false;             ///< the target's folder may not exist yet
+        std::string projectName;               ///< the project file's name for a failure message ("" untitled)
         std::expected<void, Error> write() const;
     };
     /// Nothing to write (unchanged since the last autosave or save, or nowhere to write): nullopt.
@@ -182,15 +195,29 @@ public:
     /// it that loads, or nullopt. The same file as the first loadable autosave newer than the project in
     /// recoveryFiles(), but only autosaves newer than the project are parsed, newest first, until one loads (P.1:
     /// recoveryFiles() parses every autosave and backup; after a clean exit nothing needs parsing). Any thread.
-    static std::optional<RecoveryFile> newestUnsavedAutosave(const std::filesystem::path& projectFile, int autosaveCopies);
+    /// 0.7 (card 029): looks in every folder `location` may have put the copies in (beside the project, its Auto-Save
+    /// folder, the chosen root's), and for at least io::kMaxAutosaveCopies copies in each.
+    static std::optional<RecoveryFile> newestUnsavedAutosave(const std::filesystem::path& projectFile, int autosaveCopies,
+                                                             const io::BackupLocation& location = {});
     int autosaveCopies() const { return std::max(1, m_options.autosaveCopies); }
+    /// 0.7 (card 029): changes the copies kept and where they go. Files already written stay where they are (recovery
+    /// still finds them); the next save and autosave use the new settings. `saveBackups` 0-10, `autosaveCopies` 1-10.
+    void setBackupPolicy(int saveBackups, int autosaveCopies, const io::BackupLocation& location);
+    const io::BackupLocation& backupLocation() const { return m_options.backupLocation; }
+    int saveBackups() const { return m_options.saveBackups; }
+    /// The folder `file`'s copies go in now (empty: beside it).
+    std::filesystem::path backupDirectory(const std::filesystem::path& file) const {
+        return io::backupDirectory(file, m_options.backupLocation);
+    }
     /// Opens a recovery file as the project `projectFile` (the file to save back to; empty = untitled), dirty. Media
     /// resolve relative to `projectFile`, or (untitled) to the project the recovery file belongs to. The next
     /// autosave() writes the revision whatever was autosaved before; when it is an untitled session's autosave
     /// ("Untitled-<id>.wabcut.autosave<n>"), that file (and that session's older copies) is deleted once the new
     /// session's autosave has been written, never before.
-    std::expected<void, Error> recover(const std::filesystem::path& recoveryFile,
-                                       const std::filesystem::path& projectFile);
+    /// 0.7 (card 029): `mediaBase`, for an untitled copy, is the project file the recovery file is a version of, when
+    /// the app knows it (a copy in a chosen backup folder does not say where its project is).
+    std::expected<void, Error> recover(const std::filesystem::path& recoveryFile, const std::filesystem::path& projectFile,
+                                       const std::filesystem::path& mediaBase = {});
     /// Deletes this document's autosave files (rotated copies included). A clean exit calls it: what is on disk
     /// as the project is then the truth, and the next start has nothing to recover.
     void removeAutosaves();
@@ -244,6 +271,9 @@ public:
 
 private:
     void rememberClean();
+    /// Deletes the autosave files (rotated ones included) of the project `file` (every folder they may be in) or of the
+    /// untitled session `untitledId`.
+    void removeAutosaveFiles(const std::filesystem::path& file, const std::string& untitledId) const;
     std::filesystem::path autosaveFileFor(const std::filesystem::path& file, const std::string& untitledId) const;
 
     EditSession& m_session;

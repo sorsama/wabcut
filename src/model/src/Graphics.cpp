@@ -184,6 +184,10 @@ void checkTextStyle(Checker& c, const TextStyle& s, const std::string& where) {
     c.require(within(s.tracking, -1000.0, 10000.0), where, "tracking must be -1000..10000");
     c.require(within(s.leading, 0.0, 10000.0), where, "leading must be 0..10000 pixels");
     c.require(within(s.baselineShift, -10000.0, 10000.0), where, "baseline shift must be within 10000 pixels");
+    if (!s.features.empty()) {
+        const auto parsed = parseFontFeatures(s.features);
+        c.require(parsed.has_value(), where, "OpenType features: " + (parsed ? std::string() : parsed.error()));
+    }
     c.color(s.fill, where + ".fill");
 }
 
@@ -403,6 +407,31 @@ std::optional<std::string> fieldProblem(const TemplateField& f, const Graphic& g
     if (auto problem = c.take()) {
         return problem;
     }
+    // 0.7 (card #71): the field's keys.
+    if (!f.keys.empty()) {
+        if (f.kind == FieldKind::Duration) {
+            return where + "a Duration field cannot have keys";
+        }
+        if (f.keys.size() > kMaxFieldKeys) {
+            return where + "more than " + std::to_string(kMaxFieldKeys) + " keys";
+        }
+        for (std::size_t i = 0; i < f.keys.size(); ++i) {
+            const FieldKey& key = f.keys[i];
+            const FieldValue& v = key.value;
+            if (key.time.value < 0 || key.time.value >= kMaxTicks || (i > 0 && key.time <= f.keys[i - 1].time)) {
+                return where + "its keys must be at increasing times within the timeline";
+            }
+            if (!isText(v.text, kMaxGraphicTextBytes) || !isText(v.fontStyle, kMaxFontBytes) ||
+                (v.fontWeight != 0 && (v.fontWeight < 100 || v.fontWeight > 900))) {
+                return where + "a key's value is out of range";
+            }
+            Checker keyed;
+            keyed.color(v.color, where);
+            if (auto problem = keyed.take()) {
+                return problem;
+            }
+        }
+    }
     if (f.kind == FieldKind::Duration && f.property == "clip") {
         return std::nullopt; // no layer
     }
@@ -519,6 +548,182 @@ std::string_view toString(TextVerticalAlign v) { return kVerticalAligns.name(v);
 std::optional<TextVerticalAlign> textVerticalAlignFromString(std::string_view t) { return kVerticalAligns.parse(t); }
 std::string_view toString(TextCaps v) { return kTextCaps.name(v); }
 std::optional<TextCaps> textCapsFromString(std::string_view t) { return kTextCaps.parse(t); }
+
+// ---- OpenType features (0.7, card #138) ---------------------------------------------------------------------------------------
+
+namespace {
+
+std::vector<std::string_view> wordsOf(std::string_view text) {
+    std::vector<std::string_view> words;
+    std::size_t i = 0;
+    while (i < text.size()) {
+        while (i < text.size() && (text[i] == ' ' || text[i] == '\t')) {
+            ++i;
+        }
+        const std::size_t start = i;
+        while (i < text.size() && text[i] != ' ' && text[i] != '\t') {
+            ++i;
+        }
+        if (i > start) {
+            words.push_back(text.substr(start, i - start));
+        }
+    }
+    return words;
+}
+
+/// "on", "off" or a number 0..kMaxFontFeatureValue.
+std::optional<std::uint32_t> featureValueOf(std::string_view text) {
+    if (text == "on") {
+        return 1;
+    }
+    if (text == "off") {
+        return 0;
+    }
+    if (text.empty() || text.size() > 2 || !std::all_of(text.begin(), text.end(), [](char ch) { return ch >= '0' && ch <= '9'; })) {
+        return std::nullopt;
+    }
+    const std::uint32_t v = text.size() == 1 ? static_cast<std::uint32_t>(text[0] - '0')
+                                             : static_cast<std::uint32_t>((text[0] - '0') * 10 + (text[1] - '0'));
+    return v <= kMaxFontFeatureValue ? std::optional<std::uint32_t>(v) : std::nullopt;
+}
+
+bool isValueWord(std::string_view word) { return featureValueOf(word).has_value(); }
+
+/// One tag word: `calt`, `+calt`, `-liga`, `salt=2`, `"smcp"`, `'dlig'`; the value it carries (default on) in `value`.
+std::expected<FontFeature, std::string> featureOfWord(std::string_view word) {
+    std::uint32_t value = 1;
+    if (!word.empty() && (word.front() == '+' || word.front() == '-')) {
+        value = word.front() == '-' ? 0 : 1;
+        word.remove_prefix(1);
+    }
+    std::string_view tag = word;
+    if (const std::size_t eq = word.find('='); eq != std::string_view::npos) {
+        tag = word.substr(0, eq);
+        const auto v = featureValueOf(word.substr(eq + 1));
+        if (!v) {
+            return std::unexpected("\"" + std::string(word) + "\": the value after = must be on, off or a number up to 99");
+        }
+        value = *v;
+    }
+    if (tag.size() == 6 && (tag.front() == '"' || tag.front() == '\'') && tag.back() == tag.front()) {
+        tag = tag.substr(1, 4);
+    }
+    if (tag.size() != 4 || !std::all_of(tag.begin(), tag.end(), [](char ch) {
+            return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9');
+        })) {
+        return std::unexpected("\"" + std::string(word) + "\" is not a feature tag (four letters or digits, e.g. calt, liga, ss01)");
+    }
+    FontFeature f;
+    std::copy(tag.begin(), tag.end(), f.tag.begin());
+    f.value = value;
+    return f;
+}
+
+} // namespace
+
+std::expected<std::vector<FontFeature>, std::string> parseFontFeatures(std::string_view text) {
+    if (text.size() > 512) {
+        return std::unexpected("the feature list is longer than 512 characters");
+    }
+    std::vector<FontFeature> out;
+    const auto add = [&](const FontFeature& f) {
+        const auto same = std::find_if(out.begin(), out.end(), [&](const FontFeature& e) { return e.tag == f.tag; });
+        if (same != out.end()) {
+            same->value = f.value; // the last mention wins, in the first one's place
+        } else {
+            out.push_back(f);
+        }
+    };
+    std::size_t start = 0;
+    while (start <= text.size()) {
+        const std::size_t comma = text.find(',', start);
+        const std::string_view item = text.substr(start, comma == std::string_view::npos ? std::string_view::npos : comma - start);
+        const std::vector<std::string_view> words = wordsOf(item);
+        if (words.size() == 2 && isValueWord(words[1]) && words[0].find('=') == std::string_view::npos) {
+            auto f = featureOfWord(words[0]); // "smcp" 1 / ss01 off
+            if (!f) {
+                return std::unexpected(f.error());
+            }
+            f->value = *featureValueOf(words[1]);
+            add(*f);
+        } else {
+            for (const std::string_view word : words) { // one per word: "calt liga"
+                auto f = featureOfWord(word);
+                if (!f) {
+                    return std::unexpected(f.error());
+                }
+                add(*f);
+            }
+        }
+        if (out.size() > kMaxFontFeatures) {
+            return std::unexpected("at most " + std::to_string(kMaxFontFeatures) + " features");
+        }
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        start = comma + 1;
+    }
+    return out;
+}
+
+bool fontFeatureOn(std::string_view features, std::string_view tag) {
+    bool on = fontFeatureDefaultOn(tag);
+    if (const auto list = parseFontFeatures(features)) {
+        for (const FontFeature& f : *list) {
+            if (std::string_view(f.tag.data(), 4) == tag) {
+                on = f.value != 0;
+            }
+        }
+    }
+    return on;
+}
+
+std::expected<std::string, std::string> withFontFeature(std::string_view features, std::string_view tag, bool on) {
+    auto list = parseFontFeatures(features);
+    if (!list) {
+        return std::unexpected(list.error());
+    }
+    const auto wanted = parseFontFeatures(on ? std::string(tag) : "-" + std::string(tag));
+    if (!wanted || wanted->size() != 1) {
+        return std::unexpected("\"" + std::string(tag) + "\" is not an OpenType feature tag");
+    }
+    const auto same = std::find_if(list->begin(), list->end(), [&](const FontFeature& f) { return f.tag == wanted->front().tag; });
+    // The list holds what differs from the shaper's defaults.
+    if (on == fontFeatureDefaultOn(tag)) {
+        if (same != list->end()) {
+            list->erase(same);
+        }
+    } else if (same != list->end()) {
+        *same = wanted->front();
+    } else {
+        list->push_back(wanted->front());
+    }
+    if (list->size() > kMaxFontFeatures) {
+        return std::unexpected("at most " + std::to_string(kMaxFontFeatures) + " features");
+    }
+    return toString(*list);
+}
+
+bool fontFeatureDefaultOn(std::string_view tag) {
+    for (const std::string_view on : {"liga", "clig", "calt", "ccmp", "locl", "rlig", "kern", "mark", "mkmk", "init", "medi", "fina", "isol"}) {
+        if (tag == on) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string toString(const std::vector<FontFeature>& features) {
+    std::string out;
+    for (const FontFeature& f : features) {
+        if (!out.empty()) {
+            out += ", ";
+        }
+        const std::string tag(f.tag.begin(), f.tag.end());
+        out += f.value == 1 ? tag : f.value == 0 ? "-" + tag : tag + "=" + std::to_string(f.value);
+    }
+    return out;
+}
 std::string_view toString(StrokePosition v) { return kStrokePositions.name(v); }
 std::optional<StrokePosition> strokePositionFromString(std::string_view t) { return kStrokePositions.parse(t); }
 std::string_view toString(TextUnit v) { return kTextUnits.name(v); }
@@ -610,6 +815,116 @@ std::array<double, 4> resolveColor(const GraphicColor& color, const BrandKit* ki
         }
     }
     return color.rgba;
+}
+
+// ---- Keyed template fields (0.7, card #71) ----------------------------------------------------------------------------
+
+FieldValue fieldValueAt(const TemplateField& field, Ticks time) {
+    if (field.keys.empty() || field.kind == FieldKind::Duration) {
+        return field.value;
+    }
+    const std::vector<FieldKey>& keys = field.keys;
+    if (time <= keys.front().time) {
+        return keys.front().value;
+    }
+    // The last key at or before `time`.
+    const auto next = std::upper_bound(keys.begin(), keys.end(), time, [](Ticks t, const FieldKey& k) { return t < k.time; });
+    const FieldKey& from = *(next - 1);
+    if (next == keys.end() || field.kind != FieldKind::Color || from.interpolation == Interpolation::Hold) {
+        return from.value;
+    }
+    const FieldKey& to = *next;
+    const double span = static_cast<double>((to.time - from.time).value);
+    const double u = span > 0.0 ? std::clamp(static_cast<double>((time - from.time).value) / span, 0.0, 1.0) : 1.0;
+    FieldValue out = from.value;
+    for (std::size_t i = 0; i < 4; ++i) {
+        out.color.rgba[i] = from.value.color.rgba[i] + (to.value.color.rgba[i] - from.value.color.rgba[i]) * u;
+    }
+    // A kit colour that both keys name, and that does not change, stays the kit's; a blend is plain colour.
+    if (from.value.color.brand != to.value.color.brand || from.value.color.rgba != to.value.color.rgba) {
+        out.color.brand.clear();
+    }
+    return out;
+}
+
+bool hasFieldKeys(const Graphic& graphic) {
+    return graphic.instance &&
+           std::any_of(graphic.instance->fields.begin(), graphic.instance->fields.end(), [](const TemplateField& f) { return !f.keys.empty(); });
+}
+
+namespace {
+
+/// A field's value on its layer, as the template operations put it (edit::setTemplateFields), without checking media.
+void putFieldValue(Graphic& g, const TemplateField& field, const FieldValue& v) {
+    GraphicLayer* layer = g.findLayer(field.layer);
+    if (!layer || field.kind == FieldKind::Duration) {
+        return;
+    }
+    switch (field.kind) {
+    case FieldKind::Text: {
+        const TextStyle style = layer->text.runs.empty() ? TextStyle{} : layer->text.runs.front().style;
+        layer->text.runs = {TextRun{v.text, style}};
+        break;
+    }
+    case FieldKind::Color:
+        if (field.property == "fill") {
+            if (layer->kind == LayerKind::Text) {
+                for (TextRun& r : layer->text.runs) {
+                    r.style.fill = v.color;
+                }
+            } else {
+                layer->shape.fill.color = v.color;
+            }
+        } else if (field.property == "stroke") {
+            layer->shape.stroke.color = v.color;
+        } else if (field.property == "background") {
+            layer->text.background.color = v.color;
+        } else {
+            layer->shadow.color = v.color;
+        }
+        break;
+    case FieldKind::Font:
+        for (TextRun& r : layer->text.runs) {
+            if (!v.text.empty()) {
+                r.style.fontFamily = v.text;
+                r.style.brandFont.clear();
+            }
+            r.style.fontStyle = v.fontStyle;
+            if (v.fontWeight != 0) {
+                r.style.fontWeight = v.fontWeight;
+            }
+        }
+        break;
+    case FieldKind::Image:
+        if (v.media.isValid()) {
+            layer->image.media = v.media;
+            layer->image.brandLogo.clear();
+        }
+        break;
+    case FieldKind::Duration:
+        break;
+    case FieldKind::Checkbox:
+        layer->visible = v.flag;
+        break;
+    }
+}
+
+} // namespace
+
+Graphic withFieldKeysAt(const Graphic& graphic, Ticks time) {
+    if (!hasFieldKeys(graphic)) {
+        return graphic;
+    }
+    Graphic out = graphic;
+    for (TemplateField& f : out.instance->fields) {
+        if (f.keys.empty()) {
+            continue;
+        }
+        putFieldValue(out, f, fieldValueAt(f, time));
+        f.value = fieldValueAt(f, time);
+        f.keys.clear();
+    }
+    return out;
 }
 
 // ---- Checks -----------------------------------------------------------------------------------------------------------
@@ -720,6 +1035,51 @@ std::optional<std::string> brandKitProblem(const BrandKit& kit) {
     return c.take();
 }
 
+std::optional<std::string> templateFolderProblem(std::string_view folder) {
+    if (folder.empty()) {
+        return std::nullopt;
+    }
+    if (folder.size() > kMaxTemplateFolderBytes || !isText(std::string(folder), kMaxTemplateFolderBytes)) {
+        return "a template folder is at most " + std::to_string(kMaxTemplateFolderBytes) + " bytes of UTF-8";
+    }
+    std::size_t parts = 1;
+    bool partEmpty = true;
+    for (const char ch : folder) {
+        if (ch == '\\' || static_cast<unsigned char>(ch) < 0x20) {
+            return std::string("a template folder has no backslashes or control characters");
+        }
+        if (ch == '/') {
+            if (partEmpty) {
+                return std::string("a template folder's parts are not empty (no leading or doubled '/')");
+            }
+            ++parts;
+            partEmpty = true;
+        } else {
+            partEmpty = false;
+        }
+    }
+    if (partEmpty) {
+        return std::string("a template folder does not end with '/'");
+    }
+    if (parts > kMaxTemplateFolderDepth) {
+        return "a template folder is at most " + std::to_string(kMaxTemplateFolderDepth) + " levels deep";
+    }
+    // No dot parts: the label never means a place on disk, but "." and ".." in one would still read like it.
+    std::size_t at = 0;
+    while (at <= folder.size()) {
+        const std::size_t end = folder.find('/', at);
+        const std::string_view part = folder.substr(at, end == std::string_view::npos ? std::string_view::npos : end - at);
+        if (part == "." || part == "..") {
+            return std::string("a template folder's parts are not \".\" or \"..\"");
+        }
+        if (end == std::string_view::npos) {
+            break;
+        }
+        at = end + 1;
+    }
+    return std::nullopt;
+}
+
 std::optional<std::string> templateProblem(const GraphicTemplate& t) {
     if (!isValidTemplateId(t.id)) {
         return "template id \"" + t.id.substr(0, 128) + "\" must match [A-Za-z0-9][A-Za-z0-9_.-]* (128 bytes at most)";
@@ -729,6 +1089,9 @@ std::optional<std::string> templateProblem(const GraphicTemplate& t) {
     }
     if (t.version < 1 || t.duration.value < 0 || t.duration.value >= kMaxTicks) {
         return "template " + t.id + ": version must be >= 1 and the duration >= 0";
+    }
+    if (auto problem = templateFolderProblem(t.folder)) {
+        return "template " + t.id + ": " + *problem;
     }
     if (auto problem = graphicProblem(t.graphic)) {
         return "template " + t.id + ": " + *problem;

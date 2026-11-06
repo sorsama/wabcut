@@ -408,7 +408,7 @@ TEST_CASE("shortcutText gives native tooltip text per OS", "[app][keymap]") {
     CHECK(d.shortcutText(QStringLiteral("marker.clearIn")) == QStringLiteral("⌥I"));              // ⌥I
     CHECK(d.shortcutText(QStringLiteral("timeline.rippleDelete")) == QStringLiteral("⌥⌫"));       // ⌥⌫
     CHECK(d.shortcutText(QStringLiteral("edit.rippleDelete")) == QStringLiteral("⇧⌦"));           // ⇧⌦
-    CHECK(d.shortcutText(QStringLiteral("audioMixer.meterInputsOnly")) == QStringLiteral("⌃⇧I")); // ⌃⇧I
+    CHECK(d.shortcutText(QStringLiteral("sequence.toggleTrimType")) == QStringLiteral("⌃T"));      // ⌃T
     CHECK(d.shortcutText(QStringLiteral("sequence.trimEdit")) == QStringLiteral("⇧T"));           // ⇧T
     CHECK(d.shortcutTexts(QStringLiteral("graphics.newTextLayer")) == QStringList{QStringLiteral("⌘T")});
 
@@ -479,4 +479,47 @@ TEST_CASE("Menus and buttons trigger commands through the bridge", "[app][keymap
     CHECK(d.trigger(QStringLiteral("transport.shuttleStop")));
     CHECK(scene.takeIntents() == (Intents{shuttle(1), shuttle(4), kStop}));
     CHECK_FALSE(d.trigger(QStringLiteral("no.such")));
+}
+
+// 0.7 (card 021): while the Library list's cell editor is open its keys are the keymap's: Tab, Shift+Tab, Enter and
+// Shift+Enter run the Project panel's Next / Previous Column Field and Row Field; typing stays in the field, and an
+// ordinary text field of the same panel keeps all of its keys.
+TEST_CASE("KeymapDispatcher gives the Library cell editor's field-step keys to the keymap", "[app][keymap][library]") {
+    Scene scene;
+    INFO(str(scene.errors));
+    REQUIRE(scene.window != nullptr);
+
+    scene.focus("steppingField");
+    CHECK(scene.press(Qt::Key_Tab));
+    CHECK(scene.takeCommands() == QStringList{QStringLiteral("project.nextColumnField")});
+    scene.release(Qt::Key_Tab);
+    CHECK(scene.press(Qt::Key_Backtab, Qt::ShiftModifier));
+    CHECK(scene.takeCommands() == QStringList{QStringLiteral("project.previousColumnField")});
+    scene.release(Qt::Key_Backtab, Qt::ShiftModifier);
+    CHECK(scene.press(Qt::Key_Return));
+    CHECK(scene.takeCommands() == QStringList{QStringLiteral("project.nextRowField")});
+    scene.release(Qt::Key_Return);
+    CHECK(scene.press(Qt::Key_Return, Qt::ShiftModifier));
+    CHECK(scene.takeCommands() == QStringList{QStringLiteral("project.previousRowField")});
+    scene.release(Qt::Key_Return, Qt::ShiftModifier);
+    CHECK(scene.press(Qt::Key_Enter)); // the keypad's Enter is the same key
+    CHECK(scene.takeCommands() == QStringList{QStringLiteral("project.nextRowField")});
+    scene.release(Qt::Key_Enter);
+
+    // Typing and the editor's own navigation stay in the field.
+    scene.tap(Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
+    CHECK(scene.takeCommands().isEmpty());
+    scene.tap(Qt::Key_Left);
+    scene.tap(Qt::Key_Backspace);
+    CHECK(scene.takeCommands().isEmpty());
+    // Ctrl+Tab is not a field step: it was never the Library's.
+    scene.tap(Qt::Key_Tab, Qt::ControlModifier);
+    CHECK_FALSE(scene.takeCommands().contains(QStringLiteral("project.nextColumnField")));
+
+    // An ordinary field in the same panel: Tab moves focus as everywhere, Enter belongs to the field.
+    scene.focus("plainProjectField");
+    scene.tap(Qt::Key_Tab);
+    scene.tap(Qt::Key_Return);
+    scene.tap(Qt::Key_Return, Qt::ShiftModifier);
+    CHECK(scene.takeCommands().isEmpty());
 }

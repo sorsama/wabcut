@@ -143,7 +143,7 @@ struct Fixture {
 TEST_CASE("The audio commands are in the editing catalog", "[audio][edit][commands]") {
     command::CommandRegistry registry;
     registerAudioCommands(registry);
-    CHECK(registry.all().size() == 44); // + A.3: track.setVolume, track.setPan, sequence.setMasterGain, audio.moveKeyframe;
+    CHECK(registry.all().size() == 55); // + A.3: track.setVolume, track.setPan, sequence.setMasterGain, audio.moveKeyframe;
                                         // + A.4: audio.enhanceSpeech, audio.separateStems; + A.5: audio.syncClips;
                                         // + A.6: plugins.list, plugins.scan; + A.7: audio.essentialSound, audio.remix;
                                         // + p02: sequence.addSubmixTrack, track.setOutput, track.addSend,
@@ -151,7 +151,10 @@ TEST_CASE("The audio commands are in the editing catalog", "[audio][edit][comman
                                         // + A.8: audio.remixRender, track.setRecordArm, record.takes, record.useTake
                                         // + A.9: audio.setChannels, setMediaChannels, setChannelVolume, fillChannel,
                                         //   splitToMono, channels, channelLevels, track.setFormat, setSurroundPan,
-                                        //   sequence.setMasterFormat
+                                        //   sequence.setMasterFormat; + card 137: audio.autoMix
+                                        //   + 0.7 (card 045): audio.eqMatch, audio.eqMatchReset, audio.levelMatch
+                                        //   + 0.7 (card 047): audio.spectralAttenuate / spectralHeal / spectralNoiseFloor / spectralRemoveTone /
+                                        //   spectralRepairRemove / spectralRepairOptions / spectralRepairEdits
     for (const command::CommandSpec& spec : registry.all()) {
         INFO(spec.name);
         CHECK(ai::edit::editingCommands().knows(spec.name));

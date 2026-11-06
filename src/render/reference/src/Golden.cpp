@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -42,9 +43,14 @@ bool parseInt(std::string_view token, int& out) {
 
 void appendValue(std::string& out, float v) {
     char buffer[32];
-    const float value = v == 0.0f ? 0.0f : v; // -0 is written 0
-    const auto result = std::to_chars(buffer, buffer + sizeof buffer, value, std::chars_format::general, 6);
-    out.append(buffer, result.ptr);
+    const auto result = std::to_chars(buffer, buffer + sizeof buffer, v, std::chars_format::general, 6);
+    std::string_view written(buffer, static_cast<std::size_t>(result.ptr - buffer));
+    // -0 is written 0. Decided on the text, which no floating-point optimisation can change (a compiler may fold
+    // `v == 0.0f ? 0.0f : v` into plain v, keeping the sign).
+    if (written == "-0") {
+        written = "0";
+    }
+    out.append(written);
 }
 
 } // namespace

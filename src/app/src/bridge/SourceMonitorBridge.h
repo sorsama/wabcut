@@ -54,6 +54,7 @@ class QQmlEngine;
 
 namespace wabcut::app {
 
+class NestingBridge;
 class PlaybackBridge;
 class ProgramMonitor;
 class ProjectController;
@@ -70,7 +71,15 @@ class SourceMonitorBridge : public QObject {
     /// "video", "audio" (no picture: the panel draws a waveform), "still", or "" when nothing is loaded.
     Q_PROPERTY(QString kind READ kind NOTIFY sourceChanged FINAL)
     Q_PROPERTY(bool hasVideo READ hasVideo NOTIFY sourceChanged FINAL)
+    /// 0.7 (VR / 360 video): what the loaded item's picture is - Interpret Footage's setting, else the file's spherical
+    /// metadata: "none", "equirect360" or "equirect180", and "mono", "topBottom" or "sideBySide".
+    Q_PROPERTY(QString vrProjection READ vrProjection NOTIFY sourceChanged FINAL)
+    Q_PROPERTY(QString vrStereo READ vrStereo NOTIFY sourceChanged FINAL)
     Q_PROPERTY(bool hasAudio READ hasAudio NOTIFY sourceChanged FINAL)
+    /// 0.7: the Source Monitor's sound is muted (the button over the picture, the Mute Source Sound command). Only the
+    /// source's own playback is silenced: the volume, the project and the sequence are untouched. It stays for the clips
+    /// loaded next and ends with the session (not remembered).
+    Q_PROPERTY(bool muted READ muted WRITE setMuted NOTIFY mutedChanged FINAL)
     /// Width / height of the picture (16:9 without one).
     Q_PROPERTY(double aspect READ aspect NOTIFY sourceChanged FINAL)
     Q_PROPERTY(QString durationText READ durationText NOTIFY sourceChanged FINAL)
@@ -108,6 +117,8 @@ public:
 
     void setController(ProjectController* controller);
     void setProgramPlayback(PlaybackBridge* playback);
+    /// 0.7 (card 097): Match Frame on a nested or multi-camera clip opens its source sequence through this bridge.
+    void setNesting(NestingBridge* nesting);
     /// 0.2: imports a Media Browser file (its path as loadFile got it) and returns its item (LibraryBridge sets it).
     using Importer = std::function<std::optional<MediaId>(const QString& file)>;
     void setImporter(Importer importer) { m_importer = std::move(importer); }
@@ -140,7 +151,11 @@ public:
     QString name() const { return m_name; }
     QString kind() const { return m_kind; }
     bool hasVideo() const { return m_hasVideo; }
+    QString vrProjection() const;
+    QString vrStereo() const;
     bool hasAudio() const { return m_hasAudio; }
+    bool muted() const { return m_muted; }
+    void setMuted(bool muted);
     double aspect() const { return m_aspect; }
     QString durationText() const;
     QString positionText() const;
@@ -219,6 +234,10 @@ public:
     /// `prerollSeconds` to it plus `postrollSeconds` once (Loop ignored), clamped to the source, then parks back on the
     /// frame shown. Space / K / J / L or a seek during it stop it where it is.
     Q_INVOKABLE void playAround(double prerollSeconds, double postrollSeconds);
+    /// 0.7, Play In to Out with Preroll and Postroll (Shift+Space) with the Source Monitor focused: plays from the In
+    /// (no In: the start) minus `prerollSeconds` to the Out (no Out: the end) plus `postrollSeconds` once (Loop ignored),
+    /// clamped to the source, then parks back on the frame shown.
+    Q_INVOKABLE void playInToOutAround(double prerollSeconds, double postrollSeconds);
     /// 0.4, Premiere's Play from Playhead to Out (Ctrl+Space): plays from the frame shown to the source Out (no Out: the
     /// end) once and stops on the last marked frame. At or past the Out: nothing.
     Q_INVOKABLE void playToOut();
@@ -264,6 +283,7 @@ public:
 
 signals:
     void sourceChanged();
+    void mutedChanged();
     void positionChanged();
     void marksChanged();
     void transportChanged();
@@ -280,6 +300,8 @@ private:
     class Services;
 
     edit::SourceMarks marks() const;
+    void playOnce(Ticks from, Ticks to, Ticks here);
+    void applyMute();
     const MediaItem* mediaItem() const;
     Ticks frame() const;
     double fractionOf(Ticks t) const;
@@ -319,6 +341,8 @@ private:
 
     QPointer<ProjectController> m_controller;
     QPointer<PlaybackBridge> m_programPlayback;
+    QPointer<NestingBridge> m_nesting;
+    QPointer<QQmlEngine> m_engine; // 0.7 (card 097): finds the Nesting singleton when it is needed (not at creation: a cycle)
     QPointer<ProgramMonitor> m_monitor;
     std::shared_ptr<Services> m_services;
 
@@ -342,6 +366,7 @@ private:
     QString m_kind;
     bool m_hasVideo = false;
     bool m_hasAudio = false;
+    bool m_muted = false;
     double m_aspect = 16.0 / 9.0;
     Rate m_rate{30, 1};
     std::optional<Ticks> m_length;

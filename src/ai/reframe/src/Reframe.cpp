@@ -79,7 +79,7 @@ std::optional<int> mainTrack(const std::vector<const SubjectSample*>& samples, b
             if (b.track < 0) {
                 continue;
             }
-            weight[b.track] += std::sqrt(std::max(b.box.area(), 0.0f)) * b.score;
+            weight[b.track] += std::sqrt(static_cast<double>(std::max(b.box.area(), 0.0f))) * static_cast<double>(b.score);
             ++seen[b.track];
         }
     }
@@ -546,6 +546,8 @@ std::size_t applyPlan(Clip& clip, const ClipPlan& plan, DisplayGeometry display,
     ClipProperties props = clip.properties();
     props.set(ParamId::AnchorX, 0.0);
     props.set(ParamId::AnchorY, 0.0);
+    props.set(ParamId::UniformScale, parameterInfo(ParamId::UniformScale).defaultValue); // 0.7 (card #12): the framing is uniform
+    props.set(ParamId::ScaleWidth, parameterInfo(ParamId::ScaleWidth).defaultValue);
     const std::size_t n = plan.times.size();
     if (n == 0 || display.width <= 0.0 || display.height <= 0.0) {
         clip.setProperties(props);
@@ -793,6 +795,7 @@ std::expected<SequenceCopy, Error> duplicateSequence(const ProjectState& state, 
     };
     auto seq = std::make_shared<Sequence>(*original);
     seq->id = ids.allocate<SequenceId>();
+    seq->createdAt.clear(); // 0.7 (card 144): a new sequence; the commit that adds it stamps its time
     seq->name = std::move(name);
     seq->width = width;
     seq->height = height;

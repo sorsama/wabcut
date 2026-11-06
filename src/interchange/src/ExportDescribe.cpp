@@ -158,9 +158,16 @@ private:
         seq.dropFrame = s.dropFrame;
         seq.width = s.width;
         seq.height = s.height;
+        if (s.pixelAspect.isValid()) {
+            seq.pixelAspect = s.pixelAspect.normalized();
+        }
         seq.audioRate = s.audioRate;
         seq.markIn = s.markIn;
         seq.markOut = s.markOut;
+        if (s.workArea) { // 0.7 (card 046)
+            seq.workIn = s.workArea->start;
+            seq.workOut = s.workArea->end();
+        }
         seq.duration = s.duration;
         if (s.startTimecode.value != 0) {
             seq.startTimecode = s.startTimecode;

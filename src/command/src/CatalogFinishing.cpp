@@ -5,6 +5,8 @@
 #include "Catalog.h"
 
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/KeyPins.h>
+#include <wabcut/model/KeyframeEasing.h>
 #include <wabcut/model/MotionOps.h>
 #include <wabcut/model/Timecode.h>
 #include <wabcut/model/TitleOps.h>
@@ -23,6 +25,14 @@ const Clip& clipOf(ExecutionContext& c, ClipId id) { return c.sequence().findCli
 TrackKind kindOf(ExecutionContext& c, ClipId id) { return c.sequence().findClip(id)->track->kind; }
 
 std::vector<std::string> interpolationNames() { return {"hold", "linear", "bezier", "easeIn", "easeOut", "easeInOut"}; }
+
+std::vector<std::string> easingNames() {
+    std::vector<std::string> names;
+    for (const edit::EasingPreset& p : edit::easingPresets()) {
+        names.emplace_back(p.id);
+    }
+    return names;
+}
 
 Interpolation interpolationOf(ExecutionContext& c, const char* key, Interpolation fallback) {
     return c.has(key) ? *interpolationFromString(c.string(key)) : fallback;
@@ -251,6 +261,52 @@ CommandOutput effectList(ExecutionContext& c) {
     out.state = c.state();
     out.data = Json{{"paramFields", Json::array({"key", "unit", "default", "min", "max", "animatable"})},
                     {"effects", std::move(effects)}};
+    return out;
+}
+
+// --- Effects on a whole video track (0.7, card #139) --------------------------------------------------------------
+
+/// The video track a command's "track" names (V1, V2, ... or a track id).
+const Track& videoTrackOf(ExecutionContext& c) {
+    const TrackId id = c.track("track");
+    const Track* t = c.sequence().findTrack(id);
+    if (t == nullptr || t->kind != TrackKind::Video) {
+        fail(ErrorCode::InvalidParams, "\"track\" must be a video track (V1, V2, ...); audio tracks take audio.addEffect",
+             Json{{"path", "/track"}});
+    }
+    return *t;
+}
+
+/// A parameter as the track effect commands report it: the constant, or {"keys": [{time (ticks), value, interpolation}]}.
+Json paramValueJson(const ParamValue& value) {
+    if (const Curve* curve = value.curve()) {
+        Json keys = Json::array();
+        for (const Keyframe& k : curve->keys) {
+            keys.push_back(Json{{"time", k.time.value}, {"value", k.value}, {"interpolation", std::string(toString(k.interpolation))}});
+        }
+        return Json{{"keys", std::move(keys)}};
+    }
+    return value.constant();
+}
+
+CommandOutput trackEffects(ExecutionContext& c) {
+    const Track& track = videoTrackOf(c);
+    Json list = Json::array();
+    for (const EffectInstance& e : track.effects) {
+        Json params = Json::object();
+        for (const EffectParam& p : e.params) {
+            params[p.key] = paramValueJson(p.value);
+        }
+        const EffectDescriptor* d = EffectRegistry::builtin().find(e.effect);
+        list.push_back(Json{{"id", e.id.value},
+                            {"effect", e.effect},
+                            {"name", d != nullptr ? std::string(d->displayName) : e.effect},
+                            {"enabled", e.enabled},
+                            {"params", std::move(params)}});
+    }
+    CommandOutput out;
+    out.state = c.state();
+    out.data = Json{{"track", c.trackLabel(track.id)}, {"effects", std::move(list)}};
     return out;
 }
 
@@ -685,6 +741,28 @@ void registerFinishingCommands(CommandRegistry& registry) {
              return edited(std::move(r), Json{{"indices", std::move(indices)}, {"clamped", clamped}});
          }});
     addBuiltin(registry,
+               {"clip.pinKeyframe", 1, "Pin Keyframe",
+                "Pins a keyframe to the clip's start or end (0.7), or unpins it. A pinned key moves to that end of the clip "
+                "(keeping its value; a key already there is replaced) and follows it from then on: when an edit moves "
+                "that end of the clip - a trim, a slip, a roll, a speed change - the key moves with it, so a fade-in keyed "
+                "at the head of a clip still starts at its head after the head is trimmed. Unpinning leaves the key where "
+                "it is. A razor cut gives both halves the curve; the key stays with the half whose end it is on.",
+                Capability::EditSequence,
+                keyTarget({{"index", keyIndexParam()},
+                           {"pin", schema::enumeration({"start", "end", "none"},
+                                                       "start: the clip's first frame; end: its last frame; none: unpin.")}},
+                          {"index", "pin"}),
+                Json{{"clip", 42}, {"param", "opacity.opacity"}, {"index", 0}, {"pin", "start"}}, {"keyframes.pin"},
+                [](ExecutionContext& c) {
+                    const edit::ParamRef ref = paramRef(c);
+                    const auto pin = keyPinFromString(c.string("pin"));
+                    if (!pin) {
+                        fail(ErrorCode::InvalidParams, "pin must be start, end or none", Json{{"path", "/pin"}});
+                    }
+                    return edited(c.take(edit::setKeyframePin(c.state(), c.sequenceId(), c.clip("clip"), ref,
+                                                              static_cast<std::size_t>(c.integer("index")), *pin)));
+                }});
+    addBuiltin(registry,
                {"keyframes.setInterpolation", 1, "Set Keyframe Interpolation",
                 "Sets the interpolation (hold, linear, bezier, easeIn, easeOut, easeInOut) of several keyframes of "
                 "one parameter at once.",
@@ -709,6 +787,46 @@ void registerFinishingCommands(CommandRegistry& registry) {
                     CommandOutput out;
                     out.state = std::move(state);
                     return out;
+                }});
+    addBuiltin(registry,
+               {"keyframes.ease", 1, "Ease Keyframes",
+                "Shapes the segment after each keyframe (0.7, the Graph Editor's easing library) like an easing preset: the "
+                "Penner families (sine, quad, cubic, quart, quint, expo, circ, back), the web's ease keywords, fastOutSlowIn, "
+                "snap and linear, each one unit-square cubic Bezier. Both keys of a segment become Bezier with the preset's "
+                "handles; a key that was not Bezier keeps the shape of its other side, so only the eased segment changes, and a "
+                "Hold key stays a step. The last key has no segment after it. Returns how many segments were shaped.",
+                Capability::EditSequence,
+                keyTarget({{"keys", schema::array(keyIndexParam(), "The keys whose following segment is eased. Default: all of them.")},
+                           {"preset", schema::enumeration(easingNames(), "The easing preset.")}},
+                          {"preset"}),
+                Json{{"clip", 42}, {"param", "motion.scale"}, {"preset", "easeInOutCubic"}}, {},
+                [](ExecutionContext& c) {
+                    const ClipId id = c.clip("clip");
+                    const edit::ParamRef ref = paramRef(c);
+                    const edit::EasingPreset* preset = edit::findEasingPreset(c.string("preset"));
+                    if (!preset) {
+                        fail(ErrorCode::InvalidParams, "unknown easing preset " + c.string("preset"), Json{{"path", "/preset"}});
+                    }
+                    const Clip& clip = clipOf(c, id);
+                    const ParamValue* current = currentValue(clip, ref);
+                    if (!current || !current->curve()) {
+                        fail(ErrorCode::InvalidParams, "the parameter has no keyframes", Json{{"path", "/param"}});
+                    }
+                    std::vector<std::size_t> keys = keyIndices(c, clip, ref);
+                    std::sort(keys.begin(), keys.end());
+                    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+                    for (const std::size_t k : keys) {
+                        if (k >= current->curve()->keys.size()) {
+                            fail(ErrorCode::InvalidParams, "there is no keyframe " + std::to_string(k), Json{{"path", "/keys"}});
+                        }
+                    }
+                    Curve curve = *current->curve();
+                    const std::size_t shaped = edit::applyEasing(curve, keys, *preset);
+                    if (shaped == 0) {
+                        fail(ErrorCode::InvalidParams, "no segment to ease (the last keyframe has none after it)", Json{{"path", "/keys"}});
+                    }
+                    return edited(c.take(edit::setParameter(c.state(), c.sequenceId(), id, ref, ParamValue(std::move(curve)))),
+                                  Json{{"segments", shaped}});
                 }});
     addBuiltin(registry,
                {"clip.setAnimated", 1, "Toggle Animation",
@@ -825,6 +943,119 @@ void registerFinishingCommands(CommandRegistry& registry) {
                     return edited(c.take(edit::setEffect(c.state(), c.sequenceId(), c.clip("clip"),
                                                          EffectInstanceId{static_cast<std::uint64_t>(c.integer("effect"))},
                                                          change)));
+                }});
+
+    // --- Effects on a whole video track (0.7, card #139) -----------------------------------------------------
+    // A track's stack is applied to the composited track (every clip of it, transitions and nests included), after the
+    // clips' own effects; keyframe times are timeline times. Audio tracks keep audio.addEffect and its family.
+    const auto trackTarget = [](std::initializer_list<std::pair<const char*, Json>> extra, std::vector<std::string> required) {
+        Json s = withSequence(extra, std::move(required));
+        s["properties"]["track"] = trackParam("The video track (V1, V2, ...).");
+        s["required"].push_back("track");
+        return s;
+    };
+    addBuiltin(registry,
+               {"track.effects", 1, "Video Track Effect Stack",
+                "The effects on a video track: instance id, effect id, name, enabled and the parameters (constants, or "
+                "{\"keys\": [...]} in timeline ticks).",
+                Capability::Read, trackTarget({}, {}), Json{{"track", "V1"}}, {}, trackEffects});
+    addBuiltin(registry,
+               {"track.addEffect", 1, "Add Video Track Effect",
+                "Adds a video effect to a video track's stack: it applies to the composite of every clip on the track (a "
+                "colour grade or blur for the whole track at once), after the clips' own effects. Parameters not given take "
+                "their defaults. The new instance id is returned in createdIds. One undo step.",
+                Capability::EditSequence,
+                trackTarget({{"effect", schema::enumeration(stackEffectIds(), "The effect id (effect.list with kind \"video\").")},
+                             {"params", paramsObject("Constant parameter values by key, e.g. {\"radius\": 12}.")},
+                             {"index", schema::integer("Position in the stack (0 = first). Default: last.", 0)}},
+                            {"effect"}),
+                Json{{"track", "V1"}, {"effect", "wabcut.blur.gaussian"}, {"params", Json{{"radius", 12}}}}, {},
+                [](ExecutionContext& c) {
+                    const Track& track = videoTrackOf(c);
+                    std::optional<std::size_t> index;
+                    if (c.has("index")) {
+                        index = static_cast<std::size_t>(c.integer("index"));
+                    }
+                    return edited(c.take(edit::addEffect(c.state(), c.sequenceId(), edit::EffectTarget::ofTrack(track.id),
+                                                         c.string("effect"), effectParams(c, "params"), index)),
+                                  Json{{"track", c.trackLabel(track.id)}});
+                }});
+    addBuiltin(registry,
+               {"track.setEffect", 1, "Set Video Track Effect",
+                "Turns an effect of a video track's stack on or off, or sets constant parameters (animate them with "
+                "track.addKeyframe).",
+                Capability::EditSequence,
+                trackTarget({{"effect", effectInstanceParam("The effect.")},
+                             {"enabled", schema::boolean("On or off.")},
+                             {"params", paramsObject("Parameter values by key.")}},
+                            {"effect"}),
+                Json{{"track", "V1"}, {"effect", 77}, {"params", Json{{"radius", 20}}}}, {},
+                [](ExecutionContext& c) {
+                    const Track& track = videoTrackOf(c);
+                    edit::EffectChange change;
+                    if (c.has("enabled")) {
+                        change.enabled = c.boolean("enabled", true);
+                    }
+                    change.params = effectParams(c, "params");
+                    return edited(c.take(edit::setEffect(c.state(), c.sequenceId(), edit::EffectTarget::ofTrack(track.id),
+                                                         EffectInstanceId{static_cast<std::uint64_t>(c.integer("effect"))}, change)));
+                }});
+    addBuiltin(registry,
+               {"track.removeEffect", 1, "Remove Video Track Effect", "Removes an effect from a video track's stack.",
+                Capability::EditSequence, trackTarget({{"effect", effectInstanceParam("The effect to remove.")}}, {"effect"}),
+                Json{{"track", "V1"}, {"effect", 77}}, {},
+                [](ExecutionContext& c) {
+                    const Track& track = videoTrackOf(c);
+                    return edited(c.take(edit::removeEffect(c.state(), c.sequenceId(), edit::EffectTarget::ofTrack(track.id),
+                                                            EffectInstanceId{static_cast<std::uint64_t>(c.integer("effect"))})));
+                }});
+    addBuiltin(registry,
+               {"track.moveEffect", 1, "Reorder Video Track Effect", "Moves an effect to another position in a video track's stack.",
+                Capability::EditSequence,
+                trackTarget({{"effect", effectInstanceParam("The effect to move.")},
+                             {"index", schema::integer("New position (0 = first).", 0)}},
+                            {"effect", "index"}),
+                Json{{"track", "V1"}, {"effect", 77}, {"index", 0}}, {},
+                [](ExecutionContext& c) {
+                    const Track& track = videoTrackOf(c);
+                    return edited(c.take(edit::moveEffect(c.state(), c.sequenceId(), edit::EffectTarget::ofTrack(track.id),
+                                                          EffectInstanceId{static_cast<std::uint64_t>(c.integer("effect"))},
+                                                          static_cast<std::size_t>(c.integer("index")))));
+                }});
+    addBuiltin(registry,
+               {"track.addKeyframe", 1, "Add Video Track Effect Keyframe",
+                "Adds a keyframe to a parameter of a video track's effect at a timeline time (or replaces the one there). A "
+                "constant parameter becomes animated with just this key.",
+                Capability::EditSequence,
+                trackTarget({{"effect", effectInstanceParam("The effect.")},
+                             {"param", schema::string("The effect's parameter key (effect.list).")},
+                             {"time", timeParam("Where the key goes.")},
+                             {"value", schema::number("The value, in the parameter's unit.")},
+                             {"interpolation", schema::enumeration(interpolationNames(), "Shape after this key. Default linear.")}},
+                            {"effect", "param", "time", "value"}),
+                Json{{"track", "V1"}, {"effect", 77}, {"param", "radius"}, {"time", "00:00:04:00"}, {"value", 0.0}}, {},
+                [](ExecutionContext& c) {
+                    const Track& track = videoTrackOf(c);
+                    const edit::ParamRef ref =
+                        edit::ParamRef::ofEffect(EffectInstanceId{static_cast<std::uint64_t>(c.integer("effect"))}, c.string("param"));
+                    Keyframe key{c.time("time"), c.number("value"), interpolationOf(c, "interpolation", Interpolation::Linear)};
+                    return edited(c.take(edit::addKeyframe(c.state(), c.sequenceId(), edit::EffectTarget::ofTrack(track.id), ref, key)));
+                }});
+    addBuiltin(registry,
+               {"track.removeKeyframe", 1, "Remove Video Track Effect Keyframe",
+                "Removes keyframe `index` of a video track effect's parameter; the last one leaves a constant.",
+                Capability::EditSequence,
+                trackTarget({{"effect", effectInstanceParam("The effect.")},
+                             {"param", schema::string("The effect's parameter key.")},
+                             {"index", schema::integer("Keyframe index (0 = first; track.effects lists the keys).", 0)}},
+                            {"effect", "param", "index"}),
+                Json{{"track", "V1"}, {"effect", 77}, {"param", "radius"}, {"index", 0}}, {},
+                [](ExecutionContext& c) {
+                    const Track& track = videoTrackOf(c);
+                    const edit::ParamRef ref =
+                        edit::ParamRef::ofEffect(EffectInstanceId{static_cast<std::uint64_t>(c.integer("effect"))}, c.string("param"));
+                    return edited(c.take(edit::removeKeyframe(c.state(), c.sequenceId(), edit::EffectTarget::ofTrack(track.id), ref,
+                                                              static_cast<std::size_t>(c.integer("index")))));
                 }});
 
     // --- Transitions ---------------------------------------------------------------------------------------

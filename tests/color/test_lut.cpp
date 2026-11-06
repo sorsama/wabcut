@@ -7,6 +7,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -376,4 +378,191 @@ TEST_CASE("LutLibrary loads asset files once and resolves references", "[color][
     CHECK_FALSE(library.resolver(state)("asset:3"));
     CHECK_FALSE(library.load(dir / "missing.cube", &error));
     CHECK_FALSE(error.empty());
+}
+
+TEST_CASE("Cube: a hash inside the quotes of TITLE is part of the title and not a comment (card 155)", "[color][lut]") {
+    const std::string header3 = "LUT_3D_SIZE 2\n";
+    const std::string eight = "0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+    for (const std::string title : {"Kodak 2383 #2", "Look #1", "#", "a # b # c", "Film Emulation #3 (v2)"}) {
+        INFO(title);
+        const auto lut = parseCube("TITLE \"" + title + "\"\n" + header3 + eight);
+        REQUIRE(lut);
+        CHECK(lut->title == title);
+    }
+    // A comment after the closing quote is still a comment; comment lines are skipped; data lines keep theirs.
+    const auto trailing = parseCube("TITLE \"Look #1\" # my note\n" + header3 + eight);
+    REQUIRE(trailing);
+    CHECK(trailing->title == "Look #1");
+    const auto commented = parseCube("# TITLE \"hidden\"\n# more\n" + header3 + "0 0 0 # first\n" + eight.substr(6));
+    REQUIRE(commented);
+    CHECK(commented->title.empty());
+    // An unquoted title still ends at a comment; an unclosed quote is still refused, hash or not.
+    const auto bare = parseCube("TITLE Look # note\n" + header3 + eight);
+    REQUIRE(bare);
+    CHECK(bare->title == "Look");
+    const auto unclosed = parseCube("TITLE \"Look #1\n" + header3 + eight);
+    REQUIRE_FALSE(unclosed);
+    CHECK(unclosed.error().message.find("closing quote") != std::string::npos);
+
+    // A LUT Wabcut wrote with such a title reads back (it used to be refused as unclosed).
+    auto base = parseCube(header3 + eight);
+    REQUIRE(base);
+    for (const std::string title : {"Film #3", "He said \"#1\"", "ends with #", "line\nbreak # 2"}) {
+        INFO(title);
+        base->title = title;
+        const auto again = parseCube(writeCube(*base));
+        REQUIRE(again);
+        std::string expected = title;
+        std::ranges::replace(expected, '\n', ' '); // one line in the file
+        CHECK(again->title == expected);
+        CHECK(again->table3d == base->table3d);
+    }
+}
+
+TEST_CASE("LutLibrary resolver loads a LUT again when its file is replaced on disk (card 153)", "[color][lut]") {
+    namespace fs = std::filesystem;
+    const auto dir = fs::path(WABCUT_TEST_OUTPUT_DIR) / "color";
+    fs::create_directories(dir);
+    const auto file = dir / "replaced.cube";
+    const auto write = [&](const std::string& text, int seconds) {
+        {
+            std::ofstream out(file, std::ios::binary | std::ios::trunc);
+            out << text;
+        }
+        // Editors and graders save with the clock's resolution: make every version a distinct time, whatever the size.
+        fs::last_write_time(file, fs::file_time_type::clock::now() + std::chrono::seconds(seconds));
+    };
+    const std::string first = cube3d(2, [](double r, double g, double b) { return Rgb{g, b, r}; });
+    const std::string second = cube3d(2, [](double r, double g, double b) { return Rgb{1.0 - r, 1.0 - g, 1.0 - b}; });
+    write(first, 0);
+
+    LutLibrary library;
+    library.setRecheckInterval(std::chrono::milliseconds{0}); // look at the disk on every resolve
+    ProjectState state;
+    state.ids.next = 10;
+    ProjectAsset asset{AssetId{3}, "lut", "replaced.cube", {}};
+    asset.locator.path = file.generic_string();
+    state.assets.push_back(asset);
+    const LutResolver resolve = library.resolver(state);
+
+    const auto a = resolve("asset:3");
+    REQUIRE(a);
+    CHECK(resolve("asset:3") == a); // unchanged file: the very same LUT, not read again
+
+    // The grader writes a new version over the same path: the next resolve returns it.
+    write(second, 10);
+    const auto b = resolve("asset:3");
+    REQUIRE(b);
+    CHECK(b != a);
+    CHECK(b->table3d != a->table3d);
+    CHECK(b->table3d.front() == 1.0f); // the inverted LUT's first entry (1 - 0)
+    CHECK(resolve("asset:3") == b);
+    CHECK(a->table3d.front() == 0.0f); // the old one stays valid for frames still holding it
+
+    // A new version that is not a LUT: the old look is not played any more (the export must not bake it silently).
+    write("this is not a cube file\n", 20);
+    CHECK_FALSE(resolve("asset:3"));
+    // Fixed again: back at once.
+    write(first, 30);
+    const auto c = resolve("asset:3");
+    REQUIRE(c);
+    CHECK(c->table3d == a->table3d);
+
+    // The file is deleted: no LUT, and no stat storm is needed to know it again later.
+    fs::remove(file);
+    CHECK_FALSE(resolve("asset:3"));
+    write(second, 40);
+    CHECK(resolve("asset:3"));
+
+    // With the default interval the disk is read at most once per interval: a replaced file is not seen at once, a
+    // fresh resolver of the same library sees the current version.
+    library.setRecheckInterval(std::chrono::hours(1)); // far longer than this test runs
+    const auto held = library.resolver(state)("asset:3");
+    REQUIRE(held);
+    write(first, 50);
+    CHECK(library.resolver(state)("asset:3") == held);
+    library.setRecheckInterval(std::chrono::milliseconds{0});
+    const auto fresh = library.resolver(state)("asset:3");
+    REQUIRE(fresh);
+    CHECK(fresh != held);
+}
+
+TEST_CASE("LutLibrary counts the resolves of a LUT it cannot use, names the file, and refresh() reads it again (review-1 m3)",
+          "[color][lut]") {
+    namespace fs = std::filesystem;
+    const auto dir = fs::path(WABCUT_TEST_OUTPUT_DIR) / "color";
+    fs::create_directories(dir);
+    const auto file = dir / "unreadable.cube";
+    const auto write = [&](const std::string& text, int seconds) {
+        {
+            std::ofstream out(file, std::ios::binary | std::ios::trunc);
+            out << text;
+        }
+        fs::last_write_time(file, fs::file_time_type::clock::now() + std::chrono::seconds(seconds));
+    };
+    const std::string good = cube3d(2, [](double r, double g, double b) { return Rgb{g, b, r}; });
+    write(good, 0);
+
+    LutLibrary library;
+    // A long interval: the disk is not looked at again by itself, the case where a half-written file lingers as a failure.
+    library.setRecheckInterval(std::chrono::hours(1));
+    ProjectState state;
+    state.ids.next = 10;
+    ProjectAsset asset{AssetId{3}, "lut", "unreadable.cube", {}};
+    asset.locator.path = file.generic_string();
+    state.assets.push_back(asset);
+    ProjectAsset offline{AssetId{4}, "lut", "offline.cube", {}};
+    offline.locator.path = (dir / "offline.cube").generic_string();
+    offline.locator.offline = true;
+    state.assets.push_back(offline);
+
+    {
+        const LutResolver resolve = library.resolver(state);
+        CHECK(resolve("asset:3"));
+        CHECK(library.unreadableCount() == 0);
+        CHECK(library.lastUnreadable().empty());
+        CHECK(resolve("builtin:teal-orange")); // a built-in is never "unreadable"
+        CHECK(library.unreadableCount() == 0);
+    }
+
+    // The file is being rewritten: half of it is there. The next look at the disk gets nothing, and says so.
+    write("TITLE \"half\"\nLUT_3D_SIZE 9\n0 0 0\n", 10);
+    library.refresh(state);
+    {
+        const LutResolver resolve = library.resolver(state);
+        CHECK_FALSE(resolve("asset:3"));
+        CHECK(library.unreadableCount() == 1);
+        CHECK(library.lastUnreadable().find("unreadable.cube") != std::string::npos);
+        // Held as a failure within the interval: still counted, every time it is asked for (an export checks the count).
+        CHECK_FALSE(resolve("asset:3"));
+        CHECK(library.unreadableCount() == 2);
+    }
+
+    // The writer finishes. Within the interval a resolver would still hold the failure; refresh() reads the file now.
+    write(good, 20);
+    library.refresh(state);
+    {
+        const LutResolver resolve = library.resolver(state);
+        CHECK(resolve("asset:3"));
+        CHECK(library.unreadableCount() == 2); // no more counted
+    }
+
+    // The file is deleted: counted again, with the reason.
+    fs::remove(file);
+    library.refresh(state);
+    {
+        const LutResolver resolve = library.resolver(state);
+        CHECK_FALSE(resolve("asset:3"));
+        CHECK(library.unreadableCount() == 3);
+        CHECK(library.lastUnreadable().find("missing") != std::string::npos);
+    }
+
+    // An offline asset: no LUT, counted, not a stat of its file.
+    {
+        const LutResolver resolve = library.resolver(state);
+        const auto before = library.unreadableCount();
+        CHECK_FALSE(resolve("asset:4"));
+        CHECK(library.unreadableCount() == before + 1);
+        CHECK(library.lastUnreadable().find("offline") != std::string::npos);
+    }
 }

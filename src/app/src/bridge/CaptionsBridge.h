@@ -34,6 +34,7 @@
 #include <wabcut/model/Ids.h>
 
 #include <string>
+#include <vector>
 
 class QJSEngine;
 class QQmlEngine;
@@ -129,6 +130,9 @@ public:
     /// Bleeps ("bleep") or mutes ("mute") the profane words in the sound (audio.bleepProfanity: audio redactions; the
     /// picture is untouched). "" or why not.
     Q_INVOKABLE QString bleepProfanity(const QString& mode);
+    /// 0.7 (card 102): the same words, a sound file of the user's playing on each instead of the tone
+    /// (audio.replaceProfanity). "" or why not.
+    Q_INVOKABLE QString replaceProfanity(const QUrl& file);
 
     // ---- Tracks ----
     /// Makes captions from the transcript (captions.generateFromTranscript with its speakers), replacing the shown
@@ -166,6 +170,8 @@ public:
     Q_INVOKABLE QString setTrackName(const QString& name);
     Q_INVOKABLE QString setTrackLanguage(const QString& language);
     Q_INVOKABLE QString setTrackEnabled(bool enabled);
+    /// 0.7 (card 116): draw the shown track on screen together with the main caption track (bilingual captions).
+    Q_INVOKABLE QString setTrackShowTogether(bool together);
     Q_INVOKABLE QString removeTrack();
 
     // ---- Style and presets ----
@@ -177,6 +183,20 @@ public:
     /// Saves the shown track's style as a project preset (replacing one of that name; built-in names are refused).
     Q_INVOKABLE QString savePreset(const QString& name);
     Q_INVOKABLE QString removePreset(const QString& name);
+    // ---- 0.7 (card 115): looks for every project ----
+    /// "My looks": caption presets kept for the user, outside any project (a file in the app's data folder), so a look
+    /// is made once and used in every project. A library preset shows in the gallery of every project (`presets`:
+    /// inLibrary, libraryOnly); applying one that the project lacks copies it into the project first (captions.importPresets)
+    /// as one undo step with the apply.
+    Q_INVOKABLE QString setInLibrary(const QString& name, bool inLibrary);
+    /// Reads a caption presets file (.wabcut-caption-presets.json, as Export Presets writes it) into My looks; the ones
+    /// with a name the library has replace it. "" or why not; message() says how many.
+    Q_INVOKABLE QString importPresets(const QUrl& file);
+    /// Writes My looks and the project's own presets (the project's win a name) to a file other projects and users import.
+    Q_INVOKABLE QString exportPresets(const QUrl& file);
+    /// How many looks My looks holds.
+    Q_PROPERTY(int libraryCount READ libraryCount NOTIFY styleChanged FINAL)
+    int libraryCount() const;
     /// 0.2: Premiere's Track Style - the shown track follows a caption preset ("" = none; captions.setTrackStyle), so
     /// saving the preset again restyles it; Push to Track Style makes the track's look the preset's
     /// (captions.pushTrackStyle) and restyles every track that follows it. One undo step each.
@@ -210,6 +230,11 @@ public:
     /// the first one after it, and every later one) (captions.shiftCues). One undo step "Shift Captions"; refused with
     /// nothing changed when a cue would start before 0 or overlap. "" or why not (also `message`).
     Q_INVOKABLE QString shiftCues(const QString& delta, const QString& scope);
+    /// 0.7 (card 075, Premiere's Upgrade Caption to Graphic): the shown track's cues become graphic clips on new video
+    /// tracks (captions.toGraphics: the caption style as a text layer whose box grows with its text), and `captions` says
+    /// what happens to the track: "hide" (switched off, so the text is not drawn twice; the default), "keep" or "remove".
+    /// One undo step "Convert Captions to Graphics". "" or why not (also `message`).
+    Q_INVOKABLE QString convertToGraphics(const QString& captions = QStringLiteral("hide"));
 
     // ---- 0.5: the timeline's caption lanes ----
     int selectedCue() const { return m_selectedCue; }
@@ -277,6 +302,10 @@ signals:
 
 private:
     const CaptionTrack* shownTrack() const;
+    /// 0.7: My looks, read from its file when that changed.
+    const std::vector<CaptionPreset>& library() const;
+    mutable std::vector<CaptionPreset> m_library;
+    mutable long long m_libraryStamp = -1; ///< the file's size and time when m_library was read (-1: not read)
     /// 0.6 (#57): captions.export of `track` (current sequence) to `path`, with the redaction services.
     command::CommandResult exportCaptionTrack(CaptionTrackId track, const QString& path, const QString& format);
     void refresh();

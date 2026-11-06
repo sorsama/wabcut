@@ -112,8 +112,10 @@ TEST_CASE("sequence.mediaUsage lists each use with record and source timecodes a
                              "01:00:00:00,01:00:00:04,00:00:00:04,0.160,100%,"));
     CHECK(csv[2].starts_with("Generated sky,"));
     CHECK(csv[3].empty());
-    CHECK(csv[4] == "Media Name,File Path,Tape Name,AI Generated,Uses,Used Seconds,Source Seconds");
-    CHECK(csv[5] == "\"Archive, Reel 7\",/archive/reel7.mov,A007,,1,0.160,0.160");
+    // (0.7: the rights and clearance columns follow the last of the old ones; a source without a record leaves them blank.)
+    CHECK(csv[4] == "Media Name,File Path,Tape Name,AI Generated,Uses,Used Seconds,Source Seconds,"
+                    "Clearance,Source,Licence,Territory,Expires,Cost,Credit Line,Rights Flags");
+    CHECK(csv[5] == "\"Archive, Reel 7\",/archive/reel7.mov,A007,,1,0.160,0.160,,,,,,,,");
     CHECK(csv[6].starts_with("Generated sky,"));
     CHECK(csv[6].find(",yes,1,0.240,0.240") != std::string::npos);
 
@@ -136,6 +138,54 @@ TEST_CASE("sequence.mediaUsage lists each use with record and source timecodes a
     CHECK(inside[1]["recordIn"] == "00:00:00:06");
     CHECK(inside[1]["sourceIn"] == "00:00:00:10");
     CHECK(marked.data["report"]["range"]["name"] == "inOut");
+}
+
+TEST_CASE("sequence.mediaUsage CSV neutralises spreadsheet formulas in names, tape, scene, shot and take (084)",
+          "[command][export][p1]") {
+    Timeline tl = usageTimeline(); // A is "Archive, Reel 7" and B "Generated sky" now
+    for (MediaPtr& item : tl.state.media) {
+        auto copy = std::make_shared<MediaItem>(*item);
+        if (item->name == "Archive, Reel 7") {
+            copy->name = "=HYPERLINK(\"http://x\",\"Click\")"; // quotes and a comma as well
+            copy->locator.path = "+cmd|' /C calc'!A0";
+            copy->metadata.scene = "@SUM(1+1)";
+            copy->metadata.shot = "-2+3";
+            copy->metadata.take = "\t=1";
+        } else if (item->name == "Generated sky") {
+            copy->name = "-1+1";
+        }
+        item = std::move(copy);
+    }
+    CommandHarness h(std::move(tl));
+    h.ok("media.setTimecode", {{"media", Json::array({mediaNamed(h, "=HYPERLINK(\"http://x\",\"Click\")")})},
+                               {"timecode", "01:00:00:00"}, {"reelName", "=A007"}});
+    const auto r = h.ok("sequence.mediaUsage");
+    const auto csv = lines(r.data["text"].get<std::string>());
+    REQUIRE(csv.size() >= 7);
+    // The quote goes in front of the formula character, then the cell is quoted as before.
+    CHECK(csv[1].starts_with("\"'=HYPERLINK(\"\"http://x\"\",\"\"Click\"\")\","));
+    CHECK(csv[1].find(",'+cmd|' /C calc'!A0,'=A007,'@SUM(1+1),'-2+3,'\t=1,") != std::string::npos);
+    CHECK(csv[2].starts_with("'-1+1,"));
+    // The totals block (sorted by name): the neutralised cells are there too.
+    CHECK(std::any_of(csv.begin() + 5, csv.end(), [](const std::string& row) {
+        return row.starts_with("\"'=HYPERLINK(\"\"http://x\"\",\"\"Click\"\")\",'+cmd|' /C calc'!A0,'=A007,");
+    }));
+    CHECK(std::any_of(csv.begin() + 5, csv.end(), [](const std::string& row) { return row.starts_with("'-1+1,"); }));
+    // No cell of the report starts with a formula character: split the plain rows on commas outside quotes.
+    for (std::size_t row : {std::size_t{1}, std::size_t{2}, std::size_t{5}, std::size_t{6}}) {
+        bool quoted = false;
+        bool cellStart = true;
+        for (const char ch : csv[row]) {
+            if (cellStart && !quoted) {
+                CHECK(std::string("=+-@\t\r").find(ch) == std::string::npos);
+            }
+            if (ch == '"')
+                quoted = !quoted;
+            cellStart = ch == ',' && !quoted;
+        }
+    }
+    // The JSON report keeps the real names (it is data, not a sheet).
+    CHECK(r.data["report"]["uses"][0]["media"] == "=HYPERLINK(\"http://x\",\"Click\")");
 }
 
 TEST_CASE("sequence.mediaUsage reports speed and flattens nested sequences into record time", "[command][export][p1]") {

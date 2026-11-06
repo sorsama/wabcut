@@ -13,12 +13,15 @@
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/Timecode.h>
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QQmlEngine>
 
 #include <algorithm>
 #include <functional>
 #include <map>
+#include <stop_token>
+#include <thread>
 
 namespace wabcut::app {
 
@@ -67,7 +70,12 @@ ProductionBridge::ProductionBridge(ProjectLifecycle* lifecycle, QObject* parent)
     }
 }
 
-ProductionBridge::~ProductionBridge() = default;
+ProductionBridge::~ProductionBridge() {
+    // The search worker posts to this object: it ends before the object does.
+    m_searchThread.request_stop();
+    if (m_searchThread.joinable())
+        m_searchThread.join();
+}
 
 ProductionBridge* ProductionBridge::create(QQmlEngine* qmlEngine, QJSEngine*) {
     auto* lifecycle = qmlEngine->singletonInstance<ProjectLifecycle*>("Wabcut", "ProjectFile");
@@ -120,6 +128,7 @@ bool ProductionBridge::makeProduction(const QUrl& folder, const QString& name) {
     }
     m_folder = made->folder();
     m_name = text(made->name());
+    resetSearch();
     loadSettings();
     emit productionChanged();
     refresh();
@@ -134,6 +143,8 @@ bool ProductionBridge::openProduction(const QUrl& folder) {
         return false;
     }
     const bool changed = opened->folder() != m_folder;
+    if (changed)
+        resetSearch();
     m_folder = opened->folder();
     m_name = text(opened->name());
     const QVariantMap before = m_settings;
@@ -204,6 +215,7 @@ void ProductionBridge::closeProduction() {
     if (m_folder.empty())
         return;
     m_folder.clear();
+    resetSearch();
     m_name.clear();
     m_entries.clear();
     m_settings.clear();
@@ -496,6 +508,322 @@ QVariantMap ProductionBridge::importProject(const QUrl& project) {
         return {{QStringLiteral("ok"), false}};
     }
     return runImport(*loaded, file, {}, true, QString::fromStdU16String(file.stem().u16string()));
+}
+
+// ---- Search across the production (0.7, card 094) -------------------------------------------------------------------
+
+namespace {
+
+/// What a user calls the field a word was found in.
+QString fieldWord(const std::string& field) {
+    const auto word = [](const char* source) { return QCoreApplication::translate("wabcut::app::ProductionBridge", source); };
+    if (field == "name")
+        return word("name");
+    if (field == "comment")
+        return word("comment");
+    if (field == "description")
+        return word("description");
+    if (field == "scene")
+        return word("scene");
+    if (field == "shot")
+        return word("shot");
+    if (field == "take")
+        return word("take");
+    if (field == "logNote")
+        return word("log note");
+    if (field == "client")
+        return word("client");
+    if (field == "tapeName")
+        return word("tape name");
+    if (field == "status")
+        return word("status");
+    if (field == "cameraAngle")
+        return word("camera angle");
+    if (field == "cameraLabel")
+        return word("camera label");
+    if (field == "cameraModel")
+        return word("camera model");
+    if (field == "shotDate")
+        return word("shot date");
+    if (field == "shotLocation")
+        return word("shot location");
+    if (field == "path")
+        return word("file path");
+    if (field == "marker")
+        return word("marker");
+    if (field == "bin")
+        return word("bin");
+    return text(field);
+}
+
+/// "0:01:30" for a length in ticks.
+QString lengthText(Ticks length) {
+    const std::int64_t seconds = std::max<std::int64_t>(0, length.value / kTicksPerSecond);
+    return QStringLiteral("%1:%2:%3")
+        .arg(seconds / 3600)
+        .arg((seconds / 60) % 60, 2, 10, QLatin1Char('0'))
+        .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+}
+
+/// A project's index with the projects of `older` it lacks (a stopped scan read only the first ones).
+std::shared_ptr<const editor::ProductionIndex> withEarlierProjects(const std::shared_ptr<const editor::ProductionIndex>& fresh,
+                                                                   const std::shared_ptr<const editor::ProductionIndex>& older) {
+    if (!older || !fresh || older->folder != fresh->folder)
+        return fresh;
+    auto out = std::make_shared<editor::ProductionIndex>(*fresh);
+    for (const editor::ProjectIndex& project : older->projects) {
+        const bool known = std::any_of(out->projects.begin(), out->projects.end(),
+                                       [&](const editor::ProjectIndex& p) { return p.file == project.file; });
+        if (!known)
+            out->projects.push_back(project);
+    }
+    return out;
+}
+
+} // namespace
+
+QVariantMap ProductionBridge::resultRow(const editor::SearchHit& hit) const {
+    QString meta;
+    if (hit.sequence) {
+        meta = QStringLiteral("%1 · %2 × %3")
+                   .arg(text(ticksToTimecode(hit.duration, hit.frameRate.isValid() ? hit.frameRate : kRate30, false)))
+                   .arg(hit.width)
+                   .arg(hit.height);
+    } else if (hit.offline) {
+        meta = tr("Offline");
+    } else if (hit.kind == QLatin1String("video")) {
+        meta = QStringLiteral("%1 × %2 · %3").arg(hit.width).arg(hit.height).arg(lengthText(hit.duration));
+    } else if (hit.kind == QLatin1String("still")) {
+        meta = QStringLiteral("%1 × %2").arg(hit.width).arg(hit.height);
+    } else if (hit.kind == QLatin1String("audio") || hit.kind == QLatin1String("subclip")) {
+        meta = lengthText(hit.duration);
+    }
+    QStringList matched;
+    for (const std::string& field : hit.matched)
+        matched << fieldWord(field);
+    return {{QStringLiteral("key"), QStringLiteral("%1%2").arg(hit.sequence ? QLatin1Char('s') : QLatin1Char('m')).arg(hit.id)},
+            {QStringLiteral("kind"), text(hit.kind)},
+            {QStringLiteral("name"), text(hit.name)},
+            {QStringLiteral("location"), text(hit.location)},
+            {QStringLiteral("meta"), meta},
+            {QStringLiteral("matched"), matched},
+            {QStringLiteral("project"), urlOf(hit.project)},
+            {QStringLiteral("projectName"), text(hit.projectName)},
+            {QStringLiteral("projectRelative"), text(hit.projectRelative)},
+            {QStringLiteral("projectOpen"), hit.projectOpen},
+            {QStringLiteral("current"), samePath(hit.project, currentFile())},
+            {QStringLiteral("offline"), hit.offline}};
+}
+
+bool ProductionBridge::search(const QString& words, const QString& field, const QString& type, const QString& project) {
+    if (m_folder.empty()) {
+        setMessage(tr("Open a production first."));
+        return false;
+    }
+    editor::SearchQuery query;
+    query.text = words.trimmed().toStdString();
+    query.field = field.trimmed().toStdString();
+    query.type = type.trimmed().toStdString();
+    query.project = project.toStdString();
+    if (const auto problem = editor::searchProblem(query)) {
+        setMessage(tr("This search cannot run: %1").arg(text(*problem)));
+        return false;
+    }
+    if (query.text.empty() && query.type.empty()) {
+        clearSearch();
+        return true;
+    }
+    m_pendingSearch = std::move(query);
+    if (m_scanRunning) {
+        // One worker at a time: the running one stops at its next project (what it read is kept), then this one starts.
+        m_searchThread.request_stop();
+        return true;
+    }
+    startPendingSearch();
+    return true;
+}
+
+void ProductionBridge::startPendingSearch() {
+    if (!m_pendingSearch)
+        return;
+    const editor::SearchQuery query = std::move(*m_pendingSearch);
+    m_pendingSearch.reset();
+    const std::uint64_t generation = ++m_searchGeneration;
+    // The projects open in this session, as they are in memory: read here, the worker must not touch the lifecycle.
+    auto open = std::make_shared<std::vector<std::pair<fs::path, ProjectSnapshot>>>();
+    if (m_lifecycle) {
+        for (const QVariant& v : m_lifecycle->openProjects()) {
+            const QString path = v.toMap().value(QStringLiteral("path")).toString();
+            if (path.isEmpty())
+                continue;
+            const fs::path file(QDir::fromNativeSeparators(path).toStdU16String());
+            if (ProjectSnapshot state = m_lifecycle->openProjectState(file))
+                open->emplace_back(file, std::move(state));
+        }
+    }
+    m_scanRunning = true;
+    m_searching = true;
+    m_searchProgress = -1;
+    m_searchStatus = tr("Reading the projects");
+    emit searchChanged();
+
+    const bool direct = m_synchronous;
+    auto work = [this, generation, direct, folder = m_folder, query, open, previous = m_searchIndex](std::stop_token stop) {
+        const auto post = [this, direct](auto fn) {
+            QMetaObject::invokeMethod(this, std::move(fn), direct ? Qt::DirectConnection : Qt::QueuedConnection);
+        };
+        auto production = editor::Production::open(folder);
+        if (!production) {
+            editor::SearchResult failed;
+            failed.unreadable.push_back(production.error().message);
+            post([this, generation, failed] { onSearchDone(generation, nullptr, failed, false); });
+            return;
+        }
+        editor::ScanOptions scan;
+        scan.previous = previous.get();
+        scan.openState = [&open](const fs::path& file) -> std::shared_ptr<const ProjectState> {
+            for (const auto& [path, state] : *open) {
+                if (samePath(file, path))
+                    return state;
+            }
+            return nullptr;
+        };
+        scan.progress = [&](int done, int total, const std::string& current) {
+            const QString name = text(current);
+            post([this, generation, done, total, name] { onSearchProgress(generation, done, total, name); });
+        };
+        auto index = std::make_shared<const editor::ProductionIndex>(editor::scanProduction(*production, scan, stop));
+        const bool stopped = stop.stop_requested();
+        editor::SearchResult result;
+        if (!stopped)
+            result = editor::searchProduction(*index, query);
+        post([this, generation, index, result = std::move(result), stopped] {
+            onSearchDone(generation, index, result, stopped);
+        });
+    };
+    if (direct) {
+        work(std::stop_token{});
+        return;
+    }
+    if (m_searchThread.joinable())
+        m_searchThread.join(); // an earlier worker has posted its last message already
+    m_searchThread = std::jthread(std::move(work));
+}
+
+void ProductionBridge::onSearchProgress(std::uint64_t generation, int done, int total, const QString& current) {
+    if (generation != m_searchGeneration || !m_searching)
+        return;
+    m_searchProgress = total > 0 ? std::clamp(static_cast<double>(done) / total, 0.0, 1.0) : -1.0;
+    m_searchStatus = current.isEmpty() ? tr("Searching") : tr("Reading %1 (%2 of %3)").arg(current).arg(done + 1).arg(total);
+    emit searchChanged();
+}
+
+void ProductionBridge::onSearchDone(std::uint64_t generation, std::shared_ptr<const editor::ProductionIndex> index,
+                                    editor::SearchResult result, bool stopped) {
+    m_scanRunning = false;
+    if (index && stopped)
+        m_searchIndex = withEarlierProjects(index, m_searchIndex); // what was read stays for the next search
+    else if (index)
+        m_searchIndex = std::move(index);
+    if (m_pendingSearch) {
+        startPendingSearch(); // a newer query was asked while this ran: its answer is the one to show
+        return;
+    }
+    m_searching = false;
+    m_searchProgress = -1;
+    m_searchStatus.clear();
+    if (generation != m_searchGeneration || stopped) {
+        emit searchChanged(); // cancelled or cleared: the earlier results stay (or are gone, when cleared)
+        return;
+    }
+    m_hits = std::move(result.hits);
+    m_searchResults.clear();
+    for (const editor::SearchHit& hit : m_hits)
+        m_searchResults.append(resultRow(hit));
+    m_searched = true;
+    const int total = static_cast<int>(result.total);
+    QString summary;
+    if (!result.unreadable.empty() && !m_searchIndex) {
+        summary = text(result.unreadable.front());
+    } else if (total == 0) {
+        summary = tr("No results in %1").arg(tr("%n project(s)", "", result.projects));
+    } else {
+        summary = tr("%n result(s) in %1", "", total).arg(tr("%n project(s)", "", result.projects));
+        if (static_cast<std::size_t>(total) > m_hits.size())
+            summary += QStringLiteral(" · ") + tr("the first %1 are shown").arg(m_hits.size());
+    }
+    if (!result.unreadable.empty() && m_searchIndex)
+        summary += QStringLiteral(" · ") + tr("%n project(s) could not be read", "", static_cast<int>(result.unreadable.size()));
+    m_searchSummary = summary;
+    emit searchChanged();
+}
+
+void ProductionBridge::cancelSearch() {
+    m_pendingSearch.reset();
+    if (m_scanRunning)
+        m_searchThread.request_stop();
+}
+
+void ProductionBridge::clearSearch() {
+    m_pendingSearch.reset();
+    ++m_searchGeneration; // a worker still running has its answer dropped
+    if (m_scanRunning)
+        m_searchThread.request_stop();
+    m_hits.clear();
+    m_searchResults.clear();
+    m_searchSummary.clear();
+    m_searched = false;
+    m_searching = m_scanRunning;
+    if (!m_scanRunning) {
+        m_searchProgress = -1;
+        m_searchStatus.clear();
+    }
+    emit searchChanged();
+}
+
+void ProductionBridge::resetSearch() {
+    m_searchIndex.reset();
+    clearSearch();
+}
+
+bool ProductionBridge::browseResult(int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= m_hits.size())
+        return false;
+    const editor::SearchHit& hit = m_hits[static_cast<std::size_t>(index)];
+    const QString key = QStringLiteral("%1%2").arg(hit.sequence ? QLatin1Char('s') : QLatin1Char('m')).arg(hit.id);
+    if (samePath(hit.project, currentFile())) {
+        if (m_showItem)
+            m_showItem(key); // the project being edited: its own Library shows it
+        return true;
+    }
+    if (!browse(urlOf(hit.project)))
+        return false;
+    m_revealedKey = key; // browse() cleared it; the panel scrolls to the item and picks it
+    emit browsingChanged();
+    return true;
+}
+
+QVariantMap ProductionBridge::importResult(int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= m_hits.size())
+        return {{QStringLiteral("ok"), false}};
+    const editor::SearchHit& hit = m_hits[static_cast<std::size_t>(index)];
+    if (samePath(hit.project, currentFile())) {
+        setMessage(tr("This item is already in the project being edited."));
+        return {{QStringLiteral("ok"), false}};
+    }
+    auto loaded = sourceState(hit.project);
+    if (!loaded) {
+        setMessage(tr("Cannot open %1: %2").arg(QString::fromStdU16String(hit.project.filename().u16string()), text(loaded.error().message)));
+        return {{QStringLiteral("ok"), false}};
+    }
+    const QString key = QStringLiteral("%1%2").arg(hit.sequence ? QLatin1Char('s') : QLatin1Char('m')).arg(hit.id);
+    return runImport(*loaded, hit.project, {key}, false, {});
+}
+
+QUrl ProductionBridge::resultProject(int index) const {
+    if (index < 0 || static_cast<std::size_t>(index) >= m_hits.size())
+        return {};
+    return urlOf(m_hits[static_cast<std::size_t>(index)].project);
 }
 
 // ---- Where imported items came from ----------------------------------------------------------------------------------

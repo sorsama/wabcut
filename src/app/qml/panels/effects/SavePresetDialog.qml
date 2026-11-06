@@ -18,6 +18,8 @@ WabcutDialog {
     /// Or one effect of a clip by its keys (the Color panel's grade): clip key and effect instance id.
     property string clipTarget: ""
     property string effectTarget: ""
+    /// 0.7 (card 101): or the effect chain of an Audio Track Mixer strip ("t12", "master").
+    property string trackTarget: ""
     readonly property var types: ["scale", "anchorToInPoint", "anchorToOutPoint"]
 
     function openForEffect(clipKey, effectId, suggested) {
@@ -25,10 +27,16 @@ WabcutDialog {
         clipTarget = clipKey
         effectTarget = effectId
     }
+    function openForTrack(target, suggested) {
+        openFor([], suggested)
+        trackTarget = target
+        typeTabs.currentIndex = 1 // a chain keeps its keyframes' times: Anchor to In Point
+    }
     function openFor(sectionList, suggested) {
         editing = ""
         clipTarget = ""
         effectTarget = ""
+        trackTarget = ""
         sections = sectionList
         nameField.text = EffectPresets.suggestName(suggested)
         typeTabs.currentIndex = 0
@@ -46,6 +54,7 @@ WabcutDialog {
         editing = p.name
         clipTarget = ""
         effectTarget = ""
+        trackTarget = ""
         sections = []
         nameField.text = p.name
         typeTabs.currentIndex = Math.max(0, types.indexOf(p.type))
@@ -62,6 +71,9 @@ WabcutDialog {
             const name = nameField.text.trim() !== "" ? nameField.text.trim() : editing
             if (error === "" && binField.text.trim() !== EffectPresets.preset(name).bin)
                 error = EffectPresets.movePreset(name, binField.text.trim())
+        } else if (trackTarget !== "") {
+            error = EffectPresets.saveTrackEffects(trackTarget, nameField.text, types[typeTabs.currentIndex], descriptionField.text,
+                                                   binField.text.trim())
         } else if (clipTarget !== "") {
             error = EffectPresets.saveEffectOfClip(clipTarget, effectTarget, nameField.text, types[typeTabs.currentIndex],
                                                    descriptionField.text, binField.text.trim())
@@ -104,7 +116,11 @@ WabcutDialog {
     }
     Text {
         Layout.fillWidth: true
-        text: [qsTr("Keyframes keep their place relative to the clip's length."),
+        text: dialog.trackTarget !== ""
+              ? [qsTr("Keyframes keep their place relative to the track's length."),
+                 qsTr("Keyframes keep their time from the start of the track."),
+                 qsTr("Keyframes keep their distance from the track's end.")][typeTabs.currentIndex]
+              : [qsTr("Keyframes keep their place relative to the clip's length."),
                qsTr("Keyframes keep their distance from the clip's In point."),
                qsTr("Keyframes keep their distance from the clip's Out point.")][typeTabs.currentIndex]
         wrapMode: Text.Wrap

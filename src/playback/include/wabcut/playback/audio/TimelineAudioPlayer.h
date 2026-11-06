@@ -183,6 +183,9 @@ public:
     /// feedOnce()): momentary (400 ms), short-term (3 s), integrated and true peak since play() started from pause or
     /// since resetLoudness(). Shuttle audition is not measured. Any thread; a default reading before start().
     audio::LoudnessReading loudness() const noexcept;
+    /// 0.7 (Loudness Radar): the short-term loudness once a second since the last resetLoudness() (the newest `maxPoints`).
+    /// Empty before start(). Allocates: not for the audio thread.
+    std::vector<float> loudnessHistory(std::size_t maxPoints = 100000) const;
     void resetLoudness() noexcept;
     /// Off saves the tap's work when no loudness meter is shown (readings keep their last values). On by default.
     void setLoudnessEnabled(bool enabled) noexcept;

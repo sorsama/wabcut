@@ -109,7 +109,7 @@ std::string encode(const Request& request) {
             } else if constexpr (std::is_same_v<T, TranscribeRequest>) {
                 return {{"type", "transcribe"}, {"id", r.id},           {"pcm", pcmToJson(r.pcm)},
                         {"language", r.language}, {"threads", r.threads}, {"beamSize", r.beamSize},
-                        {"vad", r.vad},           {"initialPrompt", r.initialPrompt}};
+                        {"vad", r.vad},           {"initialPrompt", r.initialPrompt}, {"translate", r.translate}};
             } else if constexpr (std::is_same_v<T, Cancel>) {
                 return {{"type", "cancel"}, {"id", r.id}};
             } else {
@@ -197,6 +197,7 @@ std::expected<Request, Error> decodeRequest(std::string_view line) {
             r.beamSize = j.value("beamSize", r.beamSize);
             r.vad = j.value("vad", r.vad);
             r.initialPrompt = j.value("initialPrompt", r.initialPrompt);
+            r.translate = j.value("translate", r.translate);
             return r;
         }
         if (type == "cancel") {

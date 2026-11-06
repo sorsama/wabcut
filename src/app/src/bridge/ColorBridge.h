@@ -12,6 +12,7 @@
 //   * the program monitor's colour views (mask, before/after split, a reference still side by side) through
 //     PlaybackBridge::setColorPreview - preview only, never exported.
 
+#include <wabcut/color/ChartMatch.h>
 #include <wabcut/color/Grade.h>
 #include <wabcut/model/ColorManagement.h>
 #include <wabcut/model/Ids.h>
@@ -35,6 +36,9 @@ struct Clip;
 }
 namespace wabcut::color {
 class FaceFinder;
+}
+namespace wabcut::command {
+class CommandServices;
 }
 
 namespace wabcut::app {
@@ -101,6 +105,15 @@ class ColorBridge : public QObject {
     /// after (the setup's own SDR preview left of the middle, SDR Conform right of it), 2 SDR Conform on the whole
     /// picture. A view: not saved, not an undo step.
     Q_PROPERTY(int conformPreview READ conformPreview WRITE setConformPreview NOTIFY viewChanged FINAL)
+    /// 0.7 (docs/color.md "Match to a colour chart"): the ColorChecker found or placed on the targeted clip's picture at the
+    /// playhead. { active, found (an automatic find), message, corners: [[x, y] x 4] (fractions of the picture: top-left,
+    /// top-right, bottom-right, bottom-left of the chart upright), quads: [[[x, y] x 4] x 24] (the middle half of every
+    /// patch, for the overlay), edition ("after-2014" | "before-2014"), colours (fit saturation and hue too), others
+    /// (the other selected video clips), stale (the corners moved and the numbers are the previous ones), canApply, error
+    /// (why the fit cannot be made), meanBefore, meanAfter, maxBefore, maxAfter (delta E 2000 over the readable patches),
+    /// used, summary, patches: [{ index (1..24), name, used, reference, before, after (#rrggbb), deltaBefore, deltaAfter }] }.
+    /// Only { active: false } while there is no chart.
+    Q_PROPERTY(QVariantMap chart READ chart NOTIFY chartChanged FINAL)
 
 public:
     explicit ColorBridge(QObject* parent = nullptr);
@@ -162,6 +175,9 @@ public:
     Q_INVOKABLE bool setLut(const QString& slot, const QString& reference);
     /// Adds a .cube file to the project (lut.import) and puts it in `slot`. Returns the error ("" = done).
     Q_INVOKABLE QString importLut(const QUrl& file, const QString& slot);
+    /// 0.7 (card #85): adds every .cube in a folder (and its sub-folders) to the project (lut.importFolder); the LUT menu
+    /// groups them by folder. The status says how many; returns the error ("" = done).
+    Q_INVOKABLE QString importLutFolder(const QUrl& folder);
     /// Auto (white balance and levels), Color Match against the reference frame, Match Scene (C.5 shots of one take).
     Q_INVOKABLE bool autoColor();
     /// `faceDetection` (0.2, Premiere's Face Detection): the faces' skin tones are matched first (needs the face
@@ -197,7 +213,32 @@ public:
     /// clips" or why not.
     Q_INVOKABLE bool applyGradeTo(const QString& scope);
 
+    // ---- 0.7: Match to a colour chart ----
+    QVariantMap chart() const { return m_chart; }
+    /// Reads the picture of the targeted clip at the playhead (without its grade) and looks for the chart; when there is
+    /// none, offers the four corners to drag. False (with the reason in `status`) when there is no picture to read.
+    Q_INVOKABLE bool findChart();
+    /// The chart's four corners (fractions of the picture, 4 x [x, y]). `final` = released: read the patches and fit; while
+    /// dragging only the outlines follow.
+    Q_INVOKABLE void setChartCorners(const QVariantList& corners, bool final);
+    /// The same corners assigned to the next corner (the chart turned a quarter), mirrored left to right.
+    Q_INVOKABLE void rotateChart();
+    Q_INVOKABLE void mirrorChart();
+    /// "after-2014" (charts made since November 2014) or "before-2014".
+    Q_INVOKABLE void setChartEdition(const QString& edition);
+    /// false: only white balance, exposure, contrast and the grey row's curves.
+    Q_INVOKABLE void setChartColours(bool on);
+    Q_INVOKABLE void clearChart();
+    /// Applies the fit to the targeted clip (and, with `toSelected`, the other selected video clips): one undo step
+    /// (color.chartMatch). `status` says what changed or why not.
+    Q_INVOKABLE bool applyChart(bool toSelected);
+
     // ---- C++ ----
+    /// findChart() with the picture given (the clip's picture at the playhead, before its grade): looks for the chart in it
+    /// and shows it. The tests use it with a synthetic chart.
+    bool showChart(std::shared_ptr<const color::ColorImage> picture);
+    /// Pictures for the colour commands from somewhere else than the renderer (tests); null = the renderer.
+    void setPictureServices(std::shared_ptr<command::CommandServices> services) { m_pictures = std::move(services); }
     ClipId targetClip() const { return m_clip; }
     EffectInstanceId gradeInstance() const { return m_grade; }
 
@@ -205,6 +246,7 @@ signals:
     void stateChanged();
     void viewChanged();
     void busyChanged();
+    void chartChanged();
 
 private:
     ProjectController* controller() const;
@@ -221,6 +263,24 @@ private:
     std::string mergeKey(const QString& what) const;
     bool runCommand(const char* name, const QVariantMap& params, QString* summary);
     void setStatus(const QString& status);
+    /// Rebuilds `chart`: the outlines always, the patches and the fit when `fit`.
+    void updateChart(bool fit);
+
+    std::shared_ptr<command::CommandServices> m_pictures;
+
+    /// 0.7: the chart picture and what was done to it.
+    std::shared_ptr<const color::ColorImage> m_chartImage;
+    color::ChartCorners m_chartCorners;
+    color::ChartEdition m_chartEdition = color::ChartEdition::AfterNov2014;
+    ClipId m_chartClip;
+    Ticks m_chartTime{};
+    bool m_chartActive = false;
+    bool m_chartFound = false;
+    bool m_chartColours = true;
+    bool m_chartStale = false;
+    QString m_chartMessage;
+    color::ChartMatchResult m_chartResult;
+    QVariantMap m_chart{{QStringLiteral("active"), false}};
 
     /// 0.2: Color Match's face detector, made the first time a match asks for it (null while not downloaded).
     std::shared_ptr<color::FaceFinder> m_faces;

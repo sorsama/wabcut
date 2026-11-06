@@ -339,6 +339,19 @@ TEST_CASE("Audio channels 0 follow the master; AC-3 is up to 5.1 at 32 to 48 kHz
     CHECK(validate(s).has_value());
     CHECK(exportAudioChannels(s.audio, ChannelFormat::Surround51) == 6);
     CHECK(exportAudioChannels(s.audio, ChannelFormat::Stereo) == 2);
+    // 0.7 (card 048): a 7.1 master is eight channels where the codec carries them (AAC here), AC-3 and MP3 take fewer.
+    CHECK(exportAudioChannels(s.audio, ChannelFormat::Surround71) == 8);
+    s.audio.channels = 8;
+    CHECK(validate(s).has_value()); // eight channels of AAC
+    s.audio.codec = AudioCodec::Ac3;
+    CHECK_FALSE(validate(s).has_value()); // AC-3 carries 5.1 at most
+    s.audio.codec = AudioCodec::Aac;
+    s.audio.channels = 0;
+    s.audio.codec = AudioCodec::Ac3;
+    CHECK(exportAudioChannels(s.audio, ChannelFormat::Surround71) == 6);
+    s.audio.codec = AudioCodec::Mp3;
+    CHECK(exportAudioChannels(s.audio, ChannelFormat::Surround71) == 2);
+    s.audio.codec = AudioCodec::Aac;
     s.audio.channels = 2;
     CHECK(exportAudioChannels(s.audio, ChannelFormat::Surround51) == 2); // asked for: the downmix
     s.audio.codec = AudioCodec::Ac3;

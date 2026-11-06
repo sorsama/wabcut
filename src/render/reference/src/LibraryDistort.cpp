@@ -2,6 +2,7 @@
 
 #include "LibraryInternal.h"
 
+#include <wabcut/model/Vr.h>
 #include <wabcut/render/reference/Transitions.h>
 
 #include <algorithm>
@@ -348,6 +349,92 @@ Rgba basic3d(const Ctx& c, const LibraryParams& q, V2 f) {
     return color;
 }
 
+// ---- 0.7 AI Eye Contact (model/EyeContact.h; shaders/fx_distort.frag "eyeContact" says what it does) ----
+
+double eyeSmooth(double e0, double e1, double x) {
+    const double t = clamp01((x - e0) / (e1 - e0));
+    return t * t * (3.0 - 2.0 * t);
+}
+
+/// How much of the eye-frame point `l` (pixels) lies in the opening: the lens |x| < a, -up (1 - u^2) < y < lo (1 - u^2), soft at the
+/// lids and corners.
+double eyeOpening(V2 l, double a, double up, double lo) {
+    const double au = std::abs(l.x / a);
+    if (!(au < 1.0)) {
+        return 0.0;
+    }
+    const double k = 1.0 - au * au;
+    const double dist = std::min(l.y + up * k, lo * k - l.y);
+    const double e = 1.0 + 0.05 * (up + lo); // the lid's own edge is crisp: the ramp starts at the contour and is full a pixel or two inside it
+    return eyeSmooth(0.0, e, dist) * (1.0 - eyeSmooth(0.9, 1.0, au));
+}
+
+Rgba eyeContact(const Ctx& c, const LibraryParams& q, V2 f, const Rgba& orig) {
+    const V2 s = c.size;
+    const int view = static_cast<int>(std::floor(q[5] + 0.5));
+    const int n = static_cast<int>(std::floor(q[6] + 0.5));
+    std::array<double, 3> map{};
+    Rgba result = orig;
+    for (int i = 0; i < 2 && i < n; ++i) {
+        const std::size_t o = 8 + 11 * static_cast<std::size_t>(i);
+        const V2 center = V2{q[o], q[o + 1]} * s;
+        const V2 ax{std::cos(q[o + 2]), std::sin(q[o + 2])};
+        const V2 pe{-ax.y, ax.x};
+        const double a = q[o + 3] * s.x;
+        const double up = q[o + 4] * s.x;
+        const double lo = q[o + 5] * s.x;
+        const V2 iris = V2{q[o + 6], q[o + 7]} * s.x;
+        const double r = q[o + 8] * s.x;
+        const V2 sh = V2{q[o + 9], q[o + 10]} * s.x;
+        if (!(a > 0.0) || !(dot(sh, sh) >= 0.0025)) {
+            continue; // no eye, or a shift under 1/20 pixel: nothing to do (also for a measurement that is not a number)
+        }
+        const V2 d = f - center;
+        const V2 l{dot(d, ax), dot(d, pe)};
+        const double cover = eyeOpening(l, a, up, lo);
+        if (!(cover > 0.0)) {
+            continue;
+        }
+        const V2 newIris = iris + sh;
+        const double newCov = 1.0 - eyeSmooth(1.02 * r, 1.14 * r + 1.0, length(l - newIris));
+        const double oldCov = 1.0 - eyeSmooth(1.06 * r, 1.18 * r + 1.0, length(l - iris));
+        const double vac = oldCov * (1.0 - newCov);
+        map = {std::max(map[0], newCov * cover), std::max(map[1], cover), std::max(map[2], vac * cover)};
+        const V2 shF = ax * sh.x + pe * sh.y;
+        const double srcCover = eyeOpening(l - sh, a, up, lo);
+        const Rgba sprite = c.sampleRaw(f - shF);
+        const double rp = 1.3 * r + 1.0;
+        const double tt = clamp01((l.x - (iris.x - rp)) / (2.0 * rp));
+        std::array<Rgba, 2> colorSide{};
+        std::array<double, 2> availSide{};
+        for (int side = 0; side < 2; ++side) {
+            Rgba acc{};
+            double w = 0.0;
+            const double px = iris.x + (side == 0 ? -rp : rp);
+            const double kp = std::max(1.0 - (px / a) * (px / a), 0.0);
+            for (int k = -1; k <= 1; ++k) {
+                // The same row, or the nearest row of the opening there where the lids have come together (towards the corners).
+                const V2 pl{px, std::min(std::max(l.y + k, -up * kp + 1.5), lo * kp - 1.5)};
+                const double avail =
+                    eyeOpening(pl, a, up, lo) * eyeSmooth(r, 1.25 * r, length(pl - newIris)) * eyeSmooth(r, 1.25 * r, length(pl - iris));
+                acc = sum(acc, scaled(c.sampleRaw(center + ax * pl.x + pe * pl.y), avail));
+                w += avail;
+            }
+            colorSide[static_cast<std::size_t>(side)] = w > 1e-6 ? scaled(acc, 1.0 / w) : Rgba{};
+            availSide[static_cast<std::size_t>(side)] = w / 3.0;
+        }
+        // From both sides by distance where both have sclera; from the one that has it, whatever the pixel's place, when only one does.
+        const double wl = std::max(1.0 - tt, 0.02) * availSide[0];
+        const double wr = std::max(tt, 0.02) * availSide[1];
+        const Rgba fill = wl + wr > 1e-6 ? scaled(sum(scaled(colorSide[0], wl), scaled(colorSide[1], wr)), 1.0 / (wl + wr)) : orig;
+        const double fillWeight = eyeSmooth(0.05, 0.5, std::max(availSide[0], availSide[1]));
+        const Rgba filled = mixC(orig, fill, vac * cover * fillWeight);
+        result = mixC(filled, sprite, newCov * srcCover * cover);
+        break; // the eyes' openings do not overlap
+    }
+    return view == 1 ? Rgba{map[0], map[1], map[2], 1.0} : result;
+}
+
 } // namespace
 
 bool isDistort(LibraryEffect effect) {
@@ -473,6 +560,16 @@ Rgba distortPixel(const Image& in, LibraryEffect op, const LibraryParams& q, int
         }
         return scaled(acc, q[10]);
     }
+    case E::VrReorient: {
+        // 0.7 (VR / 360 video): shaders/fx_distort.frag vrReorient, over the maths of model/Vr.h.
+        const VrFormat format{q[3] > 0.5 ? VrProjection::Equirectangular180 : VrProjection::Equirectangular360,
+                              static_cast<StereoLayout>(std::clamp(static_cast<int>(std::floor(q[4] + 0.5)), 0, 2))};
+        const vr::EquirectUv uv = vr::reorientUv(format, vr::rotation(q[0], q[1], q[2]), f.x / s.x, f.y / s.y);
+        if (!uv.inside) {
+            return {};
+        }
+        return scaled(c.sampleRaw({uv.u * s.x, uv.v * s.y}), c.frameCoverage(f));
+    }
     case E::HorizontalFlip:
         return c.sampleFrame({s.x - f.x, f.y});
     case E::VerticalFlip:
@@ -536,6 +633,8 @@ Rgba distortPixel(const Image& in, LibraryEffect op, const LibraryParams& q, int
         }
         return scaled(acc, 1.0 / 64.0);
     }
+    case E::EyeContact:
+        return eyeContact(c, q, f, orig);
     default:
         return orig;
     }

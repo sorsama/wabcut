@@ -96,6 +96,9 @@ ClipDiff compareClips(const Placed& a, const Placed& b) {
         if (x.timeInterpolation() != y.timeInterpolation()) {
             d.parameters.emplace_back("Time Interpolation"); // P.2
         }
+        if (x.content().nearestNeighbor != y.content().nearestNeighbor) {
+            d.parameters.emplace_back("Nearest Neighbor Scaling"); // 0.7 (card #98)
+        }
     }
     return d;
 }
@@ -130,6 +133,7 @@ SequenceDiff diffSequence(const Sequence& before, const Sequence& after) {
             "master effects");
     setting(before.beatGrid != after.beatGrid, "beat grid");
     setting(before.multicam != after.multicam, "multicam angles");
+    setting(before.trackGroups != after.trackGroups, "track groups"); // 0.7 (card 124)
     d.marksChanged = before.markIn != after.markIn || before.markOut != after.markOut;
     d.markersChanged = before.markers != after.markers;
     d.captionsChanged = before.captionTracks != after.captionTracks;
@@ -154,7 +158,7 @@ SequenceDiff diffSequence(const Sequence& before, const Sequence& after) {
             if (!same) {
                 if (o.name != t.name || o.enabled != t.enabled || o.locked != t.locked || o.syncLocked != t.syncLocked ||
                     o.muted != t.muted || o.solo != t.solo || o.role != t.role || o.recordArmed != t.recordArmed ||
-                    o.format != t.format || o.surround != t.surround ||
+                    o.colorIndex != t.colorIndex || o.format != t.format || o.surround != t.surround ||
                     o.effects != t.effects ||
                     !(o.volume == t.volume) || !(o.pan == t.pan)) {
                     d.tracksChanged.push_back(labelOf(kind, i));

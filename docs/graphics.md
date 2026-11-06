@@ -60,20 +60,33 @@ files. Rendering: `docs/internal/c13-graphics-handoff.md`. Commands: [commands.m
   every linked layer of every graphic clip in the project (clips on locked tracks keep theirs); renaming keeps the links,
   deleting a style leaves its layers' look. `textStyle.list` / `create` / `apply` / `update` / `rename` / `remove`. The
   Essential Graphics panel's Text style row (a text layer's Edit page: None or a style, Create..., Push) applies and
-  pushes them; the Library's **Text** tab lists them as items, as Premiere's Project panel does: a card per style with
+  pushes them; Essential Graphics' **Styles** tab (0.7; it was the Library's Text tab before) lists them as cards, as
+  Premiere's Project panel does: a card per style with
   its look and how many layers follow it - click it to apply it to every text layer of the graphic clips selected on the
   timeline, or drag it onto a graphic clip on the timeline to style that clip's text layers, groups' included (one undo
   step either way; the drop target lights up, other clips refuse it), right-click to rename, duplicate or delete it.
+- **Text Styles on part of a text and in the order you want** (0.7). Double-click a text on the Program Monitor to edit it
+  in place and **select some of it**: the project's text styles show as buttons under the box (the first nine also on
+  **Ctrl+Alt+1** to **Ctrl+Alt+9**), and a click gives just the selected characters that style's look - font, weight, size,
+  fill, italic, underline, tracking, leading, baseline shift - as their own run, then closes the editor so the result
+  shows. The rest of the text, the layer's alignment, background and shadow stay, and the layer does not start to follow
+  the style (**Push to Text Style** on a layer that follows it restyles all of its runs again). Editing the text later
+  keeps what is styled: typing inside a styled word goes on in its style, text typed before or after takes the style next
+  to it, and deleting a styled word takes its run with it (before 0.7 any edit flattened a text to the style of its first
+  run). `textStyle.applyRange` (`clip`, `layer`, `from`, `to` in characters, `name`, `time` for Source Text keys) does the
+  same from the CLI and MCP; one undo step. The style cards in **Essential Graphics > Styles** have **Move Earlier** and **Move
+  Later** in their right-click menu (`textStyle.move`): the order of the list is the order of the cards and of the Ctrl+Alt
+  keys.
 - **Text in Effect Controls** (0.6, Premiere's Text in Effect Controls): selecting a graphic clip shows one
   **Text (<layer>)** section per text layer in Effect Controls (the top layer first, above the clip's Transform), so a
   text can be written and styled there without opening another panel:
   - **Source Text**: the text (several lines; applied when the box loses focus or with Ctrl+Enter), **Font** (every
     installed family, filtered as you type), **Font Style**, **Font Size**, **Alignment** (left, centre, right, justify),
     **Vertical Alignment** (paragraph text in a box taller than it: top, centre, bottom), **Tracking**, **Kerning**
-    (the font's own kerning pairs, Premiere's Metrics; off spaces the letters by their advances alone - Qt's text engine
-    has no optical or per-pair manual kerning, so tracking is the way to space letters by hand), **Leading** (0 =
-    automatic), **Baseline Shift**, **Capitals** (Normal, All Caps, Small Caps), **Faux Bold**, **Faux Italic** (a 12
-    degree slant) and **Underline**.
+    (the font's own kerning pairs, Premiere's Metrics; off spaces the letters by their advances alone), **Optical Kerning**
+    (0.7, below), **Leading** (0 = automatic), **Baseline Shift**, **Capitals** (Normal, All Caps, Small Caps), **Faux Bold**,
+    **Faux Italic** (a 12 degree slant), **Underline**, and the common OpenType features **Ligatures**, **Contextual
+    Alternates** and **Discretionary Ligatures** (0.7, below).
   - **Appearance**: **Fill**; any number of **Strokes** (up to 8; the + button adds one) with colour, width and
     position - **Outside** (under the fill), **Center** or **Inside** (over it, clipped to the glyphs); the first hugs the
     glyphs and each next one frames the ones before it; a **Background** box (colour, opacity, padding, corner radius)
@@ -88,7 +101,7 @@ files. Rendering: `docs/internal/c13-graphics-handoff.md`. Commands: [commands.m
     keyframes). Keys of a graphic with responsive time are in its design time; the lane shows them where they play.
   - Every change is one undo step. The Essential Graphics panel edits the same layer (its text controls show the text
     as it is at the playhead, and have the new faux styles, capitals, kerning, vertical alignment, strokes and shadow
-    size too). A **title** clip (the Library's Text tab) shows its Title Style as its **Text (<name>)** section: the
+    size too). A **title** clip (the command palette's **New Title**) shows its Title Style as its **Text (<name>)** section: the
     title's text, font and style, and its style values with one colour row per colour.
   - Preview and export draw the same text (one rasteriser). Interchange: FCPXML, OTIO and the other timeline exports
     still leave motion graphics out (reported as dropped, as before); a title exports its text, font and style values.
@@ -119,6 +132,33 @@ selection tool in the Program Monitor:
 
 Clicks the other tools take (mask drawing and mask outlines, review marks, object prompts, layout regions, the Type
 tool) stay theirs.
+
+## Typography: optical kerning and OpenType features (0.7)
+
+Every text run has two more typographic controls, in Essential Graphics > Edit > Advanced (under the text layer's faux styles)
+and in the Text section of Effect Controls:
+
+- **Optical Kerning**: Premiere's Optical kerning. With **Kerning** on, the font's own pairs are set aside and each pair of
+  letters is spaced by their shapes instead: Wabcut measures the white space between the outlines of neighbouring glyphs over
+  the x-height (or, for two capitals, the cap height) and evens it out against the spacing of round and straight letters in
+  the same font (n, o, H, O). `AV`, `To` and `r.` close up, `nn` and `oo` stay put; the change is limited to about a fifth of
+  an em. It applies to Latin, Greek and Cyrillic text; a run with letters of a joined script (Arabic, Persian, Indic) keeps
+  the shaper's spacing. With **Kerning** off nothing is kerned, optical or not. Optical kerning sets each letter on its own,
+  so a run set this way forms no ligatures.
+- **OpenType features**: three pills (**Ligatures**, **Contextual Alternates**, **Discretionary Ligatures**) in Effect
+  Controls and five (the same, **Stylistic Alternates** and **Swashes**) in Essential Graphics, plus a field that takes the
+  whole list in the form of CSS `font-feature-settings`: `calt, -liga, ss01, salt=2, "smcp" 1`. A tag is four letters or
+  digits; `-tag` or `tag=0` turns a feature off, `tag=2` picks the second alternate; at most 16 features. The shaper
+  (HarfBuzz, through Qt's `QFont::setFeature`) already applies a script's own features without being asked: the joining
+  forms (`init`, `medi`, `fina`, `isol`), contextual alternates (`calt`) and required ligatures (`rlig`) of **Arabic and
+  Persian**, so Nastaliq and Naskh fonts shape correctly, and ligatures and kerning for Latin. The pills show what is in
+  effect - Ligatures and Contextual Alternates start on - and the field lists only what differs. A feature the font does not
+  have is ignored. Persian shapes like Arabic (the shaper takes no language per run, so a font's Persian-only digit forms
+  need the font's own feature, e.g. `ss01`).
+
+Both are saved with the graphic only when set (an older build ignores the two keys and draws the text without them), travel
+with a text style (**Push to Text Style**, the Library's Text Styles) and are in the JSON below. Caption styles take the
+feature list too (Captions > Style); the legacy title clips do not (use a graphic).
 
 ## JSON
 
@@ -165,7 +205,8 @@ graphic inside template files. Keys at their default are left out; readers accep
   `underline`, `tracking` 1/1000 em, `leading` px, `baselineShift`), `align` (`left`, `center`, `right`, `justify`),
   `boxWidth` / `boxHeight` (paragraph text; 0 = point text), `language` (`"th"`), `background` (`enabled`, `color`,
   `padding`, `radius`), `animators`. 0.6: a run's `kerning` (default true), `caps` (`normal`, `allCaps`, `smallCaps`),
-  `fauxBold`, `fauxItalic`; the text's `verticalAlign` (`top`, `center`, `bottom`), `strokes` (`[{"enabled", "color",
+  `fauxBold`, `fauxItalic`; 0.7: a run's `opticalKerning` (default false) and `features` (OpenType features, above; default
+  none); the text's `verticalAlign` (`top`, `center`, `bottom`), `strokes` (`[{"enabled", "color",
   "width" (animatable), "position": "outside" | "center" | "inside"}]`), `sizeKeys` / `trackingKeys` / `leadingKeys` /
   `baselineKeys` (curves of the first run's value; the runs follow), and Source Text keys: `sourceKey` (a curve of hold
   keys, each the version shown from it on: 0 the `runs`, i `sources[i - 1]`) with `sources` (lists of runs). Graphics
@@ -215,6 +256,21 @@ point; `clip`: the clip's length), `checkbox` (a layer's visibility). `template.
 one undo step. The instance keeps the template's id and version and its fields, so it can be edited without the
 template.
 
+**Keys on template fields (0.7).** The controls of a template instance - an imported Motion Graphics template's too - can
+change over the clip: a colour that fades from one to another, a title that switches text, a font, a picture or a
+checkbox that changes at a moment. In Essential Graphics > Edit every field except a length has a **stopwatch**: turning
+it on puts a key with the value the field shows at the playhead; from then on, with the playhead on another moment,
+changing the field puts a key there (a colour **fades** from the key before to this one, the other kinds **switch** at
+their key and hold). A field's keys are chips under it showing where they are in the clip: click one to go to it, its x
+removes it, and the stopwatch off removes them all and keeps the value shown at the playhead. The fields show their value
+at the playhead, and preview and export draw the keyed values (a snapshot of the graphic at each frame: the layers
+themselves keep the field's own value). Keys are in the graphic's time like every key of a graphic (the clip's time, the
+design time of a responsive graphic). A key can also be a **Hold** colour key (`"interpolation": "hold"`), which steps
+instead of fading. `template.setFieldKey` (`clip`, `field`, `time`, `value`, `interpolation`), `template.removeFieldKey`,
+`template.clearFieldKeys`; **`template.setField` on a keyed field is refused** and says to key it or stop animating it;
+`graphic.get` lists the keys with the field. At most 256 keys a field; one undo step each. Saved with the graphic as
+`"keys": [{"t": ticks, "value": ..., "i": "hold"}]` on the instance's field, only when there are keys.
+
 **Import and export (0.2).** `template.export` writes any template (the project's, the user's or a built-in) to a
 `.wabcut-template.json` file; `template.import` adds one to the project's library (default) or the user's. It also
 imports a **Motion Graphics template (`.mogrt`) made in Premiere Pro, approximately** (`wabcut/interchange/Mogrt.h`):
@@ -239,6 +295,20 @@ media: a `.wabcut-template.json` says 'Template "X" added to This project', and 
 opens the import report with what was read and what was dropped. A template's right-click menu (built-in templates
 included) has **Export template…**, which writes `<id>.wabcut-template.json` wherever the save dialog points; the
 `.mogrt` itself cannot be written out, as Wabcut reads a part of it.
+
+**Folders, sorting and installing a folder of templates (0.7).** The template browser (Callouts > Browse) keeps what you
+install organised. A template of **This project** or **My templates** can be filed under a **folder** (right-click >
+**Move to Folder...**, a name such as `Titles` or `Titles/Lower thirds`: up to three levels, `/` between them; empty takes it
+out): the group lists the unfiled templates first and then one fold per folder, named with its count, that closes and
+opens with its button. **Sort** (next to the search) orders every group by name (A to Z or Z to A), length or the number of
+fields. **Install folder...** (and **Install folder into My templates...**) takes every `.mogrt` and
+`.wabcut-template.json` file in a folder and its subfolders (500 files at most, 8 levels deep, no symbolic links; a file
+that does not read is skipped and reported, the rest install in one undo step) and files each under a folder named after
+where it was found: the chosen folder's name, then its subfolders (`Lower thirds/Dark`; deeper levels share the third
+part). A template with the id of one already in the library replaces it. The folder is saved with the template (`"folder"`
+in the project file's template and in the library file; other versions of Wabcut ignore it). `template.setFolder` (project
+or user templates; built-in ones cannot be filed), `template.importFolder` (`path`, `library`, `recursive`) and
+`template.list` (a `folder` per template) are the same from the CLI and MCP.
 
 **Caption Track Styles (0.2).** A caption track can follow a caption preset (Premiere's Track Style menu,
 `captions.setTrackStyle`; `"trackStyle"` on the caption track in the project file): it takes the preset's style, and
@@ -325,10 +395,64 @@ caption styles (`CaptionStyle::brand`) refer to them by name; `brand.set` with a
 JSON: `{"name", "colors": [{"name", "rgba"}], "fonts": [{"role", "family", "style", "weight"}], "logos": [{"name",
 "media"}]}`.
 
+## Vector artwork: SVG, Illustrator and EPS (0.7)
+
+**File > Import**, a drop on the Library, the timeline or Home, and Import Folder take `.svg` (and `.svgz`), `.ai` and
+`.eps` files as stills whose picture is drawn again at the size it is shown, so a logo or an icon stays sharp at any scale
+(Motion's Scale up to 8192 pixels on the longer side; the picture is drawn in half-octave steps and kept while you scrub).
+The item's size in the Library is the artwork's own (SVG user units; points for Illustrator and EPS), and Scale to Frame
+Size, Set to Frame Size and the Media Scaling preference treat it like any picture. Everything that works on a still works
+on it - Motion, Opacity, effects, masks, transitions, nesting, export - and it saves as a path in the project like any media
+(Relink and Collect Files find it).
+
+- **SVG** is drawn by Qt Svg: shapes, gradients, clips, masks, transforms and embedded fonts or images the system has; the
+  background is transparent. Scripts, animation and external references are not run. Files over 64 MB are refused.
+- **Illustrator (.ai)** saved "PDF compatible" (Illustrator's default) is a PDF: on Windows its first page - the artboard -
+  is drawn by Windows' own PDF reader, on macOS and Linux by Ghostscript. Older PostScript-based files go through
+  Ghostscript everywhere. A file saved without PDF content says to use File > Save As > "Create PDF Compatible File", or to
+  export SVG.
+- **EPS** is drawn by [Ghostscript](https://ghostscript.com), which Wabcut looks for when it needs it (the PATH, then the usual
+  install folders: Program Files\gs on Windows, Homebrew and MacPorts on macOS). Nothing is bundled: without it the file is
+  refused with a message that says what to install (or to export the artwork as SVG). Ghostscript runs with `-dSAFER`
+  (the PostScript cannot touch files or start programs), at most two minutes per drawing. It is a separate program under its
+  own licence (AGPL, or commercial from Artifex): Wabcut starts the copy you installed and bundles or links none.
+
+Files are read as untrusted input: sizes are bounded (the nominal size to 16384, a drawing to 8192 pixels a side, files to
+256 MB). A file that cannot be drawn shows nothing and the import says why. Not in this version: layers and artboards of an
+Illustrator file (the first page is drawn), CMYK colour management of EPS/AI (drawn as sRGB), and editing the artwork as
+shapes in Essential Graphics (convert it to a graphic in a vector editor, or use Lottie for animation).
+
+## The font picker (0.7)
+
+One font picker serves every place a font is chosen: Effect Controls' Text section, the Essential Graphics editor (the
+callout font, a layer's font, a template's font fields), the Brand Kit's font roles and the Caption Style panel's font. It is
+a search box over every installed family, in groups with a header each so it is clear why a font is listed: **Name** (the
+family's name contains what you typed), **Supports Thai** (the family draws the language or script you typed) and **Similar**
+(letters in order, spaces and dashes ignored, small typos). "Thai" lists Noto Sans Thai and Leelawadee UI Thai first, then every
+family that draws Thai; language and script names work in English and in their own script (Thai / ไทย, Japanese / 日本語,
+Arabic / عربي), "thai sans" is the script plus a word of the name, and "T-H-A-I" spelled out is the word. Every row is drawn
+in its own font; when a language is asked for the sample is a greeting in that script. What a family draws comes from its
+writing systems and from the real glyphs: a short sample of each script is checked against the font, because a family's own
+report can be partial.
+
+**Filters** (the button beside the box; all combine): language or script (a font must draw every one you choose; it starts on
+the script of the text in the layer, or of the caption track's language), has Bold, has Italic, three or more weights, type
+(Sans, Serif, Mono, Display, Handwriting, Symbol - from the name and whether the family is fixed pitch), source (Installed,
+Brand kit, Recently used, Favourites, Project fonts), sort (relevance, A to Z, recently used) and **Hide fonts that cannot
+draw this text**. A bookmark on a row stars the family (kept between sessions); a warning on a row lists the letters the family
+cannot draw instead of showing boxes. The picker opens with the default font and the brand kit's font roles first where the
+place allows them. Up and Down move through the rows (the headers are skipped), Enter chooses, Escape closes.
+
+Singleton `Fonts` (`FontCatalog.h`; the catalogue is read once per session on a worker thread, names are usable at once);
+`fonts::rank` is the pure ranking. UI `qml/components/{FontPicker,FontChoicePill}.qml`. Tests: `tests/app/test_d2_text_audio_ui.cpp`.
+Not in this version: variable-font detection (Qt has no reliable query for it), the licence of a font, and activating fonts
+from a folder.
+
 ## Lottie
 
-`lottie.import` (and `interchange::importLottie`) reads Bodymovin JSON (After Effects exports, LottieFiles) into a
-graphic: keyframe easing becomes Bezier keys, so motion matches. The report lists each layer **carried** or what was
+`lottie.import` (and `interchange::importLottie`) reads Bodymovin JSON (After Effects exports, LottieFiles) and, since 0.7,
+**dotLottie** archives (`.lottie`, a ZIP; its initial animation, or the one named by `animation`; the other animations, themes
+and state machines are listed in the report as not imported) into a graphic: keyframe easing becomes Bezier keys, so motion matches. The report lists each layer **carried** or what was
 **approximated** (changed - the reason says how) and **dropped**, with the JSON path of the feature (category `graphic`,
 `effect`, `media`, `marker`).
 
@@ -352,3 +476,34 @@ graphic: keyframe easing becomes Bezier keys, so motion matches. The report list
 Bounds: 16 MiB, nesting, 10,000 layers per composition, 1,000 assets, 10,000 keys per property and 500,000 in all,
 1,000,000 path vertices in all, 256 layers in the graphic (the rest are dropped and reported). The fuzz harness
 `fuzz_lottie` (tests/fuzz) runs every Lottie fixture and its mutations.
+
+### Lottie templates (0.7)
+
+An imported animation is a template: **every text** (its words, and its color) and **every solid fill or stroke color that
+stays the same** become template fields named after their layers ("Title", "Bar color"), up to 64, texts first. A colour that
+changes over the animation is part of its motion and is not a field. **File > Import Lottie...** (or dropping the file) places
+a graphic clip that is an instance of the template, so **Essential Graphics > Edit** shows the fields: type a new text, pick a
+color, and use the stopwatch to key them like any template's (text and color changes follow the clip, preview and export). The
+same through commands: `template.setField`, `template.setFieldKey`. With `saveAs` (Callouts > Stickers) the template is also kept in the
+project's library.
+
+### OGraf (0.7)
+
+[OGraf](https://ograf.ebu.io) is the EBU's open format for broadcast graphics: a package of a manifest (`*.ograf.json`: id,
+name, the data fields in a JSON Schema) and a JavaScript module that draws the graphic as a web page. **Wabcut has no web engine and
+never runs scripts**, so an OGraf graphic cannot be drawn from its web page. What it does:
+
+- **Reads the manifest** (`ograf.inspect`): name, author, the fields with their types and defaults, the custom actions, and whether
+  the graphic can be drawn. It is bounded (1 MiB, nesting and counts limited) and every path in it (the script, thumbnails) must stay
+  inside the package.
+- **Draws a package that also ships a Lottie version** of the graphic (`ograf.import`; **File > Import Lottie...** takes the
+  manifest, or a `.zip` package): one `.json` or `.lottie` animation in the package, or the one the manifest names in the vendor
+  field `"v_wabcut_lottie": "motion/lower-third.json"`. It imports as a Lottie template (above) whose fields carry the manifest's
+  names: a text layer called like a field (`title`, or its title "Headline"; case, spaces and punctuation are ignored) is that
+  field's layer, `<layer>Color` is a layer's color, and a yes / no field shows or hides the layer of that name. The manifest's other
+  fields (numbers, choices, pictures) and its defaults have no counterpart and are listed in the report: the Lottie's own texts and
+  colors are the starting values. The package's script is listed as not run.
+- **A package without a Lottie version is refused** with a message that says why (and lists its fields).
+
+Bounds: manifest 1 MiB, package 64 MiB (ZIP read bounded: no encryption, no ZIP64, safe names only), 4,096 files, 256 fields.
+Static fallback images are not used.

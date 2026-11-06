@@ -361,3 +361,300 @@ TEST_CASE("Analyze Rolling Shutter keys the picture's motion per frame", "[ai][s
     s.h.session.undo();
     CHECK(s.effect("V1@0", kRollingShutterRepairEffect) == nullptr);
 }
+
+// ---- 0.7 ---------------------------------------------------------------------------------------------------------------
+
+namespace {
+
+/// The shaky content's x position (source pixels) on each of the clip's frames over its first `frames` timeline frames, and
+/// the same plus the Warp Stabilizer's compensation read at that frame's curve time: what the viewer sees before and after.
+struct Seen {
+    std::vector<double> shot;
+    std::vector<double> steady;
+};
+
+Seen seenOver(const Clip& clip, const EffectInstance& warp, std::int64_t frames) {
+    Seen seen;
+    for (std::int64_t j = 0; j < frames; ++j) {
+        const Ticks at = clip.start() + framesToTicks(j, kRate25);
+        const std::int64_t k = ticksToFrames(clip.sourceTimeAt(at), kRate25); // the source frame it shows
+        // The renderer reads a clip that shows whole frames at the frame's own time (Evaluate.cpp, stabilizationOf: Frame
+        // Sampling holds each source frame's compensation); a remapped clip is keyed per frame shown.
+        Ticks curve = clip.curveTimeAt(at);
+        curve = clip.isRemapped() ? curve : snapToFrame(curve, kRate25);
+        seen.shot.push_back(jitterX(k) * kToSource);
+        seen.steady.push_back(jitterX(k) * kToSource + effectParameterAt(warp, "transform.x", curve));
+    }
+    return seen;
+}
+
+} // namespace
+
+// Card 107: a clip at another speed (here 200 %) is analysed over the frames it shows; its keys are at the media's times,
+// which are its curve times, so each timeline frame finds the compensation of the source frame it shows.
+TEST_CASE("Analyze Stabilization works on a clip at another speed (card 107)", "[ai][stabilize][commands][speed]") {
+    StabilizeHarness s(kClip30);
+    const ClipId clip = s.h.clip("V1@0");
+    s.h.ok("clip.addEffect", {{"clips", Json::array({clip.value})}, {"effect", kWarpStabilizerEffect},
+                              {"params", {{"framing", 0}, {"method", 0}}}});
+    s.h.ok("clip.speedDuration", {{"clips", Json::array({clip.value})}, {"speed", 200}});
+    REQUIRE(s.clip("V1@0").speed == Speed{2, 1});
+    REQUIRE(s.clip("V1@0").duration() == framesToTicks(15, kRate25));
+    const auto result = s.h.ok("effect.analyzeStabilization", {{"clip", clip.value}});
+    CHECK(result.data["frames"] == 30); // every source frame the clip shows
+    CHECK(s.pictures->frames == 30);
+    const EffectInstance* warp = s.effect("V1@0", kWarpStabilizerEffect);
+    REQUIRE(warp);
+    REQUIRE(warp->find("transform.x"));
+    CHECK(warp->find("transform.x")->isCurve());
+    const Seen seen = seenOver(s.clip("V1@0"), *warp, 15);
+    INFO("x spread " << spread(seen.shot) << " -> " << spread(seen.steady));
+    CHECK(spread(seen.steady) < 0.3 * spread(seen.shot));
+    // Slowed to 50 % (the same 30 source frames over 60 timeline frames): each frame is shown twice, the keys stay on the
+    // frames.
+    s.h.ok("clip.speedDuration", {{"clips", Json::array({clip.value})}, {"speed", 50}});
+    REQUIRE(s.clip("V1@0").duration() == framesToTicks(60, kRate25));
+    const auto again = s.h.ok("effect.analyzeStabilization", {{"clip", clip.value}});
+    CHECK(again.data["frames"] == 30);
+    warp = s.effect("V1@0", kWarpStabilizerEffect);
+    const Seen slow = seenOver(s.clip("V1@0"), *warp, 60);
+    CHECK(spread(slow.steady) < 0.3 * spread(slow.shot));
+    // A clip that plays backwards at another speed is keyed the same way (its curve time is the media time).
+    s.h.ok("clip.speedDuration", {{"clips", Json::array({clip.value})}, {"reverse", true}});
+    REQUIRE(s.clip("V1@0").reversed);
+    s.h.ok("effect.analyzeStabilization", {{"clip", clip.value}});
+    warp = s.effect("V1@0", kWarpStabilizerEffect);
+    const Seen backwards = seenOver(s.clip("V1@0"), *warp, 60);
+    CHECK(spread(backwards.steady) < 0.3 * spread(backwards.shot));
+}
+
+// Card 107: a time-remapped clip (a slow first segment here) used to be refused. Its frames are analysed once and the
+// compensation is keyed per frame the clip shows, in the clip's curve time (which runs with the timeline).
+TEST_CASE("Analyze Stabilization works on a time-remapped clip (card 107)", "[ai][stabilize][commands][speed][remap]") {
+    StabilizeHarness s(kClip30);
+    const ClipId clip = s.h.clip("V1@0");
+    s.h.ok("clip.addEffect", {{"clips", Json::array({clip.value})}, {"effect", kWarpStabilizerEffect},
+                              {"params", {{"framing", 0}, {"method", 0}}}});
+    s.h.ok("timeRemap.enable", {{"clip", clip.value}});
+    s.h.ok("timeRemap.addKey", {{"clip", clip.value}, {"time", "00:00:00:10"}});
+    s.h.ok("timeRemap.setSpeed", {{"clip", clip.value}, {"time", "00:00:00:04"}, {"speed", 50}, {"extendClip", true}});
+    REQUIRE(s.clip("V1@0").isRemapped());
+    REQUIRE(s.clip("V1@0").duration() == framesToTicks(40, kRate25)); // 10 frames at 50 % then 20 at 100 %
+    const auto result = s.h.ok("effect.analyzeStabilization", {{"clip", clip.value}});
+    CHECK(result.data["frames"] == 30);
+    CHECK(result.data["lostFrames"] == 0);
+    CHECK(s.pictures->frames == 30); // each source frame the remap shows is read once
+    const EffectInstance* warp = s.effect("V1@0", kWarpStabilizerEffect);
+    REQUIRE(warp);
+    REQUIRE(warp->find("transform.x"));
+    CHECK(warp->find("transform.x")->isCurve());
+    CHECK(*warp->findData("status")->text() == "analyzed");
+    // Frame Sampling shows whole frames: each output frame is compensated for the frame it shows, including the repeats of
+    // the slow segment (output frames 0 and 1 both show source frame 0 but are keyed at their own curve times).
+    const Clip& remapped = s.clip("V1@0");
+    const Seen seen = seenOver(remapped, *warp, 40);
+    INFO("x spread " << spread(seen.shot) << " -> " << spread(seen.steady));
+    CHECK(spread(seen.steady) < 0.3 * spread(seen.shot));
+    // The keys sit at curve times inside the clip (sourceIn + its timeline length), not at the media's frame times.
+    for (const Keyframe& key : warp->find("transform.x")->curve()->keys) {
+        CHECK(key.time >= remapped.sourceIn);
+        CHECK(key.time < remapped.sourceIn + remapped.duration());
+    }
+    // A hold (a freeze inside the remap) is keyed too.
+    s.h.ok("timeRemap.addHold", {{"clip", clip.value}, {"time", "00:00:01:00"}, {"duration", "00:00:00:03"}});
+    s.h.ok("effect.analyzeStabilization", {{"clip", clip.value}, {"effect", warp->id.value}});
+    warp = s.effect("V1@0", kWarpStabilizerEffect);
+    const Clip& held = s.clip("V1@0");
+    const Seen heldSeen = seenOver(held, *warp, ticksToFrames(held.duration(), kRate25)); // the hold may change the length
+    CHECK(spread(heldSeen.steady) < 0.3 * spread(heldSeen.shot));
+    CHECK(s.h.errorOf("effect.analyzeStabilization", {{"clip", clip.value}, {"effect", 999}}) == "NotFound");
+}
+
+// Card 128: Analyze All.
+TEST_CASE("Analyze All analyses each stabilizer once, redoes the stale ones and skips what cannot be analysed (card 128)",
+          "[ai][stabilize][commands][analyzeAll]") {
+    StabilizeHarness s("V1 |Aaaaaaaaaa..A40aaaaaaaaa|");
+    const ClipId first = s.h.clip("V1@0");
+    const ClipId second = s.h.clip("V1@12");
+    const Json position = {{"framing", 0}, {"method", 0}};
+    const Json defaults = Json(Json::value_t::object);
+    const auto add = [&](ClipId clip, std::string_view effect, const Json& params) {
+        return s.h.ok("clip.addEffect", {{"clips", Json::array({clip.value})}, {"effect", effect}, {"params", params}})
+            .createdIds.at(0);
+    };
+    const std::uint64_t warpA = add(first, kWarpStabilizerEffect, position);
+    const std::uint64_t warpB = add(second, kWarpStabilizerEffect, position);
+    const std::size_t undo = s.h.session.undoCount();
+
+    // Nothing is analysed yet: both are, over every frame of both clips (10 and 12: a source In's digits take frames of the
+    // picture), with one progress count and one undo step.
+    const auto all = s.h.ok("effect.analyzeAll");
+    CHECK(all.data["analyzed"] == 2);
+    CHECK(all.data["alreadyAnalyzed"] == 0);
+    CHECK(all.data["frames"] == 22);
+    CHECK(all.data["skipped"].empty());
+    CHECK(s.pictures->frames == 22);
+    REQUIRE_FALSE(s.pictures->reports.empty());
+    CHECK(s.pictures->reports.back().frame == 22); // one bar over both effects
+    CHECK(s.pictures->reports.back().total == 22);
+    CHECK(s.h.session.undoCount() == undo + 1);
+    for (const char* ref : {"V1@0", "V1@12"}) {
+        const EffectInstance* warp = s.effect(ref, kWarpStabilizerEffect);
+        REQUIRE(warp);
+        REQUIRE(warp->findData("status"));
+        CHECK(*warp->findData("status")->text() == "analyzed");
+        CHECK(warp->find("transform.x")->isCurve());
+    }
+
+    // Run again: everything is current, so nothing is read and nothing changes.
+    const int read = s.pictures->frames;
+    const auto again = s.h.ok("effect.analyzeAll");
+    CHECK(again.data["analyzed"] == 0);
+    CHECK(again.data["alreadyAnalyzed"] == 2);
+    CHECK(s.pictures->frames == read);
+
+    // A setting changed after the analysis (Smoothness): that one is out of date; the other stays.
+    s.h.ok("clip.setEffect", {{"clip", first.value}, {"effect", warpA}, {"params", {{"smoothness", 300}}}});
+    const auto stale = s.h.ok("effect.analyzeAll");
+    CHECK(stale.data["analyzed"] == 1);
+    CHECK(stale.data["alreadyAnalyzed"] == 1);
+    CHECK(stale.data["effects"][0]["effect"] == warpA);
+    CHECK(s.pictures->frames == read + 10);
+
+    // The clip trimmed longer after the analysis: its keys stop short of the new frames, so it is analysed again.
+    s.h.ok("clip.trim", {{"clip", second.value}, {"edge", "tail"}, {"delta", "00:00:00:02"}});
+    const auto trimmed = s.h.ok("effect.analyzeAll");
+    CHECK(trimmed.data["analyzed"] == 1);
+    CHECK(trimmed.data["effects"][0]["effect"] == warpB);
+
+    // reanalyze redoes every one; kind limits it; an effect that is switched off is listed, not analysed.
+    CHECK(s.h.ok("effect.analyzeAll", {{"reanalyze", true}}).data["analyzed"] == 2);
+    const std::uint64_t shutter = add(first, kRollingShutterRepairEffect, defaults);
+    const auto onlyShutter = s.h.ok("effect.analyzeAll", {{"kind", "shutter"}});
+    CHECK(onlyShutter.data["analyzed"] == 1);
+    CHECK(onlyShutter.data["effects"][0]["effect"] == shutter);
+    CHECK(onlyShutter.data["effects"][0]["kind"] == "shutter");
+    s.h.ok("clip.setEffect", {{"clip", second.value}, {"effect", warpB}, {"enabled", false}});
+    const auto off = s.h.ok("effect.analyzeAll", {{"reanalyze", true}});
+    CHECK(off.data["analyzed"] == 2); // warpA and the shutter repair
+    REQUIRE(off.data["skipped"].size() == 1);
+    CHECK(off.data["skipped"][0]["effect"] == warpB);
+    CHECK_FALSE(off.warnings.empty());
+    // Without the media's frames it is refused like the single analysis.
+    StabilizeHarness without("V1 |Aaaaaaaaaa|", false);
+    without.h.ok("clip.addEffect", {{"clips", Json::array({without.h.clip("V1@0").value})}, {"effect", kWarpStabilizerEffect}});
+    CHECK(without.h.errorOf("effect.analyzeAll") == "InvalidRequest");
+}
+
+// Card 128: the sequences nested in the sequence are included (their clips keep their own effects).
+TEST_CASE("Analyze All reaches a stabilizer inside a nested sequence (card 128)", "[ai][stabilize][commands][analyzeAll]") {
+    StabilizeHarness s("V1 |Aaaaaaaaaa|");
+    const ClipId clip = s.h.clip("V1@0");
+    const std::uint64_t own = s.h.ok("clip.addEffect", {{"clips", Json::array({clip.value})}, {"effect", kWarpStabilizerEffect},
+                                                         {"params", {{"framing", 0}, {"method", 0}}}})
+                                  .createdIds.at(0);
+    s.h.ok("sequence.nest", {{"clips", Json::array({clip.value})}, {"name", "Inner"}});
+    const std::int64_t outer = s.h.tl.seq.value; // two sequences now: the command names which
+    const auto result = s.h.ok("effect.analyzeAll", {{"sequence", outer}});
+    CHECK(result.data["analyzed"] == 1);
+    CHECK(result.data["effects"][0]["effect"] == own);
+    // Without the nested sequences the outer one has nothing of its own to analyse.
+    const auto outerOnly = s.h.ok("effect.analyzeAll", {{"sequence", outer}, {"nested", false}, {"reanalyze", true}});
+    CHECK(outerOnly.data["analyzed"] == 0);
+}
+
+// Card 129: Smoothness can be keyframed. Frames before the key that raises it are left as they were shot (0 %), the frames
+// after it are steadied, moving a key makes the analysis out of date, and re-smoothing reads no frame again.
+TEST_CASE("Analyze Stabilization follows a keyed Smoothness (card 129)", "[ai][stabilize][commands][keyed]") {
+    StabilizeHarness s(kClip30, true, true);
+    const ClipId clip = s.h.clip("V1@0");
+    const std::uint64_t warp =
+        s.h.ok("clip.addEffect", {{"clips", Json::array({clip.value})}, {"effect", kWarpStabilizerEffect},
+                                  {"params", {{"framing", 0}, {"method", 0}}}})
+            .createdIds.at(0);
+    // Smoothness 0 % until frame 15 (a hold), then 100 % (one second).
+    const auto key = [&](std::int64_t frame, double value, const char* interpolation) {
+        s.h.ok("clip.addKeyframe", {{"clip", clip.value}, {"effect", warp}, {"param", "smoothness"},
+                                     {"time", framesToTicks(frame, kRate25).value}, {"value", value},
+                                     {"interpolation", interpolation}});
+    };
+    key(0, 0.0, "hold");
+    key(15, 100.0, "linear");
+    REQUIRE(s.effect("V1@0", kWarpStabilizerEffect)->find("smoothness")->isCurve());
+
+    const auto first = s.h.ok("effect.analyzeStabilization", {{"clip", clip.value}, {"effect", warp}});
+    CHECK(first.data["cached"] == false);
+    const EffectInstance* effect = s.effect("V1@0", kWarpStabilizerEffect);
+    REQUIRE(effect);
+    CHECK(effect->find("smoothness")->isCurve()); // the analysis leaves the setting (and its keys) alone
+    // Where Smoothness is 0 the picture stays exactly as it was shot: the compensation is nothing.
+    for (std::int64_t k = 0; k < 15; ++k) {
+        INFO("frame " << k);
+        CHECK(at(*effect, "transform.x", k) == Approx(0.0).margin(0.06));
+        CHECK(at(*effect, "transform.y", k) == Approx(0.0).margin(0.06));
+    }
+    // Where it is 100 % the shake is gone: far less of it is left than as shot.
+    std::vector<double> shot, steady;
+    for (std::int64_t k = 15; k < 30; ++k) {
+        shot.push_back(jitterX(k) * kToSource);
+        steady.push_back(jitterX(k) * kToSource + at(*effect, "transform.x", k));
+    }
+    INFO("shake " << spread(shot) << " -> " << spread(steady));
+    CHECK(spread(steady) < 0.4 * spread(shot));
+
+    // Nothing changed since the analysis: it is up to date, so Analyze All leaves it alone.
+    const std::size_t undo = s.h.session.undoCount();
+    CHECK(s.h.ok("effect.analyzeAll").data["alreadyAnalyzed"] == 1); // up to date: nothing to do
+    CHECK(s.h.session.undoCount() == undo);
+
+    // Moving a key makes the analysis out of date; the cached motion re-smooths it without reading a frame.
+    s.h.ok("clip.setKeyframe", {{"clip", clip.value}, {"effect", warp}, {"param", "smoothness"}, {"index", 0}, {"value", 100.0}});
+    const int read = s.pictures->frames;
+    const auto stale = s.h.ok("effect.analyzeAll");
+    CHECK(stale.data["analyzed"] == 1);
+    CHECK(stale.data["alreadyAnalyzed"] == 0);
+    CHECK(s.pictures->frames == read); // the motion was cached
+    effect = s.effect("V1@0", kWarpStabilizerEffect);
+    std::vector<double> shotFirst, steadyFirst;
+    for (std::int64_t k = 0; k < 15; ++k) {
+        shotFirst.push_back(jitterX(k) * kToSource);
+        steadyFirst.push_back(jitterX(k) * kToSource + at(*effect, "transform.x", k));
+    }
+    CHECK(spread(steadyFirst) < 0.4 * spread(shotFirst)); // now steadied there too
+    // One undo step (the Analyze) restores the earlier keys.
+    s.h.session.undo();
+    effect = s.effect("V1@0", kWarpStabilizerEffect);
+    CHECK(at(*effect, "transform.x", 3) == Approx(0.0).margin(0.06));
+}
+
+TEST_CASE("Analyze Stabilization reads a keyed Smoothness through a time remap (card 129)", "[ai][stabilize][commands][keyed][remap]") {
+    StabilizeHarness s(kClip30);
+    const ClipId clip = s.h.clip("V1@0");
+    const std::uint64_t warp =
+        s.h.ok("clip.addEffect", {{"clips", Json::array({clip.value})}, {"effect", kWarpStabilizerEffect},
+                                  {"params", {{"framing", 0}, {"method", 0}}}})
+            .createdIds.at(0);
+    s.h.ok("timeRemap.enable", {{"clip", clip.value}});
+    s.h.ok("timeRemap.addKey", {{"clip", clip.value}, {"time", "00:00:00:10"}});
+    s.h.ok("timeRemap.setSpeed", {{"clip", clip.value}, {"time", "00:00:00:04"}, {"speed", 50}, {"extendClip", true}});
+    REQUIRE(s.clip("V1@0").isRemapped());
+    // Smoothness 0 % for the first 20 output frames, then 100 %: output frame 20 shows source frame 15 (10 frames at 50 %
+    // show 5 source frames, then 100 % speed).
+    for (const auto& [frame, value] : {std::pair<std::int64_t, double>{0, 0.0}, {20, 100.0}}) {
+        s.h.ok("clip.addKeyframe", {{"clip", clip.value}, {"effect", warp}, {"param", "smoothness"},
+                                     {"time", framesToTicks(frame, kRate25).value}, {"value", value}, {"interpolation", "hold"}});
+    }
+    const auto result = s.h.ok("effect.analyzeStabilization", {{"clip", clip.value}, {"effect", warp}});
+    CHECK(result.data["frames"] == 30);
+    const EffectInstance* effect = s.effect("V1@0", kWarpStabilizerEffect);
+    REQUIRE(effect);
+    const Seen seen = seenOver(s.clip("V1@0"), *effect, 40);
+    REQUIRE(seen.shot.size() == 40);
+    const std::vector<double> shotEarly(seen.shot.begin(), seen.shot.begin() + 18);
+    const std::vector<double> steadyEarly(seen.steady.begin(), seen.steady.begin() + 18);
+    const std::vector<double> shotLate(seen.shot.begin() + 22, seen.shot.end());
+    const std::vector<double> steadyLate(seen.steady.begin() + 22, seen.steady.end());
+    INFO("early " << spread(shotEarly) << " -> " << spread(steadyEarly) << ", late " << spread(shotLate) << " -> " << spread(steadyLate));
+    CHECK(spread(steadyEarly) > 0.8 * spread(shotEarly)); // left as shot
+    CHECK(spread(steadyLate) < 0.5 * spread(shotLate));   // steadied
+}

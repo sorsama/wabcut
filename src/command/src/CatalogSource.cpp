@@ -601,6 +601,27 @@ CommandOutput matchFrame(ExecutionContext& c) {
         fail(ErrorCode::NotFound, "no clip under " + c.timecode(t));
     }
     const Clip& clip = *found.clip;
+    if (clip.isNested()) {
+        // 0.7 (card 097): a nested or multi-camera clip has no media of its own: Match Frame names the source sequence and
+        // the frame of it the clip shows at `t` (the app opens that sequence there, as a double-click on the clip does).
+        // Nothing is stored: there are no source marks to set.
+        const Sequence* nested = c.state().findSequence(clip.sequence);
+        if (!nested) {
+            fail(ErrorCode::NotFound, "the clip's sequence does not exist");
+        }
+        const Ticks last = std::max(Ticks{}, nested->duration - Ticks{1});
+        const Ticks inside = std::clamp(clip.sourceTimeAt(t), Ticks{}, last);
+        CommandOutput out;
+        out.state = c.state();
+        out.data = Json{{"clip", clip.id.value},
+                        {"track", c.trackLabel(found.track->id)},
+                        {"nested", true},
+                        {"multicam", nested->multicam.has_value()},
+                        {"sequence", nested->id.value},
+                        {"name", nested->name},
+                        {"sequenceTime", sourceTimeJson(inside, nested->frameRate)}};
+        return out;
+    }
     const MediaItem* media = c.state().findMedia(clip.media);
     if (!media) {
         fail(ErrorCode::NotFound, "the clip's media does not exist");
@@ -769,7 +790,9 @@ void registerSourceCommands(CommandRegistry& registry) {
                {"sequence.matchFrame", 1, "Match Frame",
                 "Match Frame (Premiere F): the clip under a time on the targeted tracks (the topmost; every track when none "
                 "is targeted there), its media and the source frame shown. Like Premiere, the media's source marks become "
-                "the clip's used range (setMarks false leaves them).",
+                "the clip's used range (setMarks false leaves them). A nested or multi-camera clip (0.7) answers with "
+                "\"nested\": true, its source \"sequence\" and the \"sequenceTime\" it shows there instead (the app opens "
+                "that sequence on that frame); no marks are set.",
                 Capability::EditProject,
                 withSequence({{"time", timeParam("The playhead.")},
                               {"tracks", tracksParam("Tracks to look on. Default: the targeted tracks, else all.")},

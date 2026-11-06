@@ -7,6 +7,7 @@
 #include <wabcut/model/Effects.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/FrameScaling.h>
+#include <wabcut/model/Resolve.h>
 #include <wabcut/model/Synthetic.h>
 
 #include <QQmlEngine>
@@ -26,33 +27,6 @@ constexpr int kPathSamples = 24;
 /// The rotation zone: from the corner's grab distance out to this many times it.
 constexpr double kRotateReach = 3.0;
 
-/// A model anchor (displayed pixels) in the transform's space of a stream turned by `quarter` quarter turns, as
-/// playback::layerOf turns it, and back.
-render::Vec2 toTransformAnchor(double x, double y, int quarter) {
-    switch (quarter) {
-    case 1:
-        return {y, -x};
-    case 2:
-        return {-x, -y};
-    case 3:
-        return {-y, x};
-    default:
-        return {x, y};
-    }
-}
-render::Vec2 fromTransformAnchor(render::Vec2 a, int quarter) {
-    switch (quarter) {
-    case 1:
-        return {-a.y, a.x};
-    case 2:
-        return {-a.x, -a.y};
-    case 3:
-        return {a.y, -a.x};
-    default:
-        return a;
-    }
-}
-
 /// The linear part (rotation and scale) of the Motion placement: anchor space -> canvas vectors.
 struct Linear {
     double a = 1, b = 0, c = 0, d = 1;
@@ -64,10 +38,13 @@ std::optional<Linear> invertedOf(const Linear& l) {
         return std::nullopt;
     return Linear{l.d / det, -l.b / det, -l.c / det, l.a / det};
 }
-Linear linearOf(double rotationDegrees, double scale) {
+/// `scaleX` / `scaleY`: the factors along the stored picture's axes (0.7, card #12: Scale Width and Scale differ).
+Linear linearOf(double rotationDegrees, double scaleX, double scaleY) {
     const double r = rotationDegrees / kDegrees;
-    return {std::cos(r) * scale, std::sin(r) * scale, -std::sin(r) * scale, std::cos(r) * scale};
+    return {std::cos(r) * scaleX, std::sin(r) * scaleX, -std::sin(r) * scaleY, std::cos(r) * scaleY};
 }
+
+double dot(render::Vec2 a, render::Vec2 b) { return a.x * b.x + a.y * b.y; }
 
 render::Vec2 sub(render::Vec2 a, render::Vec2 b) { return {a.x - b.x, a.y - b.y}; }
 
@@ -202,6 +179,8 @@ std::optional<MotionBridge::Geometry> MotionBridge::geometryOf(const ProjectStat
     g.curveTime = curveTime;
     g.canvasWidth = seq.width;
     g.canvasHeight = seq.height;
+    g.canvasPixelAspect = sequencePixelAspect(seq);
+    g.pixelAspect = g.canvasPixelAspect; // titles and graphics are drawn in canvas pixels; media below sets its own
     if (clip.sequence.isValid()) {
         // A nested or multicam clip: the nested sequence's composite at its canvas size.
         const Sequence* nested = project.findSequence(clip.sequence);
@@ -209,6 +188,7 @@ std::optional<MotionBridge::Geometry> MotionBridge::geometryOf(const ProjectStat
             return std::nullopt;
         g.frameWidth = nested->width;
         g.frameHeight = nested->height;
+        g.pixelAspect = sequencePixelAspect(*nested);
     } else {
         const MediaItem* item = project.findMedia(clip.media);
         if (!item)
@@ -236,10 +216,12 @@ std::optional<MotionBridge::Geometry> MotionBridge::geometryOf(const ProjectStat
             g.frameWidth = v.width;
             g.frameHeight = v.height;
             g.pixelAspect = v.sampleAspect.isValid() ? v.sampleAspect.toDouble() : 1.0;
-            g.quarter = ((v.rotationDegrees / 90) % 4 + 4) % 4;
+            // Card 154: a mirrored stream is turned the other way round and flipped (render::transformQuarterTurns).
+            g.quarter = render::transformQuarterTurns(v.rotationDegrees / 90, v.mirrored);
+            g.mirrored = v.mirrored;
         }
     }
-    g.frameScale = scaleToFrameFactor(project, clip, seq.width, seq.height); // P.2: Scale to Frame Size
+    g.frameScale = scaleToFrameFactor(project, clip, seq.width, seq.height, g.canvasPixelAspect); // P.2: Scale to Frame Size
     g.values = edit::motionAt(clip, curveTime);
     g.frameToCanvas = placement(g, g.values);
     for (const EffectInstance& e : clip.effects()) {
@@ -257,11 +239,16 @@ std::optional<MotionBridge::Geometry> MotionBridge::geometryOf(const ProjectStat
 render::Affine2D MotionBridge::placement(const Geometry& g, const edit::MotionValues& v) {
     render::LayerTransform t;
     t.position = {v.positionX, v.positionY};
-    t.scale = v.scale * g.frameScale; // Motion's Scale on top of Scale to Frame Size's fit, as playback draws it
+    // Motion's Scale (Scale Width and Scale Height) on top of Scale to Frame Size's fit, as playback draws it; an odd number of
+    // quarter turns swaps the displayed axes in the stored picture (render::applyDisplayOrientation).
+    t.setScaleXY(v.scaleWidth * g.frameScale, v.scale * g.frameScale);
+    if ((g.quarter & 1) != 0 && t.aspectX != 1.0)
+        t.setScaleXY(t.scale, t.scaleX());
     t.rotationDegrees = v.rotation + 90.0 * g.quarter;
-    t.anchor = toTransformAnchor(v.anchorX, v.anchorY, g.quarter);
+    t.anchor = render::toTransformAnchor({v.anchorX, v.anchorY}, g.quarter);
+    t.mirrorX = g.mirrored;
     return render::layerToCanvas(t, g.frameWidth, g.frameHeight, g.pixelAspect,
-                                 {static_cast<int>(g.canvasWidth), static_cast<int>(g.canvasHeight)});
+                                 {static_cast<int>(g.canvasWidth), static_cast<int>(g.canvasHeight), g.canvasPixelAspect});
 }
 
 void MotionBridge::refresh() {
@@ -419,7 +406,7 @@ QString MotionBridge::clipAt(double fx, double fy) const {
     // Top track first: the picture drawn last is the one under the pointer.
     for (auto it = seq->videoTracks.rbegin(); it != seq->videoTracks.rend(); ++it) {
         const Track* track = it->get();
-        if (!track || !track->enabled)
+        if (!track || !videoTrackShown(*seq, *track))
             continue;
         for (const Clip& c : track->clips) {
             if (!c.enabled || playhead < c.start() || playhead >= c.end())
@@ -623,8 +610,35 @@ void MotionBridge::dragTo(double fx, double fy, bool shift, bool ctrl, bool alt,
         const double den = u.x * u.x + u.y * u.y;
         if (den < 1e-9)
             return;
-        const double k = std::max(0.0, (v.x * u.x + v.y * u.y) / den);
-        change.scale = std::clamp(s.values.scale * k, 0.0, parameterInfo(ParamId::Scale).maxValue);
+        const double maxScale = parameterInfo(ParamId::Scale).maxValue;
+        const double widthNow = s.values.scaleWidth;
+        const double heightNow = s.values.scale;
+        // 0.7 (card #12): the clip's own (displayed) axes on the canvas, for the handles that change one axis.
+        const double turn = s.values.rotation / kDegrees;
+        const render::Vec2 ex{std::cos(turn), std::sin(turn)};
+        const render::Vec2 ey{-std::sin(turn), std::cos(turn)};
+        const bool corner = d.kind.size() == 8; // scale-tl; the sides are scale-t, scale-r, ...
+        // Along the handle's direction from the anchor: both axes by one factor (the aspect kept).
+        const double keepAspect = std::max(0.0, dot(v, u) / den);
+        const auto along = [](double handleAxis, double pointerAxis) {
+            return std::abs(handleAxis) < 1e-9 ? 1.0 : std::max(0.0, pointerAxis / handleAxis);
+        };
+        if (shift || (corner && s.values.uniformScale)) {
+            // Uniform: Shift keeps the aspect of a clip that is not uniform too.
+            change.scale = std::clamp(heightNow * keepAspect, 0.0, maxScale);
+            if (!s.values.uniformScale)
+                change.scaleWidth = std::clamp(widthNow * keepAspect, 0.0, maxScale);
+        } else if (corner) {
+            // Uniform Scale off: a corner moves both axes to the pointer.
+            change.scale = std::clamp(heightNow * along(dot(u, ey), dot(v, ey)), 0.0, maxScale);
+            change.scaleWidth = std::clamp(widthNow * along(dot(u, ex), dot(v, ex)), 0.0, maxScale);
+        } else if (std::abs(dot(u, ex)) >= std::abs(dot(u, ey))) {
+            // A side handle changes one axis, and turns Uniform Scale off (setMotion).
+            change.scaleWidth = std::clamp(widthNow * along(dot(u, ex), dot(v, ex)), 0.0, maxScale);
+        } else {
+            change.uniformScale = false;
+            change.scale = std::clamp(heightNow * along(dot(u, ey), dot(v, ey)), 0.0, maxScale);
+        }
     } else if (d.kind == QLatin1String("rotate")) {
         label = QT_TRANSLATE_NOOP("wabcut::app::MotionBridge", "Rotation");
         const double a0 = std::atan2(d.py - anchorCanvas.y, d.px - anchorCanvas.x);
@@ -638,11 +652,15 @@ void MotionBridge::dragTo(double fx, double fy, bool shift, bool ctrl, bool alt,
         change.rotation = rotation;
     } else if (d.kind == QLatin1String("anchor")) {
         label = QT_TRANSLATE_NOOP("wabcut::app::MotionBridge", "Anchor Point");
-        const Linear l = linearOf(s.values.rotation + 90.0 * s.quarter, s.values.scale * s.frameScale);
+        double stretchX = s.values.scaleWidth * s.frameScale; // 0.7 (card #12): along the stored picture's axes
+        double stretchY = s.values.scale * s.frameScale;
+        if ((s.quarter & 1) != 0)
+            std::swap(stretchX, stretchY);
+        const Linear l = linearOf(s.values.rotation + 90.0 * s.quarter, stretchX, stretchY);
         const auto inverse = invertedOf(l);
         if (!inverse)
             return;
-        const render::Vec2 a = toTransformAnchor(s.values.anchorX, s.values.anchorY, s.quarter);
+        const render::Vec2 a = render::toTransformAnchor({s.values.anchorX, s.values.anchorY}, s.quarter);
         render::Vec2 next{};
         if (alt) {
             // Anchor Point only: the picture moves with the pointer, the anchor stays where it is on the canvas.
@@ -655,7 +673,7 @@ void MotionBridge::dragTo(double fx, double fy, bool shift, bool ctrl, bool alt,
             change.positionX = p.x - s.canvasWidth / 2.0;
             change.positionY = p.y - s.canvasHeight / 2.0;
         }
-        const render::Vec2 model = fromTransformAnchor(next, s.quarter);
+        const render::Vec2 model = render::fromTransformAnchor(next, s.quarter);
         change.anchorX = model.x;
         change.anchorY = model.y;
     } else if (d.key) {

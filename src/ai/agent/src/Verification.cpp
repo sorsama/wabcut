@@ -1,5 +1,6 @@
 #include <wabcut/ai/agent/Verification.h>
 
+#include <wabcut/model/Plural.h>
 #include <wabcut/model/Timecode.h>
 
 #include <algorithm>
@@ -461,7 +462,7 @@ VerificationReport verify(const ProjectState& before, const ProjectState& after,
             problems.push_back("sequence '" + (gone ? gone->name : std::to_string(removed.value)) + "' was removed");
         }
         if (!changes.removedMedia.empty()) {
-            problems.push_back(std::to_string(changes.removedMedia.size()) + " media item(s) removed");
+            problems.push_back(counted(static_cast<std::int64_t>(changes.removedMedia.size()), "media item") + " removed");
         }
         add("others", "Other sequences and media are unchanged", std::move(problems));
         if (!changes.addedSequences.empty()) {
@@ -617,8 +618,8 @@ VerificationReport verify(const ProjectState& before, const ProjectState& after,
                     continue; // was already this short
                 }
                 problems.push_back(ref.label + " '" + clip.name() + "' is " +
-                                   std::to_string(clip.duration().value / std::max<std::int64_t>(1, oneFrame(*a).value)) +
-                                   " frame(s) at " + tc(*a, clip.start()));
+                                   counted(clip.duration().value / std::max<std::int64_t>(1, oneFrame(*a).value), "frame") +
+                                   " at " + tc(*a, clip.start()));
             }
         }
         add("flashFrames", "No clips shorter than " + std::to_string(c.minClipFrames) + " frames", std::move(problems));
@@ -632,7 +633,7 @@ VerificationReport verify(const ProjectState& before, const ProjectState& after,
             const std::size_t beforeGaps = old ? internalGaps(before, *old).size() : 0;
             const auto gapsNow = internalGaps(after, *ref.track);
             if (gapsNow.size() > beforeGaps) {
-                problems.push_back(ref.label + ": " + std::to_string(gapsNow.size() - beforeGaps) + " new gap(s), first at " +
+                problems.push_back(ref.label + ": " + counted(static_cast<std::int64_t>(gapsNow.size() - beforeGaps), "new gap") + ", first at " +
                                    tc(*a, gapsNow.front().start));
             }
         }

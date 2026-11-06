@@ -33,6 +33,7 @@
 //     sequence's end for Append at End (sequenceEndText) and the clip Replace replaces (replaceTarget).
 
 #include "MonitorGuides.h"
+#include "VideoOutput.h"
 
 #include <QObject>
 #include <QPointer>
@@ -43,7 +44,9 @@
 #include <QVariantList>
 #include <QtQml/qqmlregistration.h>
 
+#include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 class QJSEngine;
@@ -79,6 +82,25 @@ class MonitorBridge : public QObject {
     Q_PROPERTY(bool outputVisible READ outputVisible NOTIFY outputChanged FINAL)
     /// The display the output window goes on (-1: the main window's).
     Q_PROPERTY(int outputScreen READ outputScreen NOTIFY outputChanged FINAL)
+    // ---- 0.7 (card 110): the video output to another display (VideoOutput.h; the Video Output dialog) ----
+    /// The display transmit uses, by a key that survives plugging displays in and out (manufacturer, model, serial, else the
+    /// system name; remembered). `transmitScreen` is the index it has now (-1 while it is not connected).
+    Q_PROPERTY(QString transmitDisplayKey READ transmitDisplayKey WRITE setTransmitDisplayKey NOTIFY outputPlanChanged FINAL)
+    /// How the picture sits in the display: "fit" (letterboxed), "fill" (cropped to cover it) or "native" (1:1, centred).
+    Q_PROPERTY(QString outputScaling READ outputScaling WRITE setOutputScaling NOTIFY outputPlanChanged FINAL)
+    /// Title and action safe lines over the output (remembered).
+    Q_PROPERTY(bool outputSafeMargins READ outputSafeMargins WRITE setOutputSafeMargins NOTIFY outputPlanChanged FINAL)
+    /// How late the display shows a picture, in ms (-500..500; remembered): the output plays the program that much ahead.
+    Q_PROPERTY(int outputSyncOffsetMs READ outputSyncOffsetMs WRITE setOutputSyncOffsetMs NOTIFY outputPlanChanged FINAL)
+    /// Windows: while transmitting, switch the display to a refresh rate that suits the sequence's frame rate (24 fps ->
+    /// 48 / 72 / 120 Hz, 29.97 -> 59.94) and put it back afterwards (remembered; off by default).
+    Q_PROPERTY(bool outputMatchRefreshRate READ outputMatchRefreshRate WRITE setOutputMatchRefreshRate NOTIFY outputPlanChanged FINAL)
+    /// What the output does now: { state ("off" | "noDisplay" | "missing" | "active"), displayKey, displayLabel, width,
+    /// height, refreshHz (0: unknown), rate (the sequence's frames per second), cadence ("even" | "nearEven" | "pulldown" |
+    /// "uneven" | "unknown"), ratio (refreshes per frame), multiple (even: how many), canSwitch (the platform can switch
+    /// refresh rates), switchTo ({ width, height, refreshHz }, or {}), switched (the display is at that mode now),
+    /// syncOffsetMs }.
+    Q_PROPERTY(QVariantMap outputPlan READ outputPlan NOTIFY outputPlanChanged FINAL)
 
     // ---- Rulers and guides (remembered) ----
     Q_PROPERTY(bool showRulers READ showRulers WRITE setShowRulers NOTIFY viewChanged FINAL)
@@ -102,9 +124,17 @@ class MonitorBridge : public QObject {
                    viewChanged FINAL)
     Q_PROPERTY(bool sourceTransparencyGrid READ sourceTransparencyGrid WRITE setSourceTransparencyGrid NOTIFY
                    viewChanged FINAL)
+    /// 0.7 (VR / 360 video): the VR viewer on the Program and the Source Monitor (not remembered: a person looks around on
+    /// purpose). It shows only while the monitor's picture is VR (a VR sequence, a VR item in the Source Monitor).
+    Q_PROPERTY(bool programVrView READ programVrView WRITE setProgramVrView NOTIFY viewChanged FINAL)
+    Q_PROPERTY(bool sourceVrView READ sourceVrView WRITE setSourceVrView NOTIFY viewChanged FINAL)
     /// Show Dropped Frame Indicator, Overlays, Show Audio Time Units (remembered; off by default).
     Q_PROPERTY(bool droppedFrameIndicator READ droppedFrameIndicator WRITE setDroppedFrameIndicator NOTIFY viewChanged FINAL)
     Q_PROPERTY(bool overlays READ overlays WRITE setOverlays NOTIFY viewChanged FINAL)
+    /// 0.7: composition guides over the Program Monitor's picture (remembered), a mask of kGuideThirds (1: the rule of
+    /// thirds), kGuideGolden (2: the golden ratio's lines at 38.2 % and 61.8 %) and kGuideDiagonals (4: the frame's two
+    /// diagonals). Monitor only: never in exports or Export Frame.
+    Q_PROPERTY(int compositionGuides READ compositionGuides WRITE setCompositionGuides NOTIFY viewChanged FINAL)
     Q_PROPERTY(bool audioTimeUnits READ audioTimeUnits WRITE setAudioTimeUnits NOTIFY viewChanged FINAL)
     /// The playhead as the Program Monitor's readout shows it: a timecode, or hh:mm:ss:samples with audio time units.
     Q_PROPERTY(QString programTimeText READ programTimeText NOTIFY timeChanged FINAL)
@@ -136,7 +166,7 @@ public:
     void setFullScreen(bool on);
     bool transmit() const { return m_transmit; }
     void setTransmit(bool on);
-    int transmitScreen() const { return m_transmitScreen; }
+    int transmitScreen() const; ///< the chosen display's place in `screens` now (0.7: found by its key; -1: not connected)
     void setTransmitScreen(int index);
     bool disableTransmitInBackground() const { return m_disableInBackground; }
     void setDisableTransmitInBackground(bool on);
@@ -149,6 +179,33 @@ public:
     Q_INVOKABLE void placeOutputWindow(QQuickWindow* output, QQuickWindow* mainWindow) const;
     /// Tests: whether output windows may appear on screen (they never do in a test run).
     void setPresentWindows(bool present);
+
+    // ---- 0.7 (card 110) ----
+    QString transmitDisplayKey() const { return QString::fromStdString(m_displayKey); }
+    void setTransmitDisplayKey(const QString& key);
+    QString outputScaling() const { return QString::fromStdString(videoout::toString(m_scaling)); }
+    void setOutputScaling(const QString& scaling);
+    bool outputSafeMargins() const { return m_safeMargins; }
+    void setOutputSafeMargins(bool on);
+    int outputSyncOffsetMs() const { return m_syncOffsetMs; }
+    void setOutputSyncOffsetMs(int ms);
+    bool outputMatchRefreshRate() const { return m_matchRefresh; }
+    void setOutputMatchRefreshRate(bool on);
+    QVariantMap outputPlan() const;
+    /// Where the picture goes in a window of this size on the output display, for the saved scaling: { x, y, width, height }
+    /// (Fill reaches past the window; Native is the frame's own pixels). The output window sizes its Program Monitor to it.
+    Q_INVOKABLE QVariantMap placeOutputPicture(double windowWidth, double windowHeight, double devicePixelRatio = 1.0) const;
+    /// The displays and the modes of one, and the platform's switch: the system's by default; tests set their own and call
+    /// refreshDisplays() to say they changed (the screens the output window is placed on are Qt's own either way).
+    using DisplaySource = std::function<std::vector<videoout::DisplayInfo>()>;
+    using ModeSource = std::function<std::vector<videoout::DisplayMode>(const videoout::DisplayInfo&)>;
+    using ModeSwitch = std::function<bool(const videoout::DisplayInfo&, const videoout::DisplayMode*)>; // null: put it back
+    void setDisplaySource(DisplaySource source);
+    void setModeSource(ModeSource source);
+    void setModeSwitch(ModeSwitch swap);
+    void refreshDisplays();
+    /// The display Match Refresh Rate switched, "" while none is (tests).
+    QString switchedDisplayKey() const { return QString::fromStdString(m_switchedKey); }
 
     bool showRulers() const { return m_showRulers; }
     void setShowRulers(bool on);
@@ -164,11 +221,20 @@ public:
     void setDroppedFrameIndicator(bool on);
     bool overlays() const { return m_overlays; }
     void setOverlays(bool on);
+    static constexpr int kGuideThirds = 1;
+    static constexpr int kGuideGolden = 2;
+    static constexpr int kGuideDiagonals = 4;
+    int compositionGuides() const { return m_compositionGuides; }
+    void setCompositionGuides(int mask);
     bool audioTimeUnits() const { return m_audioUnits; }
     void setAudioTimeUnits(bool on);
     QString programTimeText() const;
     QVariantMap overlayText() const;
     static QVariantList zoomLevels();
+    bool programVrView() const { return m_programVr; }
+    void setProgramVrView(bool on);
+    bool sourceVrView() const { return m_sourceVr; }
+    void setSourceVrView(bool on);
     bool programTransparencyGrid() const { return m_programGrid; }
     void setProgramTransparencyGrid(bool on);
     bool sourceTransparencyGrid() const { return m_sourceGrid; }
@@ -194,6 +260,8 @@ public:
     Q_INVOKABLE void editGuide(int index) { emit dialogRequested(QStringLiteral("editGuide"), index); }
     /// The camera buttons: the host opens Export Frame for the Program (`source` false) or the Source Monitor.
     Q_INVOKABLE void requestExportFrame(bool source) { emit dialogRequested(QStringLiteral("exportFrame"), source ? 1 : 0); }
+    /// 0.7 (card 110): Video Output Settings... (the Program Monitor's menu).
+    Q_INVOKABLE void requestVideoOutputSettings() { emit dialogRequested(QStringLiteral("videoOutput"), 0); }
     Q_INVOKABLE void clearGuides();
     /// Save Guides as Template: "" or why not (an empty name, no guides; an existing name is replaced).
     Q_INVOKABLE QString saveGuidesAsTemplate(const QString& name);
@@ -213,6 +281,9 @@ public:
     /// step). Returns the file written, or "" (the reason in `message`).
     Q_INVOKABLE QString exportFrame(bool source, const QString& name, const QString& format, const QUrl& folder,
                                     bool importIntoProject, const QVariantMap& options = {});
+    /// 0.7: Copy Frame: the same frame, at the sequence's size, as a picture on the clipboard (nothing is saved; no dialog).
+    /// True when copied; else false with the reason in `message`. On success `message` reads "Frame copied (W × H)".
+    Q_INVOKABLE bool copyFrame(bool source);
 
     // ---- P1 (#23, stream 1C): Export Frame sizes and Export Frames at Markers ----
     // exportFrame's `options`: { size: "sequence" | "thumbnail" (1280 x 720) | "vertical" (1080 x 1920) | "custom",
@@ -253,9 +324,16 @@ public:
     /// Replace: the clip under the playhead on the topmost targeted video track that has one there, else on the
     /// topmost video track that has one ("" when there is none).
     Q_INVOKABLE QString replaceTarget() const;
+    /// 0.7 (card 109), Insert Before / Insert After Clip at Playhead: the timecode where the clip under the playhead starts
+    /// (`after` false) or ends (`after` true) - the clip on the topmost targeted video track that has one there, else on a
+    /// targeted audio track, else the topmost video, else the lowest audio track; locked tracks are skipped. "" when no
+    /// track has a clip under the playhead.
+    Q_INVOKABLE QString clipEdgeText(bool after) const;
 
 signals:
     void outputChanged();
+    /// 0.7 (card 110): anything the output plan depends on changed (its settings, the displays, the sequence's rate or size).
+    void outputPlanChanged();
     void screensChanged();
     void viewChanged();
     void guidesChanged();
@@ -273,6 +351,17 @@ signals:
 private:
     bool nudge(double dx, double dy);
     bool transmitScreenValid() const;
+    /// outputChanged, and the plan with it.
+    void notifyOutput();
+    std::vector<videoout::DisplayInfo> displays() const;
+    videoout::Timing timing() const;
+    videoout::Settings outputSettings() const;
+    videoout::Plan plan() const;
+    /// Switches the chosen display to the refresh rate that suits the sequence while the output shows (Match Refresh Rate),
+    /// and puts it back when it stops, the display goes or the setting is turned off.
+    void syncDisplayMode();
+    /// Gives the mirror the sync offset (PlaybackBridge: a display's own latency on top of the monitor's).
+    void syncMirrorLatency();
     void storeGuides();
     void storeTemplates();
     /// Hands the snapping setting and the shown guides to ProgramMotion.
@@ -286,7 +375,19 @@ private:
     QPointer<MediaReadinessBridge> m_readiness;
     bool m_fullScreen = false;
     bool m_transmit = false;
-    int m_transmitScreen = -1;
+    int m_transmitScreen = -1; ///< the saved index of the old settings; the display key replaces it (see the constructor)
+    // 0.7 (card 110)
+    std::string m_displayKey;
+    videoout::Scaling m_scaling = videoout::Scaling::Fit;
+    bool m_safeMargins = false;
+    int m_syncOffsetMs = 0;
+    bool m_matchRefresh = false;
+    DisplaySource m_displaySource;
+    ModeSource m_modeSource;
+    ModeSwitch m_modeSwitch;
+    std::string m_switchedKey;  ///< the display whose mode was switched ("" none)
+    videoout::DisplayInfo m_switchedDisplay;
+    videoout::Timing m_lastTiming; ///< the sequence's timing the plan was last announced for
     bool m_disableInBackground = true;
     bool m_presentWindows = true;
     bool m_foreground = true;
@@ -299,8 +400,11 @@ private:
     bool m_lockGuides = false;
     bool m_snap = true;
     bool m_programGrid = false;
+    bool m_programVr = false; // 0.7
+    bool m_sourceVr = false;
     bool m_droppedIndicator = false;
     bool m_overlays = false;
+    int m_compositionGuides = 0;
     bool m_audioUnits = false;
     bool m_sourceGrid = false;
     std::vector<guides::Guide> m_guides;

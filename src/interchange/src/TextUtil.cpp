@@ -32,6 +32,10 @@ std::string_view trim(std::string_view text) {
     return text;
 }
 
+std::string_view withoutUtf8Bom(std::string_view text) {
+    return text.starts_with("\xEF\xBB\xBF") ? text.substr(3) : text;
+}
+
 bool iequals(std::string_view a, std::string_view b) {
     return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(),
                                               [](char x, char y) { return lowerAscii(x) == lowerAscii(y); });

@@ -1,6 +1,7 @@
 #include "TextUtil.h"
 #include "TimeMath.h"
 
+#include <wabcut/model/Plural.h>
 #include <wabcut/interchange/ImportSummary.h>
 
 #include <algorithm>
@@ -108,8 +109,8 @@ std::string formatSummary(const ImportResult& result, const SummaryOptions& opti
     std::string out;
     const Bin* bin = project.findBin(result.bin);
     out += "Imported " + std::string(displayName(result.format)) + " into bin '" +
-           (bin ? bin->name : std::string()) + "': " + std::to_string(result.sequences.size()) +
-           " sequence(s), " + std::to_string(result.media.size()) + " media item(s)\n";
+           (bin ? bin->name : std::string()) + "': " + counted(static_cast<std::int64_t>(result.sequences.size()), "sequence") +
+           ", " + counted(static_cast<std::int64_t>(result.media.size()), "media item") + "\n";
 
     for (const SequenceId id : result.sequences) {
         const Sequence* seq = project.findSequence(id);

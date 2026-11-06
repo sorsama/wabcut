@@ -42,7 +42,7 @@ Item {
 
     readonly property var looks: ["builtin:teal-orange", "builtin:warm-film", "builtin:cool-night", "builtin:bleach-bypass",
                                   "builtin:mono-silver"]
-    readonly property var standards: ["ebuR128", "atscA85", "custom"]
+    readonly property var standards: ["ebuR128", "atscA85", "custom", "streaming"]
     readonly property var xmpModes: ["none", "embed", "sidecar"]
 
     function merged(defaults, given) {
@@ -475,10 +475,21 @@ Item {
                 PillTabs {
                     Layout.fillWidth: true
                     compact: true
-                    model: [qsTr("EBU R 128"), qsTr("ATSC A/85"), qsTr("Custom")]
+                    model: [qsTr("EBU R 128"), qsTr("ATSC A/85"), qsTr("Custom"), qsTr("Streaming")]
                     currentIndex: Math.max(0, root.standards.indexOf(root.fx.loudness.standard))
                     Accessible.name: qsTr("Loudness Standard")
                     onActivated: index => root.setEffect("loudness", "standard", root.standards[index])
+                }
+                // 0.7 (card #2): the level the streaming sites play at; the YouTube, Shorts and Twitch tiles offer it.
+                Text {
+                    objectName: "exportLoudnessStreamingNote"
+                    visible: root.fx.loudness.standard === "streaming"
+                    Layout.fillWidth: true
+                    text: qsTr("Streaming platforms (-14 LUFS): YouTube, Shorts and Twitch play at about this level, so a long video and its Shorts match.")
+                    wrapMode: Text.WordWrap
+                    color: Theme.textTertiary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textXs
                 }
                 Flow {
                     Layout.fillWidth: true
@@ -486,7 +497,8 @@ Item {
                     NumberField {
                         width: Theme.space(26)
                         enabled: root.fx.loudness.standard === "custom"
-                        value: root.fx.loudness.standard === "ebuR128" ? -23 : root.fx.loudness.standard === "atscA85" ? -24 : root.fx.loudness.target
+                        value: root.fx.loudness.standard === "ebuR128" ? -23 : root.fx.loudness.standard === "atscA85" ? -24
+                               : root.fx.loudness.standard === "streaming" ? -14 : root.fx.loudness.target
                         from: -40
                         to: -5
                         decimals: 1
@@ -509,7 +521,8 @@ Item {
                     NumberField {
                         width: Theme.space(26)
                         enabled: root.fx.loudness.standard === "custom"
-                        value: root.fx.loudness.standard === "ebuR128" ? -1 : root.fx.loudness.standard === "atscA85" ? -2 : root.fx.loudness.maxTruePeak
+                        value: root.fx.loudness.standard === "ebuR128" ? -1 : root.fx.loudness.standard === "atscA85" ? -2
+                               : root.fx.loudness.standard === "streaming" ? -1 : root.fx.loudness.maxTruePeak
                         from: -12
                         to: 0
                         decimals: 1
@@ -611,7 +624,10 @@ Item {
             Toggle {
                 objectName: "exportSmartRender"
                 visible: root.hasVideo && (root.summary.smartRenderAvailable ?? false)
-                text: qsTr("Smart Render (copy untouched ProRes / DNx frames)")
+                // 0.7 (card 049): H.264 and HEVC copy whole GOPs of untouched source clips whose encoding matches this export.
+                text: root.summary.smartRenderLongGop ?? false
+                      ? qsTr("Smart Render (copy untouched GOPs of the sources, no re-encode)")
+                      : qsTr("Smart Render (copy untouched ProRes / DNx frames)")
                 checked: root.renderOptions.smartRender
                 onToggled: root.setRender("smartRender", checked)
             }

@@ -140,9 +140,10 @@ QString ExportController::keptStateOf(const ExportJobModel::Row& row) {
 
 void ExportController::keepJob(const QString& jobId, const ex::ExportRequest& request, const QString& presetName,
                                const QString& credentials, const QString& origin) {
-    // A restored job's entry is made by restoreQueue() / retryKept() (it keeps its snapshot file); Ingest transcodes
-    // import their file when they finish, which a restart cannot do: they are not kept.
-    if (m_restoring || m_queueFolder.empty() || origin == QLatin1String("transcode") || !request.snapshot)
+    // A restored job's entry is made by restoreQueue() / retryKept() (it keeps its snapshot file); Ingest transcodes and
+    // Render and Replace renders (0.7) take their file over when they finish, which a restart cannot do: they are not kept.
+    if (m_restoring || m_queueFolder.empty() || origin == QLatin1String("transcode") || origin == QLatin1String("renderReplace") ||
+        !request.snapshot)
         return;
     auto kept = std::make_shared<KeptJob>();
     kept->snapshot = request.snapshot;
@@ -167,10 +168,26 @@ void ExportController::schedulePersist() {
     });
 }
 
+std::vector<ExportController::PersistRow> ExportController::persistRowsNow() const {
+    std::vector<PersistRow> rows;
+    rows.reserve(static_cast<std::size_t>(m_jobs->rowCount()));
+    for (const ExportJobModel::Row& row : m_jobs->rows())
+        rows.push_back({row.jobId, keptStateOf(row), row.sequenceId, row.presetId, row.overrides});
+    return rows;
+}
+
+void ExportController::onJobsChanged() {
+    // Progress, speed and ETA change a row ten times a second; none of it is in queue.json (card #171).
+    if (!m_queueFolder.empty() && persistRowsNow() != m_persistRows)
+        schedulePersist();
+}
+
 void ExportController::persistQueue() {
     m_persistPending = false;
     if (m_queueFolder.empty())
         return;
+    ++m_persistRuns;
+    m_persistRows = persistRowsNow();
     const QDir folder(fromPath(m_queueFolder));
     QJsonArray entries;
     std::set<QString> referenced;
@@ -246,7 +263,9 @@ void ExportController::persistQueue() {
     }
     const QJsonObject root{{QStringLiteral("version"), kQueueVersion}, {QStringLiteral("jobs"), entries}};
     const QString text = QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented));
-    if (text != m_persistedText) {
+    if (text == m_persistedText)
+        return; // nothing the queue holds changed: no write, and no sweep of the folder (card #171)
+    {
         const QByteArray utf8 = text.toUtf8();
         if (const auto wrote = io::writeFileAtomically(toPath(folder.filePath(kQueueFile)),
                                                        std::string_view(utf8.constData(), static_cast<std::size_t>(utf8.size())));
@@ -417,7 +436,7 @@ QVariantMap ExportController::restoreQueue() {
     // From now on every change of the queue is kept.
     connect(m_jobs, &QAbstractItemModel::rowsInserted, this, &ExportController::schedulePersist);
     connect(m_jobs, &QAbstractItemModel::rowsRemoved, this, &ExportController::schedulePersist);
-    connect(m_jobs, &QAbstractItemModel::dataChanged, this, &ExportController::schedulePersist);
+    connect(m_jobs, &QAbstractItemModel::dataChanged, this, &ExportController::onJobsChanged);
     persistQueue(); // the restored jobs under their new ids; files nothing names any more go
     emit keepsQueueChanged();
     result[QStringLiteral("count")] = held + interrupted + done;

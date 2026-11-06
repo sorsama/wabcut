@@ -163,6 +163,10 @@ std::vector<FoundExtension> findExtensions(const fs::path& root, ExtensionScope 
     for (fs::directory_iterator it(root, ec), end; !ec && it != end && folders.size() < kMaxFoundExtensions;
          it.increment(ec)) {
         if (it->symlink_status(ec).type() == fs::file_type::directory) {
+            const std::string name = pathToUtf8(it->path().filename());
+            if (name.ends_with(kStagingSuffix) || name.ends_with(kReplacedSuffix)) {
+                continue; // an install in progress (or one a crash cut short): not an extension of its own
+            }
             folders.push_back(it->path());
         }
     }

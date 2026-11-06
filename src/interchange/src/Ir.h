@@ -221,12 +221,20 @@ struct IrSequence {
     bool dropFrame = false;
     std::int32_t width = 1920;
     std::int32_t height = 1080;
+    /// 0.7 (#145): the pixel aspect ratio of the frame (Sequence::pixelAspect; 1/1 square). Written by FCP7 export (its
+    /// closed list of names); the other formats and the importers do not carry it.
+    Rate pixelAspect{1, 1};
     Rate audioRate = kRate48kHz;
     std::vector<IrTrack> videoTracks; // V1..Vn
     std::vector<IrTrack> audioTracks; // A1..An
     std::vector<IrMarker> markers;
     std::optional<Ticks> markIn;
     std::optional<Ticks> markOut;
+    /// 0.7 (card 046): Premiere's work area (Sequence::workArea), In and Out in ticks of the sequence's time. FCP7 XML
+    /// carries it in Premiere's own MZ.WorkInPoint / MZ.WorkOutPoint attributes; FCPXML and OTIO in Wabcut metadata
+    /// other editors ignore.
+    std::optional<Ticks> workIn;
+    std::optional<Ticks> workOut;
     /// Explicit duration, when the format has one (it can end in a trailing gap).
     std::optional<Ticks> duration;
     /// The timecode of the first frame (X.1: Sequence::startTimecode), when the format says.

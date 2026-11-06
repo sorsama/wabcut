@@ -3,6 +3,7 @@
 #include <wabcut/model/Nesting.h>
 
 #include <wabcut/model/Auditions.h>
+#include <wabcut/model/ProjectOps.h>
 #include "SequenceEditor.h"
 
 #include <algorithm>
@@ -248,6 +249,9 @@ std::optional<std::string> multicamProblem(const Sequence& sequence) {
             if (!used.insert(id.value).second) {
                 return what + " shares a track with another angle";
             }
+        }
+        if (a.autoOffset && (a.autoOffset->value < 0 || *a.autoOffset > kMaxMulticamOffset)) {
+            return what + " has an auto-sync offset outside 0 to 24 hours";
         }
         if (a.offset.value < 0 || a.offset > kMaxMulticamOffset) {
             return what + " has a sync offset outside 0 to 24 hours";
@@ -595,7 +599,9 @@ std::expected<NestResult, Error> nestClips(const ProjectState& state, SequenceId
     ProjectState next = state;
     auto nested = std::make_shared<Sequence>();
     nested->id = next.ids.allocate<SequenceId>();
-    nested->bin = parent.bin;
+    // 0.7 (card 112): in the bin chosen for nests, else beside the sequence it comes from.
+    const BinId nestBin = nestBinOf(state);
+    nested->bin = nestBin.isValid() ? nestBin : parent.bin;
     nested->name = name.empty() ? newNestedName(state, "Nested Sequence") : std::move(name);
     nested->frameRate = parent.frameRate;
     nested->width = parent.width;
@@ -1143,7 +1149,16 @@ EditOutcome setMulticamSync(const ProjectState& state, SequenceId multicamId, st
         }
     }
     MulticamInfo& info = *ed.header().multicam;
-    info.angles[angle].offset = offset;
+    // 0.7 (card 009): the offset the sync method measured is remembered while the angle is off it, and forgotten when the
+    // angle is back on it. A source that was already manual has no measured offset: the one before the first nudge counts.
+    MulticamAngle& moved = info.angles[angle];
+    if (!moved.autoOffset && offset != moved.offset) {
+        moved.autoOffset = moved.offset;
+    }
+    moved.offset = offset;
+    if (moved.autoOffset && *moved.autoOffset == offset) {
+        moved.autoOffset.reset();
+    }
     info.sync = MulticamSync::Manual;
     return ed.finish();
 }

@@ -153,6 +153,59 @@ EditOutcome replaceClips(const ProjectState& state, SequenceId sequenceId, std::
 
 // --- Replace Footage, Make Offline ----------------------------------------------------------------------------------
 
+namespace {
+
+struct FootageProblem {
+    bool missingStream = false; ///< a stream a clip plays is not in the file (else: a clip runs past its end)
+    std::string text;           ///< why replacing the footage is refused
+    std::string warning;        ///< for a clip past the end: how Reload Footage words it
+};
+
+/// What the clips of `media` (and of its subclips) find wrong in the file the item now holds, in sequence order: a stream
+/// a clip or an audition take plays that the file lacks, and a clip that would play past the end of the file.
+std::vector<FootageProblem> footageProblems(const ProjectState& next, MediaId media) {
+    std::vector<FootageProblem> out;
+    const auto streamName = [](const StreamRef& s) {
+        return std::string(s.kind == StreamKind::Video ? "video" : "audio") + " stream " + std::to_string(s.index + 1);
+    };
+    for (const SequencePtr& s : next.sequences) {
+        s->forEachTrack([&](const Track& t) {
+            for (const Clip& c : t.clips) {
+                // 0.6 (card #74): an audition's other takes must find their streams too (they may be short: no bounds).
+                const Audition* audition = c.audition();
+                for (std::size_t k = 0; audition && k < audition->others.size(); ++k) {
+                    const AuditionTake& take = audition->others[k];
+                    const MediaItem* item = take.media.isValid() ? next.findMedia(take.media) : nullptr;
+                    if (item && (item->id == media || (item->subclip && item->subclip->master == media)) &&
+                        !item->hasStream(take.stream)) {
+                        const std::string why = "the new file has no " + streamName(take.stream) + " for take '" + take.name() +
+                                                "' of " + clipLabel(c) + " in '" + s->name + "'";
+                        out.push_back({true, why, why});
+                    }
+                }
+                if (!c.media.isValid()) {
+                    continue;
+                }
+                const MediaItem* item = next.findMedia(c.media);
+                if (!item || (item->id != media && !(item->subclip && item->subclip->master == media))) {
+                    continue;
+                }
+                if (!item->hasStream(c.stream)) {
+                    const std::string why =
+                        "the new file has no " + streamName(c.stream) + " for " + clipLabel(c) + " in '" + s->name + "'";
+                    out.push_back({true, why, why});
+                } else if (const auto bounds = clipBoundsProblem(next, c)) {
+                    out.push_back({false, clipLabel(c) + " in '" + s->name + "' " + *bounds + " in the new file",
+                                   clipLabel(c) + " in '" + s->name + "' plays past the end of the new file"});
+                }
+            }
+        });
+    }
+    return out;
+}
+
+} // namespace
+
 std::expected<ProjectState, Error> replaceFootage(const ProjectState& state, MediaId media, const MediaItem& replacement,
                                                   bool rename) {
     const MediaItem* original = state.findMedia(media);
@@ -191,43 +244,60 @@ std::expected<ProjectState, Error> replaceFootage(const ProjectState& state, Med
         }
     }
     // Every clip of it must still find its stream and its media.
-    for (const SequencePtr& s : next.sequences) {
-        std::optional<std::string> problem;
-        s->forEachTrack([&](const Track& t) {
-            for (const Clip& c : t.clips) {
-                // 0.6 (card #74): an audition's other takes must find their streams too (they may be short: no bounds).
-                const Audition* audition = c.audition();
-                for (std::size_t k = 0; audition && k < audition->others.size(); ++k) {
-                    const AuditionTake& take = audition->others[k];
-                    const MediaItem* item = take.media.isValid() ? next.findMedia(take.media) : nullptr;
-                    if (!problem && item && (item->id == media || (item->subclip && item->subclip->master == media)) &&
-                        !item->hasStream(take.stream)) {
-                        problem = "the new file has no " +
-                                  std::string(take.stream.kind == StreamKind::Video ? "video" : "audio") + " stream " +
-                                  std::to_string(take.stream.index + 1) + " for take '" + take.name() + "' of " +
-                                  clipLabel(c) + " in '" + s->name + "'";
-                    }
-                }
-                if (problem || !c.media.isValid()) {
-                    continue;
-                }
-                const MediaItem* item = next.findMedia(c.media);
-                if (!item || (item->id != media && !(item->subclip && item->subclip->master == media))) {
-                    continue;
-                }
-                if (!item->hasStream(c.stream)) {
-                    problem = "the new file has no " + std::string(c.stream.kind == StreamKind::Video ? "video" : "audio") +
-                              " stream " + std::to_string(c.stream.index + 1) + " for " + clipLabel(c) + " in '" + s->name + "'";
-                } else if (const auto bounds = clipBoundsProblem(next, c)) {
-                    problem = clipLabel(c) + " in '" + s->name + "' " + *bounds + " in the new file";
-                }
-            }
-        });
-        if (problem) {
-            return std::unexpected(invalidArgument(*problem));
-        }
+    const auto problems = footageProblems(next, media);
+    if (!problems.empty()) {
+        return std::unexpected(invalidArgument(problems.front().text));
     }
     return next;
+}
+
+std::expected<ReloadOutcome, Error> reloadFootage(const ProjectState& state, std::span<const ReloadedFootage> files) {
+    ReloadOutcome out;
+    out.state = state;
+    std::vector<MediaId> touched;
+    for (const ReloadedFootage& r : files) {
+        MediaPtr* slot = mediaSlot(out.state, r.media);
+        if (!slot) {
+            return std::unexpected(notFound("media " + std::to_string(r.media.value) + " does not exist"));
+        }
+        const MediaItem& original = **slot;
+        if (original.isGenerator()) {
+            return std::unexpected(invalidArgument("'" + original.name + "' is generated: it has no file to reload"));
+        }
+        if (r.file.isGenerator() || r.file.locator.path.empty()) {
+            return std::unexpected(invalidArgument("reload '" + original.name + "' with a media file"));
+        }
+        const bool fingerprintChanged = !r.file.locator.fingerprint.sameContentAs(original.locator.fingerprint);
+        const bool wasOffline = original.locator.offline || original.madeOffline;
+        // The path the probe saw is only informational (spelled by whoever asked): it does not count as a change.
+        MediaInfo probed = r.file.info;
+        probed.path = original.info.path;
+        if (!fingerprintChanged && !wasOffline && probed == original.info) {
+            continue; // nothing changed on disk
+        }
+        auto item = std::make_shared<MediaItem>(original);
+        item->locator.fingerprint = r.file.locator.fingerprint;
+        item->locator.offline = false;
+        item->madeOffline = false; // read from the disk again: it is linked
+        item->info = std::move(probed);
+        if (fingerprintChanged) {
+            item->locator.proxy.reset(); // made of the old file
+        }
+        *slot = std::move(item);
+        touched.push_back(r.media);
+    }
+    // Every clip must still find its stream in the new file; one that now runs past its end is only reported: the media
+    // is clamped where it is used, as after a relink to a shorter file.
+    for (const MediaId id : touched) {
+        for (const FootageProblem& p : footageProblems(out.state, id)) {
+            if (p.missingStream) {
+                return std::unexpected(invalidArgument(p.text));
+            }
+            out.warnings.push_back(p.warning);
+        }
+    }
+    out.reloaded = std::move(touched);
+    return out;
 }
 
 std::expected<ProjectState, Error> makeOffline(const ProjectState& state, std::span<const MediaId> media) {
@@ -338,6 +408,7 @@ std::expected<Created<SequenceId>, Error> makeSubsequence(const ProjectState& st
         seq->audioDisplay = parent->audioDisplay;
         seq->masterFormat = parent->masterFormat;
         seq->rippleMarkers = parent->rippleMarkers; // 0.4: Ripple Sequence Markers
+        seq->rippleTrackKeyframes = parent->rippleTrackKeyframes; // 0.7 (card 120)
         for (const TrackKind kind : {TrackKind::Video, TrackKind::Audio}) {
             auto& mine = kind == TrackKind::Video ? seq->videoTracks : seq->audioTracks;
             const auto& theirs = parent->tracks(kind);
@@ -460,6 +531,96 @@ bool isThroughEdit(const Clip& left, const Clip& right) {
         return right.sourceIn == left.sourceOut(); // curve time on a remapped clip
     }
     return right.sourceOut() == left.sourceIn; // reversed: the right piece shows the frames before
+}
+
+EditOutcome removeTransitions(const ProjectState& state, SequenceId sequenceId, std::span<const ClipId> clips) {
+    const auto seq = detail::findSequence(state, sequenceId);
+    if (!seq) {
+        return std::unexpected(seq.error());
+    }
+    const Sequence& s = **seq;
+    // The clips as listed, wherever they are (a locked track's clips are found; its transitions are left alone below).
+    std::set<std::uint64_t> chosen;
+    if (!clips.empty()) {
+        std::set<std::uint64_t> wanted;
+        for (const ClipId id : clips) {
+            wanted.insert(id.value);
+        }
+        s.forEachTrack([&](const Track& t) {
+            for (const Clip& c : t.clips) {
+                if (wanted.erase(c.id.value) > 0) {
+                    chosen.insert(c.id.value);
+                }
+            }
+        });
+        if (!wanted.empty()) {
+            return std::unexpected(notFound("clip " + std::to_string(*wanted.begin()) + " is not in this sequence"));
+        }
+    }
+    const auto belongsToChosen = [&](const Transition& tr) {
+        return clips.empty() || chosen.contains(tr.outgoing.value) || chosen.contains(tr.incoming.value);
+    };
+    SequenceEditor ed(state, s);
+    std::size_t removed = 0;
+    std::size_t onLockedTracks = 0;
+    for (const TrackId id : ed.trackIds()) {
+        const Track& t = ed.track(id);
+        const auto count = static_cast<std::size_t>(std::count_if(t.transitions.begin(), t.transitions.end(), belongsToChosen));
+        if (count == 0) {
+            continue;
+        }
+        if (t.locked) {
+            onLockedTracks += count;
+            continue;
+        }
+        std::erase_if(ed.mutableTrack(id).transitions, belongsToChosen);
+        removed += count;
+    }
+    if (removed == 0) {
+        return std::unexpected(invalidArgument(onLockedTracks > 0   ? "the transitions are on locked tracks"
+                                               : clips.empty()      ? "the sequence has no transitions"
+                                                                    : "the clips have no transitions"));
+    }
+    return ed.finish();
+}
+
+std::vector<ClipId> disabledClips(const Sequence& sequence) {
+    std::vector<ClipId> out;
+    sequence.forEachTrack([&](const Track& t) {
+        for (const Clip& c : t.clips) {
+            if (!c.enabled) {
+                out.push_back(c.id);
+            }
+        }
+    });
+    return out;
+}
+
+EditOutcome removeDisabledClips(const ProjectState& state, SequenceId sequenceId, bool ripple) {
+    const auto seq = detail::findSequence(state, sequenceId);
+    if (!seq) {
+        return std::unexpected(seq.error());
+    }
+    std::vector<ClipId> ids;
+    bool onLockedTracks = false;
+    (*seq)->forEachTrack([&](const Track& t) {
+        for (const Clip& c : t.clips) {
+            if (c.enabled) {
+                continue;
+            }
+            if (t.locked) {
+                onLockedTracks = true;
+            } else {
+                ids.push_back(c.id);
+            }
+        }
+    });
+    if (ids.empty()) {
+        return std::unexpected(invalidArgument(onLockedTracks ? "the disabled clips are on locked tracks" : "there are no disabled clips"));
+    }
+    // Each clip on its own: a disabled picture's enabled sound (or the other way round) stays.
+    return ripple ? rippleDeleteClips(state, sequenceId, ids, LinkMode::IgnoreLinks)
+                  : deleteClips(state, sequenceId, ids, LinkMode::IgnoreLinks);
 }
 
 EditOutcome joinThroughEdits(const ProjectState& state, SequenceId sequenceId, std::span<const ClipId> clips,

@@ -52,6 +52,8 @@ add_library(wabcut_interchange STATIC
     src/InterchangeEffects.cpp
     src/InterchangeEffects.h
     src/LottieImporter.cpp
+    src/DotLottie.cpp
+    src/OGraf.cpp
     src/MogrtImporter.cpp
     src/Importers.h
     src/Ir.h

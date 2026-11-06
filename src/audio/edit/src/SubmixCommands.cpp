@@ -207,7 +207,7 @@ void registerSubmixCommands(command::CommandRegistry& registry) {
          "format is fixed once made. Use it to put one reverb or compressor on several tracks (all the voices, the music). "
          "sequence.removeTrack deletes one (its tracks go to the Mix). One undo step.",
          Capability::EditSequence,
-         withSequence({{"format", schema::enumeration({"mono", "stereo", "5.1", "adaptive"}, "The submix's channels (default stereo).")},
+         withSequence({{"format", schema::enumeration({"mono", "stereo", "5.1", "7.1", "adaptive"}, "The submix's channels (default stereo).")},
                        {"name", schema::string("A name (default \"Submix n\").")}}),
          Json{{"format", "stereo"}, {"name", "Voices"}}, {}, addSubmixTrack});
     add(registry,

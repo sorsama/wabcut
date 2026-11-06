@@ -391,6 +391,51 @@ TEST_CASE("Stream display rotation is applied before the clip's motion", "[playb
     CHECK(layers[0].transform.anchor.y == Approx(-5.0));
 }
 
+TEST_CASE("A mirrored stream is flipped as well as turned before the clip's motion (card 154)", "[playback][evaluate]") {
+    ClipProperties p;
+    p.set(ParamId::Rotation, 10.0);
+    p.set(ParamId::AnchorX, 5); // displayed pixels
+    p.set(ParamId::AnchorY, 0);
+    const auto layerOf = [&](int rotation, bool mirrored) {
+        ProjectState s;
+        auto media = fakeMedia(s, 640, 360, AlphaMode::None, rotation);
+        media->info.video.front().mirrored = mirrored;
+        s.media = {media};
+        Sequence seq;
+        seq.videoTracks = {trackOf(s, {clipOf(s, media->id, 0, 60, 0, p)})};
+        std::vector<LayerSpec> layers;
+        evaluateVideoLayers(s, seq, Ticks{}, layers);
+        REQUIRE(layers.size() == 1);
+        return layers[0].transform;
+    };
+    // Not flagged: unchanged (no flip; the turn as before).
+    const render::LayerTransform plain = layerOf(0, false);
+    CHECK_FALSE(plain.mirrorX);
+    CHECK(plain.rotationDegrees == Approx(10.0));
+    CHECK(plain.anchor.x == Approx(5.0));
+    CHECK_FALSE(layerOf(90, false).mirrorX);
+    // Mirrored with no turn: flipped, the clip's own motion unchanged.
+    const render::LayerTransform flipped = layerOf(0, true);
+    CHECK(flipped.mirrorX);
+    CHECK(flipped.rotationDegrees == Approx(10.0));
+    CHECK(flipped.anchor.x == Approx(5.0));
+    CHECK(flipped.anchor.y == Approx(0.0));
+    // Mirrored and a quarter turn clockwise: a flip then the turn the other way round (270 degrees on top of the clip's
+    // 10); the anchor (5, 0) displayed is (0, 5) in that space.
+    const render::LayerTransform transposed = layerOf(90, true);
+    CHECK(transposed.mirrorX);
+    CHECK(transposed.rotationDegrees == Approx(280.0));
+    CHECK(transposed.anchor.x == Approx(0.0));
+    CHECK(transposed.anchor.y == Approx(5.0));
+    // Half a turn is its own inverse.
+    const render::LayerTransform half = layerOf(180, true);
+    CHECK(half.mirrorX);
+    CHECK(half.rotationDegrees == Approx(190.0));
+    CHECK(half.anchor.x == Approx(-5.0));
+    // A mirrored layer is never "identity", so a smart-render passthrough cannot be chosen for it.
+    CHECK_FALSE(flipped == render::LayerTransform{});
+}
+
 TEST_CASE("Composite pool reuses composites once released", "[playback][pool]") {
     CompositePool pool(2, 4);
     auto a = pool.acquire();

@@ -266,3 +266,91 @@ TEST_CASE("Import Presets puts a built-in Lumetri look in a presets bin of its o
     h.ok("effects.importPresets", Json{{"path", pathToUtf8(file)}, {"bin", "Grades"}});
     CHECK(lh.services->library().findPreset("Bleach Bypass 2")->bin == "Grades");
 }
+
+// ---- 0.7 (card 101): presets of an Audio Track Mixer effect chain ----------------------------------------------------
+
+TEST_CASE("An audio track's effect chain is saved as a preset and added to other tracks", "[command][effects][presets][audio]") {
+    auto services = std::make_shared<command::EffectLibraryServices>();
+    command::EnginePolicy policy;
+    policy.services = services;
+    CommandHarness h(R"(
+        V1 tgt |Aaaaaaaaaaaaaaaaaaaa|
+        A1 tgt |Aaaaaaaaaaaaaaaaaaaa|
+        A2     |Bbbbbbbbbbbbbbbbbbbb|
+    )", policy);
+    const TrackId a1 = h.tl.track("A1");
+    const TrackId a2 = h.tl.track("A2");
+    // A1: a compressor and a bypassed 3-band EQ (the mixer strip's chain).
+    {
+        ProjectState s = *h.state();
+        s = ok(edit::addEffect(s, h.tl.seq, edit::EffectTarget::ofTrack(a1), "wabcut.audio.compressor",
+                               {EffectParam{"threshold", ParamValue(-30.0)}})).state;
+        s = ok(edit::addEffect(s, h.tl.seq, edit::EffectTarget::ofTrack(a1), "wabcut.audio.eq3")).state;
+        const EffectInstanceId eq = s.findSequence(h.tl.seq)->findTrack(a1)->effects.back().id;
+        edit::EffectChange off;
+        off.enabled = false;
+        s = ok(edit::setEffect(s, h.tl.seq, edit::EffectTarget::ofTrack(a1), eq, off)).state;
+        REQUIRE(h.session.commit("Build chain", s));
+    }
+    const auto chainOf = [&](TrackId t) { return h.sequence(h.state()).findTrack(t)->effects; };
+    REQUIRE(chainOf(a1).size() == 2);
+
+    const auto saved = h.ok("effects.saveTrackPreset", Json{{"target", "A1"}, {"name", "Voice chain"}, {"description", "Compress, then EQ"}});
+    CHECK(saved.data["effects"].size() == 2);
+    CHECK(saved.data["target"] == "A1");
+    const EffectsLibrary stored = services->library(); // a copy: findPreset points into it
+    const EffectPreset* preset = stored.findPreset("Voice chain");
+    REQUIRE(preset);
+    CHECK(preset->kind() == EffectKind::Audio);
+    CHECK(preset->type == EffectPresetType::AnchorToInPoint); // a chain keeps the times of its keyframes
+    CHECK(preset->description == "Compress, then EQ");
+    // Saving is not a project edit.
+    CHECK(h.session.undoLabel() == std::optional<std::string>("Build chain"));
+
+    SECTION("apply it to another track: one undo step, the same settings, fresh ids") {
+        const auto applied = h.ok("effects.applyTrackPreset", Json{{"preset", "voice chain"}, {"targets", Json::array({"A2"})}});
+        CHECK(applied.data["targets"][0]["target"] == "A2");
+        const EffectStack there = chainOf(a2);
+        REQUIRE(there.size() == 2);
+        CHECK(there[0].effect == "wabcut.audio.compressor");
+        CHECK(there[0].find("threshold")->constant() == -30.0);
+        CHECK(there[1].effect == "wabcut.audio.eq3");
+        CHECK_FALSE(there[1].enabled); // bypassed stays bypassed
+        CHECK(there[0].id != chainOf(a1)[0].id);
+        CHECK(h.session.undoLabel() == std::optional<std::string>("Apply Preset to Tracks"));
+        REQUIRE(h.session.undo());
+        CHECK(chainOf(a2).empty());
+        CHECK(chainOf(a1).size() == 2);
+    }
+    SECTION("applying twice adds the chain twice; the master takes it as well") {
+        h.ok("effects.applyTrackPreset", Json{{"preset", "Voice chain"}, {"targets", Json::array({"A2", "master"})}});
+        h.ok("effects.applyTrackPreset", Json{{"preset", "Voice chain"}, {"targets", Json::array({static_cast<std::uint64_t>(a2.value)})}});
+        CHECK(chainOf(a2).size() == 4);
+        CHECK(h.sequence(h.state()).audioEffects.size() == 2);
+    }
+    SECTION("only some effects; a name that is taken; replace") {
+        h.ok("effects.saveTrackPreset", Json{{"target", "A1"}, {"name", "EQ only"}, {"effects", Json::array({1})}});
+        CHECK(services->library().findPreset("EQ only")->effects.size() == 1);
+        CHECK(h.errorOf("effects.saveTrackPreset", Json{{"target", "A1"}, {"name", "Voice chain"}}) == "EditRejected");
+        h.ok("effects.saveTrackPreset", Json{{"target", "A1"}, {"name", "Voice chain"}, {"effects", Json::array({0})}, {"replace", true}});
+        CHECK(services->library().findPreset("Voice chain")->effects.size() == 1);
+    }
+    SECTION("the master's chain can be saved too") {
+        h.ok("effects.applyTrackPreset", Json{{"preset", "Voice chain"}, {"targets", Json::array({"master"})}});
+        h.ok("effects.saveTrackPreset", Json{{"target", "master"}, {"name", "Master chain"}});
+        CHECK(services->library().findPreset("Master chain")->effects.size() == 2);
+    }
+    SECTION("refusals leave everything as it was") {
+        const auto before = h.state();
+        CHECK(h.errorOf("effects.saveTrackPreset", Json{{"target", "A2"}, {"name", "Empty"}}) == "InvalidParams");   // nothing on it
+        CHECK(h.errorOf("effects.saveTrackPreset", Json{{"target", "V1"}, {"name", "Video"}}) == "InvalidParams");   // not audio
+        CHECK(h.errorOf("effects.applyTrackPreset", Json{{"preset", "Voice chain"}, {"targets", Json::array({"V1"})}}) == "InvalidParams");
+        CHECK(h.errorOf("effects.applyTrackPreset", Json{{"preset", "No such"}, {"targets", Json::array({"A2"})}}) == "NotFound");
+        CHECK(h.errorOf("effects.applyTrackPreset", Json{{"preset", "Voice chain"}, {"targets", Json::array()}}) != "");
+        // A video preset does not go on an audio track.
+        h.ok("effects.applyPreset", Json{{"preset", "Twirl In"}, {"clips", Json::array({h.clip("V1@0").value})}});
+        CHECK(h.errorOf("effects.applyTrackPreset", Json{{"preset", "Twirl In"}, {"targets", Json::array({"A2"})}}) == "EditRejected"); // the model refuses a video preset on audio
+        CHECK(chainOf(a2).empty());
+        (void)before;
+    }
+}

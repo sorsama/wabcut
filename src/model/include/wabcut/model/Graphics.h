@@ -28,6 +28,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <optional>
 #include <span>
 #include <string>
@@ -44,6 +45,8 @@ inline constexpr std::size_t kMaxGraphicLayers = 256;     ///< every layer of a 
 inline constexpr std::size_t kMaxGraphicDepth = 8;        ///< groups inside groups
 inline constexpr std::size_t kMaxGraphicTextBytes = 16 * 1024; ///< the text of one layer (all its runs)
 inline constexpr std::size_t kMaxTextRuns = 256;
+inline constexpr std::size_t kMaxTemplateFolderDepth = 3; ///< parts of a template folder's label
+inline constexpr std::size_t kMaxTemplateFolderBytes = 96;
 inline constexpr std::size_t kMaxTextAnimators = 16;
 inline constexpr std::size_t kMaxPathVertices = 1024;
 inline constexpr std::size_t kMaxPathKeys = 10'000;
@@ -132,6 +135,35 @@ enum class TextCaps : std::uint8_t { Normal, AllCaps, SmallCaps };
 /// 0.6: where a text stroke lies on the glyphs' outline: Premiere's Outer, Center and Inner strokes.
 enum class StrokePosition : std::uint8_t { Outside, Center, Inside };
 
+/// 0.7 (card #138): one OpenType feature for the shaper: a four-letter tag ("calt", "liga", "ss01", "salt") and its value
+/// (0 off, 1 on; an index for "salt" and the like).
+struct FontFeature {
+    std::array<char, 4> tag{};
+    std::uint32_t value = 1;
+
+    bool operator==(const FontFeature&) const = default;
+};
+/// At most this many features per style; values at most kMaxFontFeatureValue.
+inline constexpr std::size_t kMaxFontFeatures = 16;
+inline constexpr std::uint32_t kMaxFontFeatureValue = 99;
+
+/// Reads a list of OpenType features in the form of CSS font-feature-settings, loosely: items separated by commas (or
+/// spaces), each a tag with an optional value - `calt`, `+calt` or `calt=1` on, `-liga` or `liga=0` off, `salt=2`, `ss01`, and
+/// the CSS spelling `"smcp" 1` / `'dlig' on|off`. Tags are four printable ASCII letters or digits. The list comes back in
+/// order with a repeated tag taken from its last mention. An error says which item is wrong. Empty text is no features.
+std::expected<std::vector<FontFeature>, std::string> parseFontFeatures(std::string_view text);
+/// The list in the form parseFontFeatures reads back, normalised: `calt, -liga, salt=2, ss01` (on = the bare tag).
+std::string toString(const std::vector<FontFeature>& features);
+/// Whether the shaper applies a feature unless told otherwise: ligatures (liga, clig), contextual alternates (calt, ccmp, locl,
+/// rlig), kerning and mark positioning are on; discretionary ligatures (dlig), alternates (salt, swsh), stylistic sets,
+/// figure styles and the like are off. A style's list holds what differs from that.
+bool fontFeatureDefaultOn(std::string_view tag);
+/// `features` with the feature `tag` turned on or off, in toString's form: a feature set to the shaper's default for its kind
+/// (fontFeatureDefaultOn) is dropped from the list. An error says what is wrong (an unreadable list, a bad tag, too many).
+std::expected<std::string, std::string> withFontFeature(std::string_view features, std::string_view tag, bool on);
+/// Whether 	ag is in effect for a style with this feature list: the list's value, else the shaper's default.
+bool fontFeatureOn(std::string_view features, std::string_view tag);
+
 struct TextStyle {
     std::string fontFamily;   ///< empty: the brand kit's font for `brandFont`, else the platform's sans-serif
     std::string fontStyle;    ///< e.g. "Bold Italic"; empty = regular
@@ -144,9 +176,15 @@ struct TextStyle {
     double tracking = 0.0;    ///< 1/1000 em, -1000..10000 (Premiere's tracking)
     double leading = 0.0;     ///< line height in pixels; 0 = automatic (1.2 x the size)
     double baselineShift = 0.0; ///< pixels
-    /// 0.6: the font's own kerning pairs (Premiere's Metrics kerning); off spaces every pair by the advances alone. The
-    /// text engine (Qt) has no optical or per-pair manual kerning: tracking spaces letters by hand.
+    /// 0.6: the font's own kerning pairs (Premiere's Metrics kerning); off spaces every pair by the advances alone.
     bool kerning = true;
+    /// 0.7 (card #138): Premiere's Optical kerning, with `kerning` on: the font's own pairs are set aside and each pair is
+    /// spaced by the shapes of its two letters (render/OpticalKerning.h). Off with `kerning` off, whatever this says.
+    bool opticalKerning = false;
+    /// 0.7 (card #138): OpenType features for the shaper beyond the defaults (contextual alternates, ligatures, stylistic
+    /// sets, ...), as parseFontFeatures reads them; empty = the font's defaults. Persian and Arabic fonts shape their joining
+    /// forms and contextual alternates by default (HarfBuzz); a feature here turns an optional one on or a default one off.
+    std::string features;
     TextCaps caps = TextCaps::Normal;
     /// 0.6: synthesised bold (the glyphs thickened by an outline in their own colour) and italic (slanted 12 degrees),
     /// for fonts without those faces; independent of the font style.
@@ -447,6 +485,21 @@ struct FieldValue {
     bool operator==(const FieldValue&) const = default;
 };
 
+/// 0.7 (card #71): a field's value from a moment on. A keyed field (TemplateField::keys) changes over the clip: a colour
+/// fades, a text, font, picture or checkbox switches. `time` is graphic time like every key of a graphic (the clip's curve
+/// time, design time with responsive time).
+struct FieldKey {
+    Ticks time{};
+    FieldValue value;
+    /// To the next key. A Color field blends linearly (Linear) or holds (Hold); every other kind holds whatever this says.
+    Interpolation interpolation = Interpolation::Linear;
+
+    bool operator==(const FieldKey&) const = default;
+};
+
+/// Keys one field can hold.
+inline constexpr std::size_t kMaxFieldKeys = 256;
+
 struct TemplateField {
     std::string id;    ///< stable key: [A-Za-z][A-Za-z0-9_.-]*
     std::string label; ///< shown in the Essential Graphics panel
@@ -454,6 +507,9 @@ struct TemplateField {
     std::uint32_t layer = 0;
     std::string property; ///< see FieldKind
     FieldValue value;     ///< the default in a template; the current value in an instance
+    /// 0.7 (card #71): the field animated over the clip (an instance only; never a Duration field). Sorted by time, at
+    /// most kMaxFieldKeys. Empty: `value` shows throughout. Before the first key the first key's value shows.
+    std::vector<FieldKey> keys;
 
     bool operator==(const TemplateField&) const = default;
 };
@@ -497,6 +553,9 @@ struct GraphicTemplate {
     Graphic graphic;          ///< the design; field values in `fields` are the defaults
     std::vector<TemplateField> fields;
     Ticks duration{};         ///< default clip length; 0 = the graphic's responsive duration, else 5 s
+    /// 0.7 (card #87): the folder the template browser files it under: a label of up to kMaxTemplateFolderDepth parts
+    /// separated by '/' ("Titles/Lower thirds"); "" = not in a folder. Written only when set.
+    std::string folder;
 
     bool operator==(const GraphicTemplate&) const = default;
 };
@@ -578,8 +637,20 @@ std::optional<RollKind> rollKindFromString(std::string_view text);
 /// layer ids, content of another kind, a pin to a missing or non-sibling layer or in a cycle, a template field that
 /// does not fit its layer), or nullopt.
 std::optional<std::string> graphicProblem(const Graphic& graphic);
+
+/// 0.7 (card #71): the value `field` shows at graphic time `time`: its `value` without keys; with keys the value of the
+/// last key at or before `time` (the first key's before it). A Color field blends linearly between two Linear keys (in
+/// the colours' own rgba; a kit colour that both keys name and that does not change stays the kit's).
+FieldValue fieldValueAt(const TemplateField& field, Ticks time);
+/// Whether any field of the graphic's template instance has keys.
+bool hasFieldKeys(const Graphic& graphic);
+/// `graphic` as it looks at graphic time `time`: every keyed field's value put on its layer (what the draw list shows).
+/// The result's field keys are cleared (it is a snapshot); a graphic without keyed fields comes back as it is.
+Graphic withFieldKeysAt(const Graphic& graphic, Ticks time);
 std::optional<std::string> brandKitProblem(const BrandKit& kit);
 std::optional<std::string> templateProblem(const GraphicTemplate& tmpl);
+/// 0.7 (card #87): why `folder` is not a template folder label (empty is fine: no folder), or nullopt.
+std::optional<std::string> templateFolderProblem(std::string_view folder);
 /// 0.2: a text style's name (1..kMaxGraphicNameBytes of UTF-8 without control characters) and values (as a text layer's).
 std::optional<std::string> textStyleProblem(const ProjectTextStyle& style);
 /// Template field ids: [A-Za-z][A-Za-z0-9_.-]*, at most 64 bytes. Template ids: [A-Za-z0-9][A-Za-z0-9_.-]*, <= 128.

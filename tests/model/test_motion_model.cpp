@@ -56,10 +56,12 @@ const RenderSegment* segmentAt(const std::vector<RenderSegment>& bar, Ticks t) {
 
 TEST_CASE("Time Interpolation names follow Premiere's menu", "[model][motion][interpolation]") {
     for (const TimeInterpolation m : {TimeInterpolation::FrameSampling, TimeInterpolation::FrameBlending,
-                                      TimeInterpolation::OpticalFlow}) {
+                                      TimeInterpolation::OpticalFlow, TimeInterpolation::AiInterpolation}) {
         CHECK(timeInterpolationFromString(toString(m)) == m);
     }
     CHECK(toString(TimeInterpolation::OpticalFlow) == "opticalFlow");
+    CHECK(toString(TimeInterpolation::AiInterpolation) == "aiInterpolation"); // 0.7 (card 133)
+    CHECK(displayName(TimeInterpolation::AiInterpolation) == "AI Frame Interpolation");
     CHECK(displayName(TimeInterpolation::FrameSampling) == "Frame Sampling");
     CHECK(displayName(TimeInterpolation::FrameBlending) == "Frame Blending");
     CHECK(displayName(TimeInterpolation::OpticalFlow) == "Optical Flow");
@@ -246,8 +248,29 @@ TEST_CASE("The motion effects are registered with Premiere's names", "[model][mo
         CHECK(warp->param(key) != nullptr);
     }
     CHECK(warp->param("smoothness")->defaultValue == 50.0);
+    CHECK(warp->param("smoothness")->animatable); // card 129: Smoothness can be keyframed, the other settings are constants
+    CHECK_FALSE(warp->param("maxScale")->animatable);
+    CHECK_FALSE(warp->param("method")->animatable);
     CHECK(warp->param("maxScale")->defaultValue == 1.5);
     CHECK(warp->param("framing")->defaultValue == 2.0); // Stabilize, Crop, Auto-scale
+    // 0.7 (card #130): Method is a menu whose last entry is Gyro (camera metadata); its four settings are constants.
+    const EffectParamInfo* method = warp->param("method");
+    CHECK(method->defaultValue == 3.0); // Subspace Warp stays the default
+    CHECK(method->maxValue == 4.0);
+    CHECK(method->isChoice());
+    REQUIRE(method->optionLabels().size() == 5);
+    CHECK(method->optionLabels().back() == "Gyro (camera metadata)");
+    CHECK(method->optionLabel(4.0) == "Gyro (camera metadata)");
+    CHECK(method->optionLabel(1.0) == "Position, Scale, Rotation");
+    CHECK(warp->param("gyroSync")->defaultValue == 1.0); // Auto-sync with the picture
+    CHECK(warp->param("gyroOffset")->defaultValue == 0.0);
+    CHECK(warp->param("gyroOffset")->minValue == -2000.0);
+    CHECK(warp->param("gyroFov")->defaultValue == 0.0); // Auto
+    CHECK(warp->param("gyroReadout")->defaultValue == 0.0);
+    for (const char* key : {"gyroSync", "gyroOffset", "gyroFov", "gyroReadout"}) {
+        INFO(key);
+        CHECK_FALSE(warp->param(key)->animatable);
+    }
     const EffectDescriptor* shutter = r.find(kRollingShutterRepairEffect);
     REQUIRE(shutter != nullptr);
     CHECK(shutter->displayName == "Rolling Shutter Repair");

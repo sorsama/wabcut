@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <cstdio>
@@ -31,7 +32,7 @@ constexpr std::array<std::pair<Capability, std::string_view>, 7> kCapabilityName
 constexpr std::array<Capability, 6> kAllCapabilities{Capability::Chat,  Capability::Transcribe, Capability::Embed,
                                                      Capability::Speak, Capability::Translate,  Capability::GenerateMedia};
 
-constexpr std::array<std::pair<AuthScheme, std::string_view>, 7> kAuthNames{{
+constexpr std::array<std::pair<AuthScheme, std::string_view>, 8> kAuthNames{{
     {AuthScheme::None, "none"},
     {AuthScheme::Bearer, "bearer"},
     {AuthScheme::XApiKey, "x-api-key"},
@@ -39,7 +40,29 @@ constexpr std::array<std::pair<AuthScheme, std::string_view>, 7> kAuthNames{{
     {AuthScheme::XGoogApiKey, "x-goog-api-key"},
     {AuthScheme::Token, "token"},
     {AuthScheme::RawAuthorization, "raw"},
+    {AuthScheme::Header, "header"}, // r07: authHeader + authPrefix
 }};
+
+/// r07: a header name the Header scheme may carry a key in: an RFC 9110 token that is not a hop-by-hop or framing
+/// header (a key must never become Host, Content-Length, Cookie, ...).
+bool validAuthHeader(std::string_view name) {
+    if (name.empty() || name.size() > 64) {
+        return false;
+    }
+    for (const char c : name) {
+        const auto u = static_cast<unsigned char>(c);
+        if (!(std::isalnum(u) || c == '-' || c == '_')) {
+            return false;
+        }
+    }
+    for (const std::string_view banned : {"host", "content-length", "content-type", "transfer-encoding", "connection",
+                                          "cookie", "te", "upgrade", "expect", "range", "accept", "accept-encoding"}) {
+        if (equalsIgnoreCase(name, banned)) {
+            return false;
+        }
+    }
+    return true;
+}
 
 AiError invalid(const std::string& what) { return AiError(AiErrorCode::InvalidRequest, "models.json: " + what); }
 
@@ -113,6 +136,14 @@ std::expected<ProviderSpec, AiError> parseProvider(const Json& j) {
         return std::unexpected(invalid(where + ": unknown auth '" + str(j, "auth") + "'"));
     }
     p.auth = *auth;
+    p.authHeader = str(j, "authHeader");
+    p.authPrefix = str(j, "authPrefix");
+    if (p.auth == AuthScheme::Header && !validAuthHeader(p.authHeader)) {
+        return std::unexpected(invalid(where + ": auth 'header' needs a valid authHeader"));
+    }
+    if (std::any_of(p.authPrefix.begin(), p.authPrefix.end(), [](char c) { return c == '\r' || c == '\n' || c == '\0'; })) {
+        return std::unexpected(invalid(where + ": authPrefix must be one line"));
+    }
     p.keyRequired = flag(j, "keyRequired", p.auth != AuthScheme::None);
     p.envVar = str(j, "envVar");
     if (auto it = j.find("keyCheck"); it != j.end() && it->is_object()) {
@@ -134,6 +165,20 @@ std::expected<ProviderSpec, AiError> parseProvider(const Json& j) {
     p.verified = flag(j, "verified", false);
     p.source = str(j, "source");
     p.notes = str(j, "notes");
+    // r07 (A1): catalogue metadata.
+    p.description = str(j, "description");
+    p.website = str(j, "website");
+    if (auto it = j.find("features"); it != j.end()) {
+        if (!it->is_array()) {
+            return std::unexpected(invalid(where + ": features must be an array of feature ids"));
+        }
+        for (const auto& f : *it) {
+            if (!f.is_string() || !featureCapability(f.get<std::string>())) {
+                return std::unexpected(invalid(where + ": unknown feature in 'features'"));
+            }
+            p.features.push_back(f.get<std::string>());
+        }
+    }
     return p;
 }
 
@@ -333,6 +378,7 @@ std::expected<ModelSpec, AiError> parseModel(const Json& j, const std::vector<Pr
     m.verified = flag(j, "verified", false);
     m.source = str(j, "source");
     m.notes = str(j, "notes");
+    m.apiId = str(j, "apiId"); // r07 (A1): the provider's own name when the registry id is "<provider>:<name>"
     return m;
 }
 
@@ -417,7 +463,20 @@ void applyAuth(HttpHeaders& headers, AuthScheme scheme, std::string_view key) {
     case AuthScheme::RawAuthorization:
         headers.push_back({"Authorization", std::string(key)});
         return;
+    case AuthScheme::Header:
+        return; // needs the header name: applyAuth(headers, provider, key)
     }
+}
+
+void applyAuth(HttpHeaders& headers, const ProviderSpec& provider, std::string_view key) {
+    if (provider.auth != AuthScheme::Header) {
+        applyAuth(headers, provider.auth, key);
+        return;
+    }
+    if (key.empty() || !validAuthHeader(provider.authHeader)) {
+        return;
+    }
+    headers.push_back({provider.authHeader, provider.authPrefix + std::string(key)});
 }
 
 std::string formatUsd(MicroUsd amount) {
@@ -496,6 +555,68 @@ MicroUsd costOf(const ModelSpec& model, const Usage& usage, std::chrono::year_mo
 
 bool isDeprecated(const ModelSpec& model, std::chrono::year_month_day today) {
     return model.deprecation && *model.deprecation <= today;
+}
+
+// --- Features (r07, A1) ------------------------------------------------------------------------------------------
+
+namespace {
+constexpr std::array<std::string_view, 7> kFeatureIds{"chat", "transcribe", "translate", "speak", "image", "video", "sound"};
+} // namespace
+
+std::span<const std::string_view> featureIds() { return kFeatureIds; }
+
+std::optional<Capability> featureCapability(std::string_view feature) {
+    if (feature == "chat") {
+        return Capability::Chat;
+    }
+    if (feature == "transcribe") {
+        return Capability::Transcribe;
+    }
+    if (feature == "translate") {
+        return Capability::Translate;
+    }
+    if (feature == "speak") {
+        return Capability::Speak;
+    }
+    if (feature == "image" || feature == "video" || feature == "sound") {
+        return Capability::GenerateMedia;
+    }
+    return std::nullopt;
+}
+
+bool servesFeature(const ModelSpec& model, std::string_view feature) {
+    if (feature == "translate") {
+        return model.caps.has(Capability::Translate) || model.caps.has(Capability::Chat);
+    }
+    if (feature == "image") {
+        return model.caps.has(Capability::GenerateMedia) && model.generation.image;
+    }
+    if (feature == "video") {
+        return model.caps.has(Capability::GenerateMedia) && model.generation.video;
+    }
+    if (feature == "sound") {
+        return model.caps.has(Capability::GenerateMedia) && model.generation.soundEffect;
+    }
+    const auto capability = featureCapability(feature);
+    return capability && model.caps.has(*capability);
+}
+
+std::vector<std::string> featuresOf(const ModelSpec& model) {
+    std::vector<std::string> out;
+    for (const std::string_view f : kFeatureIds) {
+        if (servesFeature(model, f)) {
+            out.emplace_back(f);
+        }
+    }
+    return out;
+}
+
+std::vector<std::string> featuresOfApi(std::string_view api) {
+    if (api == "chat-completions" || api == "anthropic-messages" || api == "openai-responses" ||
+        api == "gemini-interactions" || api == "managed-llama") {
+        return {"chat", "translate"};
+    }
+    return {};
 }
 
 std::chrono::year_month_day todayUtc() {
@@ -659,12 +780,21 @@ std::expected<void, AiError> ModelRegistry::addCustomProvider(ProviderSpec provi
             m.api = provider.api;
         }
     }
+    std::set<std::string> seen;
     for (const auto& m : models) {
         const ModelSpec* existing = model(m.id);
         if (existing && existing->provider != provider.id) {
             return std::unexpected(AiError(AiErrorCode::InvalidRequest, "model id '" + m.id + "' is taken"));
         }
+        if (!seen.insert(m.id).second) {
+            return std::unexpected(AiError(AiErrorCode::InvalidRequest, "model id '" + m.id + "' is listed twice"));
+        }
     }
+    provider.custom = true;
+    std::erase_if(m_userModelIds, [&](const std::string& id) {
+        const ModelSpec* m = model(id);
+        return m && m->provider == provider.id;
+    });
     std::erase_if(m_models, [&](const ModelSpec& m) { return m.provider == provider.id; });
     std::erase_if(m_providers, [&](const ProviderSpec& p) { return p.id == provider.id; });
     m_providers.push_back(std::move(provider));
@@ -672,6 +802,24 @@ std::expected<void, AiError> ModelRegistry::addCustomProvider(ProviderSpec provi
         m_models.push_back(std::move(m));
     }
     return {};
+}
+
+bool ModelRegistry::removeCustomProvider(std::string_view id) {
+    if (!isCustomProvider(id)) {
+        return false;
+    }
+    std::erase_if(m_userModelIds, [&](const std::string& modelId) {
+        const ModelSpec* m = model(modelId);
+        return m && m->provider == id;
+    });
+    std::erase_if(m_models, [&](const ModelSpec& m) { return m.provider == id; });
+    std::erase_if(m_providers, [&](const ProviderSpec& p) { return p.id == id; });
+    return true;
+}
+
+bool ModelRegistry::isCustomProvider(std::string_view id) const {
+    return provider(id) != nullptr &&
+           std::find(m_builtinProviderIds.begin(), m_builtinProviderIds.end(), id) == m_builtinProviderIds.end();
 }
 
 std::expected<void, AiError> ModelRegistry::addModel(ModelSpec model) {
@@ -749,6 +897,19 @@ Json ModelRegistry::toJson() const {
                              {"verified", p.verified},
                              {"source", p.source},
                              {"notes", p.notes}});
+        if (p.auth == AuthScheme::Header) { // r07
+            providers.back()["authHeader"] = p.authHeader;
+            providers.back()["authPrefix"] = p.authPrefix;
+        }
+        if (!p.description.empty()) { // r07 (A1): catalogue metadata
+            providers.back()["description"] = p.description;
+        }
+        if (!p.website.empty()) {
+            providers.back()["website"] = p.website;
+        }
+        if (!p.features.empty()) {
+            providers.back()["features"] = p.features;
+        }
     }
     Json models = Json::array();
     for (const auto& m : m_models) {
@@ -823,6 +984,9 @@ Json ModelRegistry::toJson() const {
                           {"notes", m.notes}});
         if (!generation.is_null()) {
             models.back()["generation"] = std::move(generation);
+        }
+        if (!m.apiId.empty()) { // r07 (A1)
+            models.back()["apiId"] = m.apiId;
         }
     }
     return {{"schemaVersion", 1}, {"updated", m_updated}, {"providers", providers}, {"models", models}};

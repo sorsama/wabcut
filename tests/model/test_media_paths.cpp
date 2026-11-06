@@ -11,9 +11,11 @@
 #include <wabcut/model/RawSourceSettings.h>
 #include <wabcut/model/SpannedClip.h>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 using namespace wabcut;
+using Catch::Approx;
 
 TEST_CASE("Layered file paths: built, parsed and bounded", "[model][media-paths]") {
     LayeredFileSpec spec{pathFromUtf8("D:/Design/Title.psd"), {0, 3, 4}, false};
@@ -61,6 +63,51 @@ TEST_CASE("Media paths: the file that stands for them, and relinking keeps what 
     // A plain file stays itself.
     CHECK(relinkedMediaPath("D:/a.mov", pathFromUtf8("E:/b.mov")) == "E:/b.mov");
     CHECK(mediaFileToCheck(pathFromUtf8("D:/a.mov")) == pathFromUtf8("D:/a.mov"));
+}
+
+TEST_CASE("RAW Source Settings: ISO is shot / develop, adds log2 of their ratio and is bounded (card 108)",
+          "[model][media-paths][raw]") {
+    RawSourceSettings settings;
+    settings.iso = RawIso{800, 1600};
+    CHECK_FALSE(settings.isDefault());
+    CHECK(settings.totalExposure() == Approx(1.0));
+    settings.exposure = -0.5;
+    CHECK(settings.totalExposure() == Approx(0.5));
+    settings.iso = RawIso{3200, 800};
+    CHECK(settings.totalExposure() == Approx(-2.5));
+    settings.exposure = 0.0;
+    CHECK(settings.totalExposure() == Approx(-2.0));
+    // Carried after the white balance, read back exactly; equal ISOs are not written (a default leaves the path bare).
+    settings.iso = RawIso{800, 1600};
+    CHECK(withRawSourceSettings("D:/A001.mov", settings) == "D:/A001.mov?raw=exposure:+0.00,iso:800:1600");
+    settings.exposure = 0.25;
+    settings.white = RawWhiteBalance{4300, 7};
+    const std::string path = withRawSourceSettings("D:/A001.mov", settings);
+    CHECK(path == "D:/A001.mov?raw=exposure:+0.25,white:4300:7,iso:800:1600");
+    CHECK(rawSourceSettingsOf(path) == settings);
+    CHECK(withoutRawSourceSettings(path) == "D:/A001.mov");
+    RawSourceSettings equal;
+    equal.iso = RawIso{800, 800};
+    CHECK(withRawSourceSettings("D:/A001.mov", equal) == "D:/A001.mov");
+    CHECK(withRawSourceSettings(path, equal) == "D:/A001.mov"); // replaces what was there
+    CHECK(rawSourceSettingsOf("D:/a.mov?raw=exposure:+0.00,iso:800:800").isDefault()); // not ours: never written
+    // Bounds and malformed suffixes: no path, and the suffix is not settings (the path stays plain).
+    CHECK(withRawSourceSettings("D:/A001.mov", RawSourceSettings{0.0, std::nullopt, RawIso{10, 800}}).empty());
+    CHECK(withRawSourceSettings("D:/A001.mov", RawSourceSettings{0.0, std::nullopt, RawIso{800, 204801}}).empty());
+    CHECK(withRawSourceSettings("D:/A001.mov", RawSourceSettings{0.0, std::nullopt, RawIso{kMinRawIso, kMaxRawIso}}) ==
+          "D:/A001.mov?raw=exposure:+0.00,iso:50:204800");
+    for (const std::string_view bad :
+         {"D:/a.mov?raw=exposure:+0.00,iso:800", "D:/a.mov?raw=exposure:+0.00,iso:800:", "D:/a.mov?raw=exposure:+0.00,iso::1600",
+          "D:/a.mov?raw=exposure:+0.00,iso:10:1600", "D:/a.mov?raw=exposure:+0.00,iso:800:999999",
+          "D:/a.mov?raw=exposure:+0.00,iso:-800:1600", "D:/a.mov?raw=exposure:+0.00,iso:8x0:1600",
+          "D:/a.mov?raw=exposure:+0.00,iso:800:1600,white:3200:0", // the white balance comes first
+          "D:/a.mov?raw=exposure:+0.00,iso:1234567:1600"}) {
+        INFO(bad);
+        CHECK(rawSourceSettingsOf(bad).isDefault());
+        CHECK(withoutRawSourceSettings(bad) == bad);
+    }
+    // The command's edit keeps the ISO on the item and drops its proxy as for any development change.
+    CHECK(validRawSourceSettings(RawSourceSettings{5.0, std::nullopt, RawIso{50, 204800}}));
 }
 
 TEST_CASE("RAW Source Settings: carried in the media path, bounded, read past by the other paths", "[model][media-paths][raw]") {

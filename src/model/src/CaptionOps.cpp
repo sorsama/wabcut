@@ -409,6 +409,7 @@ EditOutcome setCaptionTrackInfo(const ProjectState& state, SequenceId sequence, 
         }
         t.language = change.language.value_or(t.language);
         t.enabled = change.enabled.value_or(t.enabled);
+        t.showTogether = change.showTogether.value_or(t.showTogether);
         return {};
     });
 }
@@ -430,7 +431,9 @@ std::expected<ProjectState, Error> saveCaptionPreset(const ProjectState& state, 
         return std::unexpected(detail::invalidArgument("a caption preset needs a one-line name of 1.." +
                                                        std::to_string(kMaxCaptionNameBytes) + " bytes"));
     }
-    if (findBuiltinCaptionPreset(preset.name)) {
+    // A built-in name is refused, unless the project already holds its own preset of that name (made before the animated
+    // gallery took the name): that one can still be updated.
+    if (findBuiltinCaptionPreset(preset.name) && !state.findCaptionPreset(preset.name)) {
         return std::unexpected(detail::invalidArgument("\"" + preset.name + "\" is a built-in preset"));
     }
     if (const auto problem = captionStyleProblem(preset.style)) {
@@ -453,10 +456,10 @@ std::expected<ProjectState, Error> saveCaptionPreset(const ProjectState& state, 
 }
 
 std::expected<ProjectState, Error> removeCaptionPreset(const ProjectState& state, std::string_view name) {
-    if (findBuiltinCaptionPreset(name)) {
+    const CaptionPreset* p = state.findCaptionPreset(name);
+    if (!p && findBuiltinCaptionPreset(name)) {
         return std::unexpected(detail::invalidArgument("built-in presets cannot be removed"));
     }
-    const CaptionPreset* p = state.findCaptionPreset(name);
     if (!p) {
         return std::unexpected(detail::notFound("there is no caption preset \"" + std::string(name) + "\""));
     }
@@ -464,6 +467,66 @@ std::expected<ProjectState, Error> removeCaptionPreset(const ProjectState& state
     const std::string removed = p->name;
     out.captionPresets.erase(out.captionPresets.begin() + (p - state.captionPresets.data()));
     restyleTracks(out, removed, nullptr);
+    return out;
+}
+
+std::vector<std::string> splitCustomWords(std::string_view text) {
+    std::vector<std::string> out;
+    std::string current;
+    const auto flush = [&] {
+        out.push_back(std::move(current));
+        current.clear();
+    };
+    for (const char ch : text) {
+        if (ch == '\n' || ch == '\r' || ch == ',' || ch == ';') {
+            flush();
+        } else {
+            current += ch;
+        }
+    }
+    flush();
+    return out;
+}
+
+std::expected<ProjectState, Error> setCustomWords(const ProjectState& state, std::vector<std::string> words) {
+    std::vector<std::string> clean;
+    for (std::string& raw : words) {
+        // One line: any run of spaces, tabs and line breaks inside becomes one space; the ends are trimmed.
+        std::string w;
+        bool gap = false;
+        for (const char ch : raw) {
+            if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') {
+                gap = !w.empty();
+            } else {
+                if (gap) {
+                    w += ' ';
+                    gap = false;
+                }
+                w += ch;
+            }
+        }
+        if (w.empty()) {
+            continue;
+        }
+        if (w.size() > kMaxCustomWordBytes || !isValidCaptionText(w)) {
+            return std::unexpected(detail::invalidArgument(
+                "a custom word is a line of UTF-8 text of at most " + std::to_string(kMaxCustomWordBytes) + " bytes"));
+        }
+        const auto same = [&](const std::string& other) {
+            return std::equal(other.begin(), other.end(), w.begin(), w.end(), [](char a, char b) {
+                return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+            });
+        };
+        if (std::none_of(clean.begin(), clean.end(), same)) {
+            clean.push_back(std::move(w));
+        }
+    }
+    if (clean.size() > kMaxCustomWords) {
+        return std::unexpected(detail::invalidArgument("a project holds at most " + std::to_string(kMaxCustomWords) +
+                                                       " custom words"));
+    }
+    ProjectState out = state;
+    out.customWords = std::move(clean);
     return out;
 }
 

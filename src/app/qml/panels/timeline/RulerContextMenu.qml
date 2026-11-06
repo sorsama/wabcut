@@ -26,6 +26,10 @@ ContextMenu {
     /// 0.6: opened on a marker's flag: the marker's own rows only (Edit, Colour, Type, Go to, Clear), like the marker
     /// menu of the Program time bar and the Markers panel; the ruler's rows (marks, markers, units) show elsewhere.
     readonly property bool onFlag: menu.markerIndex >= 0
+    /// 0.7 (card 119): how many markers the Copy / Cut / Clear rows act on (the selection when the flag is part of a larger
+    /// one, else the flag alone).
+    readonly property int groupCount: Markers.selectionCount > 1 && Markers.selection.indexOf(menu.markerIndex) >= 0
+                                      ? Markers.selectionCount : 1
 
     /// Edit Marker… on the marker `index` (TimelineRuler opens the marker editor there).
     signal editMarkerRequested(int index)
@@ -69,6 +73,8 @@ ContextMenu {
         if (marker < 0)
             return
         Markers.scope = "sequence"
+        if (Markers.selection.indexOf(marker) < 0)
+            Markers.select(marker) // 0.7: a flag outside the selection becomes the selection
         const m = Markers.marker(marker)
         menu.colorMenu.markerIndex = marker
         menu.colorMenu.current = m.colorIndex ?? -1
@@ -114,15 +120,48 @@ ContextMenu {
                 menu.view.revealPlayhead()
         }
     }
+    // 0.7 (card 119): the flag joins the selection when it is not in it; Copy / Cut / Clear act on the whole selection when
+    // the flag is part of a larger one, and Paste puts the copied markers at the playhead.
+    ContextMenuItem {
+        objectName: "rulerMenuCopyMarker"
+        visible: menu.markerIndex >= 0
+        height: menu.markerIndex >= 0 ? implicitHeight : 0
+        text: menu.groupCount > 1 ? qsTr("Copy %n marker(s)", "", menu.groupCount) : qsTr("Copy Marker")
+        iconName: "copy"
+        onTriggered: Markers.copySelected()
+    }
+    ContextMenuItem {
+        objectName: "rulerMenuCutMarker"
+        visible: menu.markerIndex >= 0
+        height: menu.markerIndex >= 0 ? implicitHeight : 0
+        text: menu.groupCount > 1 ? qsTr("Cut %n marker(s)", "", menu.groupCount) : qsTr("Cut Marker")
+        iconName: "scissors"
+        onTriggered: Markers.cutSelected()
+    }
+    ContextMenuItem {
+        objectName: "rulerMenuPasteMarkers"
+        visible: menu.markerIndex >= 0 || Markers.clipboardCount > 0
+        height: menu.markerIndex >= 0 || Markers.clipboardCount > 0 ? implicitHeight : 0
+        text: qsTr("Paste Markers at Playhead")
+        iconName: "clipboard-paste"
+        enabled: Markers.clipboardCount > 0
+        onTriggered: {
+            Markers.scope = "sequence"
+            Markers.paste()
+        }
+    }
     ContextMenuItem {
         objectName: "rulerMenuClearMarker"
         visible: menu.markerIndex >= 0
         height: menu.markerIndex >= 0 ? implicitHeight : 0
-        text: qsTr("Clear Marker")
+        text: menu.groupCount > 1 ? qsTr("Clear %n marker(s)", "", menu.groupCount) : qsTr("Clear Marker")
         iconName: "x"
         onTriggered: {
             Markers.scope = "sequence"
-            Markers.remove(menu.markerIndex)
+            if (menu.groupCount > 1)
+                Markers.removeSelected()
+            else
+                Markers.remove(menu.markerIndex)
         }
     }
     ContextMenuSeparator {

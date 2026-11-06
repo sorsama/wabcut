@@ -18,6 +18,7 @@ namespace {
 constexpr std::string_view kKey = "raw=";
 constexpr std::string_view kExposure = "exposure:";
 constexpr std::string_view kWhite = ",white:";
+constexpr std::string_view kIso = ",iso:";
 
 /// A whole number of at most `maxDigits` digits, optionally signed, and nothing else.
 std::optional<int> parseInt(std::string_view text, int maxDigits) {
@@ -59,14 +60,21 @@ std::optional<RawSourceSettings> parseSettings(std::string_view text) {
     }
     text.remove_prefix(kExposure.size());
     RawSourceSettings settings;
+    // 0.7 (card #108): "[,white:K:T][,iso:S:D]" after the stops; each part once, in this order.
     const std::size_t white = text.find(kWhite);
-    const auto stops = parseStops(text.substr(0, white));
+    const std::size_t iso = text.find(kIso);
+    const std::size_t stopsEnd = std::min(white, iso);
+    const auto stops = parseStops(text.substr(0, stopsEnd));
     if (!stops) {
         return std::nullopt;
     }
     settings.exposure = *stops;
     if (white != std::string_view::npos) {
-        const std::string_view rest = text.substr(white + kWhite.size());
+        if (iso != std::string_view::npos && iso < white) {
+            return std::nullopt;
+        }
+        const std::string_view rest = text.substr(white + kWhite.size(), iso == std::string_view::npos ? std::string_view::npos
+                                                                                                         : iso - white - kWhite.size());
         const std::size_t colon = rest.find(':');
         if (colon == std::string_view::npos) {
             return std::nullopt;
@@ -77,6 +85,19 @@ std::optional<RawSourceSettings> parseSettings(std::string_view text) {
             return std::nullopt;
         }
         settings.white = RawWhiteBalance{*kelvin, *tint};
+    }
+    if (iso != std::string_view::npos) {
+        const std::string_view rest = text.substr(iso + kIso.size());
+        const std::size_t colon = rest.find(':');
+        if (colon == std::string_view::npos) {
+            return std::nullopt;
+        }
+        const auto shot = parseInt(rest.substr(0, colon), 6);
+        const auto develop = parseInt(rest.substr(colon + 1), 6);
+        if (!shot || !develop || *shot == *develop) { // equal ISOs are never written: not one of ours
+            return std::nullopt;
+        }
+        settings.iso = RawIso{*shot, *develop};
     }
     if (!validRawSourceSettings(settings) || settings.isDefault()) {
         return std::nullopt;
@@ -103,8 +124,16 @@ std::optional<std::pair<std::size_t, RawSourceSettings>> suffixOf(std::string_vi
 
 } // namespace
 
+double RawIso::stops() const {
+    return shot > 0 && develop > 0 ? std::log2(static_cast<double>(develop) / static_cast<double>(shot)) : 0.0;
+}
+
 bool validRawSourceSettings(const RawSourceSettings& settings) {
     if (!std::isfinite(settings.exposure) || std::abs(settings.exposure) > kMaxRawExposureStops + 1e-9) {
+        return false;
+    }
+    if (settings.iso && (settings.iso->shot < kMinRawIso || settings.iso->shot > kMaxRawIso || settings.iso->develop < kMinRawIso ||
+                         settings.iso->develop > kMaxRawIso)) {
         return false;
     }
     return !settings.white ||
@@ -128,7 +157,8 @@ std::string withRawSourceSettings(std::string_view utf8, const RawSourceSettings
     }
     std::string out(withoutRawSourceSettings(utf8));
     const long hundredths = std::lround(settings.exposure * 100.0);
-    if (hundredths == 0 && !settings.white) {
+    const bool iso = settings.iso && settings.iso->shot != settings.iso->develop; // equal ISOs add nothing
+    if (hundredths == 0 && !settings.white && !iso) {
         return out;
     }
     out += out.find('?') == std::string::npos ? '?' : '&';
@@ -136,6 +166,9 @@ std::string withRawSourceSettings(std::string_view utf8, const RawSourceSettings
                        std::abs(hundredths) % 100);
     if (settings.white) {
         out += std::format("{}{}:{}", kWhite, settings.white->temperature, settings.white->tint);
+    }
+    if (iso) {
+        out += std::format("{}{}:{}", kIso, settings.iso->shot, settings.iso->develop);
     }
     return out;
 }
@@ -150,8 +183,8 @@ EditOutcome setRawSourceSettings(const ProjectState& state, std::span<const Medi
                                  const RawSourceSettings& settings) {
     if (!validRawSourceSettings(settings)) {
         return std::unexpected(detail::invalidArgument(std::format(
-            "RAW Source Settings must be within {} stops of exposure, {} to {} K and a tint of -{} to +{}",
-            kMaxRawExposureStops, kMinRawTemperature, kMaxRawTemperature, kMaxRawTint, kMaxRawTint)));
+            "RAW Source Settings must be within {} stops of exposure, {} to {} K, a tint of -{} to +{} and ISOs of {} to {}",
+            kMaxRawExposureStops, kMinRawTemperature, kMaxRawTemperature, kMaxRawTint, kMaxRawTint, kMinRawIso, kMaxRawIso)));
     }
     if (media.empty()) {
         return std::unexpected(detail::invalidArgument("no media item to set RAW Source Settings on"));

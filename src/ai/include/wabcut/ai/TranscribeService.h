@@ -49,10 +49,27 @@ struct TranscribeSource {
     std::vector<TimeRange> redacted;
 };
 
+/// 0.7 (card 061): the most custom words sent to a cloud transcriber as key terms.
+inline constexpr std::size_t kMaxKeyTerms = 100;
+
 struct TranscribeJobOptions {
     /// "auto", "local", "cloud:<model id>" or an id added with addProvider().
     std::string provider = "auto";
-    std::string language = "auto";   ///< ISO 639-1 hint ("en", "th", ...) or "auto"
+    std::string language = "auto";   ///< ISO 639-1 hint ("en", "th", ...) or "auto" (wabcut/ai/SpokenLanguages.h lists them)
+    /// Whisper's translate task (card 073): the words come out in English, whatever the language spoken. Runs on this
+    /// computer (the local provider only: "auto" resolves to it when it can; a cloud provider is refused), with a
+    /// multilingual model. The transcript's language is then "en".
+    bool translate = false;
+    /// 0.7 (card 111): the recording switches between languages: with `language` "auto", every stretch of speech is
+    /// transcribed in the language it is spoken in (TranscriptionOptions::mixedLanguages) and each segment of the
+    /// transcript names its own. Local provider only (a cloud or custom one is refused with Unsupported); a transcript
+    /// made as one language in the cache does not answer it.
+    bool mixedLanguages = false;
+    /// 0.7 (card 061): custom words - names, game titles, jargon - the recogniser should spell right. The local
+    /// provider gets them as its vocabulary prompt (vocabularyPrompt; unless `local.initialPrompt` is set), a cloud
+    /// provider as key terms (the first kMaxKeyTerms). Audio that already has a transcript is not heard again unless
+    /// useCache is false.
+    std::vector<std::string> vocabulary;
     /// The local provider's whisper settings (model "base" by default; language and caching come from above).
     TranscriptionOptions local;
     /// Return a transcript of this audio already in the analysis cache (from any provider) instead of transcribing.
@@ -122,6 +139,10 @@ public:
 
     /// A transcript of this audio in the analysis cache (any provider), or null.
     std::shared_ptr<const Transcript> cached(const TranscribeSource& source) const;
+    /// Deletes every transcript of this audio from the analysis cache (any provider, model, language) - and only
+    /// transcripts: the source's other analyses stay. Returns how many entries went (0: there was none). Errors:
+    /// NotFound (no media file), IoError.
+    std::expected<std::size_t, Error> forget(const TranscribeSource& source);
 
     /// Starts a job. Errors (in the job): NotFound (media, stream, provider, helper, model), InvalidArgument, IoError,
     /// DecoderError, Unsupported (a cloud refusal: the message names the AI error, e.g. "ConsentRequired",

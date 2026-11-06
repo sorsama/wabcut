@@ -380,6 +380,22 @@ void registerLibraryCommands(CommandRegistry& registry) {
                     return projectOutput(c.take(edit::renameBin(c.state(), binValue(c, "bin"), c.string("name"))));
                 }});
     addBuiltin(registry,
+               {"bin.setNestTarget", 1, "File Nests in Bin",
+                "Chooses the bin Nest… files new nested sequences in (\"Nested Sequence 01\" goes there instead of beside "
+                "the sequence it was made in), or with \"enabled\": false stops doing so. One bin at most: choosing one "
+                "takes it from the other. A search bin holds nothing and is refused. One undo step.",
+                Capability::EditProject,
+                withSequence({{"bin", binParam("The bin.")},
+                              {"enabled", schema::boolean("Turn it on (default) or off for this bin.", true)}},
+                             {"bin"}),
+                Json{{"bin", 7}}, {},
+                [](ExecutionContext& c) {
+                    const BinId bin = binValue(c, "bin");
+                    const bool enabled = c.boolean("enabled", true);
+                    return projectOutput(c.take(edit::setNestBin(c.state(), bin, enabled)),
+                                         Json{{"bin", bin.value}, {"enabled", enabled}});
+                }});
+    addBuiltin(registry,
                {"bin.move", 1, "Move to Bin",
                 "Moves bins, media items and sequences into \"target\" (absent: the project's root). A bin cannot go into "
                 "itself or one of its sub-bins.",

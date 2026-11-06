@@ -4,11 +4,17 @@
 #include "CommandHarness.h"
 
 #include <wabcut/command/ExecutionContext.h>
+#include <wabcut/command/Schema.h>
 #include <wabcut/model/CaptionOps.h>
+#include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/ProjectOps.h>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <filesystem>
+#include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -93,6 +99,42 @@ TEST_CASE("captions.addTrack / addCue / updateCue / removeCue: one undo step eac
     CHECK(*h.state() == *empty);
 }
 
+TEST_CASE("captions.setTrack showTogether draws a track with the main one: one undo step, saved with the project",
+          "[command][captions][bilingual]") {
+    CommandHarness h(R"(
+        V1 tgt |Aaaaaaaaaaaaaaaaaaaa|
+    )");
+    addTrack(h);
+    h.ok("captions.addTrack", Json{{"name", "Spanish"}, {"language", "es"}});
+    const auto& tracks = h.sequence(h.state()).captionTracks;
+    REQUIRE(tracks.size() == 2);
+    CHECK_FALSE(tracks[1].showTogether);
+    const auto steps = h.session.undoCount();
+    h.ok("captions.setTrack", Json{{"captionTrack", tracks[1].id.value}, {"showTogether", true}});
+    CHECK(h.session.undoCount() == steps + 1);
+    CHECK(h.sequence(h.state()).captionTracks[1].showTogether);
+    CHECK_FALSE(h.sequence(h.state()).captionTracks[0].showTogether); // only the track asked
+    // A rename leaves the flag alone; turning it off is an edit of its own.
+    h.ok("captions.setTrack", Json{{"captionTrack", tracks[1].id.value}, {"name", "Espanol"}});
+    CHECK(h.sequence(h.state()).captionTracks[1].showTogether);
+    h.ok("captions.setTrack", Json{{"captionTrack", tracks[1].id.value}, {"showTogether", false}});
+    CHECK_FALSE(h.sequence(h.state()).captionTracks[1].showTogether);
+    h.session.undo();
+    CHECK(h.sequence(h.state()).captionTracks[1].showTogether);
+    // The mark is saved and loads back; a project without it writes no key.
+    const auto text = io::toJson(*h.state());
+    REQUIRE(text);
+    CHECK(text->find("\"showTogether\": true") != std::string::npos);
+    const auto loaded = io::fromJson(*text);
+    REQUIRE(loaded);
+    CHECK(loaded->findSequence(h.sequence(h.state()).id)->captionTracks[1].showTogether);
+    h.session.undo();
+    h.session.undo();
+    const auto plain = io::toJson(*h.state());
+    REQUIRE(plain);
+    CHECK(plain->find("showTogether") == std::string::npos);
+}
+
 TEST_CASE("captions.splitCue / mergeCues / shiftCues", "[command][captions]") {
     CommandHarness h(R"(
         V1 tgt |Aaaaaaaaaaaaaaaaaaaa|
@@ -172,9 +214,9 @@ TEST_CASE("captions.setStyle / applyPreset / savePreset / removePreset / presets
     CHECK(h.state()->captionPresets[0].style.fontWeight == 900);
     CHECK(h.errorOf("captions.savePreset", Json{{"name", "Shorts"}}) == "EditRejected");
     const auto list = h.ok("captions.presets");
-    REQUIRE(list.data["presets"].size() == 6);
-    CHECK(list.data["presets"][5]["name"] == "Channel");
-    CHECK(list.data["presets"][5]["builtIn"] == false);
+    REQUIRE(list.data["presets"].size() == 12); // the 11 built in (the animated gallery among them) and Channel
+    CHECK(list.data["presets"][11]["name"] == "Channel");
+    CHECK(list.data["presets"][11]["builtIn"] == false);
     h.ok("captions.applyPreset", Json{{"preset", "channel"}});
     CHECK(captions(h).style.fontWeight == 900);
     h.ok("captions.removePreset", Json{{"name", "Channel"}});
@@ -184,6 +226,60 @@ TEST_CASE("captions.setStyle / applyPreset / savePreset / removePreset / presets
     const auto got = h.ok("captions.get");
     CHECK(got.data["captionTrack"]["style"]["fontWeight"] == 900);
     CHECK_FALSE(got.data.contains("cueSpeakers"));
+}
+
+TEST_CASE("captions.setStyle: animations with timing and easing and emphasis words and case and punctuation and accents",
+          "[command][captions][style][animation]") {
+    CommandHarness h(R"(
+        V1 tgt |Aaaaaaaaaa|
+    )");
+    addTrack(h);
+    const auto styled = h.ok("captions.setStyle", Json{{"style", Json{{"animation", "highlightBar"},
+                                                                      {"animationSpeed", 0.3},
+                                                                      {"animationEase", "linear"},
+                                                                      {"emphasis", "auto"},
+                                                                      {"emphasisWords", Json::array({"GG", "clutch"})},
+                                                                      {"emphasisColor", "#FF0000"},
+                                                                      {"emphasisScale", 1.25},
+                                                                      {"textCase", "upper"},
+                                                                      {"stripPunctuation", true},
+                                                                      {"stripAccents", true}}}});
+    const CaptionStyle& s = captions(h).style;
+    CHECK(s.animation == CaptionAnimation::HighlightBar);
+    CHECK(s.animationSpeed == 0.3);
+    CHECK(s.animationEase == CaptionEase::Linear);
+    CHECK(s.emphasis == CaptionEmphasis::Auto);
+    CHECK(s.emphasisWords == std::vector<std::string>{"GG", "clutch"});
+    CHECK(s.emphasisColor == CaptionRgb{1.0, 0.0, 0.0});
+    CHECK(s.emphasisScale == 1.25);
+    CHECK(s.textCase == CaptionTextCase::Upper);
+    CHECK(s.stripPunctuation);
+    CHECK(s.stripAccents);
+    CHECK(styled.data["style"]["animation"] == "highlightBar");
+    CHECK(styled.data["style"]["emphasisWords"] == Json::array({"GG", "clutch"}));
+    CHECK(styled.data["style"]["emphasisColor"] == "#FF0000");
+    CHECK(styled.data["style"]["textCase"] == "upper");
+    CHECK(captions(h).style.fontWeight == 600); // untouched
+
+    // One undo step; the old look is back.
+    h.session.undo();
+    CHECK(captions(h).style == CaptionStyle{});
+
+    // Out of range or unknown: refused, nothing changes.
+    CHECK(h.errorOf("captions.setStyle", Json{{"style", Json{{"animationSpeed", 0.01}}}}) == "InvalidParams");
+    CHECK(h.errorOf("captions.setStyle", Json{{"style", Json{{"emphasisScale", 2.0}}}}) == "InvalidParams");
+    CHECK(h.errorOf("captions.setStyle", Json{{"style", Json{{"animation", "spin"}}}}) == "InvalidParams");
+    CHECK(h.errorOf("captions.setStyle", Json{{"style", Json{{"textCase", "title"}}}}) == "InvalidParams");
+    CHECK(h.errorOf("captions.setStyle", Json{{"style", Json{{"emphasisWords", Json::array({""})}}}}) == "InvalidParams");
+    CHECK(captions(h).style == CaptionStyle{});
+
+    // The gallery presets apply as any preset and carry their looks.
+    h.ok("captions.applyPreset", Json{{"preset", "Hype"}});
+    CHECK(captions(h).style.animation == CaptionAnimation::WordPop);
+    CHECK(captions(h).style.textCase == CaptionTextCase::Upper);
+    CHECK(captions(h).style.stripPunctuation);
+    h.ok("captions.applyPreset", Json{{"preset", "highlighter"}});
+    CHECK(captions(h).style.animation == CaptionAnimation::HighlightBar);
 }
 
 TEST_CASE("Speakers: transcript.addSpeaker / renameSpeaker / mergeSpeakers / assignSpeaker", "[command][speakers]") {
@@ -266,4 +362,274 @@ TEST_CASE("captions.get masks a cue over redacted speech whatever made it", "[co
     const auto clear = h.ok("captions.get");
     CHECK(clear.data["cues"][1][2] == "two");
     CHECK_FALSE(clear.data.contains("redactedCues"));
+}
+
+// ---- 0.7 (card 061): custom words for transcription -------------------------------------------------------------------
+
+TEST_CASE("transcript.setCustomWords sets, adds and clears the project's words in one undo step", "[command][captions][words]") {
+    CommandHarness h(R"(
+        V1 tgt |Aaaaaaaaaa|
+    )");
+    CHECK(h.state()->customWords.empty());
+
+    const auto first = h.ok("transcript.setCustomWords", Json{{"words", Json::array({"Malenia", " Elden Ring ", "malenia"})}});
+    CHECK(h.state()->customWords == std::vector<std::string>{"Malenia", "Elden Ring"});
+    CHECK(first.data["words"] == Json::array({"Malenia", "Elden Ring"}));
+    CHECK(h.session.undoLabel() == std::optional<std::string>("Custom Words"));
+
+    h.ok("transcript.setCustomWords", Json{{"text", "Radahn, Godrick\nMorgott"}, {"add", true}});
+    CHECK(h.state()->customWords == std::vector<std::string>{"Malenia", "Elden Ring", "Radahn", "Godrick", "Morgott"});
+    const auto listed = h.ok("transcript.customWords");
+    CHECK(listed.data["words"].size() == 5);
+
+    // Replacing: the text alone is the whole list.
+    h.ok("transcript.setCustomWords", Json{{"text", "Only one"}});
+    CHECK(h.state()->customWords == std::vector<std::string>{"Only one"});
+
+    // One undo step each.
+    REQUIRE(h.session.undo());
+    CHECK(h.state()->customWords.size() == 5);
+    REQUIRE(h.session.undo());
+    CHECK(h.state()->customWords.size() == 2);
+    REQUIRE(h.session.undo());
+    CHECK(h.state()->customWords.empty());
+
+    // A dry run changes nothing; an empty list clears; bad input is refused.
+    const auto dry = h.run(Json{{"command", "transcript.setCustomWords"}, {"params", Json{{"words", Json::array({"X"})}}}, {"dryRun", true}});
+    CHECK(dry.ok());
+    CHECK(h.state()->customWords.empty());
+    h.ok("transcript.setCustomWords", Json{{"words", Json::array({"X"})}});
+    h.ok("transcript.setCustomWords", Json{{"words", Json::array()}});
+    CHECK(h.state()->customWords.empty());
+    CHECK(h.errorOf("transcript.setCustomWords") == "InvalidParams");
+    CHECK(h.errorOf("transcript.setCustomWords", Json{{"words", Json::array({std::string(500, 'x')})}}) != "");
+}
+
+// ---- 0.7 (card 115): caption presets as files -------------------------------------------------------------------------
+
+TEST_CASE("Caption presets are exported to a file and imported into another project", "[command][captions][presets][io]") {
+    const std::filesystem::path dir = std::filesystem::path(WABCUT_TEST_OUTPUT_DIR) / "caption-presets-file";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const std::string file = (dir / "looks.wabcut-caption-presets.json").string();
+
+    CommandHarness h(R"(
+        V1 tgt |Aaaaaaaaaa|
+    )");
+    addTrack(h);
+    h.ok("captions.setStyle", Json{{"style", Json{{"fontWeight", 800}, {"box", false}}}});
+    const std::uint64_t shown = captions(h).id.value;
+    h.ok("captions.savePreset", Json{{"name", "Channel look"}, {"captionTrack", shown}});
+    h.ok("captions.savePreset", Json{{"name", "Second look"}, {"style", Json{{"fontWeight", 400}}}});
+
+    SECTION("export writes the project's presets; the project does not change") {
+        const auto before = h.state();
+        const auto result = h.ok("captions.exportPresets", Json{{"path", file}});
+        CHECK(result.data["presets"].size() == 2);
+        CHECK(h.state() == before);
+        CHECK(std::filesystem::exists(file));
+        // A second export refuses to replace it; overwrite and merge are allowed.
+        CHECK(h.errorOf("captions.exportPresets", Json{{"path", file}}) == "EditRejected");
+        h.ok("captions.exportPresets", Json{{"path", file}, {"names", Json::array({"Second look"})}, {"overwrite", true}});
+        CHECK(h.ok("captions.exportPresets", Json{{"path", file}, {"names", Json::array({"Channel look"})}, {"merge", true}})
+                  .data["fileHolds"] == 2);
+        CHECK(h.errorOf("captions.exportPresets", Json{{"path", (dir / "x.json").string()}, {"names", Json::array({"nope"})}}) == "NotFound");
+    }
+    SECTION("a dry run writes nothing") {
+        h.run(Json{{"command", "captions.exportPresets"}, {"params", Json{{"path", file}}}, {"dryRun", true}});
+        CHECK_FALSE(std::filesystem::exists(file));
+    }
+    SECTION("import adds them to a project that has none, as one undo step") {
+        h.ok("captions.exportPresets", Json{{"path", file}});
+        CommandHarness other(R"(
+            V1 tgt |Aaaaaaaaaa|
+        )");
+        const auto result = other.ok("captions.importPresets", Json{{"path", file}});
+        CHECK(result.data["imported"] == Json::array({"Channel look", "Second look"}));
+        CHECK(other.state()->captionPresets.size() == 2);
+        CHECK(edit::captionPresetStyle(*other.state(), "channel look")->fontWeight == 800);
+        CHECK(other.session.undoLabel() == std::optional<std::string>("Import Caption Presets"));
+        REQUIRE(other.session.undo());
+        CHECK(other.state()->captionPresets.empty());
+
+        // Only the named ones; a name the project has is skipped unless "replace".
+        other.ok("captions.importPresets", Json{{"path", file}, {"names", Json::array({"second look"})}});
+        CHECK(other.state()->captionPresets.size() == 1);
+        const auto again = other.ok("captions.importPresets", Json{{"path", file}});
+        CHECK(again.data["imported"] == Json::array({"Channel look"}));
+        CHECK(again.data["skipped"].size() == 1);
+        h.ok("captions.setStyle", Json{{"style", Json{{"fontWeight", 600}}}});
+        h.ok("captions.savePreset", Json{{"name", "Channel look"}, {"captionTrack", shown}});
+        h.ok("captions.exportPresets", Json{{"path", file}, {"overwrite", true}});
+        other.ok("captions.importPresets", Json{{"path", file}, {"replace", true}});
+        CHECK(edit::captionPresetStyle(*other.state(), "Channel look")->fontWeight == 600);
+    }
+    SECTION("a missing, damaged or foreign file is refused and the project stays") {
+        const auto before = h.state();
+        CHECK(h.errorOf("captions.importPresets", Json{{"path", (dir / "missing.json").string()}}) == "NotFound");
+        const std::string bad = (dir / "bad.json").string();
+        std::ofstream(bad) << "{ not json";
+        CHECK(h.errorOf("captions.importPresets", Json{{"path", bad}}) != "");
+        const std::string foreign = (dir / "foreign.json").string();
+        std::ofstream(foreign) << R"({"format": "wabcut-effect-presets", "version": 1, "presets": []})";
+        CHECK(h.errorOf("captions.importPresets", Json{{"path", foreign}}) != "");
+        CHECK(h.state() == before);
+    }
+    SECTION("the file commands are file commands: a host that holds those back refuses them") {
+        CHECK(command::builtinCommands().find("captions.exportPresets")->touchesFiles);
+        CHECK(command::builtinCommands().find("captions.importPresets")->touchesFiles);
+    }
+}
+
+// ---- 0.7 (card 075): captions to graphics ---------------------------------------------------------------------------
+
+namespace {
+
+/// The graphic clips of video track `v` (1 = V1), in time order.
+std::vector<const Clip*> graphicClips(const CommandHarness& h, std::size_t v) {
+    std::vector<const Clip*> out;
+    const Sequence& seq = h.sequence(h.state());
+    if (v == 0 || v > seq.videoTracks.size()) {
+        return out;
+    }
+    for (const Clip& c : seq.videoTracks[v - 1]->clips) {
+        if (c.graphic() != nullptr) {
+            out.push_back(&c);
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("captions.toGraphics makes a graphic clip of every cue in the caption style, in one undo step", "[command][captions][graphics]") {
+    CommandHarness h(R"(
+        V1 tgt |Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+    )");
+    addTrack(h);
+    h.ok("captions.setStyle", Json{{"style", Json{{"fontSize", 0.06}, {"fontWeight", 700}, {"fill", "#FFD400"},
+                                                  {"outlineWidth", 0.1}, {"outline", "#101010"}, {"shadowOpacity", 0.5},
+                                                  {"box", true}, {"boxOpacity", 0.8}, {"boxPadding", 0.4}, {"maxWidth", 0.7},
+                                                  {"alignment", "center"}}}});
+    const std::size_t undo = h.session.undoCount();
+    const auto r = h.ok("captions.toGraphics");
+    CHECK(h.session.undoCount() == undo + 1);
+    CHECK(r.createdIds.size() == 3);
+    CHECK(r.data["converted"] == 3);
+    const Sequence& seq = h.sequence(h.state());
+    REQUIRE(seq.videoTracks.size() == 2); // a new video track on top
+    const auto clips = graphicClips(h, 2);
+    REQUIRE(clips.size() == 3);
+    // At the cues' times.
+    CHECK(clips[0]->start() == captions(h).cues[0].start);
+    CHECK(clips[1]->start() == captions(h).cues[1].start);
+    CHECK(clips[1]->duration() == captions(h).cues[1].duration);
+    CHECK(clips[2]->end() == captions(h).cues[2].end());
+
+    const Graphic& g = *clips[1]->graphic();
+    REQUIRE(g.layers.size() == 1);
+    const GraphicLayer& layer = g.layers[0];
+    CHECK(layer.kind == LayerKind::Text);
+    CHECK(layer.text.text() == "two");
+    CHECK(g.width == seq.width);
+    CHECK(g.height == seq.height);
+    // The look: size from the frame height, weight, colours, the outline as a stroke, the box as the background.
+    const TextStyle& run = layer.text.runs.front().style;
+    CHECK(run.fontSize == Catch::Approx(0.06 * seq.height));
+    CHECK(run.fontWeight == 700);
+    CHECK(run.fill.rgba[0] == Catch::Approx(1.0));
+    CHECK(run.fill.rgba[1] == Catch::Approx(212.0 / 255.0));
+    REQUIRE(layer.text.strokes.size() == 1);
+    CHECK(layer.text.strokes[0].width.constant() == Catch::Approx(0.1 * run.fontSize));
+    CHECK(layer.shadow.enabled);
+    CHECK(layer.text.background.enabled);
+    CHECK(layer.text.background.color.rgba[3] == Catch::Approx(0.8));
+    CHECK(layer.text.background.padding == Catch::Approx(0.4 * run.fontSize));
+    CHECK(layer.text.align == TextAlign::Center);
+    // A text box that grows with its text: as wide as the caption block, as tall as its lines (boxHeight 0 = auto) ...
+    CHECK(layer.text.boxWidth == Catch::Approx(0.7 * seq.width));
+    CHECK(layer.text.boxHeight == 0.0);
+    // ... and pinned to the bottom edge of the frame, so a longer text grows upwards from the safe margin.
+    REQUIRE(layer.pin.has_value());
+    CHECK(layer.pin->target == LayerPin::kVideoFrame);
+    CHECK(layer.pin->edges == LayerPin::kBottom);
+    CHECK(layer.pin->offsets[3] == Catch::Approx(-0.1 * seq.height));
+    CHECK(layer.transform.x.constant() == Catch::Approx(seq.width / 2.0));
+
+    // The caption track is switched off, so the text is not drawn twice; its cues are still there.
+    CHECK_FALSE(captions(h).enabled);
+    CHECK(captions(h).cues.size() == 3);
+    REQUIRE(h.session.undo());
+    CHECK(h.sequence(h.state()).videoTracks.size() == 1);
+    CHECK(captions(h).enabled);
+}
+
+TEST_CASE("captions.toGraphics: placement, case, keep and remove, a range, overlapping cues and a named track", "[command][captions][graphics]") {
+    CommandHarness h(R"(
+        V1 tgt |Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+        V2     |..................................................................................................................................|
+    )");
+    addTrack(h);
+    SECTION("top, custom, upper and lower case, left alignment") {
+        h.ok("captions.setStyle", Json{{"style", Json{{"placement", "top"}, {"textCase", "upper"}, {"alignment", "left"}}}});
+        h.ok("captions.toGraphics", Json{{"captions", "keep"}});
+        const Sequence& seq = h.sequence(h.state());
+        const GraphicLayer& top = graphicClips(h, seq.videoTracks.size())[0]->graphic()->layers[0];
+        REQUIRE(top.pin.has_value());
+        CHECK(top.pin->edges == LayerPin::kTop);
+        CHECK(top.pin->offsets[1] == Catch::Approx(0.1 * seq.height));
+        CHECK(top.text.runs.front().style.caps == TextCaps::AllCaps);
+        CHECK(top.text.align == TextAlign::Left);
+        CHECK(top.transform.x.constant() == Catch::Approx(seq.width / 2.0 - 0.8 * seq.width / 2.0)); // the block's left edge
+        CHECK(captions(h).enabled); // "keep"
+        h.ok("captions.setStyle", Json{{"style", Json{{"placement", "custom"}, {"alignment", "center"}, {"textCase", "lower"}, {"positionX", 0.25}}}});
+        h.ok("captions.toGraphics", Json{{"captions", "keep"}, {"from", tc(5)}, {"to", tc(11)}});
+        const Sequence& after = h.sequence(h.state());
+        const auto placed = graphicClips(h, after.videoTracks.size());
+        REQUIRE(placed.size() == 1); // only the cue that starts in the range
+        const GraphicLayer& custom = placed[0]->graphic()->layers[0];
+        CHECK_FALSE(custom.pin.has_value());
+        CHECK(custom.transform.x.constant() == Catch::Approx(0.25 * after.width));
+        CHECK(custom.text.text() == "two");
+    }
+    SECTION("remove deletes the caption track") {
+        h.ok("captions.toGraphics", Json{{"captions", "remove"}});
+        CHECK(h.sequence(h.state()).captionTracks.empty());
+        CHECK(graphicClips(h, 3).size() == 3);
+    }
+    SECTION("overlapping cues go on more than one new track") {
+        h.ok("captions.setStyle", Json{{"style", Json{{"allowOverlap", true}}}});
+        h.ok("captions.addCue", Json{{"start", tc(2)}, {"end", tc(6)}, {"text", "overlap"}});
+        h.ok("captions.toGraphics");
+        const Sequence& seq = h.sequence(h.state());
+        std::size_t lanes = 0;
+        for (std::size_t v = 3; v <= seq.videoTracks.size(); ++v) {
+            lanes += graphicClips(h, v).empty() ? 0 : 1;
+        }
+        CHECK(lanes == 2);
+    }
+    SECTION("a named free track takes them; a busy one is refused and nothing changes") {
+        const auto before = h.state();
+        CHECK(h.errorOf("captions.toGraphics", Json{{"track", "V1"}}) == "EditRejected"); // the picture is under the cues
+        CHECK(h.state() == before);
+        h.ok("captions.toGraphics", Json{{"track", "V2"}});
+        CHECK(graphicClips(h, 2).size() == 3);
+        CHECK(h.sequence(h.state()).videoTracks.size() == 2); // no new track
+    }
+    SECTION("nothing to convert, a bad choice and no caption track are refused") {
+        CHECK(h.errorOf("captions.toGraphics", Json{{"from", tc(100)}}) == "EditRejected");
+        CHECK(h.errorOf("captions.toGraphics", Json{{"captions", "delete"}}) == "InvalidParams");
+        CHECK(h.errorOf("captions.toGraphics", Json{{"captions", "remove"}, {"from", tc(5)}}) == "InvalidParams");
+        CommandHarness bare(R"(
+            V1 tgt |Aaaaaaaaaaaaaaaaaaaa|
+        )");
+        CHECK(bare.errorOf("captions.toGraphics") == "NotFound");
+    }
+}
+
+TEST_CASE("captions.toGraphics is in the catalog and its example is valid", "[command][captions][graphics]") {
+    const command::CommandSpec* spec = command::builtinCommands().find("captions.toGraphics");
+    REQUIRE(spec != nullptr);
+    CHECK(command::unsupportedSchemaKeywords(spec->params).empty());
+    CHECK(command::validateAgainstSchema(spec->params, spec->example).empty());
 }

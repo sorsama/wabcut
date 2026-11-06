@@ -379,3 +379,21 @@ TEST_CASE("The user cache directory honours WABCUT_CACHE_DIR", "[ai][models]") {
     CHECK(ModelStore::defaultRoot().filename() == "models");
     CHECK(AnalysisCache::defaultRoot().filename() == "analysis");
 }
+
+// Card #173: Collect Files sizes the analysis sidecars from the entry files, without reading or parsing them.
+TEST_CASE("Analysis cache sidecarBytesEstimate follows the entries of a source and is zero without any", "[ai][cache]") {
+    AnalysisCache cache(test::freshDir("cache-sidecar-size"));
+    CHECK(cache.sidecarBytesEstimate(0x1234) == 0);
+    REQUIRE(cache.put(key(0x1234), std::string(R"({"words":[")") + std::string(5000, 'a') + R"("]})"));
+    const std::int64_t one = cache.sidecarBytesEstimate(0x1234);
+    CHECK(one > 5000);
+    const auto sidecar = cache.exportSidecar(0x1234);
+    REQUIRE(sidecar);
+    CHECK(one < static_cast<std::int64_t>(sidecar->size()) * 2);
+    CHECK(one > static_cast<std::int64_t>(sidecar->size()) / 2);
+    AnalysisKey second = key(0x1234);
+    second.analyzerId = "shots";
+    REQUIRE(cache.put(second, std::string(R"({"cuts":[")") + std::string(3000, 'b') + R"("]})"));
+    CHECK(cache.sidecarBytesEstimate(0x1234) > one + 3000);
+    CHECK(cache.sidecarBytesEstimate(0x9999) == 0); // another source
+}

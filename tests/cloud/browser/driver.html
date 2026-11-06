@@ -1,0 +1,105 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Review page check</title>
+<!-- Drives the generated review page (review/index.html) in a real browser and prints what it did into #out (run.ps1 dumps the DOM).
+     Needs a browser started with --allow-file-access-from-files so this page can reach into the frame. -->
+<iframe id="f" src="review/index.html" width="960" height="900"></iframe>
+<iframe id="g" src="review-expired/index.html" width="960" height="300"></iframe>
+<pre id="out">pending</pre>
+<script>
+const out = [];
+const log = (k, v) => out.push(k + ': ' + (typeof v === 'string' ? v : JSON.stringify(v)));
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const until = async (fn, ms = 10000) => { const t = Date.now(); while (Date.now() - t < ms) { if (fn()) return true; await wait(50); } return false; };
+// (a frame that has not started loading holds an empty about:blank document that already says "complete")
+const loaded = frame => until(() => {
+  try { return frame.contentWindow.location.href !== 'about:blank' && frame.contentDocument.readyState === 'complete' && !!frame.contentDocument.getElementById('v'); }
+  catch (e) { return false; }
+}, 15000);
+
+async function main() {
+  const f = document.getElementById('f');
+  await loaded(f);
+  const w = f.contentWindow, d = w.document;
+  const $ = id => d.getElementById(id);
+  const v = $('v');
+  log('title', $('title').textContent);
+  log('video ready', await until(() => v.readyState >= 2));
+  log('video size', [v.videoWidth, v.videoHeight]);
+  log('video duration', Math.round(v.duration * 1000) / 1000);
+  log('expired banner hidden', $('expired').hidden);
+  log('timecode at start', $('tc').textContent);
+
+  // step forward a few frames with the button, and back with the keyboard
+  for (let i = 0; i < 5; i++) { $('next').click(); await wait(120); }
+  log('timecode after 5 steps', $('tc').textContent);
+  d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+  await wait(200);
+  log('timecode after ArrowLeft', $('tc').textContent);
+  log('add button label', $('addtc').textContent);
+
+  // point at the picture: a click, then a drag
+  const r = $('overlay').getBoundingClientRect();
+  const fire = (type, x, y) => $('overlay').dispatchEvent(new w.PointerEvent(type, { clientX: r.left + x, clientY: r.top + y, pointerId: 1, bubbles: true }));
+  fire('pointerdown', r.width * 0.3, r.height * 0.3);
+  fire('pointermove', r.width * 0.5, r.height * 0.5);
+  fire('pointerup', r.width * 0.5, r.height * 0.5);
+  await wait(100);
+  log('pending marks drawn', d.querySelectorAll('.mk.pending').length);
+  log('remove-mark button visible', !$('clearmark').hidden);
+
+  // a comment with the name, the text and the mark
+  $('name').value = 'Maria <b>Reviewer</b>';
+  // (the closing tag is split so it does not end THIS page's script)
+  $('text').value = 'The logo is too small <' + '/script><img src=x onerror=alert(1)>';
+  $('add').click();
+  await wait(100);
+  log('comments listed', d.querySelectorAll('#list li').length);
+  log('first comment text', d.querySelector('#list li .body').textContent);
+  log('markup injected into the list', d.querySelectorAll('#list img, #list b, #list script').length);
+  log('status', $('status').textContent);
+
+  // another comment on a later frame, without a mark
+  for (let i = 0; i < 4; i++) { $('next').click(); await wait(100); }
+  $('text').value = 'Cut this shorter';
+  $('add').click();
+  await wait(100);
+  log('comments listed after the second', d.querySelectorAll('#list li').length);
+  log('count shown', $('count').textContent);
+  log('download enabled', !$('save').disabled);
+
+  // the file the page gives the reviewer
+  let blob = null, fileName = '';
+  w.URL.createObjectURL = b => { blob = b; return 'blob:check'; };
+  w.HTMLAnchorElement.prototype.click = function () { fileName = this.download; };
+  $('save').click();
+  await wait(100);
+  log('file name', fileName);
+  if (blob) {
+    const text = await blob.text();
+    try { log('file', JSON.parse(text)); } catch (e) { log('file is not JSON', text.slice(0, 200)); }
+  } else {
+    log('no file made', '');
+  }
+
+  // comments survive a reload (the browser keeps them until they are downloaded)
+  f.contentWindow.location.reload();
+  await wait(300);
+  await loaded(f);
+  await wait(300);
+  log('comments after a reload', f.contentDocument.querySelectorAll('#list li').length);
+
+  // the expired page
+  const g = document.getElementById('g');
+  await loaded(g);
+  const gd = g.contentDocument;
+  log('expired: banner shown', !gd.getElementById('expired').hidden);
+  log('expired: player hidden', gd.getElementById('player').hidden);
+  log('expired: compose hidden', gd.getElementById('compose').hidden);
+  log('expired: video has no source', !gd.getElementById('v').getAttribute('src'));
+}
+
+main().catch(e => log('ERROR', String(e && e.stack || e))).finally(() => {
+  document.getElementById('out').textContent = out.join('\n') + '\nDONE';
+});
+</script>

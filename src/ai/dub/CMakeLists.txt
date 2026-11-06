@@ -6,6 +6,8 @@
 find_package(nlohmann_json CONFIG REQUIRED)
 
 add_library(wabcut_ai_dub STATIC
+    src/AudioDescription.cpp
+    src/AudioDescriptionCommands.cpp
     src/Dub.cpp
     src/DubCommands.cpp
     src/Pipeline.cpp

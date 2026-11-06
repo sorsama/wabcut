@@ -711,9 +711,9 @@ struct TimelineAudioPlayer::Impl {
         flushAll(TrackStream::kImmediate, at);
     }
 
-    /// A.9: the mix's channel count: 6 for a 5.1 master, else the device's.
+    /// A.9: the mix's channel count: 6 for a 5.1 master, 8 for a 7.1 one (0.7), else the device's.
     int mixChannelsFor(const Sequence* seq) const {
-        return seq != nullptr && seq->masterFormat == ChannelFormat::Surround51 ? 6 : deviceChannels;
+        return seq != nullptr ? masterMixChannels(seq->masterFormat, deviceChannels) : deviceChannels;
     }
 
     /// Creates the source (mixing `mixChannels` channels, handing the device deviceChannels) and the slots' renderers.
@@ -848,6 +848,7 @@ struct TimelineAudioPlayer::Impl {
         auto trackAt = [&](int i) { return i < count ? tracks[static_cast<std::size_t>(i)] : TrackPtr{}; };
 
         bool coarse = before == nullptr || after == nullptr || seq == nullptr;
+        bool filesChanged = false;
         ChangeSet changes;
         const SequenceChange* change = nullptr;
         if (!coarse) {
@@ -855,6 +856,16 @@ struct TimelineAudioPlayer::Impl {
             change = changes.sequence(sequence);
             coarse = !changes.modifiedMedia.empty() || !changes.removedMedia.empty() ||
                      (change != nullptr && change->trackListChanged);
+            // 143: a file that changed under the same path (Reload Footage) leaves the tracks untouched but not what is
+            // queued: the samples already read from the old bytes must not play.
+            for (const MediaId id : changes.modifiedMedia) {
+                const MediaItem* was = before->findMedia(id);
+                const MediaItem* now = after->findMedia(id);
+                if (was != nullptr && now != nullptr && was->locator.fingerprint != now->locator.fingerprint) {
+                    filesChanged = true;
+                    break;
+                }
+            }
         }
 
         if (coarse) {
@@ -862,6 +873,9 @@ struct TimelineAudioPlayer::Impl {
                 Slot& slot = slots[static_cast<std::size_t>(i)];
                 const TrackPtr next = trackAt(i);
                 if (next == slot.track) {
+                    if (filesChanged && next != nullptr) {
+                        refill(slot, i, cutover);
+                    }
                     continue;
                 }
                 const bool wasEvaluated = slot.track != nullptr;
@@ -1443,6 +1457,11 @@ void TimelineAudioPlayer::clearSubmixClip(int index) const noexcept {
 audio::LoudnessReading TimelineAudioPlayer::loudness() const noexcept {
     const std::shared_ptr<TimelineMixSource> source = m_impl->published.load(std::memory_order_acquire);
     return source != nullptr ? source->tap().reading() : audio::LoudnessReading{};
+}
+
+std::vector<float> TimelineAudioPlayer::loudnessHistory(std::size_t maxPoints) const {
+    const std::shared_ptr<TimelineMixSource> source = m_impl->published.load(std::memory_order_acquire);
+    return source != nullptr ? source->tap().shortTermHistory(maxPoints) : std::vector<float>{};
 }
 
 void TimelineAudioPlayer::resetLoudness() noexcept {

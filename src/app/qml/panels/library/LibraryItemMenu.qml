@@ -21,6 +21,10 @@ ContextMenu {
     readonly property bool making: proxyState === "generating" || proxyState === "paused" || proxyState === "queued"
     /// What the menu's selection rows act on: the selection when the item is in it, else the item.
     readonly property var targets: Library.isSelected(menu.key) ? Library.selection : [menu.key]
+    /// 0.7 (card 055): the media items among `targets` (the clips New Sequence per Clip works on).
+    readonly property var mediaTargets: menu.targets.filter(k => String(k).startsWith("m"))
+    /// 0.7 (card 112): the bin is where Nest… files nested sequences (read when the menu opens).
+    property bool nestBin: false
     /// Read when the menu opens: the bins Move to Bin offers (Library.binTree), the Proxy rows' counts
     /// (Library.proxyPlan) and the offline items of `targets` (Link Media…).
     property var bins: []
@@ -28,6 +32,8 @@ ContextMenu {
     property var offlineTargets: []
     /// P1 round (#40): where the item is used (Library.usages; bins: none), for Find in Timeline ▸.
     property var usages: []
+    /// 0.7 (card 010): the label colour the targets share (-1: they differ, or sequences / bins), checked in Label.
+    property int label: -1
     readonly property int usageLimit: 40
     /// The Proxy rows act on several items (a bin, or a selection of more than one).
     readonly property bool proxyMany: menu.kind === "bin" || (menu.proxyPlan.targets ?? 0) > 1
@@ -55,7 +61,10 @@ ContextMenu {
         bins = Library.binTree(chosen)
         proxyPlan = Library.proxyPlan(itemKey)
         offlineTargets = chosen.filter(k => Library.details(k).offline === true)
+        const labels = chosen.map(k => Library.details(k).label)
+        label = labels.length > 0 && labels.every(l => l !== undefined && l === labels[0]) ? labels[0] : -1
         usages = itemKind === "bin" ? [] : Library.usages(itemKey)
+        nestBin = itemKind === "bin" && (Library.details(itemKey).nestTarget ?? false)
         popup(target, point.x, point.y)
     }
     /// A row that opens a dialog runs once the menu has closed (the dialog then keeps the focus).
@@ -97,6 +106,15 @@ ContextMenu {
         text: qsTr("Open bin in new tab")
         iconName: "external-link"
         onTriggered: Library.openBinInTab(menu.key)
+    }
+    // 0.7 (card 112): Nest… files "Nested Sequence 01" in this bin (one bin at most), not beside the sequence.
+    ContextMenuItem {
+        objectName: "libraryMenuNestBin"
+        visible: menu.kind === "bin" && !(Library.details(menu.key).searchBin ?? false)
+        height: visible ? implicitHeight : 0
+        text: menu.nestBin ? qsTr("Stop Filing Nested Sequences Here") : qsTr("File Nested Sequences Here")
+        iconName: "layers"
+        onTriggered: Library.setNestBin(menu.key, !menu.nestBin)
     }
     ContextMenuItem {
         objectName: "libraryMenuEditSearchBin"
@@ -187,7 +205,12 @@ ContextMenu {
                 text: modelData
                 iconName: "square"
                 iconColor: Theme.clipColor(index)
-                onTriggered: Library.setLabel(Library.isSelected(menu.key) ? Library.selection : [menu.key], index)
+                checkable: true
+                checked: index === menu.label
+                onTriggered: {
+                    checked = Qt.binding(() => index === menu.label)
+                    Library.setLabel(Library.isSelected(menu.key) ? Library.selection : [menu.key], index)
+                }
             }
             onObjectAdded: (index, object) => labelMenu.insertItem(index, object)
             onObjectRemoved: (index, object) => labelMenu.removeItem(object)
@@ -305,6 +328,25 @@ ContextMenu {
         command: "file.newSequenceFromClip"
         onTriggered: Editing.newSequenceFromClip(menu.key)
     }
+    // 0.7 (card 055): several clips selected - a sequence for each, or one holding them all.
+    ContextMenuItem {
+        objectName: "libraryMenuNewSequencePerClip"
+        visible: menu.isMedia && menu.mediaTargets.length > 1
+        height: visible ? implicitHeight : 0
+        text: qsTr("New Sequence per Clip (%1)").arg(menu.mediaTargets.length)
+        iconName: "clapperboard"
+        command: "file.newSequencesFromClips"
+        onTriggered: Editing.newSequencesFromClips(menu.mediaTargets, false)
+    }
+    ContextMenuItem {
+        objectName: "libraryMenuNewSequenceFromAllClips"
+        visible: menu.isMedia && menu.mediaTargets.length > 1
+        height: visible ? implicitHeight : 0
+        text: qsTr("New Sequence From All Selected Clips")
+        iconName: "clapperboard"
+        command: "file.newSequenceFromClipsTogether"
+        onTriggered: Editing.newSequencesFromClips(menu.mediaTargets, true)
+    }
     ContextMenuItem {
         objectName: "libraryMenuSequenceSettings"
         visible: menu.kind === "sequence"
@@ -323,7 +365,7 @@ ContextMenu {
         objectName: "libraryMenuExportSequences"
         visible: exportSequencesItem.sequenceKeys.length > 0
         height: visible ? implicitHeight : 0
-        text: exportSequencesItem.sequenceKeys.length > 1 ? qsTr("Export %n Sequences…", "", exportSequencesItem.sequenceKeys.length) : qsTr("Export…")
+        text: exportSequencesItem.sequenceKeys.length > 1 ? qsTr("Export %n Sequence(s)…", "", exportSequencesItem.sequenceKeys.length) : qsTr("Export…")
         iconName: "upload"
         onTriggered: {
             const keys = exportSequencesItem.sequenceKeys.slice()
@@ -398,6 +440,16 @@ ContextMenu {
         iconName: "eye-off"
         command: "clip.makeOffline"
         onTriggered: Editing.makeOffline(Library.isSelected(menu.key) ? Library.selection : [menu.key])
+    }
+    // 0.7 (card 143): the file was changed by another program - read it again where it is.
+    ContextMenuItem {
+        objectName: "libraryMenuReloadFootage"
+        visible: menu.isMedia && menu.kind !== "title"
+        height: visible ? implicitHeight : 0
+        text: qsTr("Reload Footage")
+        iconName: "rotate-cw"
+        command: "clip.reloadFootage"
+        onTriggered: Editing.reloadFootage(Library.isSelected(menu.key) ? Library.selection : [menu.key])
     }
     ContextMenuItem {
         objectName: "libraryMenuEditOriginal"
@@ -531,6 +583,18 @@ ContextMenu {
         onTriggered: {
             const itemKey = menu.key
             menu.pendingAction = () => menu.propertiesRequested(itemKey)
+        }
+    }
+    // 0.7 (card 179): where the clip came from and whether it is cleared (the Rights and Clearance Log, these items picked).
+    ContextMenuItem {
+        objectName: "libraryMenuRights"
+        visible: menu.isMedia && menu.mediaTargets.length > 0
+        height: visible ? implicitHeight : 0
+        text: qsTr("Rights and Clearance…")
+        iconName: "list"
+        onTriggered: {
+            const keys = menu.mediaTargets
+            menu.pendingAction = () => Rights.openFor(keys)
         }
     }
     ContextMenuSeparator {}

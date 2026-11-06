@@ -303,7 +303,7 @@ CommandOutput fromScriptCommand(ExecutionContext& c) {
     const bool outline = std::ranges::any_of(script.beats, [](const ScriptBeat& b) { return b.outline; });
     if (c.boolean("interpret", false)) {
         auto* services = roughCutServicesOf(c);
-        if (c.state().aiNoCloud) {
+        if (c.state().aiNoCloud && !(services && services->chat && services->chatLocal)) { // QA-07: local models stay
             warnings.emplace_back("this project is locked to no-cloud AI: the outline was matched on this computer only");
         } else if (!services || !services->chat) {
             warnings.emplace_back("no cloud chat model here: the outline was matched on this computer only");

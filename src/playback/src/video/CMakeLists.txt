@@ -12,6 +12,8 @@ add_library(wabcut_playback_video STATIC
     PoolFrameSource.cpp
     PoolFrameSource.h
     Evaluate.cpp
+    SourceStage.cpp
+    ExternalEffects.cpp
     MotionAnalysis.cpp
     PlaybackController.cpp
     Scheduler.cpp

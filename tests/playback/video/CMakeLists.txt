@@ -5,12 +5,19 @@ wabcut_add_test_suite(playback_video
         PlaybackTestSupport.h
         PlaybackTestSupport.cpp
         test_caption_style.cpp
+        test_caption_tracks.cpp # 0.7 (card 116): bilingual captions, several tracks on screen
         test_device_change.cpp
         test_evaluate.cpp
         test_finishing.cpp
         test_library_mapping.cpp # 0.2: Premiere's transitions and effects in the evaluator
+        test_motion_blur.cpp # 0.7: Motion Blur's instants of the shutter in the evaluator
         test_nested.cpp
         test_auditions_playback.cpp # 0.6 (card #74): only the active take plays and exports
+        test_video_solo_playback.cpp # 0.7 (card 106): video track solo
+        test_ai_source_stage.cpp # 0.7: AI video effects in the evaluator (chain, source-stage processor, unprocessed flag)
+        test_ai_side_stage.cpp   # 0.7: AI Refocus depth maps and AI Frame Interpolation pictures in the evaluator
+        test_ai_face_stage.cpp   # 0.7: AI Face Retouch face maps in the evaluator
+        test_ai_eye_stage.cpp    # 0.7: AI Eye Contact eye measurements in the evaluator
         test_graphics_layers.cpp # C.13 graphic clips in the evaluator (I.9 Part 0.5)
         test_preview_playback.cpp # C.16 preview files (renders them with wabcut_editor's export preview renderer)
         test_proxy_playback.cpp

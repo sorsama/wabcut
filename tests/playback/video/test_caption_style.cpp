@@ -257,3 +257,227 @@ TEST_CASE("Caption style: vertical Short cue lines stay one line each in the pre
         }
     }
 }
+
+TEST_CASE("Caption style: OpenType features reach the renderer and are saved only when set (card 138)", "[playback][captions][typography]") {
+    CaptionStyle style;
+    style.features = "calt, -liga, ss01";
+    REQUIRE_FALSE(captionStyleProblem(style));
+    Captioned c({{Ticks{}, Ticks::fromSeconds(4), "\xD8\xB3\xD9\x84\xD8\xA7\xD9\x85"}}, style); // salam
+    const auto frame = c.at(Ticks::fromSeconds(1));
+    REQUIRE(frame);
+    CHECK(frame->style.features == "calt, -liga, ss01");
+    // The plain model style maps to the plain renderer style: nothing is asked of the shaper.
+    CHECK(captionStyleOf(CaptionStyle{}, Ticks{}).features.empty());
+    // An unreadable list is a style problem (the model refuses to keep it); the bound is the same as a graphic's.
+    style.features = "calt, nonsense!";
+    CHECK(captionStyleProblem(style));
+    style.features = "liga=100";
+    CHECK(captionStyleProblem(style));
+}
+
+// ---- card 074: per-word animations, timing, emphasis; card 114: the text rules ------------------------------------
+
+namespace {
+
+/// Three words over three seconds from 0 ("One" 0 s, "two" 0.818 s, "three" 1.636 s: the cue's time shared by length).
+Captioned threeWords(CaptionAnimation animation, double speed = 0.18, CaptionEase ease = CaptionEase::Smooth) {
+    CaptionStyle style;
+    style.animation = animation;
+    style.animationSpeed = speed;
+    style.animationEase = ease;
+    return Captioned({{Ticks{}, Ticks::fromSeconds(3), "One two three"}}, style);
+}
+
+const render::CaptionFrame::WordFx* fxOf(const render::CaptionFrame& frame, int begin) {
+    for (const auto& fx : frame.wordFx) {
+        if (fx.begin == begin)
+            return &fx;
+    }
+    return nullptr;
+}
+
+} // namespace
+
+TEST_CASE("Caption animations: word pop shows the words as they are said and each pops in", "[playback][captions][animation]") {
+    Captioned c = threeWords(CaptionAnimation::WordPop);
+    const auto early = c.at(ms(900)); // "two" started 82 ms ago; "three" is not said yet
+    REQUIRE(early);
+    REQUIRE(early->hidden.size() == 1);
+    CHECK(early->hidden[0] == std::pair{8, 13});
+    const auto* two = fxOf(*early, 4);
+    REQUIRE(two);
+    CHECK(two->scale > 0.5);
+    CHECK(two->scale < 1.0);
+    CHECK(two->opacity > 0.5);
+    CHECK(two->opacity < 1.0);
+    CHECK(fxOf(*early, 0) == nullptr); // "One" has settled
+    // The word being said takes the highlight colour.
+    REQUIRE(early->colorSpans.size() == 1);
+    CHECK(early->colorSpans[0].begin == 4);
+    CHECK(early->colorSpans[0].end == 7);
+    CHECK(early->colorSpans[0].color == CaptionStyle{}.highlight);
+    // Settled: nothing moves, everything shows.
+    const auto later = c.at(ms(2500));
+    REQUIRE(later);
+    CHECK(later->hidden.empty());
+    CHECK(later->wordFx.empty());
+    // A slower speed is less far along at the same instant.
+    Captioned slow = threeWords(CaptionAnimation::WordPop, 0.5);
+    Captioned quick = threeWords(CaptionAnimation::WordPop, 0.05);
+    REQUIRE(fxOf(*slow.at(ms(900)), 4));
+    CHECK(fxOf(*slow.at(ms(900)), 4)->scale < 1.0);
+    CHECK(fxOf(*quick.at(ms(900)), 4) == nullptr);
+}
+
+TEST_CASE("Caption animations: bounce hops the spoken word and the overshoot ease dips under the line", "[playback][captions][animation]") {
+    Captioned smooth = threeWords(CaptionAnimation::Bounce, 0.2, CaptionEase::Smooth);
+    const auto hop = smooth.at(ms(818 + 40)); // 40 ms into "two"
+    REQUIRE(hop);
+    CHECK(hop->hidden.empty()); // all words are on screen
+    const auto* two = fxOf(*hop, 4);
+    REQUIRE(two);
+    CHECK(two->lift > 0.1);
+    CHECK(two->lift <= 0.22 + 1e-9);
+    CHECK(fxOf(*smooth.at(ms(818 + 500)), 4) == nullptr); // landed (2 x 0.2 s)
+    // The overshoot curve passes 1 and settles: the word dips below its line at the end of the hop.
+    Captioned springy = threeWords(CaptionAnimation::Bounce, 0.2, CaptionEase::Overshoot);
+    double lowest = 0.0;
+    for (int k = 0; k <= 40; ++k) {
+        if (const auto* fx = fxOf(*springy.at(ms(818 + 10 * k)), 4))
+            lowest = std::min(lowest, fx->lift);
+    }
+    CHECK(lowest < 0.0);
+}
+
+TEST_CASE("Caption animations: zoom grows the spoken word and settles it back", "[playback][captions][animation]") {
+    Captioned c = threeWords(CaptionAnimation::Zoom, 0.1, CaptionEase::Linear);
+    const auto mid = c.at(ms(1200)); // "two" is said from 0.818 s to 1.636 s: fully grown
+    REQUIRE(mid);
+    const auto* two = fxOf(*mid, 4);
+    REQUIRE(two);
+    CHECK(two->scale == Approx(1.25));
+    const auto after = c.at(ms(1636 + 50)); // half way back
+    REQUIRE(after);
+    REQUIRE(fxOf(*after, 4));
+    CHECK(fxOf(*after, 4)->scale == Approx(1.125).margin(0.01));
+    REQUIRE(fxOf(*after, 8));
+    CHECK(fxOf(*after, 8)->scale > 1.0); // "three" is growing
+    CHECK(fxOf(*c.at(ms(1636 + 200)), 4) == nullptr); // "two" settled back to its size
+}
+
+TEST_CASE("Caption animations: the highlight bar sits on the spoken word and slides from the one before", "[playback][captions][animation]") {
+    Captioned c = threeWords(CaptionAnimation::HighlightBar, 0.2, CaptionEase::Linear);
+    const auto first = c.at(ms(50));
+    REQUIRE(first);
+    CHECK(first->bar.toBegin == 0);
+    CHECK(first->bar.toEnd == 3);
+    CHECK(first->bar.fromBegin == -1);
+    CHECK(first->bar.opacity == Approx(0.25).margin(0.01)); // fading in
+    const auto sliding = c.at(ms(818 + 100)); // half way from "One" to "two"
+    REQUIRE(sliding);
+    CHECK(sliding->bar.toBegin == 4);
+    CHECK(sliding->bar.toEnd == 7);
+    CHECK(sliding->bar.fromBegin == 0);
+    CHECK(sliding->bar.fromEnd == 3);
+    CHECK(sliding->bar.t == Approx(0.5).margin(0.02));
+    const auto settled = c.at(ms(1300));
+    REQUIRE(settled);
+    CHECK(settled->bar.t == 1.0);
+    // The spoken word's text colour reads on the (light) bar.
+    REQUIRE(settled->colorSpans.size() == 1);
+    CHECK(settled->colorSpans[0].color[0] < 0.2);
+    // No other animation draws a bar.
+    CHECK(threeWords(CaptionAnimation::Bounce).at(ms(900))->bar.toBegin == -1);
+}
+
+TEST_CASE("Caption animations: typewriter types the word being said letter by letter", "[playback][captions][animation]") {
+    Captioned c = threeWords(CaptionAnimation::Typewriter);
+    CHECK(c.at(ms(0))->hidden.size() == 1); // "One" is being typed: nothing is there yet
+    const auto typing = c.at(ms(818 + 600)); // "two" is typed over half a second: all three letters by now
+    REQUIRE(typing);
+    REQUIRE(typing->hidden.size() == 1);
+    CHECK(typing->hidden[0].first >= 8); // "One two" shown; "three" not yet
+    const auto partial = c.at(ms(1636 + 100)); // "three": 100 ms into 500 ms: one letter of five
+    REQUIRE(partial);
+    REQUIRE(partial->hidden.size() == 1);
+    CHECK(partial->hidden[0].first == 8 + 1);
+    CHECK(partial->hidden[0].second == 13);
+    CHECK(c.at(ms(2500))->hidden.empty()); // all typed
+}
+
+TEST_CASE("Caption animations: emphasised words take the emphasis colour and a little more size", "[playback][captions][animation]") {
+    CaptionStyle style;
+    style.emphasis = CaptionEmphasis::Auto;
+    style.emphasisColor = {1.0, 0.0, 0.0};
+    style.emphasisScale = 1.3;
+    style.emphasisWords = {"clutch"};
+    Captioned c({{Ticks{}, Ticks::fromSeconds(4), "That was a clutch GG for 3 wins!"}}, style);
+    const auto frame = c.at(ms(500));
+    REQUIRE(frame);
+    // The keyword, capitals, a number, and the word before "!": four words.
+    int red = 0;
+    for (const auto& span : frame->colorSpans) {
+        if (span.color == std::array<double, 3>{1.0, 0.0, 0.0})
+            ++red;
+    }
+    CHECK(red == 4);
+    const auto* gg = fxOf(*frame, 18);
+    REQUIRE(gg);
+    CHECK(gg->scale == Approx(1.3));
+    CHECK(fxOf(*frame, 0) == nullptr); // "That" is not emphasised
+    // Keywords only: just the listed one.
+    c.seq.captionTracks[0].style.emphasis = CaptionEmphasis::Keywords;
+    const auto only = c.at(ms(500));
+    REQUIRE(only);
+    CHECK(only->wordFx.size() == 1);
+    // None: nothing.
+    c.seq.captionTracks[0].style.emphasis = CaptionEmphasis::None;
+    CHECK(c.at(ms(500))->wordFx.empty());
+    CHECK(c.at(ms(500))->colorSpans.empty());
+}
+
+TEST_CASE("Caption animations: the timing controls reach pop and fade", "[playback][captions][animation]") {
+    const std::vector<CaptionCue> cue{{Ticks::fromSeconds(1), Ticks::fromSeconds(2), "Alpha beta gamma"}};
+    CaptionStyle pop;
+    pop.animation = CaptionAnimation::Pop;
+    pop.animationSpeed = 0.3;
+    pop.animationEase = CaptionEase::Smooth;
+    Captioned slow(cue, pop);
+    CHECK(slow.at(ms(1150))->scale < 1.0); // still going: the default 0.15 s would be done
+    CHECK(slow.at(ms(1300))->scale == Approx(1.0));
+    pop.animationEase = CaptionEase::Linear;
+    Captioned linear(cue, pop);
+    CHECK(linear.at(ms(1150))->scale == Approx(0.9)); // half way from 80 % to 100 %
+    CaptionStyle fade;
+    fade.animation = CaptionAnimation::Fade;
+    fade.animationSpeed = 0.3; // fades take 0.4 s
+    Captioned slowFade(cue, fade);
+    CHECK(slowFade.at(ms(1200))->opacity == Approx(0.5));
+}
+
+TEST_CASE("Caption text rules: case and punctuation and accents are applied when the caption is drawn", "[playback][captions][text]") {
+    CaptionStyle style;
+    style.textCase = CaptionTextCase::Lower;
+    style.stripPunctuation = true;
+    Captioned c({{Ticks{}, Ticks::fromSeconds(2), "Hello, World! It's 3.5 now."}}, style);
+    const auto frame = c.at(ms(500));
+    REQUIRE(frame);
+    CHECK(frame->text == "hello world it's 3.5 now");
+    // The cue itself keeps its words as written.
+    CHECK(c.seq.captionTracks[0].cues[0].text == "Hello, World! It's 3.5 now.");
+    // Karaoke counts the words of what is drawn.
+    CaptionSettings karaoke;
+    karaoke.karaoke = true;
+    const auto lit = c.at(ms(2000 - 1), karaoke);
+    REQUIRE(lit);
+    CHECK(lit->highlightEnd == static_cast<int>(lit->text.size()));
+    // Turkish: I is dotless i in lower case.
+    CaptionStyle turkish;
+    turkish.textCase = CaptionTextCase::Lower;
+    Captioned tr({{Ticks{}, Ticks::fromSeconds(2), "ISTANBUL"}}, turkish);
+    tr.seq.captionTracks[0].language = "tr";
+    CHECK(tr.at(ms(500))->text == "\xC4\xB1stanbul");
+    // As written: untouched.
+    Captioned plain({{Ticks{}, Ticks::fromSeconds(2), "Hello, World!"}});
+    CHECK(plain.at(ms(500))->text == "Hello, World!");
+}

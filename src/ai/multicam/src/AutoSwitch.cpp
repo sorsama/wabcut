@@ -1,3 +1,4 @@
+#include <wabcut/model/Plural.h>
 #include <wabcut/ai/multicam/AutoSwitch.h>
 
 #include <algorithm>
@@ -431,8 +432,8 @@ SwitchPlan planSwitches(const SpeakerTimeline& timeline, std::span<const TimeRan
         plan.stats.shortestShot = *std::min_element(shots.begin(), shots.end());
     }
     if (plan.stats.midWord > 0) {
-        plan.warnings.push_back(std::to_string(plan.stats.midWord) + " cut(s) fall inside a word with no pause within " +
-                                fixed(seconds(options.maxSnap), 1) + " s");
+        plan.warnings.push_back("Inside a word with no pause within " + fixed(seconds(options.maxSnap), 1) + " s: " +
+                                counted(static_cast<std::int64_t>(plan.stats.midWord), "cut"));
     }
     return plan;
 }

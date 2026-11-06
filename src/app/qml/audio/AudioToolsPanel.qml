@@ -16,26 +16,48 @@ import QtQuick.Layouts
 //                      says which tracks it uses). Each mode keeps its own amount, attack, release and hold
 //                      (audio.autoDuck); the mode is suggested per sequence (Game under my voice when a track is named
 //                      for the game). The planned volume keys show on the timeline as dashed ghosts until Apply or
-//                      Cancel; Apply is one undo step ("Duck Game Under Voice" / "Auto-Duck Music").
+//                      Cancel; Apply is one undo step ("Duck Game Under Voice" / "Auto-Duck Music"). card 137: a
+//                      third mode, "Several voices" (audio.autoMix), mixes the dialogue-role tracks against each other:
+//                      each microphone goes down while another voice speaks and never under its own words ("Auto-Mix
+//                      Voices"); Also quiet a microphone while nobody speaks adds a gate.
 //   Reduce noise       adds Reduce Noise (RNNoise) to the selected audio clips, or sets its amount where it is.
 // Measuring runs in the background over a copy of the project; Cancel stops it.
+// 0.7 (card 045): the second tab, Match (MatchTab): EQ Match and Level Match from a reference.
 Panel {
     id: root
     objectName: "audioToolsPanel"
 
+    /// 0: the tools below, 1: Match (0.7), 2: Spectral (0.7).
+    property int view: 0
     property int analyzeScope: 0   // 0 mix, 1 tracks, 2 selected clips
     property int normalizeScope: 0 // 0 mix, 1 selected clips
     readonly property bool idle: AudioMixer.busy === ""
     readonly property var pending: AudioMixer.pending
 
     function focusContent() {
-        analyzeButton.forceActiveFocus(Qt.TabFocusReason)
+        if (root.view === 2)
+            spectralTab.focusContent()
+        else if (root.view === 1)
+            matchTab.focusContent()
+        else
+            analyzeButton.forceActiveFocus(Qt.TabFocusReason)
     }
     function numberText(v, suffix) {
         return v === undefined || v === null ? qsTr("−∞") : Number(v).toFixed(1) + suffix
     }
 
     title: qsTr("Audio Tools")
+
+    leading: [
+        PillTabs {
+            objectName: "audioToolsTabs"
+            compact: true
+            model: [qsTr("Tools"), qsTr("Match"), qsTr("Spectral")]
+            Accessible.name: qsTr("Audio tools view")
+            currentIndex: root.view
+            onActivated: index => root.view = index
+        }
+    ]
 
     // A tool card: icon chip, title and a line on what it does, then its controls.
     component ToolCard: Rectangle {
@@ -113,9 +135,24 @@ Panel {
         font.pixelSize: Theme.textSm
     }
 
+    // 0.7 (card 045): EQ Match and Level Match.
+    // 0.7 (card 047): the spectrogram and spectral repair.
+    SpectralTab {
+        id: spectralTab
+        anchors.fill: parent
+        visible: root.view === 2
+    }
+
+    MatchTab {
+        id: matchTab
+        anchors.fill: parent
+        visible: root.view === 1
+    }
+
     Flickable {
         id: flick
         anchors.fill: parent
+        visible: root.view === 0
         contentWidth: width
         contentHeight: column.implicitHeight
         clip: true
@@ -153,6 +190,7 @@ Panel {
                         Layout.fillWidth: true
                         text: AudioMixer.busy === "analyze" ? qsTr("Measuring loudness…")
                             : AudioMixer.busy === "normalize" ? qsTr("Measuring for the normalization…")
+                            : AudioMixer.busy.startsWith("match") ? qsTr("Matching to the reference…")
                                                               : qsTr("Finding the dialogue…")
                         color: Theme.textPrimary
                         font.family: Theme.fontSans
@@ -376,10 +414,15 @@ Panel {
                             TimecodeLink {
                                 objectName: "reportOvers_" + oversCell.index
                                 timecode: oversCell.overs.length > 0 ? oversCell.overs[0].start : ""
-                                label: String(oversCell.count)
-                                what: oversCell.count === 1
-                                      ? qsTr("First of 1 true-peak over in %1").arg(oversCell.modelData.target)
-                                      : qsTr("First of %1 true-peak overs in %2").arg(oversCell.count).arg(oversCell.modelData.target)
+                                // A very hot programme keeps only its loudest blocks (card 166): the count is of the overs
+                                // above that higher ceiling, shown with a plus.
+                                label: String(oversCell.count) + (oversCell.modelData.oversTruncated === true ? "+" : "")
+                                what: oversCell.modelData.oversTruncated === true
+                                      ? qsTr("First of %1 or more true-peak overs above %2 dBTP in %3 (a very loud programme: quieter overs are not counted)")
+                                            .arg(oversCell.count).arg(Number(oversCell.modelData.oversAbove).toFixed(2)).arg(oversCell.modelData.target)
+                                      : oversCell.count === 1
+                                        ? qsTr("First of 1 true-peak over in %1").arg(oversCell.modelData.target)
+                                        : qsTr("First of %1 true-peak overs in %2").arg(oversCell.count).arg(oversCell.modelData.target)
                                 linkColor: Theme.dangerText
                             }
                         }
@@ -446,23 +489,54 @@ Panel {
                 objectName: "duckTool"
                 /// 0.4: "Game under my voice" (audio.autoDuck's gaming preset) rather than music under dialogue.
                 readonly property bool gameMode: AudioMixer.duckMode === "gameUnderVoice"
+                /// card 137: "Several voices" (audio.autoMix): the microphones of the voices that are not speaking dip.
+                readonly property bool mixMode: AudioMixer.duckMode === "autoMix"
                 readonly property var voiceNames: AudioMixer.gameTracks.voice ?? []
                 readonly property var duckedNames: AudioMixer.gameTracks.game ?? []
+                readonly property var mixNames: AudioMixer.gameTracks.mix ?? []
                 readonly property bool gameReady: duckCard.voiceNames.length > 0 && duckCard.duckedNames.length > 0
+                readonly property bool mixReady: duckCard.mixNames.length >= 2
                 heading: qsTr("Auto-duck")
-                detail: duckCard.gameMode ? qsTr("The game and music dip while you talk (tracks named Mic and Game, else by role)")
+                detail: duckCard.mixMode ? qsTr("Each microphone dips while another voice speaks (the voices are the tracks with the Dialogue role)")
+                      : duckCard.gameMode ? qsTr("The game and music dip while you talk (tracks named Mic and Game, else by role)")
                                           : qsTr("Music tracks dip while dialogue tracks speak (roles are set in the mixer)")
                 iconName: "volume-2"
                 PillTabs {
                     objectName: "duckModeTabs"
                     Layout.fillWidth: true
                     compact: true
-                    model: [{ label: qsTr("Music under dialogue") }, { label: qsTr("Game under my voice") }]
-                    currentIndex: duckCard.gameMode ? 1 : 0
+                    model: [{ label: qsTr("Music"), tooltip: qsTr("Music under dialogue: music tracks dip while dialogue tracks speak") },
+                            { label: qsTr("Game"), tooltip: qsTr("Game under my voice: the game and music dip while you talk") },
+                            { label: qsTr("Voices"), tooltip: qsTr("Several voices: each microphone dips while another voice speaks") }]
+                    currentIndex: duckCard.mixMode ? 2 : duckCard.gameMode ? 1 : 0
                     Accessible.name: qsTr("Auto-duck mode")
-                    onActivated: index => AudioMixer.duckMode = index === 1 ? "gameUnderVoice" : "default"
+                    onActivated: index => AudioMixer.duckMode = index === 2 ? "autoMix" : index === 1 ? "gameUnderVoice" : "default"
                 }
                 // What Game under my voice will use on this sequence, or what it misses.
+                // card 137: which tracks Several voices will mix, or what it misses.
+                Text {
+                    objectName: "mixTracksLine"
+                    Layout.fillWidth: true
+                    visible: duckCard.mixMode
+                    text: duckCard.mixNames.length < 2
+                          ? qsTr("Give two or more microphone tracks the Dialogue role in the mixer: each one dips while the others speak")
+                          : qsTr("%1: each dips while the others speak").arg(duckCard.mixNames.join(", "))
+                    wrapMode: Text.Wrap
+                    color: duckCard.mixReady ? Theme.textSecondary : Theme.warning
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textSm
+                }
+                Toggle {
+                    objectName: "duckGate"
+                    visible: duckCard.mixMode
+                    text: qsTr("Also quiet a microphone while nobody speaks")
+                    tooltip: qsTr("A noise gate for each voice: it dips in the silences too")
+                    checked: AudioMixer.duckGate
+                    onToggled: {
+                        AudioMixer.duckGate = checked
+                        checked = Qt.binding(() => AudioMixer.duckGate)
+                    }
+                }
                 Text {
                     objectName: "duckTracksLine"
                     Layout.fillWidth: true
@@ -546,7 +620,7 @@ Panel {
                 PillButton {
                     objectName: "previewDuckButton"
                     Layout.fillWidth: true
-                    enabled: root.idle && (!duckCard.gameMode || duckCard.gameReady)
+                    enabled: root.idle && (!duckCard.gameMode || duckCard.gameReady) && (!duckCard.mixMode || duckCard.mixReady)
                     text: qsTr("Preview ducking")
                     onClicked: AudioMixer.previewAutoDuck()
                 }

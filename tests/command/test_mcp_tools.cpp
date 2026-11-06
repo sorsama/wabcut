@@ -360,3 +360,35 @@ TEST_CASE("wabcut-cli mcp arguments", "[command][mcp][cli]") {
     CHECK_FALSE(parse({"--project", "a.wabcut", "--timeout-ms", "0"}));
     CHECK_FALSE(parse({"--project", "a.wabcut", "--shell"}));
 }
+
+TEST_CASE("A server that holds model commands refuses a read-only one until MediaAnalysis is allowed (Python scripts)",
+          "[command][mcp][security]") {
+    static const command::CommandRegistry registry = [] {
+        command::CommandRegistry r = command::builtinCommands();
+        auto added = r.add(command::runsModel(
+            {"test.describeScene", 1, "Describe Scene", "Runs a vision model over the sequence (a test command).",
+             command::Capability::Read, Json{{"type", "object"}, {"properties", Json::object()}, {"additionalProperties", false}},
+             Json::object(), {}, [](command::ExecutionContext& c) {
+                 command::CommandOutput out;
+                 out.state = c.state();
+                 out.data = Json{{"scene", "a beach"}};
+                 return out;
+             }}));
+        REQUIRE(added.has_value());
+        return r;
+    }();
+    const std::string picture = kPicture;
+    // The command line server serves the read-only model commands as before.
+    McpHarness open(picture, readOnlyOptions(), registry);
+    CHECK(open.call("test_describeScene")["isError"] == false);
+    // A script's server holds them back until the person allowed "Analyse media and use AI features".
+    command::mcp::McpServerOptions held = readOnlyOptions();
+    held.holdModelCommands = true;
+    McpHarness refused(picture, held, registry);
+    const Json result = refused.call("test_describeScene");
+    CHECK(result["isError"] == true);
+    command::mcp::McpServerOptions allowed = held;
+    allowed.allowed.bits |= command::CapabilitySet::of({command::Capability::MediaAnalysis}).bits;
+    McpHarness granted(picture, allowed, registry);
+    CHECK(granted.call("test_describeScene")["isError"] == false);
+}

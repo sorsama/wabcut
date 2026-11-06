@@ -33,6 +33,19 @@ constexpr std::array kLanguages{
     LanguageRules{"km", "Khmer", "ខ្មែរ", 17.0, 35, 2, false},
     LanguageRules{"my", "Burmese", "မြန်မာ", 17.0, 35, 2, false},
     LanguageRules{"fil", "Filipino", "Filipino", 17.0, 42, 2, false},
+    // card 073: the languages of the spoken-language picker that had no entry: named, with the conservative default
+    // limits (17 characters per second, 42 per line) until their style guides are checked. Hebrew is right to left.
+    LanguageRules{"he", "Hebrew", "עברית", 17.0, 42, 2, false},
+    LanguageRules{"uk", "Ukrainian", "Українська", 17.0, 42, 2, false},
+    LanguageRules{"pl", "Polish", "Polski", 17.0, 42, 2, false},
+    LanguageRules{"is", "Icelandic", "Íslenska", 17.0, 42, 2, false},
+    LanguageRules{"fi", "Finnish", "Suomi", 17.0, 42, 2, false},
+    LanguageRules{"cs", "Czech", "Čeština", 17.0, 42, 2, false},
+    LanguageRules{"sk", "Slovak", "Slovenčina", 17.0, 42, 2, false},
+    LanguageRules{"ro", "Romanian", "Română", 17.0, 42, 2, false},
+    LanguageRules{"hr", "Croatian", "Hrvatski", 17.0, 42, 2, false},
+    LanguageRules{"sr", "Serbian", "Српски", 17.0, 42, 2, false},
+    LanguageRules{"bs", "Bosnian", "Bosanski", 17.0, 42, 2, false},
 };
 
 char lower(char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }

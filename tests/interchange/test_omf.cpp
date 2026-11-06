@@ -478,3 +478,56 @@ TEST_CASE("OMF: needs the audio engine and refuses bad options (P.2)", "[interch
     CHECK(exportOmfToFile(tl.state, tl.seq, dir / "x.omf", bad, dry).error().code == ErrorCode::InvalidArgument);
     CHECK_FALSE(std::filesystem::exists(dir / "x.omf"));
 }
+
+TEST_CASE("OMF: an Embed export beyond 2 GB is refused before anything is rendered (card 160)", "[interchange][omf]") {
+    // One 4 hour clip: its mono file alone is about 2.1 GB at 24 bits and 48 kHz.
+    wabcut::test::Timeline tl(R"(
+        A1 |Aaaa|
+    )",
+                              {{'A', 400000}});
+    const ClipId clip = tl.clip("A1@0");
+    tl.state = wabcut::test::ok(edit::trimEdge(tl.state, tl.seq, clip, edit::Edge::Tail, wabcut::test::f(359996))).state;
+    const auto dir = it::scratchDir("omf-too-big");
+
+    TestRenderer renderer;
+    AudioPostHost host;
+    host.audio = &renderer;
+    const auto refused = exportOmfToFile(tl.state, tl.seq, dir / "long.omf", fixedOmfOptions(), host);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == ErrorCode::Unsupported);
+    CHECK(refused.error().message.find("2 GB") != std::string::npos);
+    CHECK(refused.error().message.find("Separate Audio") != std::string::npos);
+    CHECK(renderer.requests.empty()); // nothing was rendered, nothing was written
+    CHECK_FALSE(std::filesystem::exists(dir / "long.omf"));
+    CHECK_FALSE(std::filesystem::exists(dir / "long.omf.wabcut-partial"));
+    CHECK_FALSE(std::filesystem::exists(dir / "long.omf.wabcut-partial-audio"));
+
+    // The dry run (the export dialog's preview) says so too.
+    AudioPostHost dry;
+    dry.dryRun = true;
+    const auto preview = exportOmfToFile(tl.state, tl.seq, dir / "long.omf", fixedOmfOptions(), dry);
+    REQUIRE_FALSE(preview.has_value());
+    CHECK(preview.error().code == ErrorCode::Unsupported);
+
+    // Separate Audio has no container limit: the same sequence plans fine.
+    OmfExportOptions separate = fixedOmfOptions();
+    separate.audio.files = AudioPostFiles::Separate;
+    const auto planned = exportOmfToFile(tl.state, tl.seq, dir / "long.omf", separate, dry);
+    REQUIRE(planned.has_value());
+    CHECK(planned->clips >= 1);
+}
+
+TEST_CASE("OMF: a long Embed export that fits in 2 GB is not refused by the plan check (card 160)", "[interchange][omf]") {
+    // 1 hour: about 0.5 GB for each mono file (24 bits, 48 kHz), a stereo clip's two files together about 1 GB.
+    wabcut::test::Timeline tl(R"(
+        A1 |Aaaa|
+    )",
+                              {{'A', 400000}});
+    const ClipId clip = tl.clip("A1@0");
+    tl.state = wabcut::test::ok(edit::trimEdge(tl.state, tl.seq, clip, edit::Edge::Tail, wabcut::test::f(89996))).state;
+    AudioPostHost dry;
+    dry.dryRun = true;
+    const auto preview = exportOmfToFile(tl.state, tl.seq, it::scratchDir("omf-fits") / "x.omf", fixedOmfOptions(), dry);
+    REQUIRE(preview.has_value());
+    CHECK(preview->clips >= 1);
+}

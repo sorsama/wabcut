@@ -58,7 +58,8 @@ std::string segmentWordsText(const Transcript& transcript, const TranscriptSegme
     if (segment.wordCount == 0) {
         return std::string(text::trimAsciiSpace(segment.text));
     }
-    const bool spaces = wordSplitFor(transcript.language) == WordSplit::Whitespace;
+    // 0.7 (card 111): a segment of another language than the transcript's is joined the way its own language writes.
+    const bool spaces = wordSplitFor(segment.language.empty() ? transcript.language : segment.language) == WordSplit::Whitespace;
     std::string out;
     for (std::size_t i = segment.firstWord; i < segment.firstWord + segment.wordCount && i < transcript.words.size(); ++i) {
         const std::string& word = transcript.words[i].text;

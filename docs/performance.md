@@ -48,7 +48,8 @@ other suites (frame budgets, latency ceilings) run with `-L perf` alone.
 
 ## Profiling
 
-`wabcut_perf_sampler` (`tests/perf/tools/sampler.cpp`) is a sampling profiler that needs nothing installed:
+`wabcut_perf_sampler` (`tests/perf/tools/sampler.cpp`) is a sampling profiler that needs nothing installed (x64 Windows
+only; it is not built for Windows on ARM64):
 
 ```powershell
 build\win-msvc\bin\wabcut_perf_sampler.exe --hz 1000 --report report.txt --folded stacks.txt -- `

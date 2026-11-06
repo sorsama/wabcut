@@ -57,6 +57,11 @@ function(wabcut_target_defaults target)
         if(WABCUT_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE /WX)
         endif()
+        # ARM64: C4324 ("structure was padded due to alignment specifier") is informational: the cache-line aligned
+        # members of the real-time queues pad their owners differently there, by design. x64 flags stay unchanged.
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$" OR CMAKE_CXX_COMPILER_ARCHITECTURE_ID MATCHES "ARM64")
+            target_compile_options(${target} PRIVATE /wd4324)
+        endif()
         # The hardened STL of a sanitizer build aborts on a failed check, and the optimizer then reports unreachable
         # code in inlined third-party headers (WabcutSanitizers.cmake).
         if(WABCUT_SANITIZE)

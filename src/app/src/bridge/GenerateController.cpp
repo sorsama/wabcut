@@ -16,6 +16,7 @@
 #include <QUrl>
 #include <QUuid>
 #include <QPointer>
+#include <algorithm>
 #include <cmath>
 namespace wabcut::app {
 namespace {
@@ -56,6 +57,8 @@ void GenerateController::setAiController(AiController* ai) {
     m_ai = ai;
     // The worker calls m_ai->platform(): it must end before AiController tears the platform down (review wave 4, P2-4).
     if (m_ai) connect(m_ai, &AiController::shuttingDown, this, [this] { cancel(); if (m_worker.joinable()) m_worker.join(); });
+    // r07: keys, custom providers and Settings > AI > Features change the list and its default order.
+    if (m_ai) connect(m_ai, &AiController::modelsChanged, this, &GenerateController::changed);
 }
 QUrl GenerateController::uploadPreview() const {
     return m_upload ? QUrl::fromLocalFile(QString::fromStdWString(m_upload->file.wstring())) : QUrl();
@@ -108,10 +111,29 @@ GenerateController* GenerateController::create(QQmlEngine* engine, QJSEngine*) {
     return self;
 }
 QVariantList GenerateController::models() const {
+    // r07: the live registry (custom providers and every catalogue provider, not only the shipped file), with each
+    // kind's default (Settings > AI > Features: video, then image, then sound effects) first, so a fresh panel and the
+    // assistant's proposals (the first model of a kind) start from the routing.
     QVariantList list;
-    for (const auto* m : ai::ModelRegistry::builtin().modelsWith(ai::Capability::GenerateMedia))
-        list.push_back(QVariantMap{{"id", qs(m->id)}, {"name", qs(m->name)}, {"provider", qs(m->provider)}, {"image", m->generation.image},
+    if (!m_ai) return list;
+    const auto& registry = m_ai->platform().providers().models();
+    std::vector<const ai::ModelSpec*> ordered;
+    for (const char* kind : {"video", "image", "sound"}) {
+        QString pick = m_ai->defaultModel(QString::fromLatin1(kind)); // the user's choice, else what "automatic" can use
+        if (pick.isEmpty()) pick = m_ai->routedModel(QString::fromLatin1(kind));
+        if (const auto* m = registry.model(pick.toStdString()); m && std::find(ordered.begin(), ordered.end(), m) == ordered.end())
+            ordered.push_back(m);
+    }
+    for (const auto* m : registry.modelsWith(ai::Capability::GenerateMedia))
+        if (std::find(ordered.begin(), ordered.end(), m) == ordered.end()) ordered.push_back(m);
+    const auto today = m_ai->platform().today();
+    for (const auto* m : ordered) {
+        if (!m_ai->platform().providers().candidate(m->id, ai::Capability::GenerateMedia, today)) continue; // no adapter in this build
+        const auto* provider = registry.provider(m->provider);
+        list.push_back(QVariantMap{{"id", qs(m->id)}, {"name", qs(m->name.empty() ? m->id : m->name)}, {"provider", qs(m->provider)},
+            {"providerName", provider ? qs(provider->name) : qs(m->provider)}, {"image", m->generation.image}, {"video", m->generation.video},
             {"sound", m->generation.soundEffect}, {"loop", m->generation.loop}, {"maxSeconds", m->generation.maxSeconds}});
+    }
     return list;
 }
 QVariantMap GenerateController::estimate(const QString& modelId, const QString& prompt, int seconds, const QString& aspect, bool loop) const {
@@ -130,7 +152,10 @@ QVariantMap GenerateController::estimate(const QString& modelId, const QString& 
         {"terms", qs(p->candidate.provider->termsUrl)}, {"dataPolicy", qs(p->candidate.provider->dataPolicy)},
         {"seconds", model->generation.soundEffect ? ai::soundEffectSeconds(*model, requestFor(*model, prompt, seconds, aspect, loop))
                                                   : static_cast<double>(ai::generatedSeconds(model->generation, Ticks::fromSeconds(seconds)))},
-        {"error", p->consent == ai::ConsentState::Blocked ? tr("Offline / no-cloud is enabled") : QString{}}};
+        {"error", p->consent == ai::ConsentState::Blocked ? tr("Offline / no-cloud is enabled")
+                  // r07: a model id the user added to a cloud provider has no price Wabcut knows: no cap, no run.
+                  : !p->cost.priced ? tr("Wabcut does not know this model's price, so it cannot cap the run")
+                                    : QString{}}};
 }
 void GenerateController::run(const QString& id, const QString& prompt, int seconds, const QString& aspect,
     double maxDollars, bool consentOnce, double atSeconds, const QString& clipKey, bool head, bool acknowledgeRedactions, bool loop) {

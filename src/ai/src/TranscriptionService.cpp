@@ -271,6 +271,32 @@ std::filesystem::path defaultInferExecutable() {
 #endif
 }
 
+std::string vocabularyPrompt(std::span<const std::string> words, std::size_t* used) {
+    std::string prompt;
+    std::size_t kept = 0;
+    constexpr std::string_view head = "Vocabulary: ";
+    for (const std::string& word : words) {
+        if (word.empty()) {
+            continue;
+        }
+        // "Vocabulary: A, B, C." - the closing full stop is counted too.
+        const std::size_t next = (prompt.empty() ? head.size() : prompt.size() + 2) + word.size() + 1;
+        if (next > kMaxVocabularyPromptBytes) {
+            break;
+        }
+        prompt += prompt.empty() ? std::string(head) : std::string(", ");
+        prompt += word;
+        ++kept;
+    }
+    if (!prompt.empty()) {
+        prompt += '.';
+    }
+    if (used != nullptr) {
+        *used = kept;
+    }
+    return prompt;
+}
+
 struct TranscriptionService::Impl {
     TranscriptionServiceConfig config;
     std::mutex mutex;
@@ -445,6 +471,16 @@ std::expected<Transcript, Error> TranscriptionService::Impl::run(const Transcrip
     if (options.beamSize < 1 || options.beamSize > 16 || options.threads < 0) {
         return fail(ErrorCode::InvalidArgument, "invalid transcription options");
     }
+    if (options.translate && model->id.find(".en") != std::string::npos) {
+        return fail(ErrorCode::InvalidArgument, "the English-only model '" + model->id + "' cannot translate: pick a multilingual one");
+    }
+    // 0.7 (card 111): mixed languages = every stretch of speech is given to the recogniser with "auto" (it names the
+    // language of what it hears) instead of keeping the first stretch's language. It needs the language left to
+    // detection and no translation (that has one language by design).
+    const bool mixed = options.mixedLanguages && options.language == "auto" && !options.translate;
+    if (mixed && model->id.find(".en") != std::string::npos) {
+        return fail(ErrorCode::InvalidArgument, "the English-only model '" + model->id + "' cannot tell languages apart: pick a multilingual one");
+    }
 
     // ---- Identity and cache ----
     auto identity = config.identify(request);
@@ -463,6 +499,12 @@ std::expected<Transcript, Error> TranscriptionService::Impl::run(const Transcrip
     };
     if (!request.silence.empty()) {
         params["redacted"] = rangesKey(request.silence); // review P1-3: silenced audio is another transcript
+    }
+    if (options.translate) {
+        params["translate"] = "english"; // only when asked: the keys of every earlier transcript stay as they were
+    }
+    if (mixed) {
+        params["mixed"] = "languages"; // likewise: a transcript of mixed languages is its own entry
     }
     const AnalysisKey cacheKey{identity->fingerprint, identity->streamIndex, "transcript",
                                "whisper/" + model->id + "@" + model->sha256.substr(0, 16), hashParams(params)};
@@ -565,6 +607,17 @@ std::expected<Transcript, Error> TranscriptionService::Impl::run(const Transcrip
     // ---- Chunks ----
     const auto vadStart = Clock::now();
     const std::int64_t total = extracted->samples;
+    // 0.7 (card 111): for mixed languages the chunks are short and cut at pauses: the recogniser guesses one language per
+    // chunk (from its first 30 s), so a chunk should hold one language - a sentence or two, not five minutes.
+    ChunkOptions chunking = options.chunking;
+    if (mixed) {
+        constexpr std::int64_t kRate = kTranscriptionSampleRate;
+        chunking.maxChunkSamples = std::min<std::int64_t>(chunking.maxChunkSamples, 25 * kRate);
+        chunking.mergeGapSamples = std::min<std::int64_t>(chunking.mergeGapSamples, kRate * 8 / 10);
+        if (chunking.closeAfterSamples <= 0) {
+            chunking.closeAfterSamples = 3 * kRate;
+        }
+    }
     std::vector<SampleRange> chunks;
     if (vadPath) {
         std::vector<SampleRange> speech;
@@ -581,17 +634,18 @@ std::expected<Transcript, Error> TranscriptionService::Impl::run(const Transcrip
             speech.insert(speech.end(), found.begin(), found.end());
             report(0.15f + 0.05f * static_cast<float>(begin + count) / static_cast<float>(std::max<std::int64_t>(total, 1)));
         }
-        chunks = planChunks(speech, total, options.chunking);
+        chunks = planChunks(speech, total, chunking);
     } else {
-        chunks = fixedChunks(total, options.chunking);
+        chunks = fixedChunks(total, chunking);
     }
     report(0.2f);
     stats.vadMs = msSince(vadStart);
 
     // ---- Transcription ----
     Transcript transcript;
-    transcript.language = options.language == "auto" ? std::string{} : options.language;
+    transcript.language = options.translate ? std::string("en") : options.language == "auto" ? std::string{} : options.language;
     std::string language = options.language;
+    std::string heard; // mixed languages: the language of the segment decoded last
     std::int64_t totalChunkSamples = 0;
     for (const SampleRange& c : chunks) {
         totalChunkSamples += c.length();
@@ -599,15 +653,20 @@ std::expected<Transcript, Error> TranscriptionService::Impl::run(const Transcrip
     std::int64_t doneSamples = 0;
     stats.speechSeconds = static_cast<double>(totalChunkSamples) / kTranscriptionSampleRate;
     for (const SampleRange& chunk : chunks) {
+        // Review: what the recogniser heard in the chunk before says nothing about this one (a segment that arrives
+        // without a language must not inherit it); the segments left unnamed take the chunk's language at its end.
+        heard.clear();
+        std::vector<std::size_t> unnamed;
         const std::string id = makeId(nextId++);
         infer::TranscribeRequest t;
         t.id = id;
         t.pcm = {pcm.path, chunk.begin, chunk.length()};
-        t.language = language;
+        t.language = mixed ? std::string("auto") : language; // mixed: every chunk is listened to afresh
         t.threads = options.threads > 0 ? options.threads : automaticThreads();
         t.beamSize = options.beamSize;
         t.vad = vadPath.has_value() && options.vadInsideChunks;
         t.initialPrompt = options.initialPrompt;
+        t.translate = options.translate;
         if (!helper.send(t)) {
             return fail(ErrorCode::DecoderError, "wabcut-infer exited before transcribing");
         }
@@ -630,11 +689,26 @@ std::expected<Transcript, Error> TranscriptionService::Impl::run(const Transcrip
                 if (transcript.language.empty() && !s->language.empty()) {
                     transcript.language = s->language;
                 }
+                if (mixed && !s->language.empty()) {
+                    heard = s->language;
+                }
                 const ChunkResult piece{chunk, {s->segment}};
+                const std::size_t segmentsBefore = transcript.segments.size();
+                // Words are split the way the language of this very segment writes them (Thai has no spaces, English has).
                 if (auto stitched = stitchChunks(std::span(&piece, 1), extracted->origin,
-                                                 wordSplitFor(transcript.language), transcript);
+                                                 wordSplitFor(mixed && !heard.empty() ? heard : transcript.language),
+                                                 transcript);
                     !stitched) {
                     return std::unexpected(stitched.error());
+                }
+                if (mixed) {
+                    // A transcript of mixed languages names the language of every segment (card 111).
+                    for (std::size_t k = segmentsBefore; k < transcript.segments.size(); ++k) {
+                        transcript.segments[k].language = heard.empty() ? transcript.language : heard;
+                        if (heard.empty()) {
+                            unnamed.push_back(k);
+                        }
+                    }
                 }
                 if (request.onSegment && !transcript.segments.empty()) {
                     request.onSegment(transcript);
@@ -645,8 +719,13 @@ std::expected<Transcript, Error> TranscriptionService::Impl::run(const Transcrip
                 if (transcript.language.empty()) {
                     transcript.language = r->language;
                 }
-                if (language == "auto" && !r->language.empty()) {
-                    language = r->language; // keep the detected language for the remaining chunks
+                if (language == "auto" && !r->language.empty() && !mixed) {
+                    language = r->language; // keep the detected language for the remaining chunks (not when mixed)
+                }
+                if (mixed && !r->language.empty()) {
+                    for (const std::size_t k : unnamed) {
+                        transcript.segments[k].language = r->language; // the chunk's own language, not a guess
+                    }
                 }
                 if (const auto wall = r->stats.find("wallMs"); wall != r->stats.end()) {
                     stats.recognizeMs += wall->second;
@@ -670,6 +749,12 @@ std::expected<Transcript, Error> TranscriptionService::Impl::run(const Transcrip
     transcript.provenance.params = params;
     transcript.provenance.params["device"] = loaded->device;
     transcript.provenance.createdAt = detail::utcNowIso8601();
+    if (mixed) {
+        // The transcript's own language is the one most words are in (the segments name theirs).
+        if (const auto shares = languageShares(transcript); !shares.empty()) {
+            transcript.language = shares.front().language;
+        }
+    }
     if (transcript.language.empty()) {
         transcript.language = language == "auto" ? std::string("und") : language;
     }

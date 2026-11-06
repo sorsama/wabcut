@@ -7,11 +7,14 @@ set(wabcut_audio_edit_test_sources
     MusicTestSignals.h
     test_audio_commands.cpp
     test_loudness_qc.cpp # 0.6 (P1 round, 2E, #54): where the loudest moments and the true-peak overs are
+    test_match_commands.cpp # 0.7 (card 045): EQ Match and Level Match
+    test_spectral_commands.cpp # 0.7 (card 047): the Spectral Repair commands
     test_essential_sound.cpp
     test_remix.cpp
     test_audio_sync.cpp
     test_sync_commands.cpp
     test_ducking.cpp
+    test_auto_mix.cpp # card 137: auto-mix of several voices
     test_enhance_commands.cpp
     test_plugin_commands.cpp
     test_voice_over_takes.cpp

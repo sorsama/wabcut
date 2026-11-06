@@ -17,6 +17,11 @@ namespace {
 constexpr std::array<UiParameter, kParamCount> kUiParameters{{
     {"scale", ParamId::Scale, UI_LABEL("Scale"), UNDO_LABEL("Scale"), "scaling",
      {100.0, UiOrigin::None, 0.0, 400.0, 0.1, 1, UI_LABEL("%")}},
+    // 0.7 (card #12): Scale Width and Uniform Scale follow Scale (Effect Controls shows the width only with Uniform Scale off).
+    {"scaleWidth", ParamId::ScaleWidth, UI_LABEL("Scale Width"), UNDO_LABEL("Scale Width"), "scaling",
+     {100.0, UiOrigin::None, 0.0, 400.0, 0.1, 1, UI_LABEL("%")}},
+    {"uniformScale", ParamId::UniformScale, UI_LABEL("Uniform Scale"), UNDO_LABEL("Uniform Scale"), "scaling",
+     {1.0, UiOrigin::None, 0.0, 1.0, 1.0, 0, "", false, true}},
     {"positionX", ParamId::PositionX, UI_LABEL("Position X"), UNDO_LABEL("Position"), "move-horizontal",
      {1.0, UiOrigin::SequenceX, -4800.0, 4800.0, 1.0, 0, UI_LABEL("px"), true}},
     {"positionY", ParamId::PositionY, UI_LABEL("Position Y"), UNDO_LABEL("Position"), "move-vertical",

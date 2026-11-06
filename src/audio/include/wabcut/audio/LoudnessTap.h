@@ -25,6 +25,7 @@
 #include <limits>
 #include <memory>
 #include <span>
+#include <vector>
 
 namespace wabcut::audio {
 
@@ -35,6 +36,7 @@ struct LoudnessReading {
     double truePeakDbtp = -std::numeric_limits<double>::infinity();    ///< highest since the last reset
     double maxMomentaryLufs = -std::numeric_limits<double>::infinity();
     double maxShortTermLufs = -std::numeric_limits<double>::infinity();
+    double rangeLu = 0.0;            ///< 0.7: loudness range so far (EBU Tech 3342), refreshed about once a second
     std::int64_t frames = 0;         ///< measured since the last reset
     std::uint64_t droppedFrames = 0; ///< pushed while the ring was full (never measured); since construction
     std::uint64_t resets = 0;        ///< resets applied so far (the reading belongs to the integration after them)
@@ -65,6 +67,10 @@ public:
     /// Any thread.
     void reset() noexcept;
     LoudnessReading reading() const noexcept;
+    /// 0.7 (Loudness Radar): the short-term loudness once a second since the last reset (dsp::LoudnessResult::
+    /// shortTermSeries), -infinity where unknown. Any thread (a copy under a short lock the worker takes once a second;
+    /// never the audio thread). At most `maxPoints` of the newest entries.
+    std::vector<float> shortTermHistory(std::size_t maxPoints = 100000) const;
     /// Off: push() does nothing and the worker idles (readings keep their last values). On by default.
     void setEnabled(bool enabled) noexcept;
     bool enabled() const noexcept { return m_enabled.load(std::memory_order_relaxed); }

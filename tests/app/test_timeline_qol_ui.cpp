@@ -20,6 +20,7 @@
 #include "TimelineView.h"
 
 #include <wabcut/model/EditOps.h>
+#include <wabcut/model/EditingOps.h>
 #include <wabcut/model/Effects.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/Sequence.h>
@@ -45,6 +46,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <vector>
 
 using namespace wabcut;
 using namespace wabcut::app;
@@ -656,6 +658,102 @@ TEST_CASE("Timeline transition menu and gap menu in the shell: Set Duration and 
     REQUIRE(a1.clips.size() == 2);
     CHECK(a1.clips[1].start() == f(4));
     CHECK(c.selectedGap().isEmpty());
+
+    checkNoMessages();
+}
+
+// ---- Gap menu: Close Gaps on the track / in the sequence (card 011) ---------------------------------------------------
+
+TEST_CASE("The gap menu closes the gaps of its own track or of the whole sequence in one undo step",
+          "[app][qml][gap][screenshot]") {
+    resetSettings();
+    clearMessages();
+    ShellProject p(R"(
+        V2 |....................|
+        V1 |Aaaa....Bbbb....Cccc|
+        A1 nosync |Dddd.Gggg...........|
+    )");
+    ProjectController& c = *p.controller;
+    auto* view = qobject_cast<TimelineView*>(p.item(QStringLiteral("timelineView")));
+    REQUIRE(view);
+    auto* editing = p.singleton<EditingBridge>("Editing");
+    view->setPixelsPerSecond(400);
+    view->setScrollX(0);
+    const auto starts = [&](std::string_view label) {
+        std::vector<std::int64_t> out;
+        for (const Clip& clip : p.sequence().findTrack(p.tl.track(label))->clips)
+            out.push_back(ticksToFrames(clip.start(), kRate25));
+        return out;
+    };
+    const auto openGapMenu = [&](std::string_view track, int frame) {
+        REQUIRE(c.selectGapAt(p.tl.track(track), f(frame)));
+        spin(50);
+        QObject* menu = p.object(QStringLiteral("gapContextMenu"));
+        REQUIRE(menu);
+        const double x = f(frame + 1).toSeconds() * view->pixelsPerSecond() - view->scrollX();
+        emit view->gapContextMenuRequested(p.track(track), x, 60);
+        waitOpened(menu);
+        return menu;
+    };
+    REQUIRE(starts("V1") == std::vector<std::int64_t>{0, 8, 16});
+
+    // The menu: Ripple Delete, then the two new rows. The track's row names the track.
+    QObject* menu = openGapMenu("V1", 5);
+    QObject* trackRow = child(menu, "gapMenuCloseTrackGaps");
+    QObject* allRow = child(menu, "gapMenuCloseAllGaps");
+    CHECK(trackRow->property("text").toString() == QStringLiteral("Close Gaps on V1"));
+    CHECK(trackRow->property("enabled").toBool());
+    CHECK(allRow->property("text").toString() == QStringLiteral("Close Gaps in Sequence"));
+    CHECK(allRow->property("command").toString() == QStringLiteral("sequence.closeGap"));
+    p.settle();
+    p.shot(popupRect(menu).adjusted(-260, -120, 40, 40), QStringLiteral("timeline-gap-menu-close-gaps.png"));
+    p.shell.setAppearance(false, "ultraviolet"); // the light theme
+    spin(100);
+    p.settle();
+    p.shot(popupRect(menu).adjusted(-260, -120, 40, 40), QStringLiteral("timeline-gap-menu-close-gaps-light.png"));
+    p.shell.setAppearance(true, "ultraviolet");
+    spin(100);
+
+    // Close Gaps on V1: every gap of V1 goes (the track's two), A1 (not sync-locked) stays where it is; one undo step.
+    std::size_t steps = p.undo();
+    trigger(trackRow);
+    waitClosed(menu);
+    CHECK(p.undo() == steps + 1);
+    CHECK(starts("V1") == std::vector<std::int64_t>{0, 4, 8});
+    CHECK(starts("A1") == std::vector<std::int64_t>{0, 5});
+    REQUIRE(c.undo());
+    CHECK(starts("V1") == std::vector<std::int64_t>{0, 8, 16});
+
+    // Close Gaps in Sequence: what Sequence > Close Gap does with nothing selected (the gap selection clears the clip
+    // selection): every gap no track has material in. The same result as the command's own.
+    const ProjectSnapshot before = c.snapshot();
+    const auto expected = edit::closeGaps(*before, p.tl.seq, {});
+    REQUIRE(expected);
+    menu = openGapMenu("V1", 5);
+    steps = p.undo();
+    trigger(child(menu, "gapMenuCloseAllGaps"));
+    waitClosed(menu);
+    CHECK(p.undo() == steps + 1);
+    CHECK(*c.snapshot()->findSequence(p.tl.seq) == *expected->state.findSequence(p.tl.seq));
+    REQUIRE(c.undo());
+
+    // The bridge on its own: a track with no clips is refused (no clips would mean every gap of the sequence), a locked
+    // track is refused by the model; neither makes an undo step, and the reason is the returned text.
+    steps = p.undo();
+    const QString onEmpty = editing->closeGapsOnTrack(p.track("V2"));
+    CHECK(onEmpty == QStringLiteral("There is no gap to close on this track"));
+    CHECK(editing->closeGapsOnTrack(QStringLiteral("t99999")) == QStringLiteral("There is no such track"));
+    CHECK(p.undo() == steps);
+    c.setTrackFlag(p.track("A1"), QStringLiteral("locked"), true);
+    steps = p.undo();
+    CHECK_FALSE(editing->closeGapsOnTrack(p.track("A1")).isEmpty());
+    CHECK(p.undo() == steps);
+    // A track that has no gap: nothing to close, said so.
+    c.setTrackFlag(p.track("A1"), QStringLiteral("locked"), false);
+    REQUIRE(editing->closeGapsOnTrack(p.track("V1")).isEmpty());
+    steps = p.undo();
+    CHECK_FALSE(editing->closeGapsOnTrack(p.track("V1")).isEmpty());
+    CHECK(p.undo() == steps);
 
     checkNoMessages();
 }

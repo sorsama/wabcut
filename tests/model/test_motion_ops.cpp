@@ -4,7 +4,9 @@
 #include "TimelineFixture.h"
 
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/FrameScaling.h>
 #include <wabcut/model/MotionOps.h>
+#include <wabcut/model/ProjectIO.h>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -137,4 +139,180 @@ TEST_CASE("setMotion refuses audio clips, locked tracks, values out of range and
         const auto r = ok(edit::setMotion(tl.state, tl.seq, tl.clip("V1@0"), f(0), same));
         CHECK(r.changes.empty());
     }
+}
+
+// ---- 0.7 (card #12): Scale Width and a Uniform Scale switch on Motion ---------------------------------------------------
+
+TEST_CASE("Scale Width and Uniform Scale default to a uniform clip and are saved only when set (card 12)", "[model][motion][scalewidth]") {
+    const ClipProperties plain;
+    CHECK(plain.uniformScale());
+    CHECK(plain.scaleAt() == std::pair<double, double>{1.0, 1.0});
+    CHECK(parameterInfo(ParamId::ScaleWidth).defaultValue == 1.0);
+    CHECK(parameterInfo(ParamId::UniformScale).defaultValue == 1.0);
+    CHECK_FALSE(parameterInfo(ParamId::UniformScale).animatable); // a switch: constants only
+    CHECK(parameterInfo(ParamId::ScaleWidth).animatable);
+    CHECK(parameterByKey("motion.scaleWidth") == ParamId::ScaleWidth);
+    CHECK(parameterByKey("motion.uniformScale") == ParamId::UniformScale);
+    CHECK(allParameters().size() == kParamCount);
+
+    // With Uniform Scale on, Scale Width is ignored; off, it is the width and Scale the height.
+    ClipProperties stretched;
+    stretched.set(ParamId::Scale, 0.5);
+    stretched.set(ParamId::ScaleWidth, 2.0);
+    CHECK(stretched.scaleAt() == std::pair<double, double>{0.5, 0.5});
+    stretched.set(ParamId::UniformScale, 0.0);
+    CHECK(stretched.scaleAt() == std::pair<double, double>{2.0, 0.5});
+
+    // A curve on the switch is not a valid clip property.
+    ClipProperties bad;
+    bad[ParamId::UniformScale] = ParamValue(Curve{{key(0, 1.0)}});
+    CHECK(bad.firstInvalid() == ParamId::UniformScale);
+
+    // A project that never stretches a clip writes neither key; one that does reads back equal.
+    Timeline tl(kPicture);
+    const auto before = io::toJson(tl.state);
+    REQUIRE(before);
+    CHECK(before->find("motion.scaleWidth") == std::string::npos);
+    CHECK(before->find("motion.uniformScale") == std::string::npos);
+    const ClipId clip = tl.clip("V1@0");
+    ProjectState s = ok(edit::setParameter(tl.state, tl.seq, clip, ParamRef::of(ParamId::UniformScale), ParamValue(0.0))).state;
+    s = ok(edit::setParameter(s, tl.seq, clip, ParamRef::of(ParamId::ScaleWidth), ParamValue(1.5))).state;
+    const auto text = io::toJson(s);
+    REQUIRE(text);
+    CHECK(text->find("motion.scaleWidth") != std::string::npos);
+    CHECK(text->find("motion.uniformScale") != std::string::npos);
+    const auto loaded = io::fromJson(*text);
+    INFO((loaded ? std::string() : loaded.error().message));
+    REQUIRE(loaded);
+    CHECK(*loaded == s);
+    const Clip& again = clipIn(*loaded, tl.seq, "V1@0");
+    CHECK_FALSE(again.properties().uniformScale());
+    CHECK(again.properties().scaleAt() == std::pair<double, double>{1.5, 1.0});
+}
+
+TEST_CASE("Switching Uniform Scale carries Scale Width along so the picture does not jump (card 12)", "[model][motion][scalewidth]") {
+    Timeline tl(kPicture);
+    const ClipId clip = tl.clip("V1@0");
+    ProjectState s = ok(edit::setParameter(tl.state, tl.seq, clip, ParamRef::of(ParamId::Scale), ParamValue(0.5))).state;
+
+    SECTION("off copies Scale to the width; on puts the width back to 100 %, each one step") {
+        const auto off = ok(edit::setParameter(s, tl.seq, clip, ParamRef::of(ParamId::UniformScale), ParamValue(0.0)));
+        const Clip& c = clipIn(off.state, tl.seq, "V1@0");
+        CHECK_FALSE(c.properties().uniformScale());
+        CHECK(c.properties()[ParamId::ScaleWidth] == ParamValue(0.5));
+        CHECK(c.properties().scaleAt() == std::pair<double, double>{0.5, 0.5}); // the same picture as before
+        REQUIRE(off.changes.sequences.size() == 1);
+        CHECK(off.changes.sequences.front().modifiedClips.size() == 1);
+
+        const auto widened = ok(edit::setParameter(off.state, tl.seq, clip, ParamRef::of(ParamId::ScaleWidth), ParamValue(2.0)));
+        CHECK(clipIn(widened.state, tl.seq, "V1@0").properties().scaleAt() == std::pair<double, double>{2.0, 0.5});
+
+        const auto on = ok(edit::setParameter(widened.state, tl.seq, clip, ParamRef::of(ParamId::UniformScale), ParamValue(1.0)));
+        const Clip& back = clipIn(on.state, tl.seq, "V1@0");
+        CHECK(back.properties().uniformScale());
+        CHECK(back.properties().isDefault(ParamId::ScaleWidth));
+        CHECK(back.properties().scaleAt() == std::pair<double, double>{0.5, 0.5});
+    }
+    SECTION("off copies the keys of a keyed Scale too") {
+        Curve scale{{key(0, 0.5), key(8, 1.0)}};
+        s = ok(edit::setParameter(s, tl.seq, clip, ParamRef::of(ParamId::Scale), ParamValue(scale))).state;
+        const auto off = ok(edit::setParameter(s, tl.seq, clip, ParamRef::of(ParamId::UniformScale), ParamValue(0.0)));
+        const Clip& c = clipIn(off.state, tl.seq, "V1@0");
+        CHECK(c.properties()[ParamId::ScaleWidth] == c.properties()[ParamId::Scale]);
+        CHECK(c.properties().scaleAt(f(4)).first == c.properties().scaleAt(f(4)).second);
+    }
+    SECTION("setting the switch to what it is changes nothing") {
+        const auto same = ok(edit::setParameter(s, tl.seq, clip, ParamRef::of(ParamId::UniformScale), ParamValue(1.0)));
+        CHECK(same.changes.empty());
+    }
+    SECTION("the switch cannot be keyframed or animated") {
+        CHECK_FALSE(edit::setParameter(s, tl.seq, clip, ParamRef::of(ParamId::UniformScale), ParamValue(Curve{{key(0, 1.0), key(4, 0.0)}})));
+        CHECK_FALSE(edit::addKeyframe(s, tl.seq, clip, ParamRef::of(ParamId::UniformScale), key(2, 0.0)));
+        CHECK_FALSE(edit::setParameter(s, tl.seq, clip, ParamRef::of(ParamId::UniformScale), ParamValue(2.0))); // beyond 0..1
+    }
+}
+
+TEST_CASE("setMotion changes one axis: a Scale Width turns Uniform Scale off in the same step (card 12)", "[model][motion][scalewidth]") {
+    Timeline tl(kPicture);
+    const ClipId clip = tl.clip("V1@0");
+    ProjectState s = ok(edit::setParameter(tl.state, tl.seq, clip, ParamRef::of(ParamId::Scale), ParamValue(0.5))).state;
+
+    SECTION("a width alone: the height stays, the switch goes off") {
+        edit::MotionChange change;
+        change.scaleWidth = 1.25;
+        const auto r = ok(edit::setMotion(s, tl.seq, clip, f(2), change));
+        const Clip& c = clipIn(r.state, tl.seq, "V1@0");
+        CHECK_FALSE(c.properties().uniformScale());
+        const edit::MotionValues v = edit::motionAt(c, f(2));
+        CHECK(v.scale == 0.5);
+        CHECK(v.scaleWidth == 1.25);
+        CHECK_FALSE(v.uniformScale);
+        REQUIRE(r.changes.sequences.size() == 1); // one ChangeSet: one undo step for the caller
+        CHECK(r.changes.sequences.front().roles.has(PropertyRole::Motion));
+    }
+    SECTION("the height with the switch off leaves the width") {
+        edit::MotionChange stretch;
+        stretch.scaleWidth = 2.0;
+        s = ok(edit::setMotion(s, tl.seq, clip, f(2), stretch)).state;
+        edit::MotionChange height;
+        height.scale = 0.25;
+        const auto r = ok(edit::setMotion(s, tl.seq, clip, f(2), height));
+        const edit::MotionValues v = edit::motionAt(clipIn(r.state, tl.seq, "V1@0"), f(2));
+        CHECK(v.scale == 0.25);
+        CHECK(v.scaleWidth == 2.0);
+    }
+    SECTION("the switch alone, off then on") {
+        edit::MotionChange off;
+        off.uniformScale = false;
+        const auto r = ok(edit::setMotion(s, tl.seq, clip, f(2), off));
+        CHECK(edit::motionAt(clipIn(r.state, tl.seq, "V1@0"), f(2)).scaleWidth == 0.5);
+        edit::MotionChange on;
+        on.uniformScale = true;
+        const auto back = ok(edit::setMotion(r.state, tl.seq, clip, f(2), on));
+        CHECK(clipIn(back.state, tl.seq, "V1@0").properties().uniformScale());
+        // Already on: a no-op, not an error and not an empty undo step.
+        const auto again = ok(edit::setMotion(back.state, tl.seq, clip, f(2), on));
+        CHECK(again.changes.empty());
+    }
+    SECTION("a width is keyed at the playhead when it is animated") {
+        edit::MotionChange stretch;
+        stretch.scaleWidth = 1.0;
+        s = ok(edit::setMotion(s, tl.seq, clip, f(0), stretch)).state;
+        s = ok(edit::setParameter(s, tl.seq, clip, ParamRef::of(ParamId::ScaleWidth), ParamValue(Curve{{key(0, 1.0), key(8, 2.0)}}))).state;
+        edit::MotionChange mid;
+        mid.scaleWidth = 3.0;
+        const auto r = ok(edit::setMotion(s, tl.seq, clip, f(4), mid));
+        const Curve* width = clipIn(r.state, tl.seq, "V1@0").properties()[ParamId::ScaleWidth].curve();
+        REQUIRE(width);
+        REQUIRE(width->keys.size() == 3);
+        CHECK(width->keys[1].time == f(4));
+        CHECK(width->keys[1].value == 3.0);
+    }
+    SECTION("Scale Width with Uniform Scale on is a contradiction") {
+        edit::MotionChange both;
+        both.scaleWidth = 2.0;
+        both.uniformScale = true;
+        CHECK_FALSE(edit::setMotion(s, tl.seq, clip, f(0), both));
+    }
+    SECTION("a width beyond the range, or a switch on an audio clip") {
+        edit::MotionChange big;
+        big.scaleWidth = 1000.0;
+        CHECK_FALSE(edit::setMotion(s, tl.seq, clip, f(0), big));
+        edit::MotionChange audio;
+        audio.uniformScale = false;
+        CHECK_FALSE(edit::setMotion(s, tl.seq, tl.clip("A1@0"), f(0), audio));
+    }
+}
+
+TEST_CASE("Set to Frame Size makes a stretched clip uniform again (card 12)", "[model][motion][scalewidth]") {
+    Timeline tl(kPicture);
+    const ClipId clip = tl.clip("V1@0");
+    edit::MotionChange stretch;
+    stretch.scaleWidth = 2.0;
+    ProjectState s = ok(edit::setMotion(tl.state, tl.seq, clip, f(0), stretch)).state;
+    REQUIRE_FALSE(clipIn(s, tl.seq, "V1@0").properties().uniformScale());
+    const auto fitted = ok(edit::setToFrameSize(s, tl.seq, std::vector<ClipId>{clip}, edit::FrameFit::Frame));
+    const Clip& c = clipIn(fitted.state, tl.seq, "V1@0");
+    CHECK(c.properties().uniformScale());
+    CHECK(c.properties().isDefault(ParamId::ScaleWidth));
 }

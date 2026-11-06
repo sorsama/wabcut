@@ -431,10 +431,18 @@ Public headers in `src/model/include/wabcut/model/`; overview in `src/model/READ
   - Selection, hover and playhead are **not** document state and are never in undo.
 - **Premiere editing and sequence commands (P.2, E5)**: `FrameScaling.h`, `SequenceSettings.h`, `EditingOps.h`; commands in
   `src/command/src/CatalogEditing.cpp` ([commands.md](commands.md)).
-  - **Scale to Frame Size** is a flag on the clip (`ClipContent::scaleToFrame`): the picture is fitted to the sequence frame
+  - **Nearest Neighbor Scaling** (0.7, card #98) is a flag on the clip (`ClipContent::nearestNeighbor`, saved as
+    `nearestNeighbor` only when set; `edit::setNearestNeighbor`, `clip.nearestNeighborScaling`): the evaluator hands it to
+    the layer (`LayerSpec::nearest` -> `render::CompositeLayer::nearest`) and `layer.frag` / `layer_array.frag` move the
+    texture coordinate to the centre of the source pixel under each canvas pixel (`mode.z` bit 5), so the luma of the
+    enlarged picture has hard pixel edges. The group a stabilizer or Time Interpolation makes carries the flag, not the
+    frames inside it. Export and preview share it (one compositor).
+  - **Scale to Frame Size** (0.7: shown as **Auto Fit to Frame**, since the fit is automatic) is a flag on the clip
+    (`ClipContent::scaleToFrame`): the picture is fitted to the sequence frame
     (whole picture visible, its displayed size: pixel aspect and rotation) *before* Motion, whose Scale stays 100 %. Evaluators
     multiply Motion's scale by `scaleToFrameFactor(state, clip, width, height)` (1 without the flag; a nested clip fits its
-    sequence's frame). **Set to Frame Size** / **Set to Fill Frame** write the fit (or fill) into Motion's Scale instead and
+    sequence's frame). **Set to Frame Size** / **Set to Fill Frame** (0.7: **Set Scale to Fit Frame** / **Set Scale to
+    Fill Frame**) write the fit (or fill) into Motion's Scale instead and
     clear the flag. `MediaItem::scaling` (Preferences > Media > Default Media Scaling, set on import) is applied by every
     source edit to the video clips it places (`scaledClipContent`).
   - **Sequence Settings** (`setSequenceSettings`): frame size, timebase, pixel aspect, fields, audio rate, preview format,
@@ -467,7 +475,8 @@ Public headers in `src/model/include/wabcut/model/`; overview in `src/model/READ
     Timecode** (`MediaItem::timecode`: start timecode and reel name; `mediaStartTimecode`).
   - Preferences > Timeline's default still duration is stored per item (`MediaItem::stillDuration`, from import); the default
     video and audio transition durations are the app's settings passed to the transition commands.
-- **`ProjectIO`**: `.wabcut` JSON (nlohmann; int64 ticks as JSON integers) at `schemaVersion` 18, with a migration chain (the
+- **`ProjectDowngrade`** (0.7, `ProjectDowngrade.h`): File > Save for an Older Version. The reverse of the migration chain, by field: the project text of the current schema is rewritten as Wabcut 0.6 (schema 19) or 0.2 to 0.5 (schema 18) reads it - a rule table names every key a later release added (with the keys it sits under), erases it, turns the caption animations that release has no name for into `none`, drops the `sound` assets, and counts what was left out per feature (`DowngradeLoss`). The result is checked to load back before it is written. A test holds the key lists of the 0.2 and 0.6 releases (`tests/data/project-file-keys-0.2.txt`, `-0.6.txt`) and fails when a key survives that the older release did not have: a field added to the project file needs a rule there.
+- **`ProjectIO`**: `.wabcut` JSON (nlohmann; int64 ticks as JSON integers) at `schemaVersion` 19, with a migration chain (the
   history is in `ProjectIO.h`). Step 1→2 converts the media locator, parameters, sequence duration and transitions. Step 2→3 only
   adds optional fields: a parameter is `{"value": x}` or `{"keys": [{"t", "v", "i", "in", "out"}]}`, clips carry `effects`,
   `reversed` and `maintainPitch`, freeze frames have speed 0/1, transitions carry `params`, tracks and sequences carry
@@ -489,15 +498,37 @@ Public headers in `src/model/include/wabcut/model/`; overview in `src/model/READ
   colour management back from I.9: the project's `colorManagement` (`mode`, `peakNits`, `referenceWhiteNits`,
   `autoDetectLog`), clip `inputColorSpace` and media video stream `logColorSpace` (docs/color.md); all written only when
   set, one schema for the whole 0.2 round.
+  - 0.7: a track's label colour is its `colorIndex` (0-15, one of the clip labels; written only when set, so the schema
+    stays and an older build opens the project and ignores it). A value outside 0-15 is a `ParseError`.
+  - 0.7: a sequence's track groups are the optional `trackGroups` array (`Sequence::trackGroups`, TrackGroups.h), written only
+    when there are some, so the schema stays and an older build opens the project with the tracks ungrouped. Each group has `id`,
+    `kind` (`video` / `audio`), `name`, `members` (track ids in stack order) and, only when set, `colorIndex` and `collapsed`. A
+    group naming a track that is not a track of its kind, one track in two groups, an empty group or a bad name is refused when
+    the project loads (`validate`); the operations keep a group's tracks next to each other, and deleting a track, a merge and a
+    sequence copy keep the groups consistent (ids are renumbered with the project's, a merged group drops the tracks it lost).
   - Malformed or out-of-domain values fail with `ErrorCode::ParseError`, and newer schemas fail with `VersionMismatch`.
   - Files are untrusted (C.10, fuzzed in `tests/fuzz`). JSON nested deeper than `kMaxJsonNesting` (256) is refused before
     parsing (`jsonNestingWithin`). Kept JSON such as an unknown clip source is written back recursively, and 100,000 levels
     of it would exhaust the stack. History chunks, the history index and review packages are checked the same way.
   - Loading never writes, renames or deletes anything.
   - Saves are atomic (temp file, flush, same-directory rename). They refuse a state that would not load back, and rotate
-    `<file>.bak1..5`; only loadable files rotate in, so the last valid save is always kept.
+    `<file>.bak1..N` (N = `SaveOptions::backups`, 0 to 10); only loadable files rotate in, so the last valid save is always kept.
   - `writeAutosave`/`Autosaver` write `<file>.autosave`.
+  - 0.7 (card 029): `BackupLocation` says where those copies go - beside the project (`Beside`, as before), in a
+    `Wabcut Auto-Save` folder next to it (`Folder`) or in `<root>/<project name>-<8 hex digits of its folder>/` (`Chosen`);
+    `SaveOptions::backupDir` and `backupPath(file, n, dir)` / `autosavePath(file, dir)` name the copies, the project and its
+    temporary file stay where the user saved them. `recoveryCandidates()` (and `recoveryEntries()`,
+    `ProjectDocument::recoveryFiles()` / `newestUnsavedAutosave()`) look in all three places, up to `kMaxBackupCount` (10)
+    backups and `kMaxAutosaveCopies` (10) autosaves in each, so changing the setting never hides copies. The app reads
+    `project/backupLocation` (`beside` | `folder` | `chosen`), `project/backupFolder`, `project/backupCount` and
+    `project/autosaveCopies` (`BackupSettings`; a new install starts with `folder`, an existing one with `beside`).
   - `recoveryCandidates()` lists the autosave and backups for explicit crash recovery.
+  - 0.7 (card 009): `MulticamAngle::autoOffset` keeps the offset the sync method measured while an angle is nudged by hand
+    (written only then; `setMulticamSync` records and clears it).
+  - 0.7 (card 028): `SettingsBundle` (`src/app/src/SettingsBundle.cpp`) exports, imports and resets the settings (QSettings
+    and the user's keymap / preset / template / dictionary files) as one JSON file; secrets are never in it, imports are
+    validated as untrusted input and applied at the next start (staged in `<config>/pending-settings.json`, backup in
+    `<config>/backups`).
 - **Evaluator obligations** (render, playback and audio engineers):
   - **Time.** For a clip at timeline time `t`, read the frame at `clip.sourceTimeAt(t)` (reversed, freeze and time-remap aware),
     and evaluate every parameter at `clip.curveTimeAt(t)` - use `clip.parameterAt(id, t)` and `effectParameterAt(instance, key,
@@ -553,7 +584,13 @@ Public headers in `src/media/include/wabcut/media/`. No Qt. Every fallible call 
     FFmpeg's average vs real base frame rate;
   - the pixel format, bit depth and chroma subsampling;
   - the colour tags as written, chroma siting included (Unknown when untagged);
-  - `alpha` and the clockwise display rotation;
+  - `alpha` and the display orientation: the clockwise rotation and, 0.7, `mirrored` (the display matrix holds a
+    reflection: some phone front cameras and screen recordings; saved as `"mirrored": true` only when set, so older
+    projects and builds are unaffected). The compositor draws a mirrored stream flipped after the turn, as the thumbnails
+    always did: `render::applyDisplayOrientation` folds the turn, the flip (`LayerTransform::mirrorX`) and the clip's
+    anchor into the layer transform the preview, the exports and the Mask / Motion overlays share. Smart Render never
+    passes a flipped stream through. A project made before 0.7 keeps what it probed: relink or re-import the file to
+    read the flag;
   - the audio rate, channels and layout.
 
   Cover art is skipped.
@@ -674,9 +711,10 @@ Public headers in `src/media/include/wabcut/media/`. No Qt. Every fallible call 
   decoder) are developed in `VideoDecoder` into 10-bit Rec.709 Y'CbCr 4:4:4: black and white levels, white balance,
   a bilinear demosaic, the codec's camera-to-XYZ matrix and gain (ProRes RAW's `AVRawColorParams`), the BT.709 OETF.
   CinemaDNG arrives from FFmpeg linearised and white balanced in camera RGB, read as linear Rec.709. Highlights above
-  the white point clip. RAW Source Settings (`model/RawSourceSettings.h`: exposure, and a white balance as the colour
-  temperature and tint of the light to balance for) ride at the end of the item's media path
-  (`?raw=exposure:+0.50,white:3200:-10`, `&raw=...` after an image sequence's own query) like the other virtual paths'
+  the white point clip. RAW Source Settings (`model/RawSourceSettings.h`: exposure, a white balance as the colour
+  temperature and tint of the light to balance for, and (0.7) an ISO pair - shot at / develop for, adding
+  log2(develop / shot) stops, since FFmpeg does not carry the camera's ISO) ride at the end of the item's media path
+  (`?raw=exposure:+0.50,white:3200:-10,iso:800:1600`, `&raw=...` after an image sequence's own query) like the other virtual paths'
   descriptions, so every decoder, frame cache key (`sourceFingerprint` mixes the path), thumbnail and export develops
   the item alike without new plumbing; `openInput` opens the path before them, `VideoDecoder` reads them and the
   development applies the exposure and a Bradford adaptation in XYZ from the as-shot light (`AVRawColorParams::wb_cct`
@@ -762,6 +800,59 @@ Public headers in `src/audio/include/wabcut/audio/`; design notes in `src/audio/
   - `PluginSystem`: the per-process setup the app and wabcut-cli start.
 - Windows only for now (`WABCUT_WITH_AUDIO_PLUGINS`, vcpkg feature `audio-plugins`).
 
+### `ofxhost` — owner: Core engine (0.7, [plugins.md](plugins.md#openfx-video-plug-ins-07))
+OpenFX video effect plug-ins, out of process like the audio plugins; the same crash-isolation model.
+- **`wabcut-ofxhost`**: the helper that loads one `.ofx` binary and implements the OpenFX host (property, parameter, image
+  effect, memory, multi-thread and message suites). `--scan` describes the plug-ins; `--serve` renders pictures. It runs in a job
+  object that forbids other processes and the desktop and caps memory. The API headers are vendored in `third_party/openfx`.
+- **`wabcut_ofxhost_common`**: the wire (`Protocol.h`): JSON lines and one shared-memory block per instance for the pictures.
+- **`wabcut_ofx`**: the editor side.
+  - `OfxCatalog`: the scanner, the cache, the blocklist and the `EffectDescriptorProvider` (`plugin.ofx.<id>`).
+  - `OfxPluginHost` / `OfxRemoteInstance`: the helper processes, hang timeouts and health.
+  - `OfxEffects`: the playback layer's `ExternalEffectProcessor` - decoded frame to float RGBA (`OfxPictures`), the effects of a
+    stack in order, the 8-bit raster the compositor draws, a result cache, and the badges.
+  - `OfxSystem`: the per-process setup the app and wabcut-cli start.
+- The hook is in `playback` (`ExternalEffects.h`, `Evaluate.cpp`): the evaluator collects `LayerSpec::external`,
+  `buildCompositeLayers` runs it on the decoded frame, so preview and export share it.
+
+### `capture` — owner: Project panel / Library (0.7, [capture.md](capture.md))
+Capture from a camera, a capture card or a tape deck the system exposes as a video capture device. Qt-free, full builds only.
+- **`CaptureBackend`** (`CaptureBackend.h`): the device layer behind an interface - the video and sound devices, a device's
+  formats (read when the user picks it), and sources that push pictures (`CaptureFrame`, packed top-down, with the host-clock
+  time) and sound (`AudioBlock`) to a sink on their own thread. Implementations: **Media Foundation** (Windows:
+  `MFEnumDeviceSources`, `IMFSourceReader`; the sound goes through `audio::AudioInput`), a **fake** backend (`FakeBackend.h`: a
+  moving picture with a barcode, a tone; for tests and screenshots) and a "not available here" backend on other systems.
+- **`CaptureRecorder`**: one recording. A worker thread turns the queued pictures and sound into a constant-frame-rate file
+  through `exporter::CaptureWriter` (the export's encoders, hardware first, fast software presets; Matroska or fragmented MP4 so
+  the file survives the program stopping), aligns the sound with the first picture and corrects clock drift, bounds its memory.
+- **`CaptureSession`**: what the panel drives - preview (the newest picture, the rate, the level), recording, the system's
+  refusals and a source that stops on its own.
+- **`CaptureFiles`**: file names, the journal next to a capture being written, finding captures a run left behind, and
+  `recoverCapture` (a clean file from the packets that reached the disk).
+- The app side is `CaptureBridge` (the `Capture` singleton, a worker thread for everything slow, the image provider for the live
+  picture) and `CaptureDialog.qml`.
+
+### `cloud` — owner: Core / Project panel (0.7, [cloud.md](cloud.md))
+Review links, cloud projects on the user's own storage and stock media, with no Wabcut server. Qt-free (the Qt transport, the key
+store and the dialogs are in the app); built in core builds too.
+- **`RemoteStore`** (`RemoteStore.h`): the one storage seam - `stat`, `list`, `get`, `put`/`putFile` with a **`Precondition`** (create-if-absent,
+  compare-and-swap on an ETag), `remove`. Stores: `FolderStore` (a folder a sync service mirrors; create-if-absent by hard link), `WebDavStore` and
+  `S3Store` (AWS Signature V4, `HttpStores.h`) over the AI platform's `IHttpTransport` (so proxies, TLS, the redacted request log and offline
+  mode apply), `MemoryStore` for tests. Paths are validated segments; a listing's names are never joined to a local path unchecked.
+- **`CloudLock`**: the editing lock (`lock.json`), a create-if-absent write renewed every minute by compare-and-swap; stale after 15 minutes,
+  taken over with a warning.
+- **`CloudProjects`** (`CloudProject.h`): revisions are immutable files named by their SHA-256; `head.json` is the one mutable file and is
+  changed by compare-and-swap. A sync compares (number, sha), finds the common ancestor through the parent links and uses `mergeProjects`;
+  machine-local fields (media paths, offline flags, proxies) are normalised away before comparing and put back after; UNC paths from other
+  computers are never kept. `checkStore` tests a storage's conditional writes before a project is trusted to it.
+- **`ReviewLink`** (`ReviewLink.h`, `ReviewPage.cpp`): the static review page (one HTML file, hash-named script and style in its CSP, data in
+  a non-executing JSON block), publish / revoke, the link records (a sidecar next to the project, never in the review folder).
+  The comments file and its import are in the model (`ReviewComments.h`); `review.importComments` is the command.
+- **`Stock`** (`Stock.h`): Pexels and Pixabay request builders and parsers, host allow-lists, licence and credit records (`MediaRights`), a
+  bounded, checked, atomic download.
+App: `CloudBridge` (`Cloud`) and `StockBridge` (`Stock`) run every network call on one worker with progress and Cancel; the Cloud dialog and the
+Stock panel (`stock`).
+
 ### `script` — owner: Core engine (C.12, [extensions.md](extensions.md))
 Extensions: JavaScript over the typed command protocol, one sandboxed process each.
 - **`wabcut_script`** (pure C++, core builds too) is the editor's side.
@@ -784,6 +875,18 @@ Extensions: JavaScript over the typed command protocol, one sandboxed process ea
 - **Command hooks.** Every model-running command carries `CommandSpec::runsModel`, and every command on the files its
   parameters name carries `touchesFiles` (classified by tests/script/test_runs_model.cpp). `EnginePolicy` can hold
   either back.
+
+### Python scripting — owner: Core engine (0.7, [python.md](python.md))
+Python over the same typed commands, in the user's own Python (no sandbox: Wabcut limits what a script does to the project).
+- **`python/wabcut`** (pure Python, no dependencies): `connect()` starts `wabcut-cli mcp` (headless) or, inside the app, joins
+  the editor's private socket. `catalog.json` and `_commands.pyi` are generated by `wabcut_command_docgen` from the registry
+  (`command::pythonApiFiles`, wabcut_command); the rest is hand-written and tested by `python/tests`, which the command suite
+  runs against the built `wabcut-cli` when a Python is found.
+- **`edit_transaction`** (wabcut_mcp, `--transactions`): the session's gesture, so a script's edits are one undo step, all or
+  nothing; `--audit-log` records every tool call without parameters.
+- **`ScriptRun` / `ScriptsBridge`** (app): File > Run Python Script… runs a script on a scratch `EditSession` copy served by an
+  `McpServer` on a worker thread over a named pipe / Unix socket (random name, user-only, one-time token); the result is one undo
+  step on the open project when the script ends cleanly and the project did not change meanwhile.
 
 ### `render` — owner: Graphics/playback (Qt RHI)
 - `FrameImporter` (per QRhi instance and device): `FrameHandle` → RHI textures (plane views), with a texture pool. CPU planes are
@@ -897,14 +1000,25 @@ only adapt them to QML. One undo step per user action throughout.
 - **Recovery dashboard** (`editor::recoveryEntries`, File > Recover…): the project as saved now, its autosaves and its
   backups, and untitled autosaves, each summarised (sequences, clips, duration, last edit, what differs from the saved
   version) with a poster frame rendered by the export renderer (`renderPoster`); a version opens as an untitled copy, so
-  the project file is only replaced by an explicit save.
-- **Project capsule** (`editor::collectProject`, File > Collect Files…): the project and what it uses in one folder -
-  media whole, or trimmed to the used ranges + handles (`exporter::trimmedCopy`: stream copies of whole GOPs; clip In
+  the project file is only replaced by an explicit save. Posters are cached in `recovery-posters/` under the app's
+  cache folder, one per version file and modification time (`recoveryPosterFile`): opening the dashboard again shows them
+  at once, and `pruneRecoveryPosters` deletes the ones of versions saved since and any older than 30 days.
+- **Project capsule** (`editor::collectProject`, File > Collect Files…; `CapsuleOptions::layout` (0.7) lays the media out flat, in the project's bins or in the folders they came from, names made portable by `paths::portableName` and sharing one spelling per folded name): the project and what it uses in one folder -
+  media whole, or trimmed to the used ranges + handles (`CapsuleOptions::handles`, 0 to 10 s, the dialog's Handles field;
+  `exporter::trimmedCopy`: stream copies of whole GOPs; clip In
   points and keyframe/effect curves move by the measured shift, so trimmed clips stay frame-exact), proxies, fonts of
   titles and captions (Windows' font registry; fonts that ship with Windows are not copied), analysis sidecars - with
   locators relative to the project, `manifest.json` (paths, sizes, fingerprints, version), a free-space check first, a
   `.wabcut-partial-*` staging folder (cancel leaves nothing) and a verification that reopens a copy elsewhere with the
-  absolute paths cleared.
+  absolute paths cleared. A copy is the whole file or an error (`detail::copyChecked`: the bytes read must reach the end
+  of the file and equal its size; a short read from a dropped drive deletes the half-copy). A trimmed file starts earlier
+  than its original, so everything keyed to the media's own time moves with it: clip curves, effect and mask keys,
+  source-anchored redactions (source, audio ranges, region), Master Clip Effects, the item's markers, marks and
+  subclip range, transcript edits. Items that share redactions or Master Clip Effects (a master and its subclips) are cut
+  at the same time or all copied whole, a master with Master Clip Effects goes into the capsule when a subclip of it is
+  used, and media with AI object masks (Matte) is copied whole, with a note. The dialog's size estimate runs on a worker
+  (`CollectFilesBridge::requestEstimate`, newest request wins) and counts the analysis sidecars from the cache's entry
+  sizes (`AnalysisCache::sidecarBytesEstimate`) without writing them.
 
 ### Proxies and preview quality (I.3)
 Progressive media readiness: imported clips play immediately (at a reduced preview resolution if need be) while proxies are made
@@ -970,6 +1084,17 @@ in the background for what the machine cannot play in real time.
 ### `app` — owners: UI/UX (QML shell, theme, components); feature owners for their bridge types
 - QML module URI `Wabcut`, in library target `wabcut_ui`. Tokens live only in `qml/theme/Theme.qml` (see `docs/design-system.md`).
 - All user-visible strings use `qsTr()`. Command IDs are never translated. Theme, accent and reduce-motion are persisted.
+- **Plurals (0.7).** A string with a count is written once with Qt's numerus form and the English marker: `qsTr("%n clip(s)
+  deleted", "", n)` in QML, `tr("%n clip(s) deleted", "", n)` in C++. `EnglishPluralTranslator` (`src/app/src/EnglishPlurals.*`),
+  installed in `main()` before any QML loads (and by the test fixture), turns `(s)` / `(es)` / `(ies)` into the right form for the
+  count - "1 clip", "0 clips", "5 clips"; `prox(ies)` is "1 proxy" and "2 proxies" - and Qt puts the number in for `%n`. Without a count (`n` omitted) a string is
+  left alone, so a unit such as "(s)" for seconds is safe. Write one count per string: two counts (`%n clip(s) on %n
+  track(s)`) are split into two strings, and a verb that has to agree with the count is rephrased ("Shots quicker than
+  the reference stay as they are: %1"). A future translation file is installed after the translator and wins for the
+  strings it knows. The engine libraries, which have no Qt, write plain text with `wabcut::counted(n, "clip")`
+  (`<wabcut/model/Plural.h>`) and never print a literal `(s)`. Three tests in `tests/app/test_i18n.cpp` scan the sources: a string with a marker or
+  `%n` passed without a count, a counted noun written in the plural without a marker ("%n proxies", "%n were already there"), and a literal
+  `(s)` in an engine library string.
 - Bridges in `src/app/src/bridge/`: `ProjectController`, `TimelineView` (QQuickItem; updates **only** items in a `ChangeSet`),
   `ProgramMonitor` (QQuickRhiItem), `KeymapDispatcher` (owns `TransportGesture`, focus scopes, ShortcutOverride), and over
   `wabcut_editor` the singletons `ProjectFile` (`ProjectLifecycle`: file lifecycle, import, relink, library drops) and `Playback`

@@ -26,6 +26,7 @@ wabcut_add_test_suite(interchange
         test_auditions_interchange.cpp # 0.6 (card #74): auditions
         test_file_url.cpp
         test_lottie.cpp
+        test_ograf.cpp # 0.7 (card 178): Lottie fields, dotLottie, OGraf
         test_omf.cpp
         test_mogrt.cpp
         test_otio.cpp

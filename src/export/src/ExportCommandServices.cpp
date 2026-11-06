@@ -1,4 +1,5 @@
 #include <wabcut/export/ExportCommandServices.h>
+#include <wabcut/export/PreExportCheck.h>
 #include <wabcut/export/Stems.h>
 
 #include <wabcut/model/MediaLocator.h>
@@ -315,7 +316,7 @@ ExportCommandServices::requestFor(std::shared_ptr<const ProjectState> state, Seq
     if (out.empty()) {
         out = defaultOutput(request.settings);
     }
-    out.replace_extension(std::string(outputExtension(request.settings))); // the format decides
+    out = withOutputExtension(std::move(out), outputExtension(request.settings)); // the format decides (148: only a known extension is swapped)
     request.output = std::move(out);
     request.snapshot = std::move(state);
     request.sequence = sequenceId;
@@ -362,6 +363,47 @@ std::expected<Json, command::CommandError> ExportCommandServices::describe(const
         d["audioSamples"] = r->audioSamples;
     }
     return d;
+}
+
+std::expected<Json, command::CommandError> ExportCommandServices::check(const ProjectState& state, SequenceId sequence,
+                                                                         const Output& output) const {
+    auto snapshot = std::make_shared<const ProjectState>(state);
+    auto request = requestFor(snapshot, sequence, output, nullptr);
+    if (!request) {
+        return std::unexpected(request.error());
+    }
+    const Sequence& seq = *snapshot->findSequence(sequence);
+    CheckContext context;
+    context.projectFile = m_host.projectFile;
+    Json rows = Json::array();
+    std::int64_t counts[3] = {0, 0, 0};
+    for (const CheckIssue& issue : preExportCheck(*snapshot, seq, request->settings, context)) {
+        Json row{{"kind", std::string(checkKindName(issue.kind))},
+                 {"severity", std::string(checkSeverityName(issue.severity))},
+                 {"message", checkIssueMessage(issue, seq)},
+                 {"fix", std::string(checkFixName(issue.fix))},
+                 {"count", issue.count},
+                 {"more", issue.more}};
+        if (!issue.subject.empty()) {
+            row["subject"] = issue.subject;
+        }
+        if (issue.at) {
+            row["at"] = issue.at->value;
+            row["timecode"] = ticksToTimecode(*issue.at, seq.frameRate, seq.dropFrame);
+        }
+        if (issue.length > Ticks{0}) {
+            row["length"] = issue.length.value;
+        }
+        if (issue.clip.isValid()) {
+            row["clip"] = issue.clip.value;
+        }
+        if (issue.track.isValid()) {
+            row["track"] = issue.track.value;
+        }
+        ++counts[static_cast<std::size_t>(issue.severity)];
+        rows.push_back(std::move(row));
+    }
+    return Json{{"rows", std::move(rows)}, {"problems", counts[0]}, {"warnings", counts[1]}, {"notes", counts[2]}};
 }
 
 std::vector<command::ExportServices::Output> ExportCommandServices::stemExports(const ProjectState& state, SequenceId sequence,
@@ -435,7 +477,7 @@ std::expected<Json, command::CommandError> ExportCommandServices::savePreset(con
         return std::unexpected(commandError(resolved.error()));
     }
     if (dryRun) {
-        Preset p{userPresetId(name), name, description, resolved->second};
+        Preset p{m_host.presets->idFor(name), name, description, resolved->second};
         p.settings.presetId = p.id;
         Json j = presetJson(p, false);
         j["saved"] = false;

@@ -456,3 +456,194 @@ TEST_CASE("A still's default duration sets the length of its clips", "[model][st
     REQUIRE(edit);
     CHECK(edit->sourceRange.duration == Ticks::fromSeconds(2));
 }
+
+// ---- Clean-up: Remove Transitions and Remove Disabled Clips (0.7, cards 123 and 122) -----------------------------------
+
+namespace {
+
+std::size_t transitionCount(const ProjectState& state, SequenceId seq) {
+    std::size_t n = 0;
+    state.findSequence(seq)->forEachTrack([&](const Track& t) { n += t.transitions.size(); });
+    return n;
+}
+
+/// Picture and sound of three clips with a cross dissolve at each cut of V1, a crossfade on A1's first cut and a fade in
+/// on A1's first clip: four transitions (B and C start 5 frames into their media, so the handles are there).
+struct Transitions {
+    Timeline tl{R"(
+        V1 tgt |AaaaaaaaaaB5bbbbbbbbC5ccccccccc|
+        A1 tgt |AaaaaaaaaaB5bbbbbbbbC5ccccccccc|
+    )"};
+    ProjectState state;
+
+    Transitions() {
+        state = tl.state;
+        const auto dissolve = [&](std::string_view track, std::string_view from, std::string_view to, const char* effect) {
+            edit::TransitionSpec spec;
+            spec.outgoing = tl.clip(from);
+            spec.incoming = tl.clip(to);
+            spec.before = f(2);
+            spec.after = f(2);
+            spec.effect = effect;
+            state = ok(edit::addTransition(state, tl.seq, tl.track(track), spec)).state;
+        };
+        dissolve("V1", "V1@0", "V1@10", "crossDissolve");
+        dissolve("V1", "V1@10", "V1@20", "crossDissolve");
+        dissolve("A1", "A1@0", "A1@10", "constantPower");
+        edit::TransitionSpec fade;
+        fade.incoming = tl.clip("A1@0");
+        fade.after = f(3);
+        fade.effect = "constantGain";
+        state = ok(edit::addTransition(state, tl.seq, tl.track("A1"), fade)).state;
+    }
+};
+
+} // namespace
+
+TEST_CASE("Remove Transitions deletes every transition of the sequence and leaves the clips alone", "[model][transitions]") {
+    Transitions t;
+    REQUIRE(transitionCount(t.state, t.tl.seq) == 4);
+    const std::string picture = render(t.state, t.tl.seq);
+    const auto all = ok(edit::removeTransitions(t.state, t.tl.seq));
+    CHECK(transitionCount(all.state, t.tl.seq) == 0);
+    CHECK(render(all.state, t.tl.seq) == picture); // clips, cuts and lengths exactly as they were
+    // Undo is the old state: the result is a new state, the input was not touched.
+    CHECK(transitionCount(t.state, t.tl.seq) == 4);
+    // Removing again is an error, not a silent no-op: there is nothing to remove.
+    const auto again = edit::removeTransitions(all.state, t.tl.seq);
+    REQUIRE_FALSE(again);
+    CHECK(again.error().code == ErrorCode::InvalidArgument);
+}
+
+TEST_CASE("Remove Transitions on clips takes the transitions on either side and one-sided fades, not linked partners", "[model][transitions]") {
+    Transitions t;
+    // B on V1 sits between two dissolves: both go; A1's transitions stay (its clips were not listed).
+    const std::array<ClipId, 1> b{t.tl.clip("V1@10")};
+    const auto middle = ok(edit::removeTransitions(t.state, t.tl.seq, b));
+    CHECK(transitionCount(middle.state, t.tl.seq) == 2);
+    CHECK(t.state.findSequence(t.tl.seq)->findTrack(t.tl.track("V1"))->transitions.size() == 2);
+    CHECK(middle.state.findSequence(t.tl.seq)->findTrack(t.tl.track("V1"))->transitions.empty());
+    CHECK(middle.state.findSequence(t.tl.seq)->findTrack(t.tl.track("A1"))->transitions.size() == 2);
+    // C on V1: only the dissolve into it goes.
+    const std::array<ClipId, 1> c{t.tl.clip("V1@20")};
+    const auto last = ok(edit::removeTransitions(t.state, t.tl.seq, c));
+    const auto& v1 = last.state.findSequence(t.tl.seq)->findTrack(t.tl.track("V1"))->transitions;
+    REQUIRE(v1.size() == 1);
+    CHECK(v1.front().incoming == t.tl.clip("V1@10")); // A | B stays
+    // The first clip of A1 owns the fade in and the crossfade out of it.
+    const std::array<ClipId, 1> a{t.tl.clip("A1@0")};
+    const auto sound = ok(edit::removeTransitions(t.state, t.tl.seq, a));
+    CHECK(sound.state.findSequence(t.tl.seq)->findTrack(t.tl.track("A1"))->transitions.empty());
+    CHECK(transitionCount(sound.state, t.tl.seq) == 2);
+    // The clip with the picture and its partner together.
+    const std::array<ClipId, 2> both{t.tl.clip("V1@0"), t.tl.clip("A1@0")};
+    CHECK(transitionCount(ok(edit::removeTransitions(t.state, t.tl.seq, both)).state, t.tl.seq) == 1); // B | C on V1 stays
+    // A clip with no transition: an error that says so. An unknown clip: NotFound.
+    Timeline plain(R"(
+        V1 tgt |AaaaBbbb|
+    )");
+    const std::array<ClipId, 1> lone{plain.clip("V1@0")};
+    const auto none = edit::removeTransitions(plain.state, plain.seq, lone);
+    REQUIRE_FALSE(none);
+    CHECK(none.error().code == ErrorCode::InvalidArgument);
+    const std::array<ClipId, 1> missing{ClipId{987654}};
+    const auto gone = edit::removeTransitions(t.state, t.tl.seq, missing);
+    REQUIRE_FALSE(gone);
+    CHECK(gone.error().code == ErrorCode::NotFound);
+}
+
+TEST_CASE("Remove Transitions leaves a locked track's transitions and says so when they are all there", "[model][transitions]") {
+    Transitions t;
+    edit::TrackStateChange lock;
+    lock.locked = true;
+    const ProjectState locked = ok(edit::setTrackState(t.state, t.tl.seq, t.tl.track("V1"), lock)).state;
+    const auto rest = ok(edit::removeTransitions(locked, t.tl.seq));
+    CHECK(rest.state.findSequence(t.tl.seq)->findTrack(t.tl.track("V1"))->transitions.size() == 2); // locked: stay
+    CHECK(rest.state.findSequence(t.tl.seq)->findTrack(t.tl.track("A1"))->transitions.empty());
+    // Listing a clip of the locked track is not an error for the others, and the locked track keeps its own.
+    const std::array<ClipId, 2> mixed{t.tl.clip("V1@10"), t.tl.clip("A1@10")};
+    const auto some = ok(edit::removeTransitions(locked, t.tl.seq, mixed));
+    CHECK(some.state.findSequence(t.tl.seq)->findTrack(t.tl.track("V1"))->transitions.size() == 2);
+    CHECK(some.state.findSequence(t.tl.seq)->findTrack(t.tl.track("A1"))->transitions.size() == 1); // the fade in stays
+    // Only the locked track has any left: refused with the reason.
+    const auto refused = edit::removeTransitions(rest.state, t.tl.seq);
+    REQUIRE_FALSE(refused);
+    CHECK(refused.error().code == ErrorCode::InvalidArgument);
+    CHECK(refused.error().message.find("locked") != std::string::npos);
+}
+
+TEST_CASE("Remove Disabled Clips deletes each disabled clip on its own and can ripple", "[model][disabled]") {
+    Timeline tl(R"(
+        V2 tgt |Cccc....Dddd|
+        V1 tgt |AaaaBbbbEeee|
+        A1 tgt |AaaaBbbbEeee|
+    )");
+    tl.linkMatching();
+    // Disable B's picture only (its sound stays enabled) and the clip on V2 at 8.
+    const std::array<ClipId, 2> off{tl.clip("V1@4"), tl.clip("V2@8")};
+    edit::ClipAttributeChange disableThem;
+    disableThem.enabled = false;
+    const ProjectState s = ok(edit::setClipAttributes(tl.state, tl.seq, off, disableThem)).state;
+    // In track order: V1, V2, then the audio tracks.
+    CHECK(edit::disabledClips(*s.findSequence(tl.seq)) == std::vector<ClipId>{tl.clip("V1@4"), tl.clip("V2@8")});
+
+    // Delete: the two disabled clips go and leave gaps; B's sound, linked to a removed picture, stays.
+    const auto removed = ok(edit::removeDisabledClips(s, tl.seq));
+    CHECK_TIMELINE(removed.state, tl.seq, R"(
+        V2 |Cccc........|
+        V1 |Aaaa....Eeee|
+        A1 |AaaaBbbbEeee|
+    )");
+    CHECK(removed.removed.size() == 2);
+    CHECK(edit::disabledClips(*removed.state.findSequence(tl.seq)).empty());
+
+    // Ripple: the time they occupied closes on their tracks and on the sync-locked ones, like Ripple Delete.
+    Timeline lone(R"(
+        V1 tgt |AaaaBbbbEeee|
+    )");
+    const std::array<ClipId, 1> b{lone.clip("V1@4")};
+    edit::ClipAttributeChange disable;
+    disable.enabled = false;
+    const ProjectState offB = ok(edit::setClipAttributes(lone.state, lone.seq, b, disable)).state;
+    CHECK_TIMELINE(ok(edit::removeDisabledClips(offB, lone.seq, true)).state, lone.seq, R"(
+        V1 |AaaaEeee....|
+    )");
+    CHECK_TIMELINE(ok(edit::removeDisabledClips(offB, lone.seq, false)).state, lone.seq, R"(
+        V1 |Aaaa....Eeee|
+    )");
+
+    // Nothing disabled: an error that says so.
+    const auto none = edit::removeDisabledClips(tl.state, tl.seq);
+    REQUIRE_FALSE(none);
+    CHECK(none.error().code == ErrorCode::InvalidArgument);
+    CHECK(none.error().message.find("no disabled clips") != std::string::npos);
+}
+
+TEST_CASE("Remove Disabled Clips skips locked tracks and says when that is all there is", "[model][disabled]") {
+    Timeline tl(R"(
+        V2 lock |Cccc....|
+        V1 tgt  |AaaaBbbb|
+    )");
+    // Disable the clip on the locked V2 first (an attribute change on a locked track is refused: unlock, disable, lock).
+    edit::TrackStateChange unlock;
+    unlock.locked = false;
+    edit::TrackStateChange lock;
+    lock.locked = true;
+    ProjectState s = ok(edit::setTrackState(tl.state, tl.seq, tl.track("V2"), unlock)).state;
+    edit::ClipAttributeChange disable;
+    disable.enabled = false;
+    const std::array<ClipId, 2> both{tl.clip("V2@0"), tl.clip("V1@4")};
+    s = ok(edit::setClipAttributes(s, tl.seq, both, disable)).state;
+    s = ok(edit::setTrackState(s, tl.seq, tl.track("V2"), lock)).state;
+    // The unlocked one goes; the locked track's clip stays disabled.
+    const auto removed = ok(edit::removeDisabledClips(s, tl.seq));
+    CHECK_TIMELINE(removed.state, tl.seq, R"(
+        V2 |Cccc....|
+        V1 |Aaaa....|
+    )");
+    CHECK(edit::disabledClips(*removed.state.findSequence(tl.seq)) == std::vector<ClipId>{tl.clip("V2@0")});
+    // Now only the locked one is left: refused, with the reason.
+    const auto refused = edit::removeDisabledClips(removed.state, tl.seq);
+    REQUIRE_FALSE(refused);
+    CHECK(refused.error().message.find("locked") != std::string::npos);
+}

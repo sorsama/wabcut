@@ -10,10 +10,12 @@ Item {
     property var values: []
     /// Frames the track goes through at most: the strip's full width (0 = as many as there are values).
     property int total: 0
+    /// Frames each value stands for (a long track keeps a bounded strip: a value is the lowest confidence of its frames).
+    property int framesPerValue: 1
 
     implicitHeight: Theme.space(2)
     Accessible.role: Accessible.Indicator
-    Accessible.name: qsTr("Tracking confidence, %n frame(s)", "", values.length)
+    Accessible.name: qsTr("Tracking confidence, %n frame(s)", "", values.length * Math.max(1, framesPerValue))
 
     Rectangle {
         anchors.fill: parent
@@ -33,7 +35,8 @@ Item {
             const n = root.values.length
             if (n === 0)
                 return
-            const w = width / Math.max(n, root.total, 1)
+            const per = Math.max(1, root.framesPerValue)
+            const w = width * per / Math.max(n * per, root.total, 1)
             for (let i = 0; i < n; ++i) {
                 const v = root.values[i]
                 ctx.fillStyle = v < 0 ? Theme.danger : v >= 0.7 ? Theme.success : v >= 0.4 ? Theme.warning : Theme.danger
@@ -44,6 +47,7 @@ Item {
             target: root
             function onValuesChanged() { canvas.requestPaint() }
             function onTotalChanged() { canvas.requestPaint() }
+            function onFramesPerValueChanged() { canvas.requestPaint() }
         }
         onWidthChanged: requestPaint()
     }

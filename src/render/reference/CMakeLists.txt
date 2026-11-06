@@ -12,7 +12,9 @@ add_library(wabcut_render_reference STATIC
     src/LibraryEffects.cpp
     src/LibraryGenerate.cpp
     src/LibraryGeometry.cpp
+    src/LibraryRetouch.cpp
     src/LibraryStylize.cpp
+    src/MotionBlur.cpp
     src/Synthetic.cpp
     src/Transitions.cpp
     src/UltraKey.cpp

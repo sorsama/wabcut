@@ -622,7 +622,7 @@ TEST_CASE("Export batch dialogs: Export Sequences Export Ranges and Media Usage 
             CHECK(sequencesDialog->property("allReady").toBool());
             QQuickItem* ok = itemNamed(shell, sequencesDialog, QStringLiteral("sequencesExportOk"));
             REQUIRE(ok);
-            CHECK(ok->property("text").toString() == QStringLiteral("Queue 2 export(s)"));
+            CHECK(ok->property("text").toString() == QStringLiteral("Queue 2 exports"));
             spin(300);
             QImage image = shell.grab();
             REQUIRE_FALSE(image.isNull());
@@ -643,7 +643,7 @@ TEST_CASE("Export batch dialogs: Export Sequences Export Ranges and Media Usage 
             CHECK(rangesDialog->property("ranges").toList().size() == 2);
             QQuickItem* summary = itemNamed(shell, rangesDialog, QStringLiteral("exportRangesSummary"));
             REQUIRE(summary);
-            CHECK(summary->property("text").toString().startsWith(QStringLiteral("2 file(s) · ≈ ")));
+            CHECK(summary->property("text").toString().startsWith(QStringLiteral("2 files · ≈ ")));
             rangesDialog->setProperty("colorIndex", 3);
             REQUIRE(waitFor([&] { return rangesDialog->property("ranges").toList().size() == 1; }));
             rangesDialog->setProperty("colorIndex", -1);
@@ -662,7 +662,7 @@ TEST_CASE("Export batch dialogs: Export Sequences Export Ranges and Media Usage 
             REQUIRE(waitFor([&] { return usageDialog->property("visible").toBool(); }));
             QQuickItem* usageSummary = itemNamed(shell, usageDialog, QStringLiteral("mediaUsageSummary"));
             REQUIRE(usageSummary);
-            CHECK(usageSummary->property("text").toString() == QStringLiteral("0 use(s) · 0 source(s)"));
+            CHECK(usageSummary->property("text").toString() == QStringLiteral("0 uses · 0 sources"));
             spin(300);
             image = shell.grab();
             REQUIRE_FALSE(image.isNull());
@@ -677,7 +677,7 @@ TEST_CASE("Export batch dialogs: Export Sequences Export Ranges and Media Usage 
             QQuickItem* toast = shell.item("toast");
             REQUIRE(toast);
             CHECK(toast->property("text").toString() ==
-                  QStringLiteral("3 export(s) from last time are waiting · 1 stopped when Wabcut closed (Retry in the queue)"));
+                  QStringLiteral("3 exports from last time are waiting · 1 stopped when Wabcut closed (Retry in the queue)"));
             CHECK(toast->property("actionText").toString() == QStringLiteral("Start Queue"));
             CHECK(toast->property("secondaryActionText").toString() == QStringLiteral("Clear"));
             spin(300);

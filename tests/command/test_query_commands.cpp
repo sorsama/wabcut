@@ -92,7 +92,7 @@ TEST_CASE("clip.details tells everything about one clip", "[command][query]") {
     CHECK(d["enabled"] == true);
     CHECK(d["linkedClips"] == Json::array({h.clip("A1@6").value}));
     CHECK(d["params"]["opacity.opacity"] == 1.0);
-    CHECK(d["params"].size() == 9);
+    CHECK(d["params"].size() == kParamCount); // 11 with 0.7's Scale Width and Uniform Scale (card #12)
 }
 
 TEST_CASE("media.list and clip.find", "[command][query]") {

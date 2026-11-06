@@ -135,6 +135,8 @@ struct DrawTextRun {
     double leading = 0.0;
     double baselineShift = 0.0;
     bool kerning = true; ///< 0.6
+    bool opticalKerning = false; ///< 0.7 (card #138): the font's pairs set aside, pairs spaced by their shapes
+    std::string features;        ///< 0.7 (card #138): OpenType features (parseFontFeatures)
     TextCaps caps = TextCaps::Normal;
     bool fauxBold = false;
     bool fauxItalic = false;

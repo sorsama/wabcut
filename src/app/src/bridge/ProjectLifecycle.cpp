@@ -1,7 +1,9 @@
 #include "ProjectLifecycle.h"
 
+#include "BackupSettings.h"
 #include "BridgeIds.h"
 #include "DemoProject.h"
+#include "EditPreferences.h"
 #include "EditingBridge.h"
 #include "MediaBridge.h"
 #include "ProjectController.h"
@@ -75,6 +77,17 @@ QString toQString(const std::filesystem::path& path) {
 
 QUrl toUrl(const std::filesystem::path& path) {
     return QUrl::fromLocalFile(toQString(path));
+}
+
+/// `path` with ".wabcut" on it unless it has that extension already, in any case: "Show.WABCUT" (a sync client's rename, an
+/// old 8.3 name) opens as a project (MediaImport compares the lower-cased extension), so Save As to the same name keeps it
+/// instead of making "Show.WABCUT.wabcut" (card 174).
+std::filesystem::path withProjectExtension(std::filesystem::path path) {
+    if (QString::compare(toQString(path.extension()), QString::fromUtf8(io::kProjectExtension.data(), static_cast<qsizetype>(io::kProjectExtension.size())),
+                         Qt::CaseInsensitive) != 0) {
+        path += std::string(io::kProjectExtension);
+    }
+    return path;
 }
 
 bool samePath(const std::filesystem::path& a, const std::filesystem::path& b) {
@@ -278,7 +291,7 @@ std::expected<ProjectState, QString> newProjectState(const QVariantMap& values) 
     if (values.contains(QStringLiteral("trackFormat"))) {
         const auto format = channelFormatFromString(values.value(QStringLiteral("trackFormat")).toString().toStdString());
         if (!format) {
-            return std::unexpected(ProjectLifecycle::tr("The audio track format must be stereo, mono, 5.1 or adaptive"));
+            return std::unexpected(ProjectLifecycle::tr("The audio track format must be stereo, mono, 5.1, 7.1 or adaptive"));
         }
         if (*format != ChannelFormat::Stereo) {
             std::vector<TrackId> tracks;
@@ -299,8 +312,8 @@ std::expected<ProjectState, QString> newProjectState(const QVariantMap& values) 
     }
     if (values.contains(QStringLiteral("masterFormat"))) {
         const auto format = channelFormatFromString(values.value(QStringLiteral("masterFormat")).toString().toStdString());
-        if (!format || (*format != ChannelFormat::Stereo && *format != ChannelFormat::Surround51)) {
-            return std::unexpected(ProjectLifecycle::tr("The audio master must be stereo or 5.1"));
+        if (!format || !isMasterFormat(*format)) {
+            return std::unexpected(ProjectLifecycle::tr("The audio master must be stereo, 5.1 or 7.1"));
         }
         if (*format != ChannelFormat::Stereo) {
             auto edited = edit::setMasterFormat(state, sequence, *format);
@@ -417,8 +430,16 @@ ProjectLifecycle::ProjectLifecycle(ProjectController* controller, QObject* paren
         toPath(QUrl::fromLocalFile(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) +
                                    QStringLiteral("/Autosave")));
     m_untitledAutosaveDir = options.untitledAutosaveDir;
+    {
+        // 0.7 (card 029): where the copies go and how many are kept come from Settings > General > Projects.
+        const QSettings settings;
+        options.saveBackups = backup::backupCountFromSettings(settings);
+        options.autosaveCopies = backup::autosaveCopiesFromSettings(settings);
+        options.backupLocation = backup::locationFromSettings(settings);
+    }
     m_documentOptions = options;
     m_document = std::make_unique<editor::ProjectDocument>(controller->session(), options);
+    connect(this, &ProjectLifecycle::documentChanged, this, &ProjectLifecycle::backupSettingsChanged);
     scanRecovery();
     m_autosaveText = tr("Not autosaved yet");
     m_autosaveOk = true;
@@ -774,6 +795,7 @@ void ProjectLifecycle::updateLock(const std::filesystem::path& project) {
         m_locked.clear();
     }
     m_readOnly = false;
+    m_cloudReadOnly = false;
     m_lockOwner.clear();
     if (project.empty() || (!lockProjects() && !editor::Production::folderOf(project))) {
         return;
@@ -788,6 +810,24 @@ void ProjectLifecycle::updateLock(const std::filesystem::path& project) {
         return;
     }
     m_locked = project;
+}
+
+void ProjectLifecycle::setCloudReadOnly(bool readOnly, const QString& owner) {
+    if (readOnly) {
+        if (m_cloudReadOnly && m_readOnly && m_lockOwner == owner) {
+            return;
+        }
+        m_cloudReadOnly = true;
+        m_readOnly = true;
+        m_lockOwner = owner;
+    } else if (m_cloudReadOnly) {
+        m_cloudReadOnly = false;
+        m_readOnly = false;
+        m_lockOwner.clear();
+    } else {
+        return;
+    }
+    emit documentChanged();
 }
 
 void ProjectLifecycle::rememberProject() {
@@ -837,6 +877,8 @@ QVariantMap versionMap(const editor::RecoveryEntry& e, const editor::ProjectSumm
         {QStringLiteral("sequence"), QString::fromStdString(s.mainSequence)},
         {QStringLiteral("newer"), e.newerThanProject},
         {QStringLiteral("poster"), QString()},
+        // 0.7 (card 029): the project it is a version of (a copy in a chosen backup folder does not say where it is).
+        {QStringLiteral("project"), e.project.empty() ? QUrl() : QUrl::fromLocalFile(QString::fromStdU16String(e.project.u16string()))},
     };
     // Compared with the saved version only when that one could be read (fix round 1, ARGON-10: an unreadable saved file
     // counts as 0 clips, and every version would look like "+14 clips").
@@ -881,19 +923,22 @@ bool ProjectLifecycle::hasRecoveryVersions(const QUrl& file) const {
         std::error_code ec;
         return std::filesystem::is_regular_file(p, ec);
     };
-    const int autosaves = m_document ? std::max(1, m_document->autosaveCopies()) : 3;
-    for (int n = 1; n <= autosaves; ++n) {
-        std::filesystem::path autosave = io::autosavePath(project);
-        if (n > 1) {
-            autosave += std::to_string(n);
+    // 0.7 (card 029): beside the project, in its Auto-Save folder and in the chosen root (a setting of today or an earlier one).
+    const io::BackupLocation location = m_document ? m_document->backupLocation() : io::BackupLocation{};
+    for (const std::filesystem::path& dir : io::backupDirectories(project, location)) {
+        for (int n = 1; n <= io::kMaxAutosaveCopies; ++n) {
+            std::filesystem::path autosave = io::autosavePath(project, dir);
+            if (n > 1) {
+                autosave += std::to_string(n);
+            }
+            if (exists(autosave)) {
+                return true;
+            }
         }
-        if (exists(autosave)) {
-            return true;
-        }
-    }
-    for (int n = 1; n <= io::kDefaultBackupCount; ++n) {
-        if (exists(io::backupPath(project, n))) {
-            return true;
+        for (int n = 1; n <= io::kMaxBackupCount; ++n) {
+            if (exists(io::backupPath(project, n, dir))) {
+                return true;
+            }
         }
     }
     return false;
@@ -915,6 +960,8 @@ void ProjectLifecycle::scanRecoveryVersions(const QUrl& file) {
     const std::filesystem::path untitledDir = file.isEmpty() ? m_untitledAutosaveDir : std::filesystem::path{};
     const std::filesystem::path posters =
         toPath(QUrl::fromLocalFile(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))) / "recovery-posters";
+    const io::BackupLocation location = m_document ? m_document->backupLocation() : io::BackupLocation{};
+    const int autosaveCopies = m_document ? m_document->autosaveCopies() : 3;
     const std::uint64_t scan = ++m_versionsScan;
     m_versionsScanning = true;
     emit recoveryVersionsChanged();
@@ -938,8 +985,8 @@ void ProjectLifecycle::scanRecoveryVersions(const QUrl& file) {
                 Qt::QueuedConnection);
         }
     };
-    QThreadPool::globalInstance()->start([project, untitledDir, posters, post] {
-        const std::vector<editor::RecoveryEntry> entries = editor::recoveryEntries(project, untitledDir);
+    QThreadPool::globalInstance()->start([project, untitledDir, posters, post, location, autosaveCopies] {
+        const std::vector<editor::RecoveryEntry> entries = editor::recoveryEntries(project, untitledDir, autosaveCopies, location);
         const editor::ProjectSummary* current = nullptr;
         for (const editor::RecoveryEntry& e : entries) {
             if (e.kind == editor::RecoveryEntry::Kind::Current) {
@@ -950,13 +997,30 @@ void ProjectLifecycle::scanRecoveryVersions(const QUrl& file) {
         for (const editor::RecoveryEntry& e : entries) {
             list.append(versionMap(e, current));
         }
+        // Card #172: a poster rendered before (the file is named by the version's path and time) is shown at once and
+        // never rendered again.
+        const auto posterPathOf = [&](const editor::RecoveryEntry& e) {
+            return QString::fromStdU16String(editor::recoveryPosterFile(posters, e).u16string());
+        };
+        std::vector<bool> cached(entries.size(), false);
+        for (qsizetype i = 0; i < list.size(); ++i) {
+            const editor::RecoveryEntry& e = entries[static_cast<std::size_t>(i)];
+            std::error_code fileEc;
+            const std::filesystem::path file = editor::recoveryPosterFile(posters, e);
+            if (e.summary.loadable && std::filesystem::is_regular_file(file, fileEc) && std::filesystem::file_size(file, fileEc) > 0) {
+                QVariantMap m = list[i].toMap();
+                m.insert(QStringLiteral("poster"), QUrl::fromLocalFile(posterPathOf(e)));
+                list[i] = m;
+                cached[static_cast<std::size_t>(i)] = true;
+            }
+        }
         post(list, false);
         // Posters: the picture a third of the way into each version's first sequence (export renderer, offscreen).
         std::error_code ec;
         std::filesystem::create_directories(posters, ec);
         for (qsizetype i = 0; i < list.size(); ++i) {
             const editor::RecoveryEntry& e = entries[static_cast<std::size_t>(i)];
-            if (!e.summary.loadable) {
+            if (!e.summary.loadable || cached[static_cast<std::size_t>(i)]) {
                 continue;
             }
             auto state = io::loadProject(e.file);
@@ -969,12 +1033,7 @@ void ProjectLifecycle::scanRecoveryVersions(const QUrl& file) {
             }
             const QImage image(poster->rgba.data(), poster->width, poster->height, poster->width * 4,
                                QImage::Format_RGBA8888);
-            const std::filesystem::path file =
-                posters / (std::to_string(std::hash<std::string>{}(pathToUtf8(e.file))) + "-" +
-                           // long long: libc++'s file clock counts in an __int128, which to_string does not take.
-                           std::to_string(static_cast<long long>(e.summary.modified.time_since_epoch().count())) +
-                           ".png");
-            const QString path = QString::fromStdU16String(file.u16string());
+            const QString path = posterPathOf(e);
             if (image.save(path)) {
                 QVariantMap m = list[i].toMap();
                 m.insert(QStringLiteral("poster"), QUrl::fromLocalFile(path));
@@ -982,6 +1041,8 @@ void ProjectLifecycle::scanRecoveryVersions(const QUrl& file) {
                 post(list, false);
             }
         }
+        // Posters of versions saved since, and old ones nothing names any more, go (the cache is never cleaned otherwise).
+        editor::pruneRecoveryPosters(posters, entries);
         post(list, true);
     });
 }
@@ -992,8 +1053,17 @@ bool ProjectLifecycle::openRecoveryCopy(const QUrl& file) {
     }
     waitForAutosave(); // P.1: an autosave being written lands before the files change
     m_controller->setSelection({});
-    // Untitled: never overwrites the project. Media resolve relative to the project the copy belongs to (P2-11).
-    if (auto opened = m_document->recover(toPath(file), {}); !opened) {
+    // Untitled: never overwrites the project. Media resolve relative to the project the copy belongs to (P2-11); 0.7
+    // (card 029): the version list knows it even for a copy in a backup folder.
+    std::filesystem::path mediaBase;
+    for (const QVariant& version : m_versions) {
+        const QVariantMap map = version.toMap();
+        if (map.value(QStringLiteral("url")).toUrl() == file) {
+            mediaBase = toPath(map.value(QStringLiteral("project")).toUrl());
+            break;
+        }
+    }
+    if (auto opened = m_document->recover(toPath(file), {}, mediaBase); !opened) {
         setError(tr("Cannot open %1: %2").arg(file.fileName(), QString::fromStdString(opened.error().message)));
         return false;
     }
@@ -1019,17 +1089,18 @@ void ProjectLifecycle::scanRecovery() {
     const std::filesystem::path projectFile = last.isEmpty() ? std::filesystem::path{} : toPath(QUrl::fromLocalFile(last));
     const std::filesystem::path untitledDir = m_untitledAutosaveDir;
     const int copies = m_document ? m_document->autosaveCopies() : 1;
+    const io::BackupLocation location = m_document ? m_document->backupLocation() : io::BackupLocation{};
     const std::uint64_t scan = ++m_recoveryScanSerial;
     {
         std::lock_guard lock(m_scanGate->mutex);
         m_scanGate->owner = this;
     }
-    m_recoveryScan = std::async(std::launch::async, [gate = m_scanGate, scan, last, projectFile, untitledDir, copies] {
+    m_recoveryScan = std::async(std::launch::async, [gate = m_scanGate, scan, last, projectFile, untitledDir, copies, location] {
         RecoveryScan out;
         out.lastProject = last;
         out.untitled = editor::ProjectDocument::untitledRecoveryFiles(untitledDir);
         if (!projectFile.empty()) {
-            out.last = editor::ProjectDocument::newestUnsavedAutosave(projectFile, copies); // the newest one, as before
+            out.last = editor::ProjectDocument::newestUnsavedAutosave(projectFile, copies, location); // the newest one, as before
         }
         // Announce it, unless something collected it first or a newer scan replaced it.
         std::lock_guard lock(gate->mutex);
@@ -1311,6 +1382,98 @@ QStringList ProjectLifecycle::recentImportFolders() {
     return out;
 }
 
+// ---- Where the backups go, and how many (0.7, card 029) ---------------------------------------------------------------
+
+void ProjectLifecycle::applyBackupSettings() {
+    if (!m_document) {
+        return;
+    }
+    const QSettings settings;
+    m_document->setBackupPolicy(backup::backupCountFromSettings(settings), backup::autosaveCopiesFromSettings(settings),
+                                backup::locationFromSettings(settings));
+    m_documentOptions.saveBackups = m_document->saveBackups();
+    m_documentOptions.autosaveCopies = m_document->autosaveCopies();
+    m_documentOptions.backupLocation = m_document->backupLocation();
+    emit backupSettingsChanged();
+    // What the next start would offer comes from the new places too.
+    scanRecovery();
+}
+
+QString ProjectLifecycle::backupLocation() const {
+    return backup::normalizedLocation(QSettings().value(QStringLiteral("project/backupLocation"), QStringLiteral("beside")).toString());
+}
+
+void ProjectLifecycle::setBackupLocation(const QString& location) {
+    const QString next = backup::normalizedLocation(location);
+    if (next == backupLocation()) {
+        return;
+    }
+    QSettings().setValue(QStringLiteral("project/backupLocation"), next);
+    applyBackupSettings();
+}
+
+QUrl ProjectLifecycle::backupFolder() const {
+    const QString folder = QSettings().value(QStringLiteral("project/backupFolder")).toString();
+    return folder.isEmpty() ? QUrl() : QUrl::fromLocalFile(folder);
+}
+
+void ProjectLifecycle::setBackupFolder(const QUrl& folder) {
+    const QString path = folder.isLocalFile() ? QDir::fromNativeSeparators(folder.toLocalFile()) : QString();
+    if (path == backupFolder().toLocalFile() || (path.isEmpty() && !folder.isEmpty())) {
+        return;
+    }
+    QSettings settings;
+    if (path.isEmpty()) {
+        settings.remove(QStringLiteral("project/backupFolder"));
+    } else {
+        settings.setValue(QStringLiteral("project/backupFolder"), path);
+        settings.setValue(QStringLiteral("project/backupLocation"), QStringLiteral("chosen")); // picking a folder means using it
+    }
+    applyBackupSettings();
+}
+
+int ProjectLifecycle::backupCount() const {
+    return backup::backupCountFromSettings(QSettings());
+}
+
+void ProjectLifecycle::setBackupCount(int count) {
+    count = std::clamp(count, 0, io::kMaxBackupCount);
+    if (count == backupCount()) {
+        return;
+    }
+    QSettings().setValue(QStringLiteral("project/backupCount"), count);
+    applyBackupSettings();
+}
+
+int ProjectLifecycle::autosaveCopies() const {
+    return backup::autosaveCopiesFromSettings(QSettings());
+}
+
+void ProjectLifecycle::setAutosaveCopies(int copies) {
+    copies = std::clamp(copies, 1, io::kMaxAutosaveCopies);
+    if (copies == autosaveCopies()) {
+        return;
+    }
+    QSettings().setValue(QStringLiteral("project/autosaveCopies"), copies);
+    applyBackupSettings();
+}
+
+QString ProjectLifecycle::backupWhere() const {
+    const io::BackupLocation location = backup::locationFromSettings(QSettings());
+    const std::filesystem::path file = m_document ? m_document->file() : std::filesystem::path{};
+    const std::filesystem::path dir = io::backupDirectory(file, location);
+    if (!dir.empty()) {
+        return QDir::toNativeSeparators(QString::fromStdU16String(dir.u16string()));
+    }
+    if (location.mode == io::BackupLocation::Mode::Folder) {
+        return tr("A \"Wabcut Auto-Save\" folder next to the project");
+    }
+    if (location.mode == io::BackupLocation::Mode::Chosen) {
+        return QDir::toNativeSeparators(QString::fromStdU16String(location.root.u16string()));
+    }
+    return tr("Next to the project");
+}
+
 void ProjectLifecycle::setAutosaveIntervalSeconds(int seconds) {
     seconds = std::max(5, seconds);
     if (seconds == m_autosaveSeconds) {
@@ -1358,7 +1521,7 @@ int ProjectLifecycle::offlineCount() const {
 QStringList ProjectLifecycle::importNameFilters() const {
     return {
         tr("Media, timelines and captions (*.mp4 *.mov *.mkv *.mxf *.avi *.m4v *.webm *.wav *.mp3 *.aac *.m4a *.flac "
-           "*.png *.jpg *.jpeg *.tif *.tiff *.xml *.fcpxml *.otio *.edl *.prproj *.aaf *.omf *.srt *.vtt *.scc *.mcc *.stl *.ttml "
+           "*.png *.jpg *.jpeg *.tif *.tiff *.svg *.svgz *.ai *.eps *.xml *.fcpxml *.otio *.edl *.prproj *.aaf *.omf *.srt *.vtt *.scc *.mcc *.stl *.ttml "
            "*.dfxp *.itt)"),
         tr("Timelines (*.xml *.fcpxml *.otio *.edl *.prproj *.aaf *.omf)"),
         // P.2: a caption file becomes a caption track of the current sequence.
@@ -1498,6 +1661,33 @@ QUrl ProjectLifecycle::launchProjectIn(const QStringList& arguments) {
     return {};
 }
 
+QList<QUrl> ProjectLifecycle::launchFiles() const {
+    return launchFilesIn(QCoreApplication::arguments());
+}
+
+QList<QUrl> ProjectLifecycle::launchFilesIn(const QStringList& arguments) {
+    QList<QUrl> files;
+    for (qsizetype i = 1; i < arguments.size(); ++i) {
+        const QString& argument = arguments[i];
+        if (argument == QLatin1String("--rhi")) {
+            ++i; // its value
+            continue;
+        }
+        if (argument.isEmpty() || argument.startsWith(QLatin1Char('-'))) {
+            continue;
+        }
+        const QFileInfo info(argument);
+        if (!info.isFile()) {
+            continue;
+        }
+        const QUrl url = QUrl::fromLocalFile(info.absoluteFilePath());
+        if (!files.contains(url)) {
+            files.append(url);
+        }
+    }
+    return files;
+}
+
 bool ProjectLifecycle::open(const QUrl& file) {
     if (!m_document) {
         return false;
@@ -1578,10 +1768,7 @@ bool ProjectLifecycle::saveAs(const QUrl& file) {
         return false;
     }
     waitForAutosave(); // P.1: an autosave being written lands before the files change
-    std::filesystem::path path = toPath(file);
-    if (path.extension() != io::kProjectExtension) {
-        path += std::string(io::kProjectExtension);
-    }
+    const std::filesystem::path path = withProjectExtension(toPath(file));
     // 0.2 (P.3): never over a project open next to this one (two open projects on one file).
     if (const int at = indexOfOpen(path); at >= 0 && static_cast<std::size_t>(at) != m_active) {
         setError(tr("%1 is open next to this project: close it first").arg(toQString(path.filename())));
@@ -1613,9 +1800,7 @@ bool ProjectLifecycle::saveCopy(const QUrl& file) {
         setError(tr("Choose a file for the copy"));
         return false;
     }
-    if (path.extension() != io::kProjectExtension) {
-        path += std::string(io::kProjectExtension);
-    }
+    path = withProjectExtension(std::move(path));
     // Not over this project's own file (that is Save) nor over a project open next to it.
     if (indexOfOpen(path) >= 0) {
         setError(tr("%1 is open: choose another file for the copy").arg(toQString(path.filename())));
@@ -1627,6 +1812,76 @@ bool ProjectLifecycle::saveCopy(const QUrl& file) {
     }
     setError({});
     return true;
+}
+
+namespace {
+
+QVariantList lossesToVariants(const std::vector<io::DowngradeLoss>& losses) {
+    QVariantList out;
+    for (const io::DowngradeLoss& loss : losses) {
+        out.append(QVariantMap{{QStringLiteral("id"), QString::fromStdString(loss.id)},
+                               {QStringLiteral("what"), QString::fromStdString(loss.what)},
+                               {QStringLiteral("effect"), QString::fromStdString(loss.effect)},
+                               {QStringLiteral("count"), loss.count}});
+    }
+    return out;
+}
+
+} // namespace
+
+// 0.7 (card 059): File > Save for an Older Version.
+QVariantList ProjectLifecycle::olderReleases() const {
+    QVariantList out;
+    for (const io::OlderRelease& release : io::olderReleases()) {
+        out.append(QVariantMap{{QStringLiteral("id"), QString::fromUtf8(release.id.data(), static_cast<int>(release.id.size()))},
+                               {QStringLiteral("name"), QString::fromUtf8(release.name.data(), static_cast<int>(release.name.size()))},
+                               {QStringLiteral("versions"),
+                                QString::fromUtf8(release.versions.data(), static_cast<int>(release.versions.size()))}});
+    }
+    return out;
+}
+
+QVariantList ProjectLifecycle::olderReleaseLosses(const QString& id) {
+    if (!m_document) {
+        return {};
+    }
+    const auto losses = m_document->olderReleaseLosses(id.toStdString());
+    if (!losses) {
+        setError(QString::fromStdString(losses.error().message));
+        return {};
+    }
+    return lossesToVariants(*losses);
+}
+
+QVariantMap ProjectLifecycle::saveForOlderVersion(const QUrl& file, const QString& id) {
+    QVariantMap failed{{QStringLiteral("saved"), false}};
+    if (!m_document) {
+        return failed;
+    }
+    const io::OlderRelease* release = io::findOlderRelease(id.toStdString());
+    if (!release) {
+        setError(tr("Choose the Wabcut version the copy is for"));
+        return failed;
+    }
+    std::filesystem::path path = toPath(file);
+    if (path.empty()) {
+        setError(tr("Choose a file for the copy"));
+        return failed;
+    }
+    path = withProjectExtension(std::move(path));
+    if (indexOfOpen(path) >= 0) { // not over this project's own file, nor one open next to it
+        setError(tr("%1 is open: choose another file for the copy").arg(toQString(path.filename())));
+        return failed;
+    }
+    const auto written = m_document->saveForRelease(path, release->id);
+    if (!written) {
+        setError(tr("Cannot save a copy as %1: %2").arg(toQString(path.filename()), QString::fromStdString(written.error().message)));
+        return failed;
+    }
+    setError({});
+    return QVariantMap{{QStringLiteral("saved"), true},
+                       {QStringLiteral("name"), QString::fromUtf8(release->name.data(), static_cast<int>(release->name.size()))},
+                       {QStringLiteral("lost"), lossesToVariants(written->losses)}};
 }
 
 bool ProjectLifecycle::revert() {
@@ -1813,6 +2068,26 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
         return bins;
     };
     bool binsFromUsed = false;
+    // 0.7 (stock media): `binName` puts the files in a bin of that name; `rights` ({ local path: { source, licence, reference,
+    // territory, creditLine, notes, status } }) gives the NEW items their rights record, in the same undo step.
+    const std::string binName = options.value(QStringLiteral("binName")).toString().toStdString();
+    const QVariantMap rightsByPath = options.value(QStringLiteral("rights")).toMap();
+    std::vector<std::optional<MediaRights>> mediaRights;
+    const auto rightsOf = [&](const QUrl& url) -> std::optional<MediaRights> {
+        const QVariantMap r = rightsByPath.value(url.toLocalFile()).toMap();
+        if (r.isEmpty()) {
+            return std::nullopt;
+        }
+        MediaRights out;
+        out.source = r.value(QStringLiteral("source")).toString().toStdString();
+        out.licence = r.value(QStringLiteral("licence")).toString().toStdString();
+        out.reference = r.value(QStringLiteral("reference")).toString().toStdString();
+        out.territory = r.value(QStringLiteral("territory")).toString().toStdString();
+        out.creditLine = r.value(QStringLiteral("creditLine")).toString().toStdString();
+        out.notes = r.value(QStringLiteral("notes")).toString().toStdString();
+        out.status = clearanceStatusFromName(r.value(QStringLiteral("status")).toString().toStdString()).value_or(ClearanceStatus::Unset);
+        return rightsProblem(out) ? std::nullopt : std::optional<MediaRights>(out);
+    };
     QList<QUrl> timelines;
     QList<QUrl> captions;
     QVariantList projects;
@@ -1829,8 +2104,10 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
         switch (editor::classifyImportFile(toPath(url))) {
         case editor::ImportFileKind::Media:
             media.append(url);
-            mediaBins.push_back(binRoots.empty() ? std::vector<std::string>{} : binsFromRoots(url));
-            binsFromUsed = binsFromUsed || !mediaBins.back().empty();
+            mediaBins.push_back(!binName.empty() ? std::vector<std::string>{binName}
+                                                 : binRoots.empty() ? std::vector<std::string>{} : binsFromRoots(url));
+            mediaRights.push_back(rightsOf(url));
+            binsFromUsed = binsFromUsed || (binName.empty() && !mediaBins.back().empty()); // a named bin is not a folder import
             break;
         case editor::ImportFileKind::Captions:
             captions.append(url);
@@ -1852,6 +2129,7 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
             for (const editor::FolderImportFile& file : plan.files) {
                 media.append(toUrl(file.file));
                 mediaBins.push_back(file.bins);
+                mediaRights.push_back(std::nullopt);
             }
             for (const editor::FolderImportSkipped& left : plan.skipped) {
                 QString reason;
@@ -1928,9 +2206,11 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
                                       .scaling = EditingBridge::defaultMediaScalingSetting(),
                                       .stillDuration = EditingBridge::stillDurationSetting(), // P.2
                                       .binPaths = mediaBins,
-                                      .undoLabel = folderNames.isEmpty() && !binsFromUsed ? std::string()
-                                                                                          : std::string("Import Folder"),
-                                      .readChapters = EditingBridge::chapterMarkersSetting()}); // P0 round
+                                      .undoLabel = folderNames.isEmpty() && !binsFromUsed
+                                                       ? options.value(QStringLiteral("undoLabel")).toString().toStdString() // 0.7: Capture
+                                                       : std::string("Import Folder"),
+                                      .readChapters = EditingBridge::chapterMarkersSetting(),
+                                      .rights = mediaRights}); // P0 round
         m_importedMedia.clear();
         for (std::size_t i = 0; i < result.byFile.size(); ++i) {
             // Fix round 1: the files given themselves; a folder's files go into its bins (a folder dropped on the
@@ -2857,6 +3137,7 @@ bool ProjectLifecycle::dropMedia(const QString& mediaId, const QString& timecode
     drop.track = parseTrackKey(trackId).value_or(TrackId{});
     drop.mode = overwrite ? editor::DropMode::Overwrite : editor::DropMode::Insert;
     drop.useSourceMarks = true; // 0.2 UX (stream T): the item's Source Monitor In and Out, as Premiere's drag does
+    drop.addTracks = editprefs::addTracksOnEdit(); // 0.7 (card 182)
     auto edited = editor::dropMedia(m_document->session(), drop);
     if (!edited) {
         setError(QString::fromStdString(edited.error().message));
@@ -2868,8 +3149,8 @@ bool ProjectLifecycle::dropMedia(const QString& mediaId, const QString& timecode
 }
 
 QVariantMap ProjectLifecycle::dropFiles(const QList<QUrl>& files, const QString& timecode, const QString& trackId,
-                                        bool overwrite) {
-    QVariantMap summary = importFiles(files);
+                                        bool overwrite, const QString& bin) {
+    QVariantMap summary = importFiles(files, bin.isEmpty() ? QVariantMap{} : QVariantMap{{QStringLiteral("bin"), bin}});
     const std::vector<MediaId> media = m_importedMedia;
     const SequencePtr sequence = m_controller ? m_controller->currentSequence() : nullptr;
     int placed = 0;
@@ -2892,6 +3173,7 @@ QVariantMap ProjectLifecycle::dropFiles(const QList<QUrl>& files, const QString&
             drop.at = *at;
             drop.track = track;
             drop.mode = overwrite ? editor::DropMode::Overwrite : editor::DropMode::Insert;
+            drop.addTracks = editprefs::addTracksOnEdit(); // 0.7 (card 182)
             auto edited = editor::dropMedia(m_document->session(), drop);
             if (!edited) {
                 error = QString::fromStdString(edited.error().message);

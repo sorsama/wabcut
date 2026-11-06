@@ -20,10 +20,11 @@ namespace wabcut {
 
 namespace {
 
-constexpr std::array<std::pair<MarkerType, std::string_view>, 4> kMarkerTypeNames{{{MarkerType::Comment, "comment"},
+constexpr std::array<std::pair<MarkerType, std::string_view>, 5> kMarkerTypeNames{{{MarkerType::Comment, "comment"},
                                                                                   {MarkerType::Chapter, "chapter"},
                                                                                   {MarkerType::Segmentation, "segmentation"},
-                                                                                  {MarkerType::WebLink, "webLink"}}};
+                                                                                  {MarkerType::WebLink, "webLink"},
+                                                                                  {MarkerType::Source, "source"}}};
 
 bool startsWithNoCase(std::string_view text, std::string_view prefix) {
     if (text.size() < prefix.size()) {
@@ -54,6 +55,19 @@ std::optional<std::string> markerProblem(const Marker& marker) {
     }
     if (!marker.url.empty() && !startsWithNoCase(marker.url, "http://") && !startsWithNoCase(marker.url, "https://")) {
         return "a marker URL must start with http:// or https://";
+    }
+    if (const MarkerCitation* c = marker.citation ? &*marker.citation : nullptr) { // 0.7 (card 177)
+        for (const std::string* field : {&c->title, &c->author, &c->publisher, &c->date, &c->archive, &c->screenshot}) {
+            if (field->size() > MarkerCitation::kMaxFieldBytes) {
+                return "a source field is longer than " + std::to_string(MarkerCitation::kMaxFieldBytes) + " bytes";
+            }
+            if (!edit::isValidUtf8(*field)) {
+                return "a source field is not valid UTF-8 text";
+            }
+        }
+        if (!c->archive.empty() && !startsWithNoCase(c->archive, "http://") && !startsWithNoCase(c->archive, "https://")) {
+            return "an archive link must start with http:// or https://";
+        }
     }
     if (const MarkerHighlight* h = marker.highlight ? &*marker.highlight : nullptr) { // C.15
         if (!std::isfinite(h->score) || h->score < 0.0 || h->score > 1.0) {

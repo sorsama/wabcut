@@ -62,11 +62,15 @@ std::string_view MediaTranscript::language() const {
     return m_transcript ? std::string_view(m_transcript->language) : std::string_view();
 }
 
+std::string_view MediaTranscript::wordLanguage(std::size_t i) const {
+    return m_transcript ? m_transcript->wordLanguage(m_words[i].word) : std::string_view();
+}
+
 std::string MediaTranscript::textOf(std::size_t first, std::size_t last) const {
     std::string out;
-    const bool spaces = wordSplitFor(language()) == WordSplit::Whitespace;
     for (std::size_t i = first; i <= last && i < m_words.size(); ++i) {
         const std::string_view word = text(i);
+        const bool spaces = wordSplitFor(wordLanguage(i)) == WordSplit::Whitespace;
         if (!out.empty() && !word.empty() && !text::isTrailingPunctuation(word) &&
             (spaces || (isAsciiAlnum(out.back()) && isAsciiAlnum(word.front())))) {
             out += ' ';

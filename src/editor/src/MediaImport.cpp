@@ -10,10 +10,14 @@
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/ProjectOps.h>
+#include <wabcut/platform/FileTime.h>
+#include <wabcut/render/VectorImage.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -307,14 +311,55 @@ ImportFileKind classifyImportFile(const std::filesystem::path& file) {
             return ImportFileKind::Captions;
         }
     }
+    if (render::vectorFormatOf(file)) {
+        return ImportFileKind::Media; // 0.7 (card #86): SVG, Illustrator and EPS artwork is media (a still), not a timeline
+    }
     const interchange::Detection detection = interchange::ImportRouter::detect(file);
     return detection.format == interchange::Format::Unknown ? ImportFileKind::Media : ImportFileKind::Interchange;
 }
 
+namespace {
+
+/// 0.7 (card #86): the MediaInfo of a vector file (SVG, Illustrator, EPS): a still of the artwork's nominal size, as media::probe
+/// describes a PNG - drawn when it is shown (render::VectorPictures), so any later size is sharp.
+std::expected<MediaInfo, Error> probeVectorFile(const std::filesystem::path& absolute) {
+    auto vector = render::probeVector(absolute);
+    if (!vector) {
+        return std::unexpected(std::move(vector.error()));
+    }
+    MediaInfo info;
+    info.path = pathToUtf8(absolute);
+    info.container = "vector";
+    info.isStillImage = true;
+    VideoStreamInfo video;
+    video.index = 0;
+    video.codec = vector->format == render::VectorFormat::Svg ? "svg" : vector->format == render::VectorFormat::Eps ? "eps" : "pdf";
+    video.width = std::max(1, static_cast<int>(std::lround(vector->width)));
+    video.height = std::max(1, static_cast<int>(std::lround(vector->height)));
+    video.frameRate = Rate{25, 1};
+    video.pixelFormat = "rgba";
+    video.bitDepth = 8;
+    video.alpha = AlphaMode::Straight;
+    video.duration = Ticks::fromSeconds(1.0 / 25.0);
+    video.frameCount = 1;
+    info.video.push_back(std::move(video));
+    info.duration = info.video.front().duration;
+    std::error_code ec;
+    if (const auto size = std::filesystem::file_size(absolute, ec); !ec) {
+        info.fileSize = static_cast<std::int64_t>(size);
+    }
+    if (const auto mtime = std::filesystem::last_write_time(absolute, ec); !ec) {
+        info.modifiedTime = std::chrono::duration_cast<std::chrono::seconds>(platform::toSystemClock(mtime).time_since_epoch()).count();
+    }
+    return info;
+}
+
+} // namespace
+
 std::expected<MediaItem, Error> describeMediaFile(const std::filesystem::path& file,
                                                   const std::filesystem::path& projectFile) {
     const std::filesystem::path absolute = absolutePath(file);
-    auto info = media::probe(pathToUtf8(absolute));
+    auto info = render::vectorFormatOf(absolute) ? probeVectorFile(absolute) : media::probe(pathToUtf8(absolute));
     if (!info) {
         return std::unexpected(std::move(info.error()));
     }
@@ -395,6 +440,9 @@ MediaImportResult importMediaFiles(EditSession& session, std::span<const std::fi
     auto work = [&] {
         for (std::size_t i = next.fetch_add(1); i < files.size(); i = next.fetch_add(1)) {
             probed[i] = describeMediaFile(files[i], options.projectFile);
+            if (*probed[i] && i < options.rights.size() && options.rights[i]) {
+                (*probed[i])->rights = *options.rights[i]; // 0.7: stock media records its licence and credit
+            }
             // 0.2 (P.3): the file's XMP fills the linked clip metadata (a file without any keeps it empty).
             if (options.readXmp && *probed[i] && !(*probed[i])->isGenerator()) {
                 interchange::XmpReadOptions read;

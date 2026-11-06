@@ -10,6 +10,8 @@
 
 #include <chrono>
 #include <cmath>
+#include <algorithm>
+#include <optional>
 #include <set>
 
 #ifdef _WIN32
@@ -161,7 +163,8 @@ CommandOutput translateCommand(ExecutionContext& c) {
     }
     const std::string provider = c.string("provider", "auto");
     TranslateServices* services = servicesOf(c);
-    const bool cloudAllowed = !c.state().aiNoCloud;
+    // QA-07: the no-cloud lock stops the cloud only; a routed model on this computer is not the cloud.
+    const bool cloudAllowed = !c.state().aiNoCloud || (services && services->routedLocal());
     if (provider == "cloud" && !cloudAllowed) {
         fail(ErrorCode::EditRejected, "this project is no-cloud: captions can only be translated by a local model");
     }
@@ -172,6 +175,7 @@ CommandOutput translateCommand(ExecutionContext& c) {
         std::unique_ptr<ITranslator> translator;
         bool local = false;
         std::string model;
+        std::optional<ModelSpec> service; ///< r07: a dedicated translation service (priced per character)
     };
     std::vector<Choice> choices;
     std::unique_ptr<IChatModel> estimateModel;
@@ -196,6 +200,18 @@ CommandOutput translateCommand(ExecutionContext& c) {
             if (!cloudAllowed) {
                 fail(ErrorCode::EditRejected, "no local translation into \"" + language + "\" (" + localProblem +
                                                   "), and this project is no-cloud");
+            }
+            if (services && services->service()) { // r07: the translation service the user routed captions to
+                auto service = services->service()();
+                if (!service) {
+                    fail(ErrorCode::EditRejected, "no local translation into \"" + language + "\" (" + localProblem +
+                                                      "); the translation service: " + service.error().message);
+                }
+                choice.model = service->spec.id;
+                choice.service = service->spec;
+                choice.translator = std::move(service->translator);
+                choices.push_back(std::move(choice));
+                continue;
             }
             if (!services || !services->chat()) {
                 fail(ErrorCode::EditRejected, "no local translation into \"" + language + "\" (" + localProblem +
@@ -232,6 +248,20 @@ CommandOutput translateCommand(ExecutionContext& c) {
         for (const Choice& choice : choices) {
             if (choice.local) {
                 estimates.push_back(Json{{"language", choice.language}, {"provider", "local"}, {"usd", 0.0}});
+                continue;
+            }
+            if (choice.service) { // r07: a translation service bills the characters it is sent
+                Usage usage;
+                for (const std::string& text : texts.texts) {
+                    usage.characters += static_cast<std::int64_t>(
+                        std::count_if(text.begin(), text.end(), [](char ch) { return (static_cast<unsigned char>(ch) & 0xC0) != 0x80; }));
+                }
+                const double usd = static_cast<double>(costOf(*choice.service, usage, today())) / 1e6;
+                expected += usd;
+                ceiling += usd;
+                estimates.push_back(Json{{"language", choice.language}, {"provider", "cloud"}, {"model", choice.model},
+                                         {"usd", rounded(usd, 10000.0)}, {"ceilingUsd", rounded(usd, 10000.0)},
+                                         {"priced", !choice.service->prices.empty()}});
                 continue;
             }
             const ModelSpec& spec = estimateModel ? estimateModel->spec() : static_cast<LlmTranslator*>(choice.translator.get())->spec();

@@ -11,6 +11,10 @@ ContextMenu {
     property string key: ""
     /// P1 (#50): the template whose export dialog opens once this menu has closed (a native dialog cannot open over it).
     property string pendingExport: ""
+    /// 0.7 (card #87): the template the Move to Folder name box opens for once this menu has closed.
+    property string pendingMove: ""
+    /// Move to Folder...: the browser asks for the folder's name.
+    signal moveRequested(string key)
 
     /// The Export template row: remembered, then run by onClosed (a native file dialog cannot open over a menu).
     function requestExport() {
@@ -24,7 +28,14 @@ ContextMenu {
         menu.pendingExport = ""
         Graphics.openExportDialog(key)
     }
-    onClosed: menu.finishPendingExport()
+    onClosed: {
+        menu.finishPendingExport()
+        if (menu.pendingMove !== "") {
+            const key = menu.pendingMove
+            menu.pendingMove = ""
+            menu.moveRequested(key)
+        }
+    }
 
     ContextMenuItem {
         objectName: "graphicTemplateAdd"
@@ -33,6 +44,15 @@ ContextMenu {
         onTriggered: Graphics.instantiateAtPlayhead(menu.key)
     }
     ContextMenuSeparator {}
+    // 0.7 (card #87): file it under a folder of the browser (not the built-in ones: they ship in their own groups).
+    ContextMenuItem {
+        objectName: "graphicTemplateFolder"
+        visible: !menu.key.startsWith("builtin/")
+        height: visible ? implicitHeight : 0
+        text: qsTr("Move to Folder…")
+        iconName: "folder"
+        onTriggered: menu.pendingMove = menu.key
+    }
     // P1 round (#50): any template, built-in included, to a .wabcut-template.json another Wabcut imports.
     ContextMenuItem {
         objectName: "graphicTemplateExport"

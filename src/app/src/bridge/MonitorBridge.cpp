@@ -8,6 +8,7 @@
 #include "PlaybackBridge.h"
 #include "ProjectController.h"
 #include "SourceMonitorBridge.h"
+#include "platform/DisplayModes.h"
 
 #include <wabcut/command/Engine.h>
 #include <wabcut/editor/MediaImport.h>
@@ -15,13 +16,17 @@
 #include <wabcut/export/StillExport.h>
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/EditSession.h>
+#include <wabcut/model/FrameScaling.h>
 #include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/Resolve.h>
 #include <wabcut/model/Timecode.h>
 
+#include <QClipboard>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QImage>
 #include <QJsonDocument>
 #include <QQmlEngine>
 #include <QSaveFile>
@@ -29,6 +34,7 @@
 #include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QUrl>
 
 #include <algorithm>
@@ -43,7 +49,45 @@ namespace {
 constexpr const char* kTransmitKey = "monitor/transmit";
 constexpr const char* kTransmitScreenKey = "monitor/transmitScreen";
 constexpr const char* kTransmitBackgroundKey = "monitor/disableTransmitInBackground";
+// 0.7 (card 110): the display by its key (the index above is the old form), how the picture sits, the safe lines, the sync
+// offset and Match Refresh Rate.
+constexpr const char* kTransmitDisplayKey = "monitor/transmitDisplay";
+constexpr const char* kOutputScalingKey = "monitor/outputScaling";
+constexpr const char* kOutputSafeMarginsKey = "monitor/outputSafeMargins";
+constexpr const char* kOutputSyncOffsetKey = "monitor/outputSyncOffsetMs";
+constexpr const char* kOutputMatchRefreshKey = "monitor/outputMatchRefresh";
+
+/// The displays Qt reports, as the planner sees them. Two displays that give the same key (identical monitors without a
+/// serial number) are told apart by their order.
+std::vector<videoout::DisplayInfo> systemDisplays() {
+    std::vector<videoout::DisplayInfo> out;
+    const QScreen* primary = QGuiApplication::primaryScreen();
+    const QList<QScreen*> all = QGuiApplication::screens();
+    for (const QScreen* screen : all) {
+        videoout::DisplayInfo d;
+        const QString manufacturer = screen->manufacturer();
+        const QString model = screen->model();
+        const QString serial = screen->serialNumber();
+        d.name = screen->name().toStdString();
+        d.label = (!model.isEmpty() ? model : screen->name()).toStdString();
+        d.key = (!model.isEmpty() || !serial.isEmpty() ? manufacturer + QLatin1Char('|') + model + QLatin1Char('|') + serial
+                                                       : screen->name()).toStdString();
+        const int same = static_cast<int>(std::count_if(out.begin(), out.end(), [&](const videoout::DisplayInfo& o) {
+            return o.key == d.key || o.key.starts_with(d.key + "#");
+        }));
+        if (same > 0)
+            d.key += "#" + std::to_string(same + 1);
+        const QRect g = screen->geometry();
+        d.width = static_cast<int>(std::lround(g.width() * screen->devicePixelRatio()));
+        d.height = static_cast<int>(std::lround(g.height() * screen->devicePixelRatio()));
+        d.refreshHz = screen->refreshRate();
+        d.primary = screen == primary;
+        out.push_back(std::move(d));
+    }
+    return out;
+}
 constexpr const char* kRulersKey = "monitor/showRulers";
+constexpr const char* kCompositionGuidesKey = "monitor/compositionGuides";
 constexpr const char* kRulerPercentKey = "monitor/rulerPercent";
 constexpr const char* kShowGuidesKey = "monitor/showGuides";
 constexpr const char* kLockGuidesKey = "monitor/lockGuides";
@@ -162,6 +206,18 @@ MonitorBridge::MonitorBridge(QObject* parent) : QObject(parent) {
     m_transmit = settings.value(QLatin1String(kTransmitKey), false).toBool();
     m_transmitScreen = settings.value(QLatin1String(kTransmitScreenKey), -1).toInt();
     m_disableInBackground = settings.value(QLatin1String(kTransmitBackgroundKey), true).toBool();
+    // 0.7 (card 110): the display is remembered by its key; a setting from before it names a display by its place in the list,
+    // which this takes over once (the screens are known by now).
+    m_displayKey = settings.value(QLatin1String(kTransmitDisplayKey)).toString().toStdString();
+    m_scaling = videoout::scalingFromString(settings.value(QLatin1String(kOutputScalingKey), QStringLiteral("fit")).toString().toStdString());
+    m_safeMargins = settings.value(QLatin1String(kOutputSafeMarginsKey), false).toBool();
+    m_syncOffsetMs = videoout::clampSyncOffset(settings.value(QLatin1String(kOutputSyncOffsetKey), 0).toInt());
+    m_matchRefresh = settings.value(QLatin1String(kOutputMatchRefreshKey), false).toBool();
+    if (m_displayKey.empty() && m_transmitScreen >= 0) {
+        const std::vector<videoout::DisplayInfo> now = displays();
+        if (m_transmitScreen < static_cast<int>(now.size()))
+            m_displayKey = now[static_cast<std::size_t>(m_transmitScreen)].key;
+    }
     m_showRulers = settings.value(QLatin1String(kRulersKey), false).toBool();
     m_rulerPercent = settings.value(QLatin1String(kRulerPercentKey), false).toBool();
     m_showGuides = settings.value(QLatin1String(kShowGuidesKey), true).toBool();
@@ -171,6 +227,7 @@ MonitorBridge::MonitorBridge(QObject* parent) : QObject(parent) {
     m_sourceGrid = settings.value(QLatin1String(kSourceGridKey), false).toBool();
     m_droppedIndicator = settings.value(QLatin1String(kDroppedIndicatorKey), false).toBool();
     m_overlays = settings.value(QLatin1String(kOverlaysKey), false).toBool();
+    m_compositionGuides = settings.value(QLatin1String(kCompositionGuidesKey), 0).toInt() & (kGuideThirds | kGuideGolden | kGuideDiagonals);
     m_audioUnits = settings.value(QLatin1String(kAudioUnitsKey), false).toBool();
     // Guides and templates from the settings: untrusted like any file (bounded and checked); bad data is dropped.
     const auto stored = guides::fromJson(QJsonDocument::fromJson(settings.value(QLatin1String(kGuidesKey)).toByteArray()).array());
@@ -181,27 +238,53 @@ MonitorBridge::MonitorBridge(QObject* parent) : QObject(parent) {
     if (templates)
         m_templates = *templates;
     if (auto* app = qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
-        connect(app, &QGuiApplication::screenAdded, this, [this] {
-            emit screensChanged();
-            emit outputChanged();
+        // A display plugged in or out, or switched to another mode (Match Refresh Rate does it): the output follows it.
+        const auto watch = [this](QScreen* screen) {
+            connect(screen, &QScreen::geometryChanged, this, [this] { refreshDisplays(); });
+            connect(screen, &QScreen::refreshRateChanged, this, [this] { refreshDisplays(); });
+        };
+        for (QScreen* screen : QGuiApplication::screens())
+            watch(screen);
+        connect(app, &QGuiApplication::screenAdded, this, [this, watch](QScreen* screen) {
+            watch(screen);
+            refreshDisplays();
         });
-        connect(app, &QGuiApplication::screenRemoved, this, [this] {
-            emit screensChanged();
-            emit outputChanged();
-        });
+        connect(app, &QGuiApplication::screenRemoved, this, [this] { refreshDisplays(); });
         connect(app, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
             m_foreground = state == Qt::ApplicationActive;
             if (m_transmit && m_disableInBackground)
-                emit outputChanged();
+                notifyOutput();
+        });
+        connect(app, &QCoreApplication::aboutToQuit, this, [this] {
+            // The system takes a switched mode back when the process ends; do it before the windows go.
+            if (!m_switchedKey.empty()) {
+                if (m_modeSwitch)
+                    m_modeSwitch(m_switchedDisplay, nullptr);
+                else
+                    platform::restoreDisplayMode(m_switchedDisplay.name);
+                m_switchedKey.clear();
+            }
         });
     }
+}
+
+void MonitorBridge::notifyOutput() {
+    emit outputChanged();
+    emit outputPlanChanged();
+    syncDisplayMode();
+    syncMirrorLatency();
+}
+
+void MonitorBridge::refreshDisplays() {
+    emit screensChanged();
+    notifyOutput();
 }
 
 void MonitorBridge::setFullScreen(bool on) {
     if (on == m_fullScreen)
         return;
     m_fullScreen = on;
-    emit outputChanged();
+    notifyOutput();
 }
 
 void MonitorBridge::setTransmit(bool on) {
@@ -209,16 +292,31 @@ void MonitorBridge::setTransmit(bool on) {
         return;
     m_transmit = on;
     QSettings().setValue(QLatin1String(kTransmitKey), on);
-    emit outputChanged();
+    notifyOutput();
 }
 
 void MonitorBridge::setTransmitScreen(int index) {
-    index = std::max(-1, index);
-    if (index == m_transmitScreen)
+    // The display at this place of the list (the Transmit To menu's rows): the choice is saved as its key.
+    const std::vector<videoout::DisplayInfo> now = displays();
+    setTransmitDisplayKey(index >= 0 && index < static_cast<int>(now.size())
+                              ? QString::fromStdString(now[static_cast<std::size_t>(index)].key)
+                              : QString());
+}
+
+int MonitorBridge::transmitScreen() const {
+    const std::vector<videoout::DisplayInfo> now = displays();
+    return videoout::findDisplay(now, m_displayKey);
+}
+
+void MonitorBridge::setTransmitDisplayKey(const QString& key) {
+    const std::string next = key.toStdString();
+    if (next == m_displayKey)
         return;
-    m_transmitScreen = index;
-    QSettings().setValue(QLatin1String(kTransmitScreenKey), index);
-    emit outputChanged();
+    m_displayKey = next;
+    QSettings settings;
+    settings.setValue(QLatin1String(kTransmitDisplayKey), key);
+    settings.setValue(QLatin1String(kTransmitScreenKey), transmitScreen()); // the place it has now: builds before the key read this
+    notifyOutput();
 }
 
 void MonitorBridge::setDisableTransmitInBackground(bool on) {
@@ -226,33 +324,202 @@ void MonitorBridge::setDisableTransmitInBackground(bool on) {
         return;
     m_disableInBackground = on;
     QSettings().setValue(QLatin1String(kTransmitBackgroundKey), on);
-    emit outputChanged();
+    notifyOutput();
 }
 
 void MonitorBridge::setPresentWindows(bool present) {
     if (present == m_presentWindows)
         return;
     m_presentWindows = present;
-    emit outputChanged();
+    notifyOutput();
+}
+
+void MonitorBridge::setOutputScaling(const QString& scaling) {
+    const videoout::Scaling next = videoout::scalingFromString(scaling.toStdString());
+    if (next == m_scaling)
+        return;
+    m_scaling = next;
+    QSettings().setValue(QLatin1String(kOutputScalingKey), QString::fromStdString(videoout::toString(next)));
+    notifyOutput();
+}
+
+void MonitorBridge::setOutputSafeMargins(bool on) {
+    if (on == m_safeMargins)
+        return;
+    m_safeMargins = on;
+    QSettings().setValue(QLatin1String(kOutputSafeMarginsKey), on);
+    emit outputPlanChanged();
+}
+
+void MonitorBridge::setOutputSyncOffsetMs(int ms) {
+    ms = videoout::clampSyncOffset(ms);
+    if (ms == m_syncOffsetMs)
+        return;
+    m_syncOffsetMs = ms;
+    QSettings().setValue(QLatin1String(kOutputSyncOffsetKey), ms);
+    emit outputPlanChanged();
+    syncMirrorLatency();
+}
+
+void MonitorBridge::setOutputMatchRefreshRate(bool on) {
+    if (on == m_matchRefresh)
+        return;
+    m_matchRefresh = on;
+    QSettings().setValue(QLatin1String(kOutputMatchRefreshKey), on);
+    notifyOutput();
+}
+
+void MonitorBridge::setDisplaySource(DisplaySource source) {
+    m_displaySource = std::move(source);
+}
+
+void MonitorBridge::setModeSource(ModeSource source) {
+    m_modeSource = std::move(source);
+}
+
+void MonitorBridge::setModeSwitch(ModeSwitch swap) {
+    m_modeSwitch = std::move(swap);
+}
+
+std::vector<videoout::DisplayInfo> MonitorBridge::displays() const {
+    return m_displaySource ? m_displaySource() : systemDisplays();
+}
+
+videoout::Timing MonitorBridge::timing() const {
+    videoout::Timing t;
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (seq) {
+        t.rateNum = seq->frameRate.num;
+        t.rateDen = seq->frameRate.den;
+        t.width = seq->width;
+        t.height = seq->height;
+        t.pixelAspect = sequencePixelAspect(*seq);
+    }
+    return t;
+}
+
+videoout::Settings MonitorBridge::outputSettings() const {
+    videoout::Settings s;
+    s.enabled = m_transmit;
+    s.displayKey = m_displayKey;
+    s.scaling = m_scaling;
+    s.safeMargins = m_safeMargins;
+    s.syncOffsetMs = m_syncOffsetMs;
+    s.matchRefreshRate = m_matchRefresh;
+    return s;
+}
+
+videoout::Plan MonitorBridge::plan() const {
+    const std::vector<videoout::DisplayInfo> now = displays();
+    std::vector<videoout::DisplayMode> modes;
+    if (m_matchRefresh) {
+        const int index = videoout::findDisplay(now, m_displayKey);
+        if (index >= 0) {
+            const videoout::DisplayInfo& d = now[static_cast<std::size_t>(index)];
+            modes = m_modeSource ? m_modeSource(d) : platform::displayModes(d.name);
+        }
+    }
+    return videoout::planOutput(now, outputSettings(), timing(), modes);
+}
+
+QVariantMap MonitorBridge::outputPlan() const {
+    const videoout::Plan p = plan();
+    const char* state = p.state == videoout::State::Active           ? "active"
+                        : p.state == videoout::State::DisplayMissing ? "missing"
+                        : p.state == videoout::State::NoDisplay      ? "noDisplay"
+                                                                     : "off";
+    const char* cadence = p.cadence.kind == videoout::Cadence::Even       ? "even"
+                          : p.cadence.kind == videoout::Cadence::NearEven ? "nearEven"
+                          : p.cadence.kind == videoout::Cadence::Pulldown ? "pulldown"
+                          : p.cadence.kind == videoout::Cadence::Uneven   ? "uneven"
+                                                                          : "unknown";
+    QVariantMap out{{QStringLiteral("state"), QLatin1String(state)},
+                    {QStringLiteral("displayKey"), QString::fromStdString(p.display.key)},
+                    {QStringLiteral("displayLabel"), QString::fromStdString(p.display.label)},
+                    {QStringLiteral("width"), p.display.width},
+                    {QStringLiteral("height"), p.display.height},
+                    {QStringLiteral("refreshHz"), p.display.refreshHz},
+                    {QStringLiteral("rate"), timing().fps()},
+                    {QStringLiteral("cadence"), QLatin1String(cadence)},
+                    {QStringLiteral("ratio"), p.cadence.ratio},
+                    {QStringLiteral("multiple"), p.cadence.multiple},
+#ifdef _WIN32
+                    {QStringLiteral("canSwitch"), true},
+#else
+                    {QStringLiteral("canSwitch"), false},
+#endif
+                    {QStringLiteral("switched"), !m_switchedKey.empty() && m_switchedKey == p.display.key},
+                    {QStringLiteral("syncOffsetMs"), p.syncOffsetMs}};
+    if (p.switchTo) {
+        out.insert(QStringLiteral("switchTo"), QVariantMap{{QStringLiteral("width"), p.switchTo->width},
+                                                           {QStringLiteral("height"), p.switchTo->height},
+                                                           {QStringLiteral("refreshHz"), p.switchTo->refreshHz}});
+    }
+    return out;
+}
+
+QVariantMap MonitorBridge::placeOutputPicture(double windowWidth, double windowHeight, double devicePixelRatio) const {
+    const double dpr = devicePixelRatio > 0 ? devicePixelRatio : 1.0;
+    const videoout::Rect r = videoout::placePicture(timing(), static_cast<int>(std::lround(windowWidth * dpr)),
+                                                    static_cast<int>(std::lround(windowHeight * dpr)), m_scaling);
+    return {{QStringLiteral("x"), r.x / dpr}, {QStringLiteral("y"), r.y / dpr}, {QStringLiteral("width"), r.width / dpr},
+            {QStringLiteral("height"), r.height / dpr}};
+}
+
+void MonitorBridge::syncMirrorLatency() {
+    if (m_playback)
+        m_playback->setMirrorSyncOffsetMs(m_transmit && !m_fullScreen ? m_syncOffsetMs : 0);
+}
+
+void MonitorBridge::syncDisplayMode() {
+    // Match Refresh Rate: while the output shows on its display, that display runs at a refresh rate the sequence's frame rate
+    // divides evenly; when the output stops, the display goes or the setting is turned off, it is put back.
+    videoout::Plan p;
+    bool want = false;
+    if (m_matchRefresh && m_presentWindows && m_transmit && !m_fullScreen && outputVisible()) {
+        p = plan();
+        // Once switched the display runs at a suitable rate, so the plan has nothing left to switch to: keep it as it is.
+        const bool keep = !m_switchedKey.empty() && p.display.key == m_switchedKey;
+        want = p.state == videoout::State::Active && (p.switchTo.has_value() || keep);
+    }
+    if (!m_switchedKey.empty() && (!want || p.display.key != m_switchedKey)) {
+        if (m_modeSwitch)
+            m_modeSwitch(m_switchedDisplay, nullptr);
+        else
+            platform::restoreDisplayMode(m_switchedDisplay.name);
+        m_switchedKey.clear();
+        emit outputPlanChanged();
+    }
+    if (want && m_switchedKey.empty() && p.switchTo) {
+        const bool ok = m_modeSwitch ? m_modeSwitch(p.display, &*p.switchTo) : platform::setDisplayMode(p.display.name, *p.switchTo);
+        if (ok) {
+            m_switchedKey = p.display.key;
+            m_switchedDisplay = p.display;
+            emit outputPlanChanged();
+        }
+    }
 }
 
 QVariantList MonitorBridge::screens() const {
     QVariantList out;
-    const QList<QScreen*> all = QGuiApplication::screens();
-    const QScreen* primary = QGuiApplication::primaryScreen();
-    for (int i = 0; i < all.size(); ++i) {
-        const QRect g = all[i]->geometry();
-        out << QVariantMap{{QStringLiteral("index"), i},
-                           {QStringLiteral("name"), all[i]->name()},
-                           {QStringLiteral("width"), g.width()},
-                           {QStringLiteral("height"), g.height()},
-                           {QStringLiteral("primary"), all[i] == primary}};
+    const std::vector<videoout::DisplayInfo> now = displays();
+    for (std::size_t i = 0; i < now.size(); ++i) {
+        const videoout::DisplayInfo& d = now[i];
+        // The size in the list is the display's own pixels (the Transmit To menu: "Display 2: 1920 x 1080").
+        out << QVariantMap{{QStringLiteral("index"), static_cast<int>(i)},
+                           {QStringLiteral("key"), QString::fromStdString(d.key)},
+                           {QStringLiteral("name"), QString::fromStdString(d.name)},
+                           {QStringLiteral("label"), QString::fromStdString(d.label)},
+                           {QStringLiteral("width"), d.width},
+                           {QStringLiteral("height"), d.height},
+                           {QStringLiteral("refreshHz"), d.refreshHz},
+                           {QStringLiteral("primary"), d.primary}};
     }
     return out;
 }
 
 bool MonitorBridge::transmitScreenValid() const {
-    return m_transmitScreen >= 0 && m_transmitScreen < QGuiApplication::screens().size();
+    return transmitScreen() >= 0;
 }
 
 bool MonitorBridge::outputActive() const { return m_fullScreen || (m_transmit && transmitScreenValid()); }
@@ -266,7 +533,7 @@ bool MonitorBridge::outputVisible() const {
 
 int MonitorBridge::outputScreen() const {
     // Full screen covers the display the main window is on; transmit uses its own.
-    return m_fullScreen || !transmitScreenValid() ? -1 : m_transmitScreen;
+    return m_fullScreen ? -1 : transmitScreen();
 }
 
 void MonitorBridge::placeOutputWindow(QQuickWindow* output, QQuickWindow* mainWindow) const {
@@ -316,15 +583,27 @@ void MonitorBridge::setController(ProjectController* controller) {
     m_controller = controller;
     if (controller) {
         controller->setAudioTimeUnits(m_audioUnits); // 0.2: the playhead moves by samples while they are shown
-        connect(controller, &ProjectController::sequenceChanged, this, [this] {
+        // 0.7 (card 110): the output plan follows the sequence's frame rate, size and pixel shape.
+        const auto timingMoved = [this] {
+            const videoout::Timing now = timing();
+            if (now.rateNum == m_lastTiming.rateNum && now.rateDen == m_lastTiming.rateDen && now.width == m_lastTiming.width &&
+                now.height == m_lastTiming.height && now.pixelAspect == m_lastTiming.pixelAspect)
+                return;
+            m_lastTiming = now;
+            emit outputPlanChanged();
+            syncDisplayMode();
+        };
+        connect(controller, &ProjectController::sequenceChanged, this, [this, timingMoved] {
             emit guidesChanged(); // pixel guides sit at other fractions of another frame
             syncSnapping();
             emit timeChanged();
+            timingMoved();
         });
         connect(controller, &ProjectController::playheadChanged, this, &MonitorBridge::timeChanged);
-        connect(controller, &ProjectController::revisionChanged, this, [this] {
+        connect(controller, &ProjectController::revisionChanged, this, [this, timingMoved] {
             if (m_overlays)
                 emit timeChanged(); // the clip under the playhead may have changed
+            timingMoved();
         });
     }
     emit guidesChanged();
@@ -334,6 +613,7 @@ void MonitorBridge::setController(ProjectController* controller) {
 bool MonitorBridge::handlesCommand(const QString& id) {
     static const QSet<QString> kCommands{
         QStringLiteral("monitor.loop"),
+        QStringLiteral("audioMixer.loop"), // 0.7 (card 032): Ctrl+L in the Audio Track Mixer is the same Loop
         QStringLiteral("programMonitor.showRulers"),
         QStringLiteral("programMonitor.showGuides"),
         QStringLiteral("programMonitor.lockGuides"),
@@ -345,9 +625,13 @@ bool MonitorBridge::handlesCommand(const QString& id) {
         QStringLiteral("programMonitor.transparencyGrid"),
         QStringLiteral("sourceMonitor.transparencyGrid"),
         QStringLiteral("file.exportFrame"),
+        QStringLiteral("monitor.copyFrame"), // 0.7: the focused monitor's frame on the clipboard
         QStringLiteral("marker.exportFrames"), // P1 (#23): Markers > Export Frames at Markers…
         QStringLiteral("programMonitor.droppedFrameIndicator"),
         QStringLiteral("programMonitor.overlays"),
+        QStringLiteral("programMonitor.ruleOfThirds"), // 0.7: composition guides
+        QStringLiteral("programMonitor.goldenRatio"),
+        QStringLiteral("programMonitor.diagonalGuides"),
         QStringLiteral("programMonitor.audioTimeUnits"),
         QStringLiteral("monitor.toggleFullScreen"),
         QStringLiteral("monitor.toggleProxies"), // P1 (#19): View > Use Proxies
@@ -378,7 +662,7 @@ bool MonitorBridge::handlesCommand(const QString& id) {
 bool MonitorBridge::runCommand(const QString& id, bool sourceFocused) {
     if (!handlesCommand(id))
         return false;
-    if (id == QLatin1String("monitor.loop")) {
+    if (id == QLatin1String("monitor.loop") || id == QLatin1String("audioMixer.loop")) {
         if (m_playback)
             m_playback->setLoop(!m_playback->loop());
         return true;
@@ -419,9 +703,25 @@ bool MonitorBridge::runCommand(const QString& id, bool sourceFocused) {
         setAudioTimeUnits(!m_audioUnits);
         return true;
     }
+    if (id == QLatin1String("programMonitor.ruleOfThirds")) {
+        setCompositionGuides(m_compositionGuides ^ kGuideThirds);
+        return true;
+    }
+    if (id == QLatin1String("programMonitor.goldenRatio")) {
+        setCompositionGuides(m_compositionGuides ^ kGuideGolden);
+        return true;
+    }
+    if (id == QLatin1String("programMonitor.diagonalGuides")) {
+        setCompositionGuides(m_compositionGuides ^ kGuideDiagonals);
+        return true;
+    }
     if (id == QLatin1String("file.exportFrame")) {
         // Ctrl+Shift+E: the Source Monitor's frame while it has the focus, else the program's.
         requestExportFrame(sourceFocused);
+        return true;
+    }
+    if (id == QLatin1String("monitor.copyFrame")) {
+        copyFrame(sourceFocused); // the Source Monitor's frame while it has the focus, as Export Frame
         return true;
     }
     if (id == QLatin1String("marker.exportFrames")) {
@@ -548,6 +848,15 @@ void MonitorBridge::setDroppedFrameIndicator(bool on) {
     emit viewChanged();
 }
 
+void MonitorBridge::setCompositionGuides(int mask) {
+    mask &= kGuideThirds | kGuideGolden | kGuideDiagonals;
+    if (mask == m_compositionGuides)
+        return;
+    m_compositionGuides = mask;
+    QSettings().setValue(QLatin1String(kCompositionGuidesKey), mask);
+    emit viewChanged();
+}
+
 void MonitorBridge::setOverlays(bool on) {
     if (on == m_overlays)
         return;
@@ -596,7 +905,7 @@ QVariantMap MonitorBridge::overlayText() const {
     const ProjectSnapshot snap = m_controller->snapshot();
     for (auto it = seq->videoTracks.rbegin(); it != seq->videoTracks.rend(); ++it) {
         const Track* track = it->get();
-        if (!track || !track->enabled)
+        if (!track || !videoTrackShown(*seq, *track))
             continue;
         for (const Clip& c : track->clips) {
             if (!c.enabled || t < c.start() || t >= c.end())
@@ -613,6 +922,20 @@ QVariantMap MonitorBridge::overlayText() const {
         }
     }
     return out;
+}
+
+void MonitorBridge::setProgramVrView(bool on) {
+    if (on == m_programVr)
+        return;
+    m_programVr = on;
+    emit viewChanged();
+}
+
+void MonitorBridge::setSourceVrView(bool on) {
+    if (on == m_sourceVr)
+        return;
+    m_sourceVr = on;
+    emit viewChanged();
 }
 
 void MonitorBridge::setProgramTransparencyGrid(bool on) {
@@ -872,6 +1195,78 @@ QVariantMap MonitorBridge::exportFrameDefaults(bool source) const {
     return out;
 }
 
+/// Runs sequence.exportFrame (the Program Monitor's frame at the playhead) or source.exportFrame (the Source
+/// Monitor's at its position) with `params` (format, path, ...). Nothing to export: `problem` says why (the whole
+/// message); a failed export has `error` set in the result.
+static std::optional<command::CommandResult> runFrameExport(ProjectController& controller, SourceMonitorBridge* sourceMonitor,
+                                                            bool source, command::Json params, QString& problem) {
+    command::CommandRequest request;
+    if (source) {
+        if (!sourceMonitor || !sourceMonitor->loaded()) {
+            problem = QCoreApplication::translate("wabcut::app::MonitorBridge", "Load a clip in the Source Monitor first");
+            return std::nullopt;
+        }
+        request.command = "source.exportFrame";
+        params["media"] = sourceMonitor->mediaId().value;
+        params["time"] = sourceMonitor->positionTicks().value;
+    } else {
+        const SequencePtr seq = controller.currentSequence();
+        if (!seq) {
+            problem = QCoreApplication::translate("wabcut::app::MonitorBridge", "No sequence");
+            return std::nullopt;
+        }
+        request.command = "sequence.exportFrame";
+        params["sequence"] = seq->id.value;
+        params["time"] = controller.playhead().value;
+    }
+    request.params = std::move(params);
+    command::EnginePolicy policy;
+    const std::filesystem::path projectFile = controller.projectFile();
+    policy.services = exporter::stillExportServices(
+        [projectFile](const std::filesystem::path& file) { return editor::describeMediaFile(file, projectFile); });
+    command::CommandEngine engine(controller.session(), command::builtinCommands(), policy);
+    return engine.execute(request);
+}
+
+bool MonitorBridge::copyFrame(bool source) {
+    if (!m_controller) {
+        setMessage(tr("No project"));
+        return false;
+    }
+    QClipboard* clipboard = qobject_cast<QGuiApplication*>(QCoreApplication::instance()) ? QGuiApplication::clipboard() : nullptr;
+    if (!clipboard) {
+        setMessage(tr("The clipboard is not available"));
+        return false;
+    }
+    // The same still Export Frame writes (the sequence's size, PNG), in a folder of its own that goes with the call.
+    QTemporaryDir folder;
+    if (!folder.isValid()) {
+        setMessage(tr("Cannot copy the frame: no temporary folder"));
+        return false;
+    }
+    command::Json params{{"format", "png"},
+                         {"path", pathToUtf8(pathFromUtf8(QDir(folder.path()).filePath(QStringLiteral("frame")).toStdString()))},
+                         {"importIntoProject", false}};
+    QString problem;
+    const std::optional<command::CommandResult> result = runFrameExport(*m_controller, m_source.data(), source, std::move(params), problem);
+    if (!result) {
+        setMessage(problem);
+        return false;
+    }
+    if (!result->ok()) {
+        setMessage(tr("Copy Frame failed: %1").arg(QString::fromStdString(result->error->message)));
+        return false;
+    }
+    const QImage image(QString::fromStdString(result->data.value("path", std::string())));
+    if (image.isNull()) {
+        setMessage(tr("Cannot copy the frame: the picture could not be read back"));
+        return false;
+    }
+    clipboard->setImage(image);
+    setMessage(tr("Frame copied (%1 × %2)").arg(image.width()).arg(image.height()));
+    return true;
+}
+
 QString MonitorBridge::exportFrame(bool source, const QString& rawName, const QString& format, const QUrl& folder,
                                    bool importIntoProject, const QVariantMap& options) {
     if (!m_controller) {
@@ -901,32 +1296,13 @@ QString MonitorBridge::exportFrame(bool source, const QString& rawName, const QS
         setMessage(problem);
         return {};
     }
-    command::CommandRequest request;
-    if (source) {
-        if (!m_source || !m_source->loaded()) {
-            setMessage(tr("Load a clip in the Source Monitor first"));
-            return {};
-        }
-        request.command = "source.exportFrame";
-        params["media"] = m_source->mediaId().value;
-        params["time"] = m_source->positionTicks().value;
-    } else {
-        const SequencePtr seq = m_controller->currentSequence();
-        if (!seq) {
-            setMessage(tr("No sequence"));
-            return {};
-        }
-        request.command = "sequence.exportFrame";
-        params["sequence"] = seq->id.value;
-        params["time"] = m_controller->playhead().value;
+    QString problem;
+    const std::optional<command::CommandResult> executed = runFrameExport(*m_controller, m_source.data(), source, std::move(params), problem);
+    if (!executed) {
+        setMessage(problem);
+        return {};
     }
-    request.params = std::move(params);
-    command::EnginePolicy policy;
-    const std::filesystem::path projectFile = m_controller->projectFile();
-    policy.services = exporter::stillExportServices(
-        [projectFile](const std::filesystem::path& file) { return editor::describeMediaFile(file, projectFile); });
-    command::CommandEngine engine(m_controller->session(), command::builtinCommands(), policy);
-    const command::CommandResult result = engine.execute(request);
+    const command::CommandResult& result = *executed;
     if (!result.ok()) {
         setMessage(tr("Export Frame failed: %1").arg(QString::fromStdString(result.error->message)));
         return {};
@@ -1194,6 +1570,37 @@ QString MonitorBridge::replaceTarget() const {
     for (auto t = seq->videoTracks.rbegin(); t != seq->videoTracks.rend(); ++t) {
         if (const QString key = clipOn(t->get()); !key.isEmpty())
             return key;
+    }
+    return {};
+}
+
+QString MonitorBridge::clipEdgeText(bool after) const {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!seq)
+        return {};
+    const Ticks at = m_controller->playhead();
+    const std::vector<TrackId> targeted = edit::targetedTracks(*seq);
+    const auto isTargeted = [&](const Track* t) { return std::find(targeted.begin(), targeted.end(), t->id) != targeted.end(); };
+    const auto edgeOn = [&](const Track* t) -> std::optional<Ticks> {
+        if (!t || t->locked)
+            return std::nullopt;
+        const auto index = t->clipIndexAt(at);
+        if (!index)
+            return std::nullopt;
+        return after ? t->clips[*index].end() : t->clips[*index].start();
+    };
+    // Targeted tracks first (picture, then sound), then any track, each topmost first.
+    for (const bool onlyTargeted : {true, false}) {
+        for (auto t = seq->videoTracks.rbegin(); t != seq->videoTracks.rend(); ++t) {
+            if (*t && (!onlyTargeted || isTargeted(t->get())))
+                if (const auto edge = edgeOn(t->get()))
+                    return m_controller->formatTimecode(*edge);
+        }
+        for (const TrackPtr& t : seq->audioTracks) {
+            if (t && (!onlyTargeted || isTargeted(t.get())))
+                if (const auto edge = edgeOn(t.get()))
+                    return m_controller->formatTimecode(*edge);
+        }
     }
     return {};
 }

@@ -391,6 +391,89 @@ CommandOutput applyPreset(ExecutionContext& c) {
     return edited(std::move(result.edit), Json{{"preset", found.preset.name}, {"builtIn", found.builtIn}, {"clips", std::move(clips)}});
 }
 
+// ---- 0.7 (card 101): presets of an Audio Track Mixer effect chain -------------------------------------------------------
+
+/// An audio track, submix track or the audio master named by "target"/"targets" entries: "master", a label ("A1", "S1")
+/// or a track id.
+struct ChainSite {
+    edit::EffectTarget target;
+    const EffectStack* chain = nullptr;
+    Ticks span{};
+    std::string label;
+};
+
+ChainSite chainSiteOf(ExecutionContext& c, const Json& value, const std::string& path) {
+    const Sequence& seq = c.sequence();
+    if (value.is_string() && value.get<std::string>() == "master") {
+        return {edit::EffectTarget::masterAudio(), &seq.audioEffects, seq.contentEnd(), "master"};
+    }
+    const TrackId track = c.trackValue(value, path);
+    const Track* t = seq.findAudioBus(track);
+    if (t == nullptr || t->kind != TrackKind::Audio) {
+        fail(ErrorCode::InvalidParams, "the target must be \"master\", an audio track or a submix track", Json{{"path", path}});
+    }
+    return {edit::EffectTarget::ofTrack(track), &t->effects, t->end(), c.trackLabel(track)};
+}
+
+Json chainTargetSchema(std::string description) {
+    return Json{{"type", Json::array({"integer", "string"})}, {"description", std::move(description)}};
+}
+
+CommandOutput saveTrackPreset(ExecutionContext& c) {
+    const ChainSite site = chainSiteOf(c, c.params()["target"], "/target");
+    std::vector<std::size_t> indices;
+    if (c.has("effects")) {
+        for (std::size_t i = 0; i < c.params()["effects"].size(); ++i) {
+            indices.push_back(c.indexValue(c.params()["effects"][i], "/effects/" + std::to_string(i)));
+        }
+    }
+    EffectsLibrary library = heldLibrary(c);
+    const std::string name = c.string("name");
+    if (!c.boolean("replace", false) || !library.findPreset(name)) {
+        requireFreeName(c, library, name, "name");
+    }
+    std::vector<std::string> notes;
+    auto preset = edit::makeChainEffectPreset(c.state(), *site.chain, site.span, indices, name,
+                                              typeParam(c, EffectPresetType::AnchorToInPoint), c.string("description"),
+                                              checkedBin(c.string("bin"), "bin"), &notes);
+    if (!preset) {
+        fail(ErrorCode::InvalidParams, preset.error().message);
+    }
+    std::erase_if(library.presets, [&](const EffectPreset& p) { return samePresetName(p.name, name); });
+    if (library.presets.size() >= kMaxEffectPresets) {
+        fail(ErrorCode::EditRejected, "the library holds the most presets it can (" + std::to_string(kMaxEffectPresets) + ")");
+    }
+    Json effects = Json::array();
+    for (const EffectInstance& e : preset->effects) {
+        effects.push_back(effectDisplayName(e));
+    }
+    Json data{{"preset", preset->name}, {"type", std::string(toString(preset->type))}, {"effects", std::move(effects)},
+              {"target", site.label}, {"notes", notes}};
+    library.presets.push_back(std::move(*preset));
+    return libraryChanged(c, std::move(library), std::move(data));
+}
+
+CommandOutput applyTrackPreset(ExecutionContext& c) {
+    const EffectsLibrary library = heldLibrary(c);
+    const FoundPreset found = presetNamed(c, library, c.string("preset"), "preset");
+    const Json& targets = c.params()["targets"];
+    if (!targets.is_array() || targets.empty()) {
+        fail(ErrorCode::InvalidParams, "name the audio tracks (or \"master\") to apply the preset to", Json{{"path", "/targets"}});
+    }
+    edit::EditResult total;
+    total.state = c.state();
+    Json reports = Json::array();
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+        const ChainSite site = chainSiteOf(c, targets[i], "/targets/" + std::to_string(i));
+        edit::ChainPresetResult result = c.take(edit::applyEffectPresetToChain(total.state, c.sequenceId(), site.target, found.preset));
+        total.state = std::move(result.edit.state);
+        total.createdEffects.insert(total.createdEffects.end(), result.edit.createdEffects.begin(), result.edit.createdEffects.end());
+        reports.push_back(Json{{"target", site.label}, {"applied", result.applied}, {"skipped", result.skipped}});
+    }
+    total.changes = diff(c.state(), total.state);
+    return edited(std::move(total), Json{{"preset", found.preset.name}, {"builtIn", found.builtIn}, {"targets", std::move(reports)}});
+}
+
 CommandOutput setPresetProperties(ExecutionContext& c) {
     EffectsLibrary library = heldLibrary(c);
     const std::string current = c.string("preset");
@@ -747,6 +830,39 @@ void registerEffectsLibraryCommands(CommandRegistry& registry) {
          withSequence({{"preset", nameSchema("The preset's name (case-insensitive).")}, {"clips", clipsParam("The clips.")}},
                       {"preset", "clips"}),
          Json{{"preset", "Twirl In"}, {"clips", Json::array({42})}}, {}, applyPreset});
+    // 0.7 (card 101): the Audio Track Mixer's effect chains as presets.
+    addBuiltin(
+        registry,
+        {"effects.saveTrackPreset", 1, "Save Track Effects as Preset",
+         "Saves the effect chain of an audio track, a submix track or the audio master (an Audio Track Mixer strip) as a "
+         "preset in the user's library: its effects in order with their settings and keyframes (a bypassed effect stays "
+         "bypassed). The fader and panner are not part of a chain. Apply it to other strips or tracks with "
+         "effects.applyTrackPreset; it also shows in the Effects panel's Presets bin as an audio preset. The preset type "
+         "times keyframes on a chain of another length (track effects use timeline times); default "
+         "\"anchorToInPoint\" (they keep their time). Not an undo step: the library is the user's.",
+         Capability::EditProject,
+         withSequence({{"target", chainTargetSchema("\"master\" (the audio master), an audio track (\"A1\" or its id) or a submix track (\"S1\").")},
+                       {"effects", schema::array(schema::integer("An index in the chain (0 = first).", 0),
+                                                 "Only these effects (default: the whole chain).")},
+                       {"name", nameSchema("The preset's name: unique among the user's presets, not a built-in's.")},
+                       {"type", typeSchema()},
+                       {"description", schema::string("A description.")},
+                       {"bin", schema::string("The presets bin it goes in, e.g. \"Voice chains\" (default: the Presets bin).")},
+                       {"replace", schema::boolean("Replace a preset of yours with that name (default false: refused).")}},
+                      {"target", "name"}),
+         Json{{"target", "A1"}, {"name", "Voice chain"}}, {}, saveTrackPreset});
+    addBuiltin(
+        registry,
+        {"effects.applyTrackPreset", 1, "Apply Preset to Tracks",
+         "Applies an audio preset to the effect chain of audio tracks, submix tracks or the audio master: its effects are "
+         "added after the chain's own (keyframes timed by the preset's type against the track's length). A preset "
+         "saved from a clip also works; its Volume and Panner are skipped and reported. One undo step.",
+         Capability::EditSequence,
+         withSequence({{"preset", nameSchema("The preset's name (case-insensitive): the user's or a built-in audio preset.")},
+                       {"targets", schema::array(chainTargetSchema("\"master\", an audio track (\"A1\" or its id) or a submix track."),
+                                                 "The chains to apply it to.", 1)}},
+                      {"preset", "targets"}),
+         Json{{"preset", "Voice chain"}, {"targets", Json::array({"A2"})}}, {}, applyTrackPreset});
     addBuiltin(registry,
                {"effects.setPresetProperties", 1, "Preset Properties",
                 "Changes a user preset (Premiere's Preset Properties): its name (custom bins and favourites follow), type, "

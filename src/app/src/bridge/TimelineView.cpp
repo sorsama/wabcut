@@ -8,6 +8,7 @@
 #include "TimelineAnalysis.h"
 #include "TimelineGeometry.h"
 #include "TimeRemapBridge.h"
+#include "TimelineKeyframes.h"
 
 #include <wabcut/audio/edit/Loudness.h>
 #include <wabcut/model/Auditions.h>
@@ -171,6 +172,7 @@ struct LabelEntry {
     QString badgeText;                 // the micro-tag it shows ("AI", "ENHANCED", ...)
     QSGTransformNode* fx = nullptr;    // 0.4: the fx chip (sibling, before the micro-tag)
     ClipFx fxState = ClipFx::None;     // what it shows
+    QRectF fxRect;                     // 0.7 (card 041): where it is, in content coordinates (the click target)
     int fxStyleRevision = -1;
     bool fxInverted = false;           // drawn as a clipInk pill (its colour is the clip's own)
     QSGTransformNode* sync = nullptr;  // 0.6: the out-of-sync tag before the name (sibling, follows the label)
@@ -207,6 +209,35 @@ void removeRegionTag(RegionTag& tag) {
         delete tag.node;
     }
     tag.node = nullptr;
+}
+
+// 0.7 (card 125): the note of a clip, printed at its foot: the words wrapped to `width` and cut after `maxLines` lines (the
+// last one ends in an ellipsis when more follows). Empty when nothing fits.
+QStringList noteLines(const QString& note, const QFont& font, qreal width, int maxLines) {
+    const QString text = note.simplified();
+    QStringList lines;
+    if (text.isEmpty() || width < 8 || maxLines < 1)
+        return lines;
+    QTextLayout layout(text, font);
+    QTextOption option;
+    option.setWrapMode(QTextOption::WordWrap);
+    layout.setTextOption(option);
+    int consumed = 0;
+    layout.beginLayout();
+    while (lines.size() < maxLines) {
+        QTextLine line = layout.createLine();
+        if (!line.isValid())
+            break;
+        line.setLineWidth(width);
+        lines << text.mid(line.textStart(), line.textLength()).trimmed();
+        consumed = line.textStart() + line.textLength();
+    }
+    layout.endLayout();
+    if (consumed < text.size()) {
+        const QFontMetricsF metrics(font);
+        lines.last() = metrics.elidedText(lines.last() + QLatin1Char(' ') + text.mid(consumed).trimmed(), Qt::ElideRight, width);
+    }
+    return lines;
 }
 
 struct BuiltClip {
@@ -286,6 +317,9 @@ struct TrackBucket {
     QSGGeometryNode* top = nullptr;
     std::vector<BuiltClip> clips;
     std::unordered_map<std::uint64_t, LabelEntry> labels;
+    std::vector<std::pair<std::uint64_t, QString>> clipNotes; // 0.7 (card 125): clip id -> the note as printed on it
+    std::vector<std::pair<std::uint64_t, QRectF>> lockBadges; // 0.7 (card 064): clip id -> its padlock (content coordinates)
+    std::vector<std::pair<std::uint64_t, int>> keyLines;      // 0.7 (card 041): clip id -> keys drawn on its shown property
     std::vector<std::size_t> stuck; // indices into `clips` whose label is pinned to the left edge
     int nestedClips = 0; // M5l: clips drawn with the nested / multi-camera stripe
     int angleCuts = 0;   // M5l: angle-cut marks
@@ -632,6 +666,8 @@ void TimelineView::setStyle(const QVariantMap& map) {
     s.captionTrackHeight = std::max<qreal>(12, realFrom(map, "captionTrackHeight", s.captionTrackHeight)); // 0.5
     s.captionColor = colorFrom(map.value(QStringLiteral("captionColor")), s.captionColor);
     s.captionInkColor = colorFrom(map.value(QStringLiteral("captionInkColor")), s.captionInkColor);
+    s.groupHeaderHeight = std::max<qreal>(16, realFrom(map, "groupHeaderHeight", s.groupHeaderHeight)); // 0.7 (card 124)
+    s.groupLaneWash = realFrom(map, "groupLaneWash", s.groupLaneWash);
     m_style = std::move(s);
     ++m_styleRevision;
     m_cursorSet = false; // the edit cursors' trim colours may have changed (0.1.3)
@@ -836,6 +872,16 @@ void addClipFacts(TimelineLaneFacts& facts, const ProjectState& snap, const Trac
         const QString channels = channelBadge(snap, c);
         if (!channels.isEmpty())
             facts.channels.emplace(c.id.value, channels);
+        // 0.7 (card 142): the title the clip's stream carries in the file, for a recording with two or more audio streams.
+        if (!c.isNested() && c.media.isValid()) {
+            const MediaItem* media = snap.findMedia(c.media);
+            if (media && media->info.audio.size() >= 2 && c.stream.index >= 0
+                && static_cast<std::size_t>(c.stream.index) < media->info.audio.size()) {
+                const std::string& title = media->info.audio[static_cast<std::size_t>(c.stream.index)].title;
+                if (!title.empty())
+                    facts.streamNames.emplace(c.id.value, QString::fromStdString(title));
+            }
+        }
     }
     // 0.4: the fx chip (every track kind; untouched clips have no entry).
     if (const ClipFx fx = clipFxOf(c); fx != ClipFx::None)
@@ -907,6 +953,7 @@ void TimelineView::updateFacts(const TimelineChange& change) {
             for (ClipId id : *list) {
                 m_facts.badges.erase(id.value);
                 m_facts.channels.erase(id.value);
+                m_facts.streamNames.erase(id.value);
                 m_facts.fx.erase(id.value);
                 linked = linked || m_facts.sync.contains(id.value);
             }
@@ -1030,14 +1077,28 @@ void TimelineView::refreshSelection() {
 void TimelineView::relayoutRows() {
     const std::vector<CaptionRow> captionsBefore = m_captionRows;
     std::vector<Row> rows;
+    std::vector<GroupRow> groupRows;
+    std::unordered_set<std::uint64_t> groupsWithHeader;
     // 0.5: the caption rows come first, above the top video track (TimelineViewCaptions.cpp).
     qreal y = layoutCaptionRows();
     const auto add = [&](const TrackPtr& track) {
         const bool audio = track->kind == TrackKind::Audio;
         const auto custom = m_trackHeights.find(track->id.value);
         const qreal h = custom != m_trackHeights.end() ? custom->second : defaultTrackHeight(audio);
-        rows.push_back({track, y, h, audio});
-        y += h + m_style.trackGap;
+        // 0.7 (card 124): a track group has a header row before its first track in the display; its tracks fold into it
+        // (no height, no gap) while it is collapsed.
+        const TrackGroup* group = m_sequence->trackGroupOf(track->id);
+        bool hidden = false;
+        if (group) {
+            if (groupsWithHeader.insert(group->id.value).second) {
+                groupRows.push_back({group->id, y, m_style.groupHeaderHeight, group->collapsed, group->colorIndex});
+                y += m_style.groupHeaderHeight + m_style.trackGap;
+            }
+            hidden = group->collapsed;
+        }
+        rows.push_back({track, y, hidden ? 0 : h, audio, hidden});
+        if (!hidden)
+            y += h + m_style.trackGap;
     };
     if (m_sequence) {
         for (auto it = m_sequence->videoTracks.rbegin(); it != m_sequence->videoTracks.rend(); ++it)
@@ -1046,9 +1107,16 @@ void TimelineView::relayoutRows() {
             add(t);
     }
     const qreal contentHeight = rows.empty() && m_captionRows.empty() ? 0 : y - m_style.trackGap;
-    const bool shapeChanged = rows.size() != m_rows.size()
+    const bool groupsChanged = groupRows.size() != m_groupRows.size()
+        || !std::equal(groupRows.begin(), groupRows.end(), m_groupRows.begin(), [](const GroupRow& a, const GroupRow& b) {
+               return a.id == b.id && a.y == b.y && a.height == b.height && a.collapsed == b.collapsed
+                      && a.colorIndex == b.colorIndex;
+           });
+    m_groupRows = std::move(groupRows);
+    const bool shapeChanged = groupsChanged || rows.size() != m_rows.size()
         || !std::equal(rows.begin(), rows.end(), m_rows.begin(), [](const Row& a, const Row& b) {
-               return a.track->id == b.track->id && a.y == b.y && a.height == b.height;
+               return a.track->id == b.track->id && a.y == b.y && a.height == b.height && a.hidden == b.hidden
+                      && a.track->colorIndex == b.track->colorIndex; // 0.7: a new label colour redraws the lanes
            })
         || captionsBefore.size() != m_captionRows.size()
         || !std::equal(captionsBefore.begin(), captionsBefore.end(), m_captionRows.begin(), [](const CaptionRow& a, const CaptionRow& b) {
@@ -1061,6 +1129,7 @@ void TimelineView::relayoutRows() {
         emit layoutChanged();
     }
     refreshCaptionRowItems(); // 0.5: the caption headers (emits captionRowsChanged when they differ)
+    refreshGroupRowItems();   // 0.7 (card 124): the track groups' header rows
 }
 
 // ---- View parameters --------------------------------------------------------------------------------
@@ -1203,6 +1272,16 @@ double TimelineView::markInX() const {
 double TimelineView::markOutX() const {
     const auto out = m_controller ? m_controller->markOut() : std::nullopt;
     return out ? xOfTicks(*out) : qQNaN();
+}
+
+double TimelineView::workAreaInX() const {
+    const auto area = m_controller ? m_controller->workArea() : std::nullopt;
+    return area ? xOfTicks(area->start) : qQNaN();
+}
+
+double TimelineView::workAreaOutX() const {
+    const auto area = m_controller ? m_controller->workArea() : std::nullopt;
+    return area ? xOfTicks(area->end()) : qQNaN();
 }
 
 Ticks TimelineView::ticksAtX(double x) const {
@@ -1527,6 +1606,11 @@ QVariantMap TimelineView::clipHoverInfo(const QString& clipId) const {
     }
     if (!state.isEmpty())
         lines << state.join(QStringLiteral(" · "));
+    // 0.7 (card 125): the clip's note, whole.
+    if (!c.note().empty()) {
+        info.insert(QStringLiteral("note"), QString::fromStdString(c.note()));
+        lines << tr("Note: %1").arg(QString::fromStdString(c.note()));
+    }
     info.insert(QStringLiteral("text"), lines.join(QLatin1Char('\n')));
     return info;
 }
@@ -1540,7 +1624,7 @@ std::vector<ClipId> TimelineView::clipsInRect(const QRectF& rect) const {
     const Ticks t1 = ticksAtX(r.right());
     for (const Row& row : m_rows) {
         const double top = row.y - m_scrollY;
-        if (top + row.height < r.top() || top > r.bottom())
+        if (row.hidden || top + row.height < r.top() || top > r.bottom()) // 0.7: a collapsed group's tracks are not under it
             continue;
         const auto& clips = row.track->clips;
         for (auto it = clips.iteratorAt(firstClipEndingAfter(clips, t0)); it != clips.end() && it->start() <= t1; ++it)
@@ -1641,6 +1725,12 @@ struct BuildContext {
     bool showSpeed = false;
     bool showClipSpeed = true; // 0.4: "[50%]" after the name
     bool showFxBadges = true;  // 0.4: the fx chip
+    const std::unordered_map<std::uint64_t, ShownKeyframeProperty>* shownKeyframes = nullptr; // 0.7 (card 041)
+    bool showClipDuration = false; // 0.7 (card 126): the clip's length after its name
+    bool showClipNotes = true;     // 0.7 (card 125): the clip's note printed on it
+    bool showStreamNames = true;   // 0.7 (card 142): a multi-track recording's stream title after an audio clip's name
+    /// The clip length in the sequence's time format (an audio clip's in samples with Show Audio Time Units on).
+    std::function<QString(Ticks, bool)> formatDuration;
     // Media whose files are offline: their clips are hatched (design language v2).
     const std::unordered_set<std::uint64_t>* offline = nullptr;
     // M5i
@@ -1863,6 +1953,26 @@ void addBeamLine(MeshBuilder& mesh, const TimelineStyle& st, QPointF bottom, QPo
     }
 }
 
+/// 0.7 (card 064): the padlock of a locked clip sits in the top right corner of its body.
+QRectF lockBadgeRect(const QRectF& body) {
+    constexpr double kSize = 18.0;
+    return QRectF(body.right() - kSize - 4.0, body.top() + 3.0, kSize, kSize);
+}
+
+/// A padlock (a round plate in clipInk; a shackle and a body in the clip's label colour) inside `badge`.
+void addLockBadge(MeshBuilder& mesh, const TimelineStyle& st, const QRectF& badge, const QColor& glyph) {
+    mesh.addRoundedRect(badge, badge.height() / 2, st.markerInkColor, st.markerInkColor, 0.75);
+    const QPointF c = badge.center();
+    mesh.addRect(QRectF(c.x() - 4.2, c.y() - 0.4, 8.4, 6.0), glyph);
+    constexpr double kRadius = 2.9;
+    std::vector<QPointF> shackle;
+    for (int i = 0; i <= 8; ++i) {
+        const double a = std::numbers::pi * i / 8.0;
+        shackle.emplace_back(c.x() + kRadius * std::cos(a), c.y() - 0.4 - kRadius * std::sin(a));
+    }
+    mesh.addPolyline(shackle, 1.6, glyph);
+}
+
 /// Diagonal hatching over a disabled or offline clip (30°: a fixed angle, not the v2 slice's, which v3 sets to 0).
 void addHatch(MeshBuilder& mesh, const TimelineStyle& st, const QRectF& rect) {
     constexpr double kHatchDegrees = 30.0;
@@ -1912,17 +2022,19 @@ void scaleByClipVolume(const Clip& clip, double x0, double step, const std::func
     }
 }
 
-void addVolumeLine(BuildContext& ctx, const Clip& clip, const QRectF& rect, double x0, double x1, bool opacity = false) {
+/// The line of a clip's parameter `volume` (a constant or a keyframe curve) over `rect`, with its keys: `yFraction` maps a
+/// value to the band (0 = its top .. 1 = its bottom). 0.7 (card 041): the volume and opacity bands below and Show Clip
+/// Keyframes' property both draw through this.
+void addValueLine(BuildContext& ctx, const Clip& clip, const QRectF& rect, double x0, double x1, const ParamValue& volume,
+                  const std::function<double(double)>& yFraction, MeshBuilder& mesh) {
     if (x1 - x0 < 2)
         return;
     const TimelineStyle& st = ctx.style;
     const QRectF area = TimelineView::volumeArea(rect);
-    const auto yOf = [&](double v) { return area.top() + TimelineView::bandFraction(!opacity, v) * area.height(); };
+    const auto yOf = [&](double v) { return area.top() + yFraction(v) * area.height(); };
     const auto tickAt = [&](double x) {
         return Ticks{static_cast<std::int64_t>((x + ctx.originX) / ctx.pps * static_cast<double>(kTicksPerSecond))};
     };
-    MeshBuilder& mesh = opacity && ctx.top ? *ctx.top : ctx.mesh;
-    const ParamValue& volume = clip.properties()[opacity ? ParamId::Opacity : ParamId::VolumeDb];
     // A light line on a dark underlay: it reads on every clip colour and waveform, in both themes.
     constexpr double kWidth = 1.5;
     constexpr double kUnderlay = 3.5;
@@ -1968,6 +2080,44 @@ void addVolumeLine(BuildContext& ctx, const Clip& clip, const QRectF& rect, doub
             mesh.addTriangle({c.x(), c.y() - kKey}, {c.x(), c.y() + kKey}, {c.x() - kKey, c.y()}, st.volumeKeyColor);
         }
     }
+}
+
+void addVolumeLine(BuildContext& ctx, const Clip& clip, const QRectF& rect, double x0, double x1, bool opacity = false) {
+    MeshBuilder& mesh = opacity && ctx.top ? *ctx.top : ctx.mesh;
+    addValueLine(ctx, clip, rect, x0, x1, clip.properties()[opacity ? ParamId::Opacity : ParamId::VolumeDb],
+                 [opacity](double v) { return TimelineView::bandFraction(!opacity, v); }, mesh);
+}
+
+/// 0.7 (card 041), Show Clip Keyframes: the shown property's line and keys over the clip, on the overlay mesh. The band
+/// is ranged to the keys' values (a flat property sits in the middle), so any property reads, whatever its unit.
+int addKeyframeProperty(BuildContext& ctx, const Clip& clip, const QRectF& rect, double x0, double x1,
+                        const ShownKeyframeProperty& property) {
+    const std::optional<ParamValue> value = shownKeyframeValue(clip, property);
+    if (!value || !ctx.top)
+        return -1;
+    double lo = value->constant();
+    double hi = lo;
+    if (const Curve* curve = value->curve()) {
+        lo = hi = curve->keys.front().value;
+        for (const Keyframe& k : curve->keys) {
+            lo = std::min(lo, k.value);
+            hi = std::max(hi, k.value);
+        }
+    }
+    const double pad = hi > lo ? 0.0 : 1.0;
+    lo -= pad;
+    hi += pad;
+    addValueLine(ctx, clip, rect, x0, x1, *value,
+                 [lo, hi](double v) { return 1.0 - std::clamp(std::isfinite(v) ? (v - lo) / (hi - lo) : 0.5, 0.0, 1.0); },
+                 *ctx.top);
+    int keys = 0;
+    if (const Curve* curve = value->curve()) {
+        for (const Keyframe& k : curve->keys) {
+            const auto at = clip.timelineTimeOfCurveTime(k.time);
+            keys += at && *at >= clip.start() && *at < clip.end() ? 1 : 0;
+        }
+    }
+    return keys;
 }
 
 void addSpeedLine(BuildContext& ctx, const Clip& clip, const QRectF& rect, double x0, double x1) {
@@ -2079,6 +2229,7 @@ qreal placeFxChip(BuildContext& ctx, LabelEntry& e, const BuiltClip& c, ClipFx f
         delete e.fx;
         e.fx = nullptr;
         e.fxState = ClipFx::None;
+        e.fxRect = {};
     };
     if (fx == ClipFx::None || e.pending) {
         remove();
@@ -2130,6 +2281,7 @@ qreal placeFxChip(BuildContext& ctx, LabelEntry& e, const BuiltClip& c, ClipFx f
     QMatrix4x4 transform;
     transform.translate(static_cast<float>(e.x + offset), static_cast<float>(chipY));
     e.fx->setMatrix(transform);
+    e.fxRect = QRectF(e.x + offset, chipY, chipWidth, chipHeight);
     return chipWidth + 4;
 }
 
@@ -2194,6 +2346,35 @@ void placeGeneratedBadge(BuildContext& ctx, LabelEntry& e, const BuiltClip& c, c
     e.badge->setMatrix(transform);
 }
 
+// 0.7 (card 125): where a clip's note goes. A tall clip has room under its name label for a plate of two or three lines at its
+// foot; a short one carries the note's first line after its name instead (placeLabel). `labelBottomOffset` is where the name
+// label ends, from the clip's top, for each way the label is placed (a name band over thumbnails, on thumbnails, an audio clip,
+// centred in a plain clip).
+qreal labelBottomOffset(const BuildContext& ctx, bool audio, qreal header, bool thumbs, qreal height) {
+    const TimelineStyle& st = ctx.style;
+    const qreal labelHeight = ctx.metrics.height();
+    if (audio)
+        return st.stripHeight + st.labelTop + labelHeight;
+    if (header > 0)
+        return st.stripHeight + header;
+    if (thumbs || ctx.showSpeed)
+        return st.stripHeight + 2 + labelHeight;
+    return st.stripHeight + (height - st.stripHeight - labelHeight) / 2 + labelHeight;
+}
+
+QFont noteFont(const TimelineStyle& st) {
+    QFont font = st.labelFont;
+    font.setPixelSize(static_cast<int>(st.microSize) + 2);
+    return font;
+}
+
+/// How many note lines (0 to 3) fit under the name label of a clip of `height`; fewer than two: the note goes after the name.
+int notePlateLines(const BuildContext& ctx, bool audio, qreal header, bool thumbs, qreal height) {
+    const qreal lineHeight = std::ceil(QFontMetricsF(noteFont(ctx.style)).height());
+    const qreal room = height - labelBottomOffset(ctx, audio, header, thumbs, height) - 4;
+    return std::clamp(static_cast<int>(std::floor(room / lineHeight)), 0, 3);
+}
+
 // Places (or removes) the label of `c`. Returns true when the label is pinned to the view's left edge.
 bool placeLabel(BuildContext& ctx, TrackBucket& b, const BuiltClip& c) {
     const TimelineStyle& st = ctx.style;
@@ -2233,6 +2414,11 @@ bool placeLabel(BuildContext& ctx, TrackBucket& b, const BuiltClip& c) {
                 name = QStringLiteral("MC%1 · %2").arg(angle + 1).arg(info->second.angles[angle]);
         }
     }
+    // 0.7 (card 142): the track name the file gives this audio clip's stream (a recording with several audio streams).
+    if (ctx.showStreamNames && c.audio && ctx.facts) {
+        if (const auto stream = ctx.facts->streamNames.find(c.id.value); stream != ctx.facts->streamNames.end())
+            name += QStringLiteral(" · ") + stream->second;
+    }
     if (ctx.showSpeed && !c.audio) {
         const Clip& clip = b.track->clips[c.index];
         name += QStringLiteral(" · ") + TimeRemapBridge::speedLabel(clip);
@@ -2240,6 +2426,16 @@ bool placeLabel(BuildContext& ctx, TrackBucket& b, const BuiltClip& c) {
         // 0.4: a clip not at a uniform 100 % forward shows its speed in brackets, as Premiere does ("[50%]").
         if (const QString speed = clipSpeedText(b.track->clips[c.index]); !speed.isEmpty())
             name += QStringLiteral(" [") + speed + QLatin1Char(']');
+    }
+    // 0.7 (card 126): the clip's length, last, so a narrow clip loses it first (the name is elided from the end).
+    if (ctx.showClipDuration && ctx.formatDuration)
+        name += QStringLiteral(" · ") + ctx.formatDuration(b.track->clips[c.index].duration(), c.audio);
+    // 0.7 (card 125): a clip too short for the note's plate carries the first line of its note after its name (last, so it is
+    // the first thing a narrow clip loses).
+    if (ctx.showClipNotes && !b.track->clips[c.index].note().empty() &&
+        notePlateLines(ctx, c.audio, c.header, c.thumbs, c.h) < 2) {
+        const QString line = QString::fromStdString(b.track->clips[c.index].note()).simplified();
+        name += QStringLiteral(" · ") + line;
     }
     // Elide only when the name does not fit, at an 8 px-quantised width, so zooming re-lays text out rarely.
     const QString text = ctx.names.width(ctx.metrics, name) <= available
@@ -2368,6 +2564,9 @@ std::pair<int, int> buildTrack(BuildContext& ctx, TrackBucket& b, const Timeline
     ctx.mesh.clear();
     ctx.top->clear();
     b.clips.clear();
+    b.lockBadges.clear();
+    b.clipNotes.clear();
+    b.keyLines.clear();
     b.stuck.clear();
     b.nestedClips = 0;
     b.angleCuts = 0;
@@ -2384,7 +2583,8 @@ std::pair<int, int> buildTrack(BuildContext& ctx, TrackBucket& b, const Timeline
     std::vector<std::uint64_t> used;
 
     // Rows more than a viewport above/below the view get no geometry.
-    b.visible = row.y + row.height >= ctx.scrollY - ctx.viewHeight && row.y <= ctx.scrollY + 2 * ctx.viewHeight;
+    // 0.7 (card 124): a track folded into a collapsed group draws nothing (the group's row shows a summary).
+    b.visible = !row.hidden && row.y + row.height >= ctx.scrollY - ctx.viewHeight && row.y <= ctx.scrollY + 2 * ctx.viewHeight;
     if (b.visible && b.track) {
         const auto& clips = b.track->clips;
         const double secondsPerTick = 1.0 / static_cast<double>(kTicksPerSecond);
@@ -2534,6 +2734,12 @@ std::pair<int, int> buildTrack(BuildContext& ctx, TrackBucket& b, const Timeline
             }
             if (!it->enabled || (ctx.offline && ctx.offline->contains(it->media.value)))
                 addHatch(*ctx.top, st, body);
+            // 0.7 (card 064): a locked clip wears a padlock at its right end (when it is wide and tall enough).
+            if (it->locked && body.width() >= 60 && body.height() >= 24) {
+                const QRectF badge = lockBadgeRect(body);
+                addLockBadge(*ctx.top, st, badge, label);
+                b.lockBadges.emplace_back(it->id.value, badge);
+            }
             // M5o: a graphic with responsive time (Premiere's Responsive Design - Time): its protected intro plays from
             // the clip's start and its outro ends at its end; the middle stretches. Both are tinted bands with an edge
             // line where the stretch begins / ends, tagged when wide enough.
@@ -2596,6 +2802,54 @@ std::pair<int, int> buildTrack(BuildContext& ctx, TrackBucket& b, const Timeline
                     };
                     tag(it->id.value * 2, ctx.introText, body.left(), introW);
                     tag(it->id.value * 2 + 1, ctx.outroText, body.right() - outroW, outroW);
+                }
+            }
+            // 0.7 (card 125): the clip's note, on a scrim at the foot of the clip, under the name band (Timeline Display >
+            // Clip notes). Up to three lines of what fits; the whole note is in the clip's tooltip.
+            const int plate = ctx.showClipNotes && !it->note().empty() && body.width() >= 48
+                                  ? notePlateLines(ctx, row.audio, band, film, rect.height())
+                                  : 0;
+            if (plate >= 2) {
+                const QFont font = noteFont(st);
+                const QFontMetricsF metrics(font);
+                const qreal lineHeight = std::ceil(metrics.height());
+                const QStringList lines = noteLines(QString::fromStdString(it->note()), font, body.width() - 10, plate);
+                if (!lines.isEmpty()) {
+                    const std::uint64_t key = it->id.value | (std::uint64_t{1} << 62); // apart from the Intro / Outro tags' keys
+                    const QString text = lines.join(QChar::LineSeparator);
+                    const qreal plateHeight = lineHeight * static_cast<qreal>(lines.size()) + 3;
+                    ctx.top->addRect(QRectF(body.left() + 2, body.bottom() - plateHeight - 1, body.width() - 4, plateHeight),
+                                     st.scrimColor);
+                    RegionTag& t = b.regionTags[key];
+                    if (t.node && (t.styleRevision != ctx.styleRevision || t.text != text))
+                        removeRegionTag(t);
+                    if (!t.node) {
+                        t.node = new QSGTransformNode;
+                        ctx.labelGroup->appendChildNode(t.node);
+                        auto* glyphs = ctx.window->createTextNode();
+                        t.node->appendChildNode(glyphs);
+                        glyphs->setColor(st.audioLabelColor); // light ink on the dark scrim, in both themes
+                        QTextLayout layout(text, font);
+                        layout.beginLayout();
+                        qreal y = 0;
+                        for (;;) {
+                            QTextLine line = layout.createLine();
+                            if (!line.isValid())
+                                break;
+                            line.setLineWidth(body.width());
+                            line.setPosition({0, y});
+                            y += line.height();
+                        }
+                        layout.endLayout();
+                        glyphs->addTextLayout({5, 1}, &layout);
+                        t.styleRevision = ctx.styleRevision;
+                        t.text = text;
+                    }
+                    QMatrix4x4 m;
+                    m.translate(static_cast<float>(body.left()), static_cast<float>(body.bottom() - plateHeight - 1));
+                    t.node->setMatrix(m);
+                    usedTags.push_back(key);
+                    b.clipNotes.emplace_back(it->id.value, lines.join(QLatin1Char('\n')));
                 }
             }
             // Through edits: the cut continues the same source (Premiere's bow tie).
@@ -2735,6 +2989,14 @@ std::pair<int, int> buildTrack(BuildContext& ctx, TrackBucket& b, const Timeline
                 addVolumeLine(ctx, *it, rect, std::max(rect.left(), 0.0), std::min(rect.right(), endX), true);
             if (ctx.showSpeed && !row.audio)
                 addSpeedLine(ctx, *it, rect, std::max(rect.left(), 0.0), std::min(rect.right(), endX));
+            if (ctx.shownKeyframes) { // 0.7 (card 041): Show Clip Keyframes
+                if (const auto shown = ctx.shownKeyframes->find(it->id.value); shown != ctx.shownKeyframes->end()) {
+                    const int keys = addKeyframeProperty(ctx, *it, rect, std::max(rect.left(), 0.0), std::min(rect.right(), endX),
+                                                         shown->second);
+                    if (keys >= 0)
+                        b.keyLines.emplace_back(it->id.value, keys);
+                }
+            }
 
             BuiltClip bc{it->id, index, rect.left(), rect.right(), rect.top(), rect.height(), row.audio, thumbs, band};
             b.clips.push_back(bc);
@@ -2751,6 +3013,7 @@ std::pair<int, int> buildTrack(BuildContext& ctx, TrackBucket& b, const Timeline
                 delete entry.fx; // 0.4: nor its fx chip
                 entry.fx = nullptr;
                 entry.fxState = ClipFx::None;
+                entry.fxRect = {};
                 entry.pending = true; // place its tag again if it scrolls into view
             }
         }
@@ -3140,6 +3403,19 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     ctx.showSpeed = m_showSpeed;
     ctx.showClipSpeed = m_showClipSpeed;
     ctx.showFxBadges = m_showFxBadges;
+    ctx.shownKeyframes = &m_clipKeyframes;
+    ctx.showClipDuration = m_showClipDuration;
+    ctx.showClipNotes = m_showClipNotes;
+    ctx.showStreamNames = m_showStreamNames;
+    if (m_showClipDuration && m_controller) {
+        const QPointer<ProjectController> controller = m_controller;
+        const bool samples = m_audioTimeUnits && m_sequence && m_sequence->audioRate.isValid();
+        ctx.formatDuration = [controller, samples](Ticks t, bool audio) {
+            if (!controller)
+                return QString();
+            return samples && audio ? controller->formatAudioTime(t) : controller->formatTimecode(t);
+        };
+    }
     ctx.styleRevision = m_styleRevision;
     ctx.introText = m_introText;
     ctx.outroText = m_outroText;
@@ -3270,7 +3546,7 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     for (std::size_t i = 0; i < m_rows.size(); ++i) {
         TrackBucket& b = root->buckets[i];
         const Row& row = m_rows[i];
-        const bool nowVisible = row.y + row.height >= m_scrollY - h && row.y <= m_scrollY + 2 * h;
+        const bool nowVisible = !row.hidden && row.y + row.height >= m_scrollY - h && row.y <= m_scrollY + 2 * h;
         bool rebuild = full || nowVisible != b.visible || b.y != row.y || b.h != row.height || !b.track
                     || b.track->id != row.track->id || m_animatedTracks.contains(row.track->id.value);
         if (!rebuild && b.track != row.track) {
@@ -3397,6 +3673,27 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                 if (xe - x >= 1)
                     mesh.addRect(QRectF(xe - m_style.markerWidth / 2, 0, m_style.markerWidth, m_contentHeight),
                                  withAlpha(color, m_style.markerOpacity * 0.6));
+            }
+            // 0.7 (card 124): a collapsed track group's row shows where its tracks have clips: one thin bar per clip, in the
+            // clip's label colour (the tracks themselves are folded away and draw nothing).
+            for (const GroupRow& group : m_groupRows) {
+                const TrackGroup* members = group.collapsed ? m_sequence->findTrackGroup(group.id) : nullptr;
+                if (!members)
+                    continue;
+                const double top = group.y + 5;
+                const double barHeight = std::max(2.0, group.height - 10);
+                for (const TrackId id : members->members) {
+                    const Track* track = m_sequence->findTrack(id);
+                    if (!track)
+                        continue;
+                    const ClipList& clips = track->clips;
+                    for (auto it = clips.iteratorAt(firstClipEndingAfter(clips, builtStart)); it != clips.end() && it->start() < builtEnd; ++it) {
+                        const double x0 = it->start().toSeconds() * m_pps - root->originX;
+                        const double x1 = std::max(x0 + 1.0, it->end().toSeconds() * m_pps - root->originX);
+                        mesh.addRoundedRect(QRectF(x0, top, x1 - x0, barHeight), std::min<qreal>(m_style.clipRadius, barHeight / 2),
+                                            withAlpha(m_style.clipColor(it->colorIndex), 0.85));
+                    }
+                }
             }
         }
         mesh.commit(root->markers);
@@ -3582,12 +3879,26 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             if (y + row.height < 0 || y > h)
                 continue;
             mesh.addRoundedRect(QRectF(0, y, w, row.height), m_style.laneRadius, m_style.laneColor);
+            // 0.7 (card 077): the track's label colour washes its lane (the header carries the same colour as a bar).
+            if (row.track->colorIndex >= 0)
+                mesh.addRoundedRect(QRectF(0, y, w, row.height), m_style.laneRadius,
+                                    withAlpha(m_style.clipColor(row.track->colorIndex), m_style.laneLabelWash));
         }
         for (const CaptionRow& row : m_captionRows) { // 0.5: the caption lanes above them
             const double y = row.y - m_scrollY;
             if (y + row.height < 0 || y > h)
                 continue;
             mesh.addRoundedRect(QRectF(0, y, w, row.height), std::min<qreal>(m_style.laneRadius, row.height / 2), m_style.laneColor);
+        }
+        for (const GroupRow& row : m_groupRows) { // 0.7 (card 124): the track groups' header rows, in the group's colour
+            const double y = row.y - m_scrollY;
+            if (y + row.height < 0 || y > h)
+                continue;
+            const qreal radius = std::min<qreal>(m_style.laneRadius, row.height / 2);
+            mesh.addRoundedRect(QRectF(0, y, w, row.height), radius, m_style.laneColor);
+            if (row.colorIndex >= 0)
+                mesh.addRoundedRect(QRectF(0, y, w, row.height), radius,
+                                    withAlpha(m_style.clipColor(row.colorIndex), m_style.groupLaneWash));
         }
         mesh.commit(root->lanes);
         root->lanesScrollY = m_scrollY;
@@ -3795,6 +4106,12 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
         stats.nestedClips += b.nestedClips;
         stats.angleCuts += b.angleCuts;
         stats.trackLanes += b.trackLane ? 1 : 0;
+        for (const auto& [id, text] : b.clipNotes) // 0.7 (card 125)
+            stats.clipNotes.insert(id, text);
+        for (const auto& [id, badge] : b.lockBadges) // 0.7 (card 064)
+            stats.lockBadges.insert(id, badge.translated(root->originX - m_scrollX, -m_scrollY));
+        for (const auto& [id, keys] : b.keyLines) // 0.7 (card 041)
+            stats.keyframeLines.insert(id, keys);
         stats.responsiveClips += static_cast<int>(b.responsiveBands.size());
         for (const auto& [id, widths] : b.responsiveBands)
             stats.responsiveBands.insert(id, widths);
@@ -3806,8 +4123,10 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                 ++stats.generatedBadges;
                 stats.badgeTexts.insert(id, label.badgeText);
             }
-            if (label.fx) // 0.4
+            if (label.fx) { // 0.4
                 stats.fxBadges.insert(id, label.fxState == ClipFx::Effects ? QStringLiteral("effects") : QStringLiteral("changed"));
+                stats.fxRects.insert(id, label.fxRect.translated(root->originX - m_scrollX, -m_scrollY)); // 0.7 (card 041)
+            }
             if (label.sync) // 0.6
                 stats.syncBadges.insert(id, label.syncText);
             stats.labelTexts.insert(id, label.text);

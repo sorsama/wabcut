@@ -57,6 +57,11 @@ Item {
         showClipSpeed: Preferences.timelineShowClipSpeed
         showFxBadges: Preferences.timelineShowFxBadges
         snapPlayhead: Preferences.snapPlayhead
+        // 0.7 (batch A2): what snapping sticks to (113), the clip's length on it (126), a recording's audio track names (142).
+        snapTargetMask: Preferences.snapTargetMask
+        showClipDuration: Preferences.timelineShowClipDuration
+        showClipNotes: Preferences.timelineShowClipNotes
+        showStreamNames: Preferences.timelineShowStreamNames
         // 0.5: the caption tracks as lanes (Timeline Display > Show caption tracks); a selected cue lives in Captions,
         // so the Captions page follows it.
         showCaptionTracks: Preferences.timelineShowCaptionTracks
@@ -177,7 +182,10 @@ Item {
             // 0.5: caption lanes - compact rows, cues as solid neutral blocks with their first line in clipInk.
             captionTrackHeight: Theme.trackHeightCaption,
             captionColor: Theme.captionCue,
-            captionInkColor: Theme.clipInk
+            captionInkColor: Theme.clipInk,
+            // 0.7 (card 124): a track group's header row, washed with the group's label colour.
+            groupHeaderHeight: Theme.trackGroupHeight,
+            groupLaneWash: 0.18
         })
     }
 }

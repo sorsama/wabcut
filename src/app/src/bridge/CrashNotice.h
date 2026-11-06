@@ -64,8 +64,23 @@ public:
     int count() const { return static_cast<int>(m_reports.size()); }
 
     // ---- QML ----
+    /// 0.7 (card 016, Help > Report a Bug…): the system information a bug report needs, always available (not only after a
+    /// crash): the version, the operating system, CPU threads, graphics card and driver (crash::systemDiagnostics()), the
+    /// graphics API and adapter the window runs on (`renderer`, e.g. "D3D11 on NVIDIA GeForce RTX 3060"; the line is left
+    /// out when empty), the video decoders in the order tried, Qt's version, the interface size and the number of
+    /// screens. Redacted (crash::redact): no paths, no user or computer name, no project. Several lines of "Label: value".
+    Q_INVOKABLE QString systemInfo(const QString& renderer = {}) const;
+    /// 0.7 (card 016): the GitHub new-issue address that opens the bug report form with the version and `info` (systemInfo)
+    /// filled in. The values are percent-encoded; the whole address stays under about 6 KB (the information is cut at a
+    /// line boundary when it would not). Nothing is sent by the app: the user's browser opens it.
+    Q_INVOKABLE QString bugReportUrl(const QString& info) const;
+    /// main(): the product version with its build commit ("0.7.0 (abc1234)"), for systemInfo(); without it the
+    /// application version is used.
+    static void setProductVersion(const QString& version);
     /// Puts the diagnostic summary on the clipboard.
     Q_INVOKABLE void copyDiagnosticSummary();
+    /// 0.7 (card 016): puts `text` on the clipboard (Report a Bug…'s Copy System Info, About's Copy).
+    Q_INVOKABLE void copyText(const QString& text);
     /// Opens the crash reports folder in the system file manager.
     Q_INVOKABLE bool openFolder();
     /// The user has seen it: the notice does not come back for these runs.

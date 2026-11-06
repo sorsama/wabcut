@@ -18,6 +18,14 @@
 //
 // Exports never use proxies (exporter::ExportJob resolves originals and reports offline ones).
 //
+// 0.7, background rendering while idle (editor/IdleRender.h): the red and yellow stretches of the current sequence are
+// rendered into the same preview cache by a worker thread (IdleRenderer) while the editor is quiet: no input for the idle
+// time, nothing playing, no gesture, export, manual render or proxy job, not on battery, other programs not busy. This
+// bridge feeds the worker plain data (the project snapshot, the current sequence and playhead, the activity flags, the
+// time of the last input from an application-wide event filter) at its 250 ms poll and reads its status back; it holds the
+// worker back (held) after Delete Render Files and Stop until the project changes. The worker runs only on a real platform
+// (not the offscreen/minimal test platforms) unless a test allows it. Settings: render/background*, Settings > Media & cache.
+//
 // 0.1.1: Sequence > Render In to Out (Enter). The project's preview render cache (model/PreviewCache.h, in
 // "<project> Preview Files", editor::previewFolderFor) goes to playback with the other preview settings, so the
 // monitor plays a rendered file where its segment is still valid (PreviewCache::validAt: an edit that changes the
@@ -36,6 +44,7 @@
 #include "CommandJob.h"
 
 #include <wabcut/editor/CacheInspector.h>
+#include <wabcut/editor/IdleRender.h>
 #include <wabcut/editor/ProxyManager.h>
 #include <wabcut/model/Time.h>
 
@@ -48,6 +57,7 @@
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
+#include <atomic>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -143,6 +153,30 @@ class MediaReadinessBridge : public QObject {
     /// P1 (#58): the cache limits are kept without opening Settings (QSettings cache/autoEnforce, default true).
     Q_PROPERTY(bool autoEnforce READ autoEnforce WRITE setAutoEnforce NOTIFY settingsChanged FINAL)
 
+    // ---- 0.7: background rendering while idle (editor/IdleRender.h) ----
+    /// Render the red and yellow stretches of the current sequence by itself when nothing else happens (QSettings
+    /// render/background, default true): Settings > Media & cache > Background rendering, Sequence > Background Rendering.
+    Q_PROPERTY(bool backgroundRender READ backgroundRender WRITE setBackgroundRender NOTIFY backgroundSettingsChanged FINAL)
+    /// Seconds without input before it starts (3..600, QSettings render/backgroundIdleSeconds, default 10).
+    Q_PROPERTY(int backgroundIdleSeconds READ backgroundIdleSeconds WRITE setBackgroundIdleSeconds NOTIFY backgroundSettingsChanged FINAL)
+    /// Wait on battery power (render/backgroundPauseOnBattery, default true).
+    Q_PROPERTY(bool backgroundPauseOnBattery READ backgroundPauseOnBattery WRITE setBackgroundPauseOnBattery NOTIFY backgroundSettingsChanged FINAL)
+    /// Wait while other programs use the CPU or an NVIDIA GPU (render/backgroundPauseWhenBusy, default true).
+    Q_PROPERTY(bool backgroundPauseWhenBusy READ backgroundPauseWhenBusy WRITE setBackgroundPauseWhenBusy NOTIFY backgroundSettingsChanged FINAL)
+    /// "off", "waiting", "rendering", "paused", "upToDate" or "full" (IdleRenderStatus::Phase).
+    Q_PROPERTY(QString backgroundState READ backgroundState NOTIFY backgroundChanged FINAL)
+    /// One sentence for the settings page and the background tasks popover: what it does now or what it waits for.
+    Q_PROPERTY(QString backgroundText READ backgroundText NOTIFY backgroundChanged FINAL)
+    /// The short form of it for a row that already says "Background rendering": "3 segments left", "Paused: playback is running."
+    Q_PROPERTY(QString backgroundDetail READ backgroundDetail NOTIFY backgroundChanged FINAL)
+    /// A segment is being rendered or waits half rendered (the popover lists it).
+    Q_PROPERTY(bool backgroundActive READ backgroundActive NOTIFY backgroundChanged FINAL)
+    /// Progress of the segment in hand, 0..1.
+    Q_PROPERTY(double backgroundProgress READ backgroundProgress NOTIFY backgroundChanged FINAL)
+    /// Segments still to render (the one in hand included), and segments finished since the project was opened.
+    Q_PROPERTY(int backgroundRemaining READ backgroundRemaining NOTIFY backgroundChanged FINAL)
+    Q_PROPERTY(int backgroundRendered READ backgroundRendered NOTIFY backgroundChanged FINAL)
+
 public:
     MediaReadinessBridge(ProjectLifecycle* lifecycle, PlaybackBridge* playback, QObject* parent = nullptr);
     ~MediaReadinessBridge() override;
@@ -207,6 +241,33 @@ public:
     bool autoEnforce() const;
     void setAutoEnforce(bool on);
 
+    // ---- 0.7: background rendering while idle ----
+    bool backgroundRender() const { return m_idleSettings.enabled; }
+    void setBackgroundRender(bool on);
+    int backgroundIdleSeconds() const { return static_cast<int>(m_idleSettings.idleSeconds); }
+    void setBackgroundIdleSeconds(int seconds);
+    bool backgroundPauseOnBattery() const { return m_idleSettings.pauseOnBattery; }
+    void setBackgroundPauseOnBattery(bool on);
+    bool backgroundPauseWhenBusy() const { return m_idleSettings.pauseWhenBusy; }
+    void setBackgroundPauseWhenBusy(bool on);
+    QString backgroundState() const { return m_bgState; }
+    QString backgroundText() const { return m_bgText; }
+    QString backgroundDetail() const { return m_bgDetail; }
+    bool backgroundActive() const { return m_bgActive; }
+    double backgroundProgress() const { return m_bgProgress; }
+    int backgroundRemaining() const { return m_bgRemaining; }
+    int backgroundRendered() const { return m_bgRendered; }
+    /// The worker (null until the first look with the feature on, and never in the offscreen test platform unless a test
+    /// allows it): tests change its settings and polling directly.
+    editor::IdleRenderer* backgroundRenderer() { return m_idle.get(); }
+    /// The application (main.cpp) says that background rendering may run in this process: a process that does not (the test
+    /// programs) never starts the worker, whatever the setting says.
+    static void setBackgroundRenderAvailable(bool available);
+    /// Tests: lets the worker run in a process that has not opted in, with this load probe.
+    void setBackgroundRenderAllowedForTests(bool allowed, std::shared_ptr<editor::SystemLoadProbe> probe = {});
+    /// Tests: counts as input now (the event filter does it for real input).
+    void noteInput(double secondsAgo = 0.0);
+
     /// P1 (#7, #58): the Sequence menu's render rows this bridge answers (Render Selection, Delete Render Files, Delete
     /// Render Files In to Out), for CommandPalette::commandState: {handled, enabled, reason}.
     static bool handlesCommand(const QString& id);
@@ -240,6 +301,11 @@ public:
     Q_INVOKABLE QString renderSelection();
     /// Stops the render at its next checkpoint; the segments rendered so far stay.
     Q_INVOKABLE void cancelRender();
+    /// 0.7: Sequence > Background Rendering (the checkable row): turns the feature on or off.
+    Q_INVOKABLE void toggleBackgroundRender();
+    /// 0.7: the background tasks popover's Stop: gives up the segment in hand; nothing is rendered in the background
+    /// again until the project changes (the next edit) or the feature is turned off and on.
+    Q_INVOKABLE void stopBackgroundRender();
     /// P1 (#7, #58): what Delete Render Files (In to Out) would delete in the current sequence, as the command's dry run
     /// counts it: { enabled, reason, files, bytes, sizeText ("1.2 GB"), sequenceName }. In to Out: the files that meet
     /// [In, Out) (a missing mark is the sequence's start or end; neither set: not enabled).
@@ -296,8 +362,23 @@ signals:
     void diskSpaceLow(const QString& message);
     /// P1 (#7, #58): Delete Render Files ended: `ok`, and "Deleted 1.2 GB of render files (12 files)." or the error.
     void renderFilesDeleted(bool ok, const QString& message);
+    /// 0.7: the background rendering settings changed.
+    void backgroundSettingsChanged();
+    /// 0.7: what the background rendering does changed (state, text, progress, counts).
+    void backgroundChanged();
+
+public:
+    /// 0.7 (AI video effects): processed pictures were made or deleted - the monitor evaluates the held picture and the
+    /// lookahead again so they show them.
+    Q_INVOKABLE void aiPicturesChanged();
 
 private:
+    /// 0.7: feeds the worker the editor's state (the poll's) and reads its status back; makes / resets it as needed.
+    void updateBackgroundRender();
+    void saveBackgroundSettings();
+    QString backgroundStatusText(const editor::IdleRenderStatus& status, bool brief = false) const;
+    /// Whether this process may run the worker (main.cpp opted in, or a test allows it).
+    bool backgroundMayRun() const;
     void attachDocument();
     void applyPreview(bool force = false);
     void ensurePreviewCache();
@@ -372,12 +453,52 @@ private:
     std::shared_ptr<PreviewRenderer> m_renderer;
     std::shared_ptr<PreviewRenderer> m_testRenderer;
     std::shared_ptr<PreviewCache> m_appliedPreviews;
+    std::uint64_t m_aiRevision = 0;
     CommandJob m_render;
     bool m_rendering = false;
     double m_renderProgress = -1.0;
     QString m_renderMessage;
     QString m_renderScope = QStringLiteral("inToOut");
     CommandJob m_deleteJob;
+
+    // ---- 0.7: background rendering while idle ----
+    /// What the worker thread reads: the editor's focus, the activity flags and the time of the last input. Written by
+    /// the GUI thread (the poll, the event filter), never holds a pointer into the GUI's objects.
+    struct IdleShared {
+        std::mutex mutex;
+        editor::IdleRenderFocus focus;
+        std::atomic<bool> playing{false};
+        std::atomic<bool> gesture{false};
+        std::atomic<bool> exporting{false};
+        std::atomic<bool> otherWork{false};
+        std::atomic<bool> held{false};
+        std::atomic<std::int64_t> lastInputNs{0};
+    };
+    std::shared_ptr<IdleShared> m_idleShared = std::make_shared<IdleShared>();
+    /// What render.status shows under "background" (command::PreviewServices::backgroundStatus): written by the GUI thread
+    /// when the status changes, read by whichever thread runs the command.
+    struct BackgroundBox {
+        std::mutex mutex;
+        command::Json json = command::Json::object();
+    };
+    std::shared_ptr<BackgroundBox> m_bgBox = std::make_shared<BackgroundBox>();
+    std::unique_ptr<QObject> m_inputWatcher; ///< the application-wide event filter that notes input
+    std::unique_ptr<editor::IdleRenderer> m_idle;
+    std::shared_ptr<PreviewCache> m_idleCache; ///< the cache the worker was made / reset for
+    std::shared_ptr<editor::SystemLoadProbe> m_idleProbe;
+    editor::IdleRenderSettings m_idleSettings;
+    bool m_idleAllowedForTests = false;
+    bool m_idleHeld = false;
+    std::uint64_t m_idleHeldRevision = 0;
+    std::uint64_t m_idleSeenGeneration = ~std::uint64_t{0};
+    int m_idleSeenRendered = 0;
+    QString m_bgState = QStringLiteral("off");
+    QString m_bgText;
+    QString m_bgDetail;
+    bool m_bgActive = false;
+    double m_bgProgress = 0.0;
+    int m_bgRemaining = 0;
+    int m_bgRendered = 0;
 };
 
 } // namespace wabcut::app

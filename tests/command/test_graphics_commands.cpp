@@ -376,3 +376,174 @@ TEST_CASE("lottie.import places an animation and saves it as a template", "[comm
     CommandHarness locked(kPicture, noFiles);
     CHECK(locked.errorOf("lottie.import", Json{{"data", data}, {"saveAs", Json{{"id", "dot"}, {"name", "Dot"}}}}) != "");
 }
+
+// ---- 0.7: keys on template fields (card 71), styling part of a text and reordering text styles (card 81), template
+// folders (card 87) ---------------------------------------------------------------------------------------------------------
+
+TEST_CASE("template fields are keyed over the clip and read back (card 71)", "[command][graphics][templates][keys]") {
+    CommandHarness h(kPicture);
+    const std::uint64_t clip = idOf(h.ok("graphic.add", Json{{"at", tc(0)}, {"duration", tc(10)}, {"track", "V2"}, {"graphic", lowerThird()}}), "clip");
+    const Json fields = Json::array({Json{{"id", "name"}, {"label", "Name"}, {"kind", "text"}, {"layer", 2}, {"property", "text"}},
+                                     Json{{"id", "box"}, {"label", "Box"}, {"kind", "color"}, {"layer", 1}, {"property", "fill"}},
+                                     Json{{"id", "length"}, {"label", "Length"}, {"kind", "duration"}, {"property", "clip"}}});
+    h.ok("template.save", Json{{"clip", clip}, {"id", "lower-third"}, {"name", "Lower third"}, {"fields", fields}, {"duration", tc(6)}});
+    const std::uint64_t instance = idOf(h.ok("template.instantiate", Json{{"template", "lower-third"}, {"at", tc(0)}, {"track", "V2"}, {"placement", "newTrack"}}), "clip");
+
+    const std::size_t undos = h.session.undoCount();
+    h.ok("template.setFieldKey", Json{{"clip", instance}, {"field", "box"}, {"time", tc(0)}, {"value", "#ff0000"}});
+    h.ok("template.setFieldKey", Json{{"clip", instance}, {"field", "box"}, {"time", tc(4)}, {"value", "#0000ff"}});
+    h.ok("template.setFieldKey", Json{{"clip", instance}, {"field", "name"}, {"time", tc(2)}, {"value", "Second"}, {"interpolation", "hold"}});
+    CHECK(h.session.undoCount() == undos + 3); // one undo step each
+    CHECK(h.session.undoLabel() == "Key a Template Field");
+    const Graphic& g = graphicIn(h, instance);
+    REQUIRE(g.instance->fields[1].keys.size() == 2);
+    CHECK(g.instance->fields[1].keys[1].time == f(4));
+    CHECK(fieldValueAt(g.instance->fields[1], f(2)).color.rgba[0] == Approx(0.5));
+    // graphic.get lists the keys with the field.
+    const Json shown = h.ok("graphic.get", Json{{"clip", instance}}).data["graphic"];
+    CHECK(shown.dump().find("\"keys\"") != std::string::npos);
+
+    // A static edit of an animated field says how to go on; other fields and unkeyed ones are as before.
+    CHECK(h.errorOf("template.setField", Json{{"clip", instance}, {"field", "box"}, {"value", "#00ff00"}}) == "EditRejected");
+    h.ok("template.setField", Json{{"clip", instance}, {"field", "length"}, {"value", tc(8)}});
+    // Refusals: a length, an unknown field, a time outside the clip, not an instance, a bad colour.
+    CHECK(h.errorOf("template.setFieldKey", Json{{"clip", instance}, {"field", "length"}, {"time", tc(1)}, {"value", tc(3)}}) == "EditRejected");
+    CHECK(h.errorOf("template.setFieldKey", Json{{"clip", instance}, {"field", "nope"}, {"time", tc(1)}, {"value", "x"}}) == "InvalidParams");
+    CHECK(h.errorOf("template.setFieldKey", Json{{"clip", instance}, {"field", "box"}, {"time", tc(30)}, {"value", "#ffffff"}}) == "InvalidParams");
+    CHECK(h.errorOf("template.setFieldKey", Json{{"clip", clip}, {"field", "box"}, {"time", tc(1)}, {"value", "#ffffff"}}) == "InvalidParams");
+    CHECK(h.errorOf("template.setFieldKey", Json{{"clip", instance}, {"field", "box"}, {"time", tc(1)}, {"value", "red"}}) == "InvalidParams");
+
+    // Remove a key; stop animating keeps the value at "time".
+    h.ok("template.removeFieldKey", Json{{"clip", instance}, {"field", "box"}, {"index", 1}});
+    CHECK(graphicIn(h, instance).instance->fields[1].keys.size() == 1);
+    CHECK(h.errorOf("template.removeFieldKey", Json{{"clip", instance}, {"field", "box"}, {"index", 5}}) == "NotFound");
+    h.ok("template.setFieldKey", Json{{"clip", instance}, {"field", "box"}, {"time", tc(5)}, {"value", "#0000ff"}});
+    h.ok("template.clearFieldKeys", Json{{"clip", instance}, {"field", "box"}, {"time", tc(0)}});
+    const Graphic& cleared = graphicIn(h, instance);
+    CHECK(cleared.instance->fields[1].keys.empty());
+    CHECK(cleared.findLayer(1)->shape.fill.color.rgba[0] == 1.0); // red, as it was at time 0
+    h.session.undo();
+    CHECK(graphicIn(h, instance).instance->fields[1].keys.size() == 2);
+}
+
+TEST_CASE("text styles style part of a text and are reordered through commands (card 81)", "[command][graphics][textStyles]") {
+    CommandHarness h(kPicture);
+    const std::uint64_t clip = idOf(h.ok("graphic.add", Json{{"at", tc(0)}, {"duration", tc(10)}, {"track", "V2"}, {"graphic", lowerThird()}}), "clip");
+    // "Name" is layer 2 (4 characters).
+    h.ok("textStyle.update", Json{{"name", "Big"}, {"style", Json{{"text", Json{{"runs", Json::array({Json{{"size", 120}, {"weight", 800}}})}}}}}});
+    h.ok("textStyle.update", Json{{"name", "Small"}, {"style", Json{{"text", Json{{"runs", Json::array({Json{{"size", 20}}})}}}}}});
+    const std::size_t undos = h.session.undoCount();
+    h.ok("textStyle.applyRange", Json{{"clip", clip}, {"layer", 2}, {"from", 1}, {"to", 3}, {"name", "big"}});
+    CHECK(h.session.undoCount() == undos + 1);
+    CHECK(h.session.undoLabel() == "Apply Text Style to Part of a Text");
+    const GraphicLayer* layer = graphicIn(h, clip).findLayer(2);
+    REQUIRE(layer->text.runs.size() == 3);
+    CHECK(layer->text.runs[0].text == "N");
+    CHECK(layer->text.runs[1].text == "am");
+    CHECK(layer->text.runs[1].style.fontSize == 120.0);
+    CHECK(layer->text.runs[2].text == "e");
+    CHECK(layer->textStyle.empty());
+    CHECK(h.errorOf("textStyle.applyRange", Json{{"clip", clip}, {"layer", 2}, {"from", 1}, {"to", 3}, {"name", "none"}}) == "NotFound");
+    CHECK(h.errorOf("textStyle.applyRange", Json{{"clip", clip}, {"layer", 2}, {"from", 3}, {"to", 3}, {"name", "Big"}}) == "EditRejected");
+    CHECK(h.errorOf("textStyle.applyRange", Json{{"clip", clip}, {"layer", 2}, {"from", 0}, {"to", 99}, {"name", "Big"}}) == "EditRejected");
+    CHECK(h.errorOf("textStyle.applyRange", Json{{"clip", clip}, {"layer", 1}, {"from", 0}, {"to", 1}, {"name", "Big"}}) == "EditRejected"); // a shape
+    CHECK(h.errorOf("textStyle.applyRange", Json{{"clip", clip}, {"layer", 2}, {"from", 0}, {"to", 1}, {"name", "Big"}, {"time", tc(40)}}) == "InvalidParams");
+    h.session.undo();
+    CHECK(graphicIn(h, clip).findLayer(2)->text.runs.size() == 1);
+
+    // The order: Big, Small -> Small, Big.
+    const auto order = [&] {
+        std::string out;
+        for (const ProjectTextStyle& s : h.state()->textStyles)
+            out += s.name + ",";
+        return out;
+    };
+    CHECK(order() == "Big,Small,");
+    h.ok("textStyle.move", Json{{"name", "Small"}, {"index", 0}});
+    CHECK(order() == "Small,Big,");
+    CHECK(h.session.undoLabel() == "Reorder Text Styles");
+    CHECK(h.errorOf("textStyle.move", Json{{"name", "Missing"}, {"index", 0}}) == "NotFound");
+    h.session.undo();
+    CHECK(order() == "Big,Small,");
+}
+
+TEST_CASE("templates are filed in folders and a folder of template files installs in one step (card 87)", "[command][graphics][templates][folders]") {
+    const fs::path library = scratch("folder-library");
+    const fs::path source = scratch("folder-source");
+    command::EnginePolicy policy;
+    policy.services = std::make_shared<command::GraphicsServices>(library);
+    CommandHarness h(kPicture, policy);
+    const std::uint64_t clip = idOf(h.ok("graphic.add", Json{{"at", tc(0)}, {"duration", tc(10)}, {"track", "V2"}, {"graphic", lowerThird()}}), "clip");
+    const Json fields = Json::array({Json{{"id", "name"}, {"kind", "text"}, {"layer", 2}, {"property", "text"}}});
+    h.ok("template.save", Json{{"clip", clip}, {"id", "one"}, {"name", "One"}, {"fields", fields}});
+    h.ok("template.save", Json{{"clip", clip}, {"id", "two"}, {"name", "Two"}, {"fields", fields}, {"library", "user"}});
+
+    // Filing: a project template (one undo step, the version stays) and a user one (its file is rewritten).
+    const std::size_t undos = h.session.undoCount();
+    h.ok("template.setFolder", Json{{"template", "one"}, {"folder", "Titles/Lower thirds"}});
+    CHECK(h.session.undoCount() == undos + 1);
+    CHECK(h.state()->findTemplate("one")->folder == "Titles/Lower thirds");
+    CHECK(h.state()->findTemplate("one")->version == 1);
+    CHECK(h.ok("template.list", Json{{"library", "project"}}).data["project"][0]["folder"] == "Titles/Lower thirds");
+    h.ok("template.setFolder", Json{{"template", "two"}, {"library", "user"}, {"folder", "Mine"}});
+    CHECK(h.ok("template.list", Json{{"library", "user"}}).data["user"][0]["folder"] == "Mine");
+    h.ok("template.setFolder", Json{{"template", "two"}, {"library", "user"}, {"folder", ""}});
+    CHECK_FALSE(h.ok("template.list", Json{{"library", "user"}}).data["user"][0].contains("folder"));
+    for (const char* bad : {"/start", "end/", "a//b", "a/b/c/d", "back\\slash", "a/../b", "."})
+        CHECK(h.errorOf("template.setFolder", Json{{"template", "one"}, {"folder", bad}}) == "InvalidParams");
+    CHECK(h.errorOf("template.setFolder", Json{{"template", "nope"}, {"folder", "x"}}) == "NotFound");
+    CHECK(h.errorOf("template.setFolder", Json{{"template", "one"}, {"library", "user"}, {"folder", "x"}}) == "NotFound");
+    // The folder is saved with the template (project file and library file) and read back.
+    CHECK(io::templateFileToJson(*h.state()->findTemplate("one")).find("\"folder\"") != std::string::npos);
+    const auto reread = io::templateFileFromJson(io::templateFileToJson(*h.state()->findTemplate("one")));
+    REQUIRE(reread);
+    CHECK(reread->folder == "Titles/Lower thirds");
+
+    // A folder of template files: the files of a tree install, each filed under the folder it was found in; a file that
+    // does not read is skipped with the reason and the others still go in.
+    const GraphicTemplate one = *h.state()->findTemplate("one");
+    const auto write = [&](const fs::path& where, const std::string& id, const std::string& name) {
+        GraphicTemplate t = one;
+        t.id = id;
+        t.name = name;
+        t.folder.clear();
+        fs::create_directories(where.parent_path());
+        std::ofstream out(where, std::ios::binary);
+        out << io::templateFileToJson(t);
+    };
+    write(source / "Pack" / "top.wabcut-template.json", "top", "Top");
+    write(source / "Pack" / "Dark" / "dark.wabcut-template.json", "dark", "Dark");
+    write(source / "Pack" / "Dark" / "Deeper" / "Deepest" / "deep.wabcut-template.json", "deep", "Deep");
+    {
+        std::ofstream broken(source / "Pack" / "broken.wabcut-template.json");
+        broken << "{";
+        std::ofstream notes(source / "Pack" / "notes.txt");
+        notes << "not a template";
+    }
+    const std::string root = (source / "Pack").generic_string();
+    const ProjectSnapshot before = h.state();
+    const std::size_t steps = h.session.undoCount();
+    const auto dry = h.run(Json{{"command", "template.importFolder"}, {"params", Json{{"path", root}}}, {"dryRun", true}});
+    REQUIRE(dry.ok());
+    CHECK(*h.state() == *before);
+    const auto imported = h.ok("template.importFolder", Json{{"path", root}});
+    CHECK(imported.data["imported"] == 3);
+    CHECK(imported.data["skipped"].size() == 1);
+    CHECK(imported.data["skipped"][0]["file"].get<std::string>().find("broken") != std::string::npos);
+    CHECK_FALSE(imported.warnings.empty());
+    CHECK(h.session.undoCount() == steps + 1); // one undo step for the library
+    CHECK(h.state()->findTemplate("top")->folder == "Pack");
+    CHECK(h.state()->findTemplate("dark")->folder == "Pack/Dark");
+    CHECK(h.state()->findTemplate("deep")->folder == "Pack/Dark/Deeper Deepest"); // deeper levels share the third part
+    h.session.undo();
+    CHECK(h.state()->findTemplate("top") == nullptr);
+    // Without subfolders only the top level; into the user's library the files are written.
+    CHECK(h.ok("template.importFolder", Json{{"path", root}, {"recursive", false}}).data["imported"] == 1);
+    CHECK(h.ok("template.importFolder", Json{{"path", root}, {"library", "user"}}).data["imported"] == 3);
+    CHECK(fs::exists(library / "dark.wabcut-template.json"));
+    CHECK(h.ok("template.list", Json{{"library", "user"}, {"id", "dark"}}).data["user"][0]["folder"] == "Pack/Dark");
+    // Refusals: not a folder, no user library.
+    CHECK(h.errorOf("template.importFolder", Json{{"path", (source / "missing").generic_string()}}) == "NotFound");
+    CommandHarness plain(kPicture);
+    CHECK(plain.errorOf("template.importFolder", Json{{"path", root}, {"library", "user"}}) == "InvalidRequest");
+}

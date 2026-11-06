@@ -12,6 +12,7 @@
 
 #include <cmath>
 #include <numbers>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -507,5 +508,112 @@ TEST_CASE("Master automation follows the loop's time across a wrap", "[playback]
         INFO(begin);
         CHECK(levelAt(begin + 960) > 0.15f);
         CHECK(levelAt(begin + 9600 - 960) < 0.05f);
+    }
+}
+
+// 0.7 (card 044): Dynamics Processing on a clip, on a track and on the master, some of it animated, with its lookahead
+// limiter on (5 ms of latency, compensated): preview and export give the same samples, and it does what its curve says.
+TEST_CASE("Dynamics Processing renders alike in preview and export on a clip, a track and the master",
+          "[playback][effects][export][dynamics]") {
+    Project p;
+    p.media('A', noiseSignal(0.5f, 21));
+    p.media('M', tone(180.0, 0.7f));
+    addTrack(p,
+             {clipWith(p, {'A', ms(50), ms(1800), ms(100)},
+                       {effect(p, "wabcut.audio.dynamicsProcessing",
+                               {{"bandCount", ParamValue(3.0)}, {"crossover1", ParamValue(250.0)}, {"crossover2", ParamValue(3000.0)},
+                                {"band1Threshold", ParamValue(Curve{{Keyframe{ms(100), -30.0}, Keyframe{ms(1500), -12.0}}})},
+                                {"band2Mode", ParamValue(1.0)}, {"band2Threshold", ParamValue(-40.0)},
+                                {"band3Mode", ParamValue(3.0)}, {"band3Threshold", ParamValue(-20.0)},
+                                {"limiterEnable", ParamValue(1.0)}, {"autoGate", ParamValue(1.0)},
+                                {"autoGateThreshold", ParamValue(-60.0)}})})});
+    addTrack(p, {p.makeClip({'M', ms(0), ms(2400), ms(0), -3.0})},
+             {effect(p, "wabcut.audio.dynamicsProcessing",
+                     {{"bandCount", ParamValue(2.0)}, {"band1Ratio", ParamValue(6.0)}, {"band1Threshold", ParamValue(-30.0)},
+                      {"band2Solo", ParamValue(Curve{{Keyframe{ms(0), 0.0}, Keyframe{ms(1000), 1.0}}})}})});
+    setMaster(p, {effect(p, "wabcut.audio.dynamicsProcessing",
+                         {{"bandCount", ParamValue(1.0)}, {"band1Mode", ParamValue(3.0)}, {"band1Threshold", ParamValue(-10.0)},
+                          {"limiterEnable", ParamValue(1.0)}, {"limiterCeiling", ParamValue(-3.0)},
+                          {"mix", ParamValue(Curve{{Keyframe{ms(0), 100.0}, Keyframe{ms(2000), 60.0}}})}})});
+    SECTION("from the start") {
+        Rig rig(p);
+        rig.player->play();
+        rig.pullFor(2600);
+        const auto offline = exported(p, Ticks{}, 2600 * 48);
+        const std::int64_t bad = firstMismatch(rig.stream, 0, offline, 0, offline.size());
+        std::string where; // where preview and export part, for the failure message
+        if (bad >= 0) {
+            double worst = 0.0;
+            std::size_t count = 0;
+            for (std::size_t i = 0; i < offline.size(); ++i) {
+                const double diff = std::fabs(static_cast<double>(rig.stream[i]) - static_cast<double>(offline[i]));
+                worst = std::max(worst, diff);
+                count += diff > 0.0 ? 1 : 0;
+            }
+            for (std::size_t i = 0, shown = 0; i < offline.size() && shown < 6; ++i) {
+                if (rig.stream[i] != offline[i]) {
+                    char text[160];
+                    std::snprintf(text, sizeof text, " [sample %zu: preview %.9g export %.9g]", i, static_cast<double>(rig.stream[i]),
+                                  static_cast<double>(offline[i]));
+                    where += text;
+                    ++shown;
+                }
+            }
+            where += "; first differing frame " + std::to_string(bad / 2) + " (" + std::to_string((bad / 2) / 48.0) + " ms) channel " +
+                    std::to_string(bad % 2) + ": preview " + std::to_string(rig.stream[static_cast<std::size_t>(bad)]) + " export " +
+                    std::to_string(offline[static_cast<std::size_t>(bad)]) + "; " + std::to_string(count) +
+                    " samples differ, the worst by " + std::to_string(worst) + "; stream " + std::to_string(rig.stream.size() / 2) +
+                    " frames";
+        }
+        INFO(where);
+        CHECK(bad == -1);
+        CHECK(rig.player->stats().underrunFrames == 0);
+        CHECK(rig.player->stats().feedErrors == 0);
+    }
+    SECTION("from a seek point, the effect settled on the same pre-roll") {
+        Rig rig(p, Rig::Options{Ticks{}, Ticks{}, false, ms(50)});
+        rig.player->play();
+        rig.pullFor(100);
+        rig.player->seek(ms(1100));
+        const auto before = rig.stream.size() / 2;
+        rig.pullFor(1000);
+        const auto offline = exported(p, ms(1100), 800 * 48);
+        CHECK(firstMismatch(rig.stream, (before + 480) * 2, offline, 0, offline.size(), 2e-3f) == -1);
+    }
+}
+
+TEST_CASE("Dynamics Processing as a limiter on a clip, a track and the master holds the level", "[playback][effects][dynamics]") {
+    const auto peakOf = [](const std::vector<float>& s, std::size_t from) {
+        float peak = 0.0f;
+        for (std::size_t i = from; i < s.size(); ++i) {
+            peak = std::max(peak, std::fabs(s[i]));
+        }
+        return peak;
+    };
+    const auto limiter = [](Project& p) {
+        return effect(p, "wabcut.audio.dynamicsProcessing",
+                      {{"bandCount", ParamValue(1.0)}, {"band1Mode", ParamValue(3.0)}, {"band1Threshold", ParamValue(-12.0)},
+                       {"band1Attack", ParamValue(0.1)}, {"band1Release", ParamValue(30.0)}, {"band1Knee", ParamValue(0.0)}});
+    };
+    const float ceiling = static_cast<float>(std::pow(10.0, -12.0 / 20.0)); // -12 dBFS
+    Project clip;
+    clip.media('A', tone(440.0, 0.9f));
+    addTrack(clip, {clipWith(clip, {'A', ms(0), ms(1500), ms(0)}, {limiter(clip)})});
+    Project track;
+    track.media('A', tone(440.0, 0.9f));
+    addTrack(track, {track.makeClip({'A', ms(0), ms(1500), ms(0)})}, {limiter(track)});
+    Project master;
+    master.media('A', tone(440.0, 0.9f));
+    addTrack(master, {master.makeClip({'A', ms(0), ms(1500), ms(0)})});
+    setMaster(master, {limiter(master)});
+    Project plain;
+    plain.media('A', tone(440.0, 0.9f));
+    addTrack(plain, {plain.makeClip({'A', ms(0), ms(1500), ms(0)})});
+    CHECK(peakOf(exported(plain, Ticks{}, 60000), 24000) > 0.85f);
+    for (Project* p : {&clip, &track, &master}) {
+        const auto mix = exported(*p, Ticks{}, 60000);
+        // After the attack and the 30 ms settle: the tone stays within a dB of the limit.
+        CHECK(peakOf(mix, 24000) < ceiling * 1.12f);
+        CHECK(peakOf(mix, 24000) > ceiling * 0.8f);
     }
 }

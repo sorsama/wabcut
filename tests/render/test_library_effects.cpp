@@ -10,6 +10,7 @@
 
 #include <wabcut/model/Effects.h>
 #include <wabcut/render/EffectLibrary.h>
+#include <wabcut/render/FaceMap.h>
 #include <wabcut/render/Mask.h>
 #include <wabcut/render/reference/LibraryEffects.h>
 #include <wabcut/render/reference/LibraryGeometry.h>
@@ -23,6 +24,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <limits>
 #include <optional>
 #include <span>
@@ -89,8 +92,8 @@ LayerEffect libraryEffectOf(std::string_view id, const std::vector<std::pair<std
             e.params[kLibraryTimeParam] = value;
             continue;
         }
-        if (key == "#10") { // the evaluator's extra (Strobe Light: on)
-            e.params[10] = value;
+        if (key.size() > 1 && key[0] == '#') { // a parameter the evaluator fills (Strobe Light's #10: on; AI Eye Contact's baked eyes, #6 and #8..)
+            e.params[static_cast<std::size_t>(std::stoul(std::string(key.substr(1))))] = value;
             continue;
         }
         const auto it = std::find(entry->keys.begin(), entry->keys.end(), key);
@@ -141,6 +144,123 @@ std::array<std::uint8_t, 4> shifted(int x, int y) {
     auto c = colorful(std::max(0, x - 23), y);
     return {static_cast<std::uint8_t>(c[0] * 3 / 4), static_cast<std::uint8_t>(c[1] * 3 / 4),
             static_cast<std::uint8_t>(c[2] * 3 / 4), 191};
+}
+
+/// A depth map for AI Refocus: premultiplied black whose alpha is the distance (0 = nearest .. 1 = farthest) - far on the left
+/// growing nearer to the right, with a near disc in the middle.
+std::array<std::uint8_t, 4> depthCard(int x, int y) {
+    const double ramp = 1.0 - (x + 0.5) / kW * 0.8;
+    const double d = std::hypot(x + 0.5 - kW * 0.5, y + 0.5 - kH * 0.5);
+    const double distance = d < 40.0 ? 0.1 : ramp;
+    return {0, 0, 0, byte(distance)};
+}
+
+/// 0.7 (Skin Smoothing, AI Face Retouch): a face in a bluish room - an ellipse of shaded skin with pore texture, two spots, a hair band, eyes
+/// (whites and an iris), a mouth (yellowish teeth over a dark tongue) - and the face map that goes with it (R skin, G mouth, B eyes).
+bool inFaceEllipse(int x, int y) {
+    const double ex = (x + 0.5 - 160.0) / 90.0;
+    const double ey = (y + 0.5 - 90.0) / 70.0;
+    return ex * ex + ey * ey < 1.0;
+}
+bool inEyes(int x, int y) { return y >= 66 && y < 76 && ((x >= 112 && x < 146) || (x >= 174 && x < 208)); }
+bool inMouth(int x, int y) { return x >= 134 && x < 186 && y >= 116 && y < 132; }
+
+std::array<std::uint8_t, 4> skinPortrait(int x, int y) {
+    const auto hash = [](int a, int b) {
+        std::uint32_t h = static_cast<std::uint32_t>(a) * 73856093u ^ static_cast<std::uint32_t>(b) * 19349663u;
+        h ^= h >> 13;
+        h *= 0x5bd1e995u;
+        h ^= h >> 15;
+        return static_cast<double>(h & 0xFFFFu) / 65535.0 - 0.5;
+    };
+    if (!inFaceEllipse(x, y)) {
+        const double t = y / double(kH);
+        return {byte(0.22 + 0.1 * t), byte(0.34 + 0.08 * t), byte(0.62 - 0.1 * t), 255};
+    }
+    if (y < 28) {
+        return {byte(0.18), byte(0.12), byte(0.09), 255}; // hair
+    }
+    if (inEyes(x, y)) {
+        const int cx = x < 160 ? 129 : 191;
+        return std::hypot(x + 0.5 - cx, y + 0.5 - 71.0) < 4.0 ? std::array<std::uint8_t, 4>{byte(0.25), byte(0.15), byte(0.10), 255}
+                                                                : std::array<std::uint8_t, 4>{byte(0.88), byte(0.85), byte(0.82), 255};
+    }
+    if (inMouth(x, y)) {
+        return y < 124 ? std::array<std::uint8_t, 4>{byte(0.86), byte(0.79), byte(0.58), 255}
+                       : std::array<std::uint8_t, 4>{byte(0.50), byte(0.15), byte(0.15), 255};
+    }
+    if ((x >= 118 && x < 121 && y >= 99 && y < 102) || (x >= 198 && x < 201 && y >= 94 && y < 97)) {
+        return {byte(0.76), byte(0.45), byte(0.40), 255}; // spots
+    }
+    const double shade = 1.0 - 0.12 * ((y + 0.5 - 90.0) / 70.0);
+    const double pore = 0.03 * hash(x, y);
+    return {byte(0.82 * shade + pore), byte(0.64 * shade + pore), byte(0.54 * shade + pore), 255};
+}
+
+std::array<std::uint8_t, 4> faceMapCard(int x, int y) {
+    const bool eyes = inFaceEllipse(x, y) && inEyes(x, y);
+    const bool mouth = inFaceEllipse(x, y) && inMouth(x, y);
+    const bool skin = inFaceEllipse(x, y) && y >= 28 && !eyes && !mouth;
+    return {static_cast<std::uint8_t>(skin ? 255 : 0), static_cast<std::uint8_t>(mouth ? 255 : 0), static_cast<std::uint8_t>(eyes ? 255 : 0), 255};
+}
+
+/// 0.7 AI Eye Contact: an eye drawn analytically (a lens-shaped opening with shaded sclera, an iris with a pupil and a catch-light, skin round it),
+/// level and rolled by 8 degrees. The effect's parameters for it are the baked ones (model/EyeContact.h): the eye's frame, its iris and a shift.
+constexpr double kEyeCx = 160.0;
+constexpr double kEyeCy = 90.0;
+constexpr double kEyeHalf = 60.0;
+constexpr double kEyeUp = 22.0;
+constexpr double kEyeLo = 17.0;
+constexpr double kEyeRadius = 14.0;
+constexpr double kEyeIrisX = 3.0;
+constexpr double kEyeIrisY = 8.0;
+
+std::array<std::uint8_t, 4> eyePixel(int x, int y, double rollDegrees) {
+    const double t = rollDegrees * 3.14159265358979 / 180.0;
+    const double dx = x + 0.5 - kEyeCx;
+    const double dy = y + 0.5 - kEyeCy;
+    const double lx = dx * std::cos(t) + dy * std::sin(t);
+    const double ly = -dx * std::sin(t) + dy * std::cos(t);
+    const double u = lx / kEyeHalf;
+    const double k = 1.0 - u * u;
+    const double grain = 0.012 * (static_cast<double>((static_cast<std::uint32_t>(x) * 73856093u ^ static_cast<std::uint32_t>(y) * 19349663u) >> 7 & 0xFF) / 255.0 - 0.5);
+    if (!(std::abs(u) < 1.0 && ly > -kEyeUp * k && ly < kEyeLo * k)) {
+        const double shade = 1.0 - 0.1 * (y / double(kH));
+        return {byte(0.80 * shade + grain), byte(0.62 * shade + grain), byte(0.52 * shade + grain), 255}; // skin
+    }
+    const double dIris = std::hypot(lx - kEyeIrisX, ly - kEyeIrisY);
+    if (std::hypot(lx - kEyeIrisX + 4.0, ly - kEyeIrisY + 4.0) < 1.8) {
+        return {byte(0.98), byte(0.98), byte(0.98), 255}; // the catch-light
+    }
+    if (dIris < 5.0) {
+        return {byte(0.04), byte(0.03), byte(0.03), 255}; // the pupil
+    }
+    if (dIris < kEyeRadius) {
+        const double ring = 0.85 + 0.15 * std::sin(dIris * 1.7);
+        return {byte(0.30 * ring), byte(0.18 * ring), byte(0.10 * ring), 255};
+    }
+    const double shade = 0.78 + 0.22 * (ly + kEyeUp * k) / ((kEyeUp + kEyeLo) * k); // darker under the upper lid
+    return {byte(0.93 * shade + grain), byte(0.91 * shade + grain), byte(0.89 * shade + grain), 255};
+}
+std::array<std::uint8_t, 4> eyeCard(int x, int y) { return eyePixel(x, y, 0.0); }
+std::array<std::uint8_t, 4> eyeCardRolled(int x, int y) { return eyePixel(x, y, 8.0); }
+
+/// The effect's settings for one baked eye: the shift in the eye's frame (pixels), its roll (degrees), the Show menu.
+std::vector<std::pair<std::string_view, double>> eyeSettings(double shiftX, double shiftY, double rollDegrees = 0.0, double view = 0.0, int eyes = 1) {
+    static constexpr std::array<std::string_view, 12> kKeys{"#6", "#8", "#9", "#10", "#11", "#12", "#13", "#14", "#15", "#16", "#17", "#18"};
+    return {{"view", view},
+            {kKeys[0], static_cast<double>(eyes)},
+            {kKeys[1], kEyeCx / kW},
+            {kKeys[2], kEyeCy / kH},
+            {kKeys[3], rollDegrees * 3.14159265358979 / 180.0},
+            {kKeys[4], kEyeHalf / kW},
+            {kKeys[5], kEyeUp / kW},
+            {kKeys[6], kEyeLo / kW},
+            {kKeys[7], kEyeIrisX / kW},
+            {kKeys[8], kEyeIrisY / kW},
+            {kKeys[9], kEyeRadius / kW},
+            {kKeys[10], shiftX / kW},
+            {kKeys[11], shiftY / kW}};
 }
 
 std::array<std::uint8_t, 4> textCard(int x, int y) {
@@ -390,6 +510,43 @@ std::vector<Case> secondPictureCases() {
         one("image_matte_none", colorful, "wabcut.key.imageMatte"),
         withSecond("gradient_wipe_layer", colorful, nearlySame, "wabcut.transition.gradientWipe",
                    {{"completion", 0.5}, {"softness", 0.15}, {"gradientLayer", 1.0}}),
+        // 0.7 AI Refocus (Depth Blur): the depth map is the second picture; without one the picture is left as it is.
+        withSecond("depth_blur_near_focus", colorful, depthCard, "wabcut.ai.refocus", {{"focus", 15.0}, {"range", 10.0}, {"amount", 60.0}}),
+        withSecond("depth_blur_far_focus", colorful, depthCard, "wabcut.ai.refocus", {{"focus", 85.0}, {"range", 20.0}, {"amount", 100.0}}),
+        withSecond("depth_blur_background_only", colorful, depthCard, "wabcut.ai.refocus",
+                   {{"focus", 10.0}, {"amount", 80.0}, {"foreground", 0.0}}),
+        withSecond("depth_blur_view_depth", colorful, depthCard, "wabcut.ai.refocus", {{"view", 1.0}}),
+        withSecond("depth_blur_view_blur", colorful, depthCard, "wabcut.ai.refocus", {{"focus", 30.0}, {"view", 2.0}}),
+        withSecond("depth_blur_no_blur", colorful, depthCard, "wabcut.ai.refocus", {{"amount", 0.0}}),
+        one("depth_blur_no_depth", colorful, "wabcut.ai.refocus"),
+        // 0.7 Skin Smoothing (card 100) and AI Face Retouch (card 132): the face map is the second picture; without one the picture is left as it is.
+        one("skin_smoothing_default", skinPortrait, "wabcut.retouch.skinSmoothing"),
+        one("skin_smoothing_full", skinPortrait, "wabcut.retouch.skinSmoothing", {{"amount", 100.0}, {"detail", 0.0}, {"size", 5.0}}),
+        one("skin_smoothing_narrow_tone", skinPortrait, "wabcut.retouch.skinSmoothing",
+            {{"amount", 100.0}, {"detail", 20.0}, {"size", 8.0}, {"tone", 140.0}, {"range", 20.0}, {"softness", 30.0}}),
+        one("skin_smoothing_mask_view", skinPortrait, "wabcut.retouch.skinSmoothing", {{"view", 1.0}}),
+        one("skin_smoothing_zero", skinPortrait, "wabcut.retouch.skinSmoothing", {{"amount", 0.0}}),
+        withSecond("face_retouch_default", skinPortrait, faceMapCard, "wabcut.ai.faceRetouch"),
+        withSecond("face_retouch_full", skinPortrait, faceMapCard, "wabcut.ai.faceRetouch",
+                   {{"smoothing", 100.0}, {"detail", 0.0}, {"blemish", 100.0}, {"teeth", 100.0}, {"eyes", 100.0}}),
+        withSecond("face_retouch_blemish_only", skinPortrait, faceMapCard, "wabcut.ai.faceRetouch",
+                   {{"smoothing", 0.0}, {"blemish", 100.0}, {"blemishSize", 12.0}, {"teeth", 0.0}, {"eyes", 0.0}}),
+        withSecond("face_retouch_teeth_eyes_only", skinPortrait, faceMapCard, "wabcut.ai.faceRetouch",
+                   {{"smoothing", 0.0}, {"blemish", 0.0}, {"teeth", 100.0}, {"eyes", 100.0}}),
+        withSecond("face_retouch_view_skin", skinPortrait, faceMapCard, "wabcut.ai.faceRetouch", {{"view", 1.0}}),
+        withSecond("face_retouch_view_mouth", skinPortrait, faceMapCard, "wabcut.ai.faceRetouch", {{"view", 2.0}}),
+        withSecond("face_retouch_view_eyes", skinPortrait, faceMapCard, "wabcut.ai.faceRetouch", {{"view", 3.0}}),
+        withSecond("face_retouch_zero", skinPortrait, faceMapCard, "wabcut.ai.faceRetouch",
+                   {{"smoothing", 0.0}, {"blemish", 0.0}, {"teeth", 0.0}, {"eyes", 0.0}}),
+        one("face_retouch_no_map", skinPortrait, "wabcut.ai.faceRetouch"),
+        // 0.7 AI Eye Contact (Distort family): the evaluator bakes the frame's eye measurements into the parameters; the iris moves inside the opening.
+        one("eye_contact_up", eyeCard, "wabcut.ai.eyeContact", eyeSettings(0.0, -10.0)),
+        one("eye_contact_diagonal_rolled", eyeCardRolled, "wabcut.ai.eyeContact", eyeSettings(-6.0, -7.0, 8.0)),
+        one("eye_contact_large", eyeCard, "wabcut.ai.eyeContact", eyeSettings(0.0, -15.0)),
+        one("eye_contact_sideways", eyeCard, "wabcut.ai.eyeContact", eyeSettings(-12.0, 0.0)),
+        one("eye_contact_view_map", eyeCard, "wabcut.ai.eyeContact", eyeSettings(0.0, -10.0, 0.0, 1.0)),
+        one("eye_contact_zero_shift", eyeCard, "wabcut.ai.eyeContact", eyeSettings(0.0, 0.0)),
+        one("eye_contact_no_eyes", eyeCard, "wabcut.ai.eyeContact", eyeSettings(0.0, -10.0, 0.0, 0.0, 0)),
     };
 }
 
@@ -442,6 +599,19 @@ TEST_CASE("Effect library: the Distort family matches its CPU reference (0.2)", 
     runCases(distortCases());
 }
 
+// 0.7 (card 38): VR Reorient turns an equirectangular sphere (the picture here is only a stand-in for one: the maths do not
+// care what is drawn), per eye, 360 or 180.
+TEST_CASE("Effect library: VR Reorient matches its CPU reference (card 38)", "[render][gpu][library][vr]") {
+    runCases({
+        one("vr_reorient_yaw", colorful, "wabcut.vr.reorient", {{"yaw", 60.0}}),
+        one("vr_reorient_all_angles", colorful, "wabcut.vr.reorient", {{"yaw", -45.0}, {"pitch", 30.0}, {"roll", 20.0}}),
+        one("vr_reorient_180", colorful, "wabcut.vr.reorient", {{"projection", 1.0}, {"yaw", 20.0}, {"pitch", -10.0}}),
+        one("vr_reorient_top_bottom", colorful, "wabcut.vr.reorient", {{"stereo", 1.0}, {"yaw", 30.0}, {"pitch", 10.0}}),
+        one("vr_reorient_side_by_side", colorful, "wabcut.vr.reorient", {{"stereo", 2.0}, {"yaw", 15.0}, {"roll", 8.0}}),
+        one("vr_reorient_none", colorful, "wabcut.vr.reorient"),
+    });
+}
+
 TEST_CASE("Effect library: the Stylize family matches its CPU reference (0.2)", "[render][gpu][library]") {
     runCases(stylizeCases());
 }
@@ -482,6 +652,361 @@ TEST_CASE("Effect library: 1080p cost of a few heavy effects (0.2)", "[render][g
         WARN(name << " at 1080p: " << best / 1.0e6 << " ms per frame incl. readback");
         CHECK(best < 1'000'000'000); // a second would be a hang, not a cost
     }
+}
+
+TEST_CASE("Effect library: Skin Smoothing at 1080p stays real time (0.7)", "[render][gpu][library][perf]") {
+    // The face of the 320 x 180 portrait enlarged to 1080p (a third of the frame is skin): render + readback, best of a few, reported.
+    auto renderer = makeRenderer(OutputRole::Export);
+    const auto face = [](int x, int y) { return skinPortrait(x * kW / 1920, y * kH / 1080); };
+    qint64 best = std::numeric_limits<qint64>::max();
+    CompositeLayer layer = layerOf(makeRgbaFrame(1920, 1080, face));
+    layer.effects = {libraryEffectOf("wabcut.retouch.skinSmoothing", {{"amount", 100.0}, {"size", 8.0}})};
+    for (int i = 0; i < 5; ++i) {
+        QElapsedTimer timer;
+        timer.start();
+        auto image = renderer->render(compositeOf({1920, 1080}, {layer}));
+        REQUIRE(image);
+        best = std::min(best, timer.nsecsElapsed());
+    }
+    CompositeLayer plain = layerOf(makeRgbaFrame(1920, 1080, face));
+    qint64 base = std::numeric_limits<qint64>::max();
+    for (int i = 0; i < 5; ++i) {
+        QElapsedTimer timer;
+        timer.start();
+        REQUIRE(renderer->render(compositeOf({1920, 1080}, {plain})));
+        base = std::min(base, timer.nsecsElapsed());
+    }
+    WARN("Skin Smoothing at 1080p (size 8): " << best / 1.0e6 << " ms per frame incl. readback; the same frame without the effect "
+                                               << base / 1.0e6 << " ms");
+    {   // The figures also go to a file (a passing test prints no warnings): test-output/render/library/perf_skin_smoothing.txt.
+        QDir().mkpath(outputDir() + QStringLiteral("/library"));
+        QFile out(outputDir() + QStringLiteral("/library/perf_skin_smoothing.txt"));
+        if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            out.write(QByteArray("Skin Smoothing at 1080p (amount 100, size 8, a third of the frame is skin): ") + QByteArray::number(best / 1.0e6, 'f', 2) +
+                      " ms per frame including readback; the same frame without the effect " + QByteArray::number(base / 1.0e6, 'f', 2) + " ms\n");
+        }
+    }
+    CHECK(best < 1'000'000'000);           // a second would be a hang, not a cost
+}
+
+namespace {
+
+/// A binary PPM (P6, 8-bit): its size and RGB bytes.
+bool readPpm(const std::string& path, int& width, int& height, std::vector<std::uint8_t>& rgb) {
+    std::ifstream in(path, std::ios::binary);
+    std::string magic;
+    int maxValue = 0;
+    in >> magic >> width >> height >> maxValue;
+    in.get();
+    if (magic != "P6" || width <= 0 || height <= 0 || maxValue != 255) {
+        return false;
+    }
+    rgb.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3);
+    in.read(reinterpret_cast<char*>(rgb.data()), static_cast<std::streamsize>(rgb.size()));
+    return static_cast<bool>(in);
+}
+
+} // namespace
+
+TEST_CASE("Effect library: AI Face Retouch on a real photo with the real face map (WABCUT_TEST_FACE_IMAGE, WABCUT_TEST_FACE_MAP)",
+          "[render][gpu][library][live]") {
+    // The photo and the face map the AI suite's live test made of it (both P6). The map goes through the evaluator's raster (the sRGB
+    // encoding of its coverage) as the effect's second picture, like in playback.
+    const char* photoPath = std::getenv("WABCUT_TEST_FACE_IMAGE");
+    const char* mapPath = std::getenv("WABCUT_TEST_FACE_MAP");
+    if (photoPath == nullptr || mapPath == nullptr || *photoPath == '\0' || *mapPath == '\0') {
+        WARN("skipped: set WABCUT_TEST_FACE_IMAGE (a P6 photo of a face) and WABCUT_TEST_FACE_MAP (its face map, P6: R skin, G mouth, B eyes)");
+        return;
+    }
+    int w = 0;
+    int h = 0;
+    std::vector<std::uint8_t> photo;
+    int mw = 0;
+    int mh = 0;
+    std::vector<std::uint8_t> coverage;
+    REQUIRE(readPpm(photoPath, w, h, photo));
+    REQUIRE(readPpm(mapPath, mw, mh, coverage));
+    REQUIRE(mw == w);
+    REQUIRE(mh == h);
+    auto renderer = makeRenderer(OutputRole::Export);
+    const auto raster = makeFaceMapRaster(w, h, coverage);
+    const std::shared_ptr<const PreparedComposite> matte = compositeOf({w, h}, {layerOf(raster->view(raster))});
+    const auto picture = [&](int x, int y) {
+        const std::uint8_t* p = &photo[(static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x)) * 3];
+        return std::array<std::uint8_t, 4>{p[0], p[1], p[2], 255};
+    };
+    const auto renderWith = [&](std::vector<std::pair<std::string_view, double>> settings, std::optional<QSize> size = {}) {
+        CompositeLayer layer = layerOf(makeRgbaFrame(w, h, picture));
+        LayerEffect effect = libraryEffectOf("wabcut.ai.faceRetouch", settings);
+        effect.matte = matte;
+        layer.effects = {effect};
+        auto image = renderer->render(compositeOf({w, h}, {layer}), size);
+        REQUIRE(image);
+        return std::move(*image);
+    };
+    CompositeLayer plainLayer = layerOf(makeRgbaFrame(w, h, picture));
+    auto original = renderer->render(compositeOf({w, h}, {plainLayer}));
+    REQUIRE(original);
+    const RenderedImage off = renderWith({{"smoothing", 0.0}, {"blemish", 0.0}, {"teeth", 0.0}, {"eyes", 0.0}});
+    const RenderedImage soft = renderWith({}); // the defaults
+    const RenderedImage full = renderWith({{"smoothing", 100.0}, {"detail", 0.0}, {"blemish", 100.0}, {"teeth", 100.0}, {"eyes", 100.0}});
+    REQUIRE(off.rgba.size() == original->rgba.size());
+    // Every amount at 0 is the picture as it was, byte for byte; the defaults and the full retouch change only what the map covers.
+    CHECK(off.rgba == original->rgba);
+    long long covered = 0;
+    long long outsideChanged = 0;
+    long long insideChanged = 0;
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const std::size_t i = static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x);
+            const bool inMap = coverage[3 * i] > 0 || coverage[3 * i + 1] > 0 || coverage[3 * i + 2] > 0;
+            covered += inMap ? 1 : 0;
+            const bool changed = !std::equal(original->rgba.begin() + static_cast<std::ptrdiff_t>(4 * i), original->rgba.begin() + static_cast<std::ptrdiff_t>(4 * i + 3),
+                                             full.rgba.begin() + static_cast<std::ptrdiff_t>(4 * i));
+            if (changed) {
+                (inMap ? insideChanged : outsideChanged) += 1;
+            }
+        }
+    }
+    WARN("face map covers " << covered << " of " << static_cast<long long>(w) * h << " pixels; full retouch changed " << insideChanged << " of them and "
+                            << outsideChanged << " outside");
+    CHECK(covered > 5'000);
+    CHECK(outsideChanged == 0); // the dogs, the suit and the flag are not touched, however skin-coloured
+    CHECK(insideChanged > covered / 4);
+    // The retouch is not violent: the mean change inside the face stays small and no channel moves by more than a third.
+    double sum = 0.0;
+    int largest = 0;
+    long long n = 0;
+    for (std::size_t i = 0; i < original->rgba.size(); i += 4) {
+        for (std::size_t c = 0; c < 3; ++c) {
+            const int d = std::abs(static_cast<int>(original->rgba[i + c]) - static_cast<int>(full.rgba[i + c]));
+            if (d != 0) {
+                sum += d;
+                ++n;
+                largest = std::max(largest, d);
+            }
+        }
+    }
+    WARN("full retouch: mean change of a changed value " << (n > 0 ? sum / static_cast<double>(n) : 0.0) << " levels, largest " << largest);
+    CHECK(largest < 85);
+    // For looking at: the original, the defaults and the full retouch, and the face enlarged side by side.
+    const QString dir = outputDir() + QStringLiteral("/library");
+    QDir().mkpath(dir);
+    const auto asImage = [&](const RenderedImage& image) { return QImage(image.rgba.data(), w, h, w * 4, QImage::Format_RGBA8888).convertToFormat(QImage::Format_RGB888); };
+    asImage(*original).save(dir + QStringLiteral("/real_face_original.png"));
+    asImage(soft).save(dir + QStringLiteral("/real_face_retouch_default.png"));
+    asImage(full).save(dir + QStringLiteral("/real_face_retouch_full.png"));
+    int left = w, right = 0, top = h, bottom = 0;
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            if (coverage[3 * (static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x))] > 128) {
+                left = std::min(left, x);
+                right = std::max(right, x);
+                top = std::min(top, y);
+                bottom = std::max(bottom, y);
+            }
+        }
+    }
+    const QRect face(std::max(0, left - 20), std::max(0, top - 20), std::min(w, right + 20) - std::max(0, left - 20), std::min(h, bottom + 20) - std::max(0, top - 20));
+    QImage strip(face.width() * 3 * 2, face.height() * 2, QImage::Format_RGB888);
+    strip.fill(Qt::black);
+    for (int k = 0; k < 3; ++k) {
+        const QImage part = (k == 0 ? asImage(*original) : k == 1 ? asImage(soft) : asImage(full)).copy(face).scaled(face.size() * 2, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        for (int y = 0; y < part.height(); ++y) {
+            for (int x = 0; x < part.width(); ++x) {
+                strip.setPixel(k * part.width() + x, y, part.pixel(x, y));
+            }
+        }
+    }
+    strip.save(dir + QStringLiteral("/real_face_compare.png"));
+    // Timing: the retouch at the photo's size (1280 x 1024), best of a few runs, with the map's raster and the effect.
+    qint64 best = std::numeric_limits<qint64>::max();
+    for (int i = 0; i < 4; ++i) {
+        CompositeLayer layer = layerOf(makeRgbaFrame(w, h, picture));
+        LayerEffect effect = libraryEffectOf("wabcut.ai.faceRetouch", {{"smoothing", 100.0}, {"blemish", 100.0}, {"teeth", 100.0}, {"eyes", 100.0}});
+        effect.matte = matte;
+        layer.effects = {effect};
+        QElapsedTimer timer;
+        timer.start();
+        REQUIRE(renderer->render(compositeOf({w, h}, {layer})));
+        best = std::min(best, timer.nsecsElapsed());
+    }
+    WARN("AI Face Retouch at " << w << " x " << h << ": " << best / 1.0e6 << " ms per frame incl. readback");
+    {
+        QFile out(dir + QStringLiteral("/perf_face_retouch.txt"));
+        if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            out.write(QByteArray("AI Face Retouch at ") + QByteArray::number(w) + " x " + QByteArray::number(h) + " (everything at 100, the real face map): " +
+                      QByteArray::number(best / 1.0e6, 'f', 2) + " ms per frame including readback\n");
+        }
+    }
+    CHECK(best < 1'000'000'000);
+}
+
+TEST_CASE("Effect library: AI Eye Contact on a real photo with the real landmarks, looking down and corrected (WABCUT_TEST_FACE_IMAGE, WABCUT_TEST_GAZE_FACE)",
+          "[render][gpu][library][live]") {
+    // The photo and the eyes the AI suite's live test measured on it (a text file: per eye cx cy angle halfWidth upper lower irisX irisY irisRadius,
+    // then turn score size). The photo's subject looks into the camera: the test makes the picture of the same subject looking down by moving each
+    // iris with the effect itself (a shift down), then corrects that picture with the iris where it now is, and compares both with the original.
+    const char* photoPath = std::getenv("WABCUT_TEST_FACE_IMAGE");
+    const char* gazePath = std::getenv("WABCUT_TEST_GAZE_FACE");
+    if (photoPath == nullptr || gazePath == nullptr || *photoPath == '\0' || *gazePath == '\0') {
+        WARN("skipped: set WABCUT_TEST_FACE_IMAGE (a P6 photo of a face) and WABCUT_TEST_GAZE_FACE (its eyes, written by the AI suite's live landmark test)");
+        return;
+    }
+    int w = 0;
+    int h = 0;
+    std::vector<std::uint8_t> photo;
+    REQUIRE(readPpm(photoPath, w, h, photo));
+    std::array<std::array<double, 9>, 2> eyes{};
+    {
+        std::ifstream in(gazePath);
+        REQUIRE(in.good());
+        for (auto& eye : eyes) {
+            for (double& v : eye) {
+                in >> v;
+            }
+        }
+        REQUIRE(in.good());
+    }
+    // The compositor's parameters of both eyes (model/EyeContact.h layout); keys are stored so the string views stay valid.
+    std::vector<std::string> keyStorage;
+    for (int i = 0; i < 30; ++i) {
+        keyStorage.push_back("#" + std::to_string(i));
+    }
+    // `irisDown` is added to each iris's y in the eye's frame, `shift[e]` is eye e's shift (y, in the eye's frame).
+    const auto settingsFor = [&](const std::array<double, 2>& irisDown, const std::array<double, 2>& shift) {
+        std::vector<std::pair<std::string_view, double>> s;
+        s.emplace_back(keyStorage[6], 2.0);
+        for (std::size_t e = 0; e < 2; ++e) {
+            const std::size_t base = 8 + 11 * e;
+            for (std::size_t k = 0; k < 9; ++k) {
+                s.emplace_back(keyStorage[base + k], eyes[e][k] + (k == 7 ? irisDown[e] : 0.0));
+            }
+            s.emplace_back(keyStorage[base + 9], 0.0);
+            s.emplace_back(keyStorage[base + 10], shift[e]);
+        }
+        return s;
+    };
+    auto renderer = makeRenderer(OutputRole::Export);
+    using Settings = std::vector<std::pair<std::string_view, double>>;
+    // The photo through a stack of Eye Contact effects (each with its own baked eyes), one after the other in linear light.
+    const auto renderOf = [&](const std::vector<std::uint8_t>& rgba, const std::vector<Settings>& stack) {
+        const auto picture = [&](int x, int y) {
+            const std::uint8_t* p = &rgba[(static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x)) * 4];
+            return std::array<std::uint8_t, 4>{p[0], p[1], p[2], p[3]};
+        };
+        CompositeLayer layer = layerOf(makeRgbaFrame(w, h, picture));
+        for (const Settings& settings : stack) {
+            layer.effects.push_back(libraryEffectOf("wabcut.ai.eyeContact", settings));
+        }
+        auto image = renderer->render(compositeOf({w, h}, {layer}));
+        REQUIRE(image);
+        return std::move(*image);
+    };
+    // The eyes of a portrait are small: the test works on a crop round them enlarged four times (the eyes' numbers follow the crop: positions
+    // are fractions of the frame, lengths fractions of its width).
+    std::vector<std::uint8_t> rgba;
+    {
+        QImage whole(w, h, QImage::Format_RGB888);
+        for (int y = 0; y < h; ++y) {
+            std::copy(photo.begin() + static_cast<std::ptrdiff_t>(3 * static_cast<std::size_t>(y) * static_cast<std::size_t>(w)),
+                      photo.begin() + static_cast<std::ptrdiff_t>(3 * (static_cast<std::size_t>(y) + 1) * static_cast<std::size_t>(w)), whole.scanLine(y));
+        }
+        const double left = std::max(0.0, std::min(eyes[0][0], eyes[1][0]) * w - eyes[0][3] * w - 24.0);
+        const double right = std::min<double>(w, std::max(eyes[0][0], eyes[1][0]) * w + eyes[1][3] * w + 24.0);
+        const double top = std::max(0.0, std::min(eyes[0][1], eyes[1][1]) * h - 0.04 * w);
+        const double bottom = std::min<double>(h, std::max(eyes[0][1], eyes[1][1]) * h + 0.04 * w);
+        const QRect crop(static_cast<int>(left), static_cast<int>(top), static_cast<int>(right - left), static_cast<int>(bottom - top));
+        const QImage big = whole.copy(crop).scaled(crop.size() * 4, Qt::IgnoreAspectRatio, Qt::SmoothTransformation).convertToFormat(QImage::Format_RGBA8888);
+        for (auto& eye : eyes) {
+            eye[0] = (eye[0] * w - crop.x()) / crop.width();
+            eye[1] = (eye[1] * h - crop.y()) / crop.height();
+            for (const std::size_t k : {3u, 4u, 5u, 6u, 7u, 8u}) {
+                eye[k] *= static_cast<double>(w) / crop.width(); // lengths: fractions of the width of the new frame
+            }
+        }
+        w = big.width();
+        h = big.height();
+        rgba.assign(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4, 255);
+        for (int y = 0; y < h; ++y) {
+            std::copy(big.constScanLine(y), big.constScanLine(y) + static_cast<std::ptrdiff_t>(w) * 4, rgba.begin() + static_cast<std::ptrdiff_t>(y) * w * 4);
+        }
+    }
+    // The original as the renderer shows it, and the same with the effect and no eyes baked: byte for byte the same.
+    const RenderedImage original = renderOf(rgba, {});
+    const RenderedImage withoutEyes = renderOf(rgba, {{}});
+    CHECK((withoutEyes.rgba == original.rgba));
+    // Looking down: each iris 12 % of the eye's width lower.
+    const std::array<double, 2> down{0.12 * 2.0 * eyes[0][3], 0.12 * 2.0 * eyes[1][3]};
+    const Settings lower = settingsFor({0.0, 0.0}, down);
+    const RenderedImage looking = renderOf(rgba, {lower});
+    // Corrected: a second effect after the first, with the iris where it now is and the shift back up by what it was moved down.
+    const Settings fix = settingsFor(down, {-down[0], -down[1]});
+    const RenderedImage corrected = renderOf(rgba, {lower, fix});
+    REQUIRE(original.rgba.size() == looking.rgba.size());
+    // Where the eyes are (a box round each, the width of the eye) and everything else.
+    const auto inWindow = [&](int x, int y, double margin) {
+        for (const auto& eye : eyes) {
+            const double r = eye[3] * w + margin;
+            if (std::abs(x + 0.5 - eye[0] * w) < r && std::abs(y + 0.5 - eye[1] * h) < r) {
+                return true;
+            }
+        }
+        return false;
+    };
+    double errLooking = 0.0;
+    double errCorrected = 0.0;
+    long long n = 0;
+    long long outsideChanged = 0;
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const std::size_t i = 4 * (static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x));
+            if (inWindow(x, y, 0.0)) {
+                for (std::size_t c = 0; c < 3; ++c) {
+                    errLooking += std::abs(static_cast<int>(looking.rgba[i + c]) - static_cast<int>(original.rgba[i + c]));
+                    errCorrected += std::abs(static_cast<int>(corrected.rgba[i + c]) - static_cast<int>(original.rgba[i + c]));
+                }
+                ++n;
+            } else if (!inWindow(x, y, 6.0)) {
+                bool differs = false;
+                for (std::size_t c = 0; c < 3; ++c) {
+                    differs = differs || looking.rgba[i + c] != original.rgba[i + c] || corrected.rgba[i + c] != original.rgba[i + c];
+                }
+                outsideChanged += differs ? 1 : 0;
+            }
+        }
+    }
+    errLooking /= static_cast<double>(std::max<long long>(1, n) * 3);
+    errCorrected /= static_cast<double>(std::max<long long>(1, n) * 3);
+    WARN("eye windows: mean error against the original, looking down " << errLooking << " levels, corrected " << errCorrected << " levels; outside changed " << outsideChanged);
+    CHECK(outsideChanged == 0);             // nothing but the eyes is touched
+    CHECK(errLooking > 0.3);                // moving the iris changed the picture
+    CHECK(errCorrected < errLooking * 1.25); // and the correction does not make it worse: it brings the iris back (resampled twice) to where the camera saw it
+    // For looking at: the original, the iris moved down and the correction, the eyes enlarged four times, side by side.
+    const QString dir = outputDir() + QStringLiteral("/library");
+    QDir().mkpath(dir);
+    const auto asImage = [&](const RenderedImage& image) { return QImage(image.rgba.data(), w, h, w * 4, QImage::Format_RGBA8888).convertToFormat(QImage::Format_RGB888); };
+    QImage strip(w * 3, h, QImage::Format_RGB888);
+    strip.fill(Qt::black);
+    for (int k = 0; k < 3; ++k) {
+        const QImage part = k == 0 ? asImage(original) : k == 1 ? asImage(looking) : asImage(corrected);
+        for (int y = 0; y < part.height(); ++y) {
+            for (int x = 0; x < part.width(); ++x) {
+                strip.setPixel(k * part.width() + x, y, part.pixel(x, y));
+            }
+        }
+    }
+    strip.save(dir + QStringLiteral("/real_eye_contact_compare.png"));
+    // Timing: both eyes at the photo's size, best of a few runs, with the upload and the readback.
+    qint64 best = std::numeric_limits<qint64>::max();
+    for (int i = 0; i < 4; ++i) {
+        QElapsedTimer timer;
+        timer.start();
+        REQUIRE_FALSE(renderOf(rgba, {lower, fix}).rgba.empty());
+        best = std::min(best, timer.nsecsElapsed());
+    }
+    WARN("AI Eye Contact (two effects of two eyes each) at " << w << " x " << h << ": " << best / 1.0e6 << " ms per frame incl. the upload and readback");
+    CHECK(best < 1'000'000'000);
 }
 
 TEST_CASE("Effect library: every library effect has a descriptor with its keys (0.2)", "[render][library]") {

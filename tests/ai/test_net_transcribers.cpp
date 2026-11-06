@@ -271,5 +271,5 @@ TEST_CASE("Cloud transcription through AiPlatform: consent, spend and the shared
     CHECK(providers.hasAdapter("anthropic-messages", Capability::Chat));
     CHECK(providers.hasAdapter("assemblyai", Capability::Transcribe));
     CHECK(providers.hasAdapter("anthropic-messages", Capability::Translate));
-    CHECK_FALSE(providers.hasAdapter("openai-transcriptions", Capability::Transcribe)); // Voxtral: no adapter yet
+    CHECK(providers.hasAdapter("openai-transcriptions", Capability::Transcribe)); // r07: OpenAI-compatible transcription
 }

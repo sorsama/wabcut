@@ -48,9 +48,21 @@ public:
     WavWriter& operator=(const WavWriter&) = delete;
 
     /// Appends whole frames of interleaved float samples (clamped to [-1, 1], rounded to the bit depth). IoError.
+    /// A WAV header describes at most 4 GiB (the RIFF and data sizes are 32 bits): the frames that still fit are
+    /// written and the header is updated, then the call fails with Unsupported and full() is true - the file is a valid
+    /// WAV of everything it holds, which recoverWav() can still repair. The caller ends or rolls over the take.
     std::expected<void, Error> write(std::span<const float> interleaved);
     /// Writes the final sizes and closes the file. Idempotent.
     std::expected<void, Error> finish();
+
+    /// The most whole frames a WAV of `format` can hold: 4 GiB less the header and the RIFF size field's own bytes.
+    static std::int64_t maxFrames(const WavFormat& format) noexcept;
+    /// Lowers this writer's ceiling to `frames` (never above maxFrames()): a recorder's own cap on a take.
+    void limitFrames(std::int64_t frames) noexcept;
+    /// The frames this writer accepts in all (maxFrames() unless lowered).
+    std::int64_t capacityFrames() const noexcept { return m_capacity; }
+    /// No more frames fit: write() refuses everything.
+    bool full() const noexcept { return m_frames >= m_capacity; }
 
     std::int64_t frames() const noexcept { return m_frames; }
     const WavFormat& format() const noexcept { return m_format; }
@@ -64,6 +76,7 @@ private:
     std::filesystem::path m_path;
     WavFormat m_format;
     std::int64_t m_syncFrames;
+    std::int64_t m_capacity = 0; ///< maxFrames() of the format, or the lowered limit
     std::int64_t m_frames = 0;
     std::int64_t m_unsynced = 0;
 };

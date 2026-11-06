@@ -1,6 +1,7 @@
 // Stream descriptions shared by probe() and the decoders: colour tags, exact frame rate / VFR detection,
 // rotation, audio stream titles.
 
+#include "DynamicHdrInternal.h"
 #include "FfmpegUtil.h"
 
 extern "C" {
@@ -9,6 +10,8 @@ extern "C" {
 #include <libavutil/display.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/spherical.h>
+#include <libavutil/stereo3d.h>
 }
 
 #include <algorithm>
@@ -432,6 +435,73 @@ std::string audioStreamTitle(const AVStream* st) {
 
 } // namespace
 
+VrFormat vrFormatOf(const AVCodecParameters* par) {
+    VrFormat out;
+    const AVPacketSideData* sphere =
+        av_packet_side_data_get(par->coded_side_data, par->nb_coded_side_data, AV_PKT_DATA_SPHERICAL);
+    if (!sphere || sphere->size < sizeof(AVSphericalMapping)) {
+        return out;
+    }
+    const auto* mapping = reinterpret_cast<const AVSphericalMapping*>(sphere->data);
+    switch (mapping->projection) {
+    case AV_SPHERICAL_EQUIRECTANGULAR:
+        out.projection = VrProjection::Equirectangular360;
+        break;
+    case AV_SPHERICAL_HALF_EQUIRECTANGULAR:
+        out.projection = VrProjection::Equirectangular180;
+        break;
+    case AV_SPHERICAL_EQUIRECTANGULAR_TILE: {
+        // The bounds are 0.32 fixed-point fractions of the whole sphere's picture cropped from each side (Google's
+        // Spherical Video V2, the 'equi' box): none is the whole sphere; a quarter off the left and right is VR180.
+        constexpr double kOne = 4294967296.0;
+        const double left = mapping->bound_left / kOne;
+        const double right = mapping->bound_right / kOne;
+        const double top = mapping->bound_top / kOne;
+        const double bottom = mapping->bound_bottom / kOne;
+        if (top == 0.0 && bottom == 0.0 && left == 0.0 && right == 0.0) {
+            out.projection = VrProjection::Equirectangular360;
+        } else if (top == 0.0 && bottom == 0.0 && std::abs(left - 0.25) < 0.01 && std::abs(right - 0.25) < 0.01) {
+            out.projection = VrProjection::Equirectangular180;
+        } else {
+            return out; // a crop Wabcut cannot draw: treated as a flat picture
+        }
+        break;
+    }
+    default:
+        return out; // cube maps, fisheye, ...: not drawn
+    }
+    const AVPacketSideData* stereo =
+        av_packet_side_data_get(par->coded_side_data, par->nb_coded_side_data, AV_PKT_DATA_STEREO3D);
+    if (stereo && stereo->size >= sizeof(AVStereo3D)) {
+        const auto* s3d = reinterpret_cast<const AVStereo3D*>(stereo->data);
+        switch (s3d->type) {
+        case AV_STEREO3D_TOPBOTTOM:
+            out.stereo = StereoLayout::TopBottom;
+            break;
+        case AV_STEREO3D_SIDEBYSIDE:
+            out.stereo = StereoLayout::SideBySide;
+            break;
+        case AV_STEREO3D_UNSPEC:
+            // An MP4 written with FFmpeg's unofficial tags also carries Apple's 'vexu' box, which the demuxer reads after
+            // 'st3d' and which says only "two eyes packed in one frame": the layout is then the one that makes each eye the
+            // shape of the projection (2:1 for 360, 1:1 for 180) - top - bottom or side by side.
+            if (s3d->view == AV_STEREO3D_VIEW_PACKED && par->width > 0 && par->height > 0) {
+                const double wanted = out.projection == VrProjection::Equirectangular180 ? 1.0 : 2.0;
+                const double aspect = static_cast<double>(par->width) / static_cast<double>(par->height);
+                if (std::abs(aspect * 2.0 / wanted - 1.0) <= 0.05) {
+                    out.stereo = StereoLayout::TopBottom;
+                } else if (std::abs(aspect / (2.0 * wanted) - 1.0) <= 0.05) {
+                    out.stereo = StereoLayout::SideBySide;
+                }
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    return out;
+}
+
 ColorInfo colorInfoFrom(AVColorSpace space, AVColorRange range, AVColorPrimaries primaries,
                         AVColorTransferCharacteristic transfer, AVChromaLocation chroma) {
     return ColorInfo{toMatrix(space), toRange(range), toPrimaries(primaries), toTransfer(transfer),
@@ -502,7 +572,10 @@ VideoStreamInfo describeVideoStream(AVFormatContext* fmt, AVStream* st) {
         info.bitDepth = 10;
         info.chromaSubsampling = "4:4:4";
     }
-    info.rotationDegrees = orientationOf(par).rotationDegrees;
+    const Orientation orientation = orientationOf(par);
+    info.rotationDegrees = orientation.rotationDegrees;
+    info.mirrored = orientation.mirrored;
+    info.vr = vrFormatOf(par); // 0.7: Spherical Video V1 / V2, Matroska Projection
     if (const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(pixFmt);
         desc && (desc->flags & AV_PIX_FMT_FLAG_ALPHA) != 0) {
         // Codecs with alpha (ProRes 4444, PNG, VP9/HEVC alpha) are straight unless the stream says otherwise.
@@ -523,6 +596,8 @@ VideoStreamInfo describeVideoStream(AVFormatContext* fmt, AVStream* st) {
         info.fieldOrder = FieldOrder::Progressive;
         break;
     }
+    // 0.7: the Dolby Vision configuration the container declares (dvcC / dvvC), if any.
+    info.dolbyVision = dolbyVisionConfigOf(par);
     info.duration = streamDuration(fmt, st);
 
     if (st->nb_frames > 0) {

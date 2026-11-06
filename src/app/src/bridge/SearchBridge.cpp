@@ -4,6 +4,7 @@
 
 #include "AiController.h"
 #include "BridgeIds.h"
+#include "EditPreferences.h"
 #include "ProjectController.h"
 #include "ProjectLifecycle.h"
 
@@ -661,6 +662,7 @@ bool SearchBridge::dropHit(const QString& hit, const QString& timecode, const QS
     drop.track = parseTrackKey(trackId).value_or(TrackId{});
     drop.mode = overwrite ? editor::DropMode::Overwrite : editor::DropMode::Insert;
     drop.sourceRange = TimeRange::fromStartEnd(Ticks{in}, Ticks{out});
+    drop.addTracks = editprefs::addTracksOnEdit(); // 0.7 (card 182)
     auto edited = editor::dropMedia(m_controller->session(), drop);
     if (!edited) {
         emit notice(QString::fromStdString(edited.error().message));

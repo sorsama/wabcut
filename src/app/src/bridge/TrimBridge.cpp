@@ -88,6 +88,8 @@ QString TrimBridge::type() const {
         return QStringLiteral("regular");
     case Type::Ripple:
         return QStringLiteral("ripple");
+    case Type::Slip:
+        return QStringLiteral("slip");
     case Type::Roll:
         break;
     }
@@ -97,6 +99,7 @@ QString TrimBridge::type() const {
 void TrimBridge::setType(const QString& type) {
     const Type t = type == QLatin1String("regular") ? Type::Regular
                  : type == QLatin1String("ripple")  ? Type::Ripple
+                 : type == QLatin1String("slip")    ? Type::Slip
                                                     : Type::Roll;
     if (t == m_type)
         return;
@@ -145,6 +148,11 @@ std::optional<TrimBridge::Sides> TrimBridge::sidesOf(const Point& p) const {
     const Clip& clip = loc->clip();
     Sides sides;
     sides.track = track.id;
+    if (m_type == Type::Slip) { // 0.7: the clip itself, its last frame outgoing and its first frame incoming
+        sides.outgoing = sides.incoming = &clip;
+        sides.cut = clip.start();
+        return sides;
+    }
     if (p.head) {
         sides.incoming = &clip;
         sides.cut = clip.start();
@@ -301,11 +309,48 @@ bool TrimBridge::trimEdit() {
     return true;
 }
 
+bool TrimBridge::slipEdit() {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!seq)
+        return false;
+    // The selected clips; else the clips under the playhead on the targeted tracks (every track when none is targeted),
+    // as Select Clip at Playhead picks them.
+    std::vector<ClipId> clips = m_controller->selection();
+    if (clips.empty()) {
+        std::vector<TrackId> tracks = edit::targetedTracks(*seq);
+        if (tracks.empty())
+            tracks = edit::allTracks(*seq);
+        for (const TrackId id : tracks) {
+            const Track* track = seq->findTrack(id);
+            if (const auto index = track ? track->clipIndexAt(m_controller->playhead()) : std::nullopt)
+                clips.push_back(track->clips[*index].id);
+        }
+    }
+    // Both edges of each clip are its edit points: Avid's slip selection.
+    std::vector<Point> points;
+    for (const ClipId id : clips) {
+        if (!seq->findClip(id))
+            continue;
+        points.push_back({id, true});
+        points.push_back({id, false});
+    }
+    if (points.empty())
+        return false;
+    m_type = Type::Slip;
+    m_viewOpen = true;
+    setPoints(std::move(points));
+    m_outOffset = m_inOffset = 0;
+    emit detailsChanged();
+    refreshFrames();
+    return true;
+}
+
 void TrimBridge::toggleType() {
     if (!active()) {
         trimEdit();
         return;
     }
+    // Roll, ripple, regular, roll...; slip (reached from its own selection) goes back to roll.
     m_type = m_type == Type::Roll ? Type::Ripple : m_type == Type::Ripple ? Type::Regular : Type::Roll;
     syncControllerPoints();
     emit pointsChanged();
@@ -318,7 +363,7 @@ void TrimBridge::syncControllerPoints() {
     std::vector<edit::EdgePoint> points;
     for (const Point& p : m_points)
         points.push_back({p.clip, p.head ? edit::Edge::Head : edit::Edge::Tail,
-                          m_type == Type::Roll ? std::nullopt
+                          m_type == Type::Roll || m_type == Type::Slip ? std::nullopt
                           : p.head             ? std::optional(TransitionAlignment::StartAtCut)
                                                : std::optional(TransitionAlignment::EndAtCut)});
     m_controller->setTrimEditPoints(std::move(points));
@@ -330,8 +375,22 @@ void TrimBridge::selectEditPoint(const QString& clipId, const QString& edge, con
         return;
     const Point point{*clip, edge == QLatin1String("head")};
     std::vector<Point> points;
-    if (Qt::KeyboardModifiers::fromInt(modifiers) & Qt::ShiftModifier)
+    const bool shift = Qt::KeyboardModifiers::fromInt(modifiers).testFlag(Qt::ShiftModifier);
+    if (shift)
         points = m_points;
+    // 0.7 (card 127), Avid's slip: the other edge of a clip whose edge is already selected makes both edges of the clip the
+    // edit points, and the trim type slip.
+    if (shift && std::ranges::any_of(points, [&](const Point& p) { return p.clip == point.clip && p.head != point.head; })) {
+        std::erase_if(points, [&](const Point& p) { return p.clip == point.clip; });
+        points.push_back({point.clip, true});
+        points.push_back({point.clip, false});
+        setType(QStringLiteral("slip"));
+        m_viewOpen = true; // a slip is judged by the clip's first and last frame: the Trim view shows them
+        m_outOffset = m_inOffset = 0;
+        setPoints(withLinkedEdges(std::move(points)));
+        refreshFrames();
+        return;
+    }
     std::erase_if(points, [&](const Point& p) { return p.clip == point.clip; });
     points.push_back(point);
     setType(type);
@@ -379,6 +438,19 @@ void TrimBridge::onModelChanged() {
 
 edit::EditOutcome TrimBridge::applyTrim(const ProjectState& state, Ticks delta, Ticks* applied) const {
     const SequenceId seqId = m_controller->currentSequenceId();
+    if (m_type == Type::Slip) {
+        // Slip: the source range of every clip with an edit point moves by `delta` (+ = later source frames, the Slip
+        // tool's convention), together with its linked partners while linked selection is on; clamped to the media.
+        std::vector<ClipId> clips;
+        for (const Point& p : m_points) {
+            if (std::ranges::find(clips, p.clip) == clips.end())
+                clips.push_back(p.clip);
+        }
+        auto step = edit::slip(state, seqId, clips, delta, m_linked ? edit::LinkMode::FollowLinks : edit::LinkMode::IgnoreLinks);
+        if (step && applied)
+            *applied = step->appliedDelta;
+        return step;
+    }
     ProjectState current = state;
     std::unordered_set<std::uint64_t> covered;
     std::optional<Ticks> first;
@@ -424,6 +496,7 @@ bool TrimBridge::trim(int frames) {
     m_selecting = true;
     const bool ok = m_controller->applyEditFn(m_type == Type::Roll     ? "Roll Edit"
                                               : m_type == Type::Ripple ? "Ripple Trim"
+                                              : m_type == Type::Slip   ? "Slip"
                                                                        : "Trim",
                                               [&](const ProjectState& s) { return applyTrim(s, delta, nullptr); });
     m_selecting = false;
@@ -436,7 +509,7 @@ bool TrimBridge::trim(int frames) {
 void TrimBridge::addOffsets(Ticks applied) {
     const int n = static_cast<int>(ticksToFrames(applied, m_controller->currentSequence()->frameRate));
     const bool head = m_points.front().head;
-    if (m_type == Type::Roll) {
+    if (m_type == Type::Roll || m_type == Type::Slip) { // a slip moves both of the clip's ends in its source
         m_outOffset += n;
         m_inOffset += n;
     } else if (head) {
@@ -450,7 +523,7 @@ void TrimBridge::addOffsets(Ticks applied) {
 
 bool TrimBridge::extendToPlayhead() {
     const auto cut = editTime();
-    if (!cut || !m_controller)
+    if (!cut || !m_controller || m_type == Type::Slip) // a slip has no cut to bring to the playhead
         return false;
     const Ticks delta = m_controller->playhead() - *cut;
     if (delta.value == 0)
@@ -475,6 +548,8 @@ bool TrimBridge::runCommand(const QString& commandId) {
         toggleType();
         return true;
     }
+    if (commandId == QLatin1String("sequence.slipTrim")) // 0.7, card 127
+        return slipEdit();
     // 0.6 (1A): E with edit points selected moves them to the playhead with the current trim type (the first point's
     // clamped delta for all, as the other trims). Ctrl+D / Ctrl+Shift+D read the points in ProjectController itself.
     if (commandId == QLatin1String("sequence.extendEditToPlayhead")) {
@@ -620,8 +695,10 @@ void TrimBridge::refreshFrames() {
         Ticks at;
     };
     std::vector<Job> jobs;
-    jobs.push_back({true, sides->outgoing && video ? std::optional(isolated(sides->track)) : std::nullopt,
-                    std::max(Ticks{}, sides->cut - frame)});
+    // A slip shows the clip's last frame (outgoing) and first frame (incoming); a cut shows the frames each side of it.
+    const bool slip = m_type == Type::Slip && sides->outgoing;
+    const Ticks outgoingAt = slip ? std::max(Ticks{}, sides->outgoing->end() - frame) : std::max(Ticks{}, sides->cut - frame);
+    jobs.push_back({true, sides->outgoing && video ? std::optional(isolated(sides->track)) : std::nullopt, outgoingAt});
     jobs.push_back({false, sides->incoming && video ? std::optional(isolated(sides->track)) : std::nullopt, sides->cut});
     for (Job& job : jobs) {
         if (!job.state) {

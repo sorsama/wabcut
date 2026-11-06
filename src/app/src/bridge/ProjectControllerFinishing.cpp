@@ -273,6 +273,7 @@ QVariantMap ProjectController::speedDurationInfo() const {
     const TimeInterpolation interpolation = videoLoc ? videoLoc->clip().timeInterpolation() : TimeInterpolation::FrameSampling;
     return {
         {QStringLiteral("hasVideo"), videoLoc.has_value()},
+        {QStringLiteral("videoClip"), videoLoc ? static_cast<qulonglong>(videoLoc->clip().id.value) : qulonglong{0}}, // 0.7: AI Frame Interpolation's Process
         {QStringLiteral("timeInterpolation"), QString::fromLatin1(toString(interpolation).data(),
                                                                   static_cast<qsizetype>(toString(interpolation).size()))},
         {QStringLiteral("available"), true},

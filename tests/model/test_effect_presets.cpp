@@ -5,6 +5,7 @@
 
 #include <wabcut/model/EffectPresets.h>
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/ProjectOps.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -384,4 +385,161 @@ TEST_CASE("Image Pans: directional push-ins never show the frame edge", "[model]
             CHECK(std::abs(yv) <= (s - 1.0) / 2.0 * kHeight + 1e-6);
         }
     }
+}
+
+// ---- 0.7 (card 101): presets of an Audio Track Mixer effect chain ----------------------------------------------------
+
+TEST_CASE("An audio track's effect chain is saved as a preset and added to another track", "[model][presets][audio]") {
+    Timeline tl(R"(
+        V1 tgt |Aaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+        A1 tgt |Aaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+        A2     |........Bbbbbbbbbbbbbbbbbbbb|
+    )");
+    const TrackId a1 = tl.track("A1");
+    const TrackId a2 = tl.track("A2");
+    // A1: a compressor whose threshold moves (keys at frames 4 and 12) and a bypassed EQ.
+    ProjectState state = ok(edit::addEffect(tl.state, tl.seq, edit::EffectTarget::ofTrack(a1), "wabcut.audio.compressor",
+                                            {EffectParam{"threshold", ParamValue(keys({{f(4), -30.0}, {f(12), -12.0}}))}}))
+                             .state;
+    state = ok(edit::addEffect(state, tl.seq, edit::EffectTarget::ofTrack(a1), "wabcut.audio.eq3")).state;
+    const EffectStack& chain = state.findSequence(tl.seq)->findTrack(a1)->effects;
+    REQUIRE(chain.size() == 2);
+    const Ticks span = state.findSequence(tl.seq)->findTrack(a1)->end();
+
+    SECTION("the whole chain, in order, keyframes kept") {
+        auto preset = edit::makeChainEffectPreset(state, chain, span, {}, "Voice chain", EffectPresetType::AnchorToInPoint);
+        REQUIRE(preset);
+        CHECK(preset->kind() == EffectKind::Audio);
+        REQUIRE(preset->effects.size() == 2);
+        CHECK(preset->effects[0].effect == "wabcut.audio.compressor");
+        CHECK(preset->effects[1].effect == "wabcut.audio.eq3");
+        CHECK(keyTimes(preset->effects[0].find("threshold")) == std::vector<Ticks>{f(4), f(12)});
+        CHECK_FALSE(effectPresetProblem(*preset));
+
+        auto applied = edit::applyEffectPresetToChain(state, tl.seq, edit::EffectTarget::ofTrack(a2), *preset);
+        REQUIRE(applied);
+        CHECK(applied->applied.size() == 2);
+        const EffectStack& there = applied->edit.state.findSequence(tl.seq)->findTrack(a2)->effects;
+        REQUIRE(there.size() == 2);
+        CHECK(there[0].effect == "wabcut.audio.compressor");
+        CHECK(there[0].id != chain[0].id);
+        CHECK(keyTimes(there[0].find("threshold")) == std::vector<Ticks>{f(4), f(12)}); // anchored: the same times
+        CHECK(applied->edit.createdEffects.size() == 2);
+        // The track it came from is unchanged.
+        CHECK(applied->edit.state.findSequence(tl.seq)->findTrack(a1)->effects == chain);
+    }
+    SECTION("only the effects chosen") {
+        const std::size_t second[] = {1};
+        auto preset = edit::makeChainEffectPreset(state, chain, span, second, "EQ only", EffectPresetType::AnchorToInPoint);
+        REQUIRE(preset);
+        REQUIRE(preset->effects.size() == 1);
+        CHECK(preset->effects[0].effect == "wabcut.audio.eq3");
+        const std::size_t past[] = {5};
+        CHECK_FALSE(edit::makeChainEffectPreset(state, chain, span, past, "Nope", EffectPresetType::Scale));
+    }
+    SECTION("Scale and Anchor to Out Point time the keyframes against the track they go on") {
+        // Saved from a 14 frame stretch (keys at frames 4 and 12), added to A2, which runs to frame 28.
+        auto scaled = edit::makeChainEffectPreset(state, chain, f(14), {}, "Scaled", EffectPresetType::Scale);
+        REQUIRE(scaled);
+        auto onScale = edit::applyEffectPresetToChain(state, tl.seq, edit::EffectTarget::ofTrack(a2), *scaled);
+        REQUIRE(onScale);
+        CHECK(keyTimes(onScale->edit.state.findSequence(tl.seq)->findTrack(a2)->effects[0].find("threshold")) ==
+              std::vector<Ticks>{f(8), f(24)}); // twice as long: twice the distance
+        auto anchored = edit::makeChainEffectPreset(state, chain, f(14), {}, "Anchored", EffectPresetType::AnchorToOutPoint);
+        REQUIRE(anchored);
+        auto onOut = edit::applyEffectPresetToChain(state, tl.seq, edit::EffectTarget::ofTrack(a2), *anchored);
+        REQUIRE(onOut);
+        CHECK(keyTimes(onOut->edit.state.findSequence(tl.seq)->findTrack(a2)->effects[0].find("threshold")) ==
+              std::vector<Ticks>{f(18), f(26)}); // the same distance from the end
+    }
+    SECTION("the audio master takes a chain too") {
+        auto preset = edit::makeChainEffectPreset(state, chain, span, {}, "Master chain", EffectPresetType::AnchorToInPoint);
+        REQUIRE(preset);
+        auto applied = edit::applyEffectPresetToChain(state, tl.seq, edit::EffectTarget::masterAudio(), *preset);
+        REQUIRE(applied);
+        CHECK(applied->edit.state.findSequence(tl.seq)->audioEffects.size() == 2);
+    }
+    SECTION("refusals: a video preset, a locked track, nothing to save, a clip target") {
+        EffectPreset video;
+        video.name = "Blur";
+        video.duration = f(10);
+        EffectInstance blur;
+        blur.id = EffectInstanceId{1};
+        blur.effect = "wabcut.blur.gaussian";
+        video.effects.push_back(blur);
+        CHECK_FALSE(edit::applyEffectPresetToChain(state, tl.seq, edit::EffectTarget::ofTrack(a2), video));
+        CHECK_FALSE(edit::makeChainEffectPreset(state, EffectStack{}, span, {}, "Empty", EffectPresetType::Scale));
+        auto preset = edit::makeChainEffectPreset(state, chain, span, {}, "Voice chain", EffectPresetType::AnchorToInPoint);
+        REQUIRE(preset);
+        CHECK_FALSE(edit::applyEffectPresetToChain(state, tl.seq, edit::EffectTarget::ofClip(tl.clip("A1@0")), *preset));
+        edit::TrackStateChange lock;
+        lock.locked = true;
+        const ProjectState locked = ok(edit::setTrackState(state, tl.seq, a2, lock)).state;
+        CHECK_FALSE(edit::applyEffectPresetToChain(locked, tl.seq, edit::EffectTarget::ofTrack(a2), *preset));
+    }
+}
+
+// 0.7 (card 044): Dynamics Processing is saved in the project and in an effect preset, and applies to another clip.
+TEST_CASE("Dynamics Processing is saved in the project and in effect presets and applies to another clip",
+          "[model][effects][presets][audio][dynamics]") {
+    Timeline tl(R"(
+        A1 tgt |..........A5aaaaaaaaaaaaaaaaaa..........Bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb|
+    )");
+    const ClipId source = tl.clip("A1@10");
+    const ClipId target = tl.clip("A1@40");
+    ProjectState state =
+        ok(edit::addEffect(tl.state, tl.seq, std::vector<ClipId>{source}, "wabcut.audio.dynamicsProcessing",
+                           {EffectParam{"bandCount", ParamValue(3.0)}, EffectParam{"band1Mode", ParamValue(1.0)},
+                            EffectParam{"band2Threshold", ParamValue(-33.0)}, EffectParam{"crossover1", ParamValue(200.0)},
+                            EffectParam{"limiterEnable", ParamValue(1.0)},
+                            EffectParam{"band1Threshold", ParamValue(keys({{f(7), -30.0}, {f(15), -20.0}}))}}))
+            .state;
+    requireValid(state);
+    // A value outside its range, or an unknown mode, is refused.
+    CHECK_FALSE(edit::addEffect(tl.state, tl.seq, std::vector<ClipId>{source}, "wabcut.audio.dynamicsProcessing",
+                                {EffectParam{"band1Ratio", ParamValue(50.0)}}));
+    CHECK_FALSE(edit::addEffect(tl.state, tl.seq, std::vector<ClipId>{source}, "wabcut.audio.dynamicsProcessing",
+                                {EffectParam{"band1Mode", ParamValue(4.0)}}));
+
+    // The project file keeps every parameter, the keyframes included.
+    const auto saved = io::toJson(state);
+    REQUIRE(saved);
+    const auto back = io::fromJson(*saved);
+    REQUIRE(back);
+    CHECK(*back == state);
+    const EffectInstance& kept = lastEffect(*back, tl.seq, source);
+    CHECK(kept.effect == "wabcut.audio.dynamicsProcessing");
+    CHECK(effectParameterAt(kept, "bandCount", Ticks{}) == 3.0);
+    CHECK(effectParameterAt(kept, "band2Threshold", Ticks{}) == -33.0);
+    CHECK(effectParameterAt(kept, "band1Threshold", f(11)) == -25.0);
+
+    // Save Preset keeps the effect with its keyframes relative to the clip's In point; the file reads back the same.
+    auto preset = edit::makeEffectPreset(state, clipOf(state, tl.seq, source), {{0}, {}}, "Leveler", EffectPresetType::Scale);
+    REQUIRE(preset);
+    CHECK_FALSE(effectPresetProblem(*preset));
+    CHECK(preset->kind() == EffectKind::Audio);
+    REQUIRE(preset->effects.size() == 1);
+    CHECK(keyTimes(preset->effects[0].find("band1Threshold")) == std::vector<Ticks>{f(2), f(10)});
+    const auto reread = io::effectPresetFromJson(io::effectPresetToJson(*preset));
+    REQUIRE(reread);
+    CHECK(*reread == *preset);
+
+    // Applied to another clip: the same settings, the keys scaled to its length.
+    auto applied = edit::applyEffectPreset(state, tl.seq, std::vector<ClipId>{target}, *reread);
+    REQUIRE(applied);
+    requireValid(applied->edit.state);
+    REQUIRE(applied->clips.size() == 1);
+    CHECK(applied->clips[0].applied == std::vector<std::string>{"Dynamics Processing"});
+    const EffectInstance& copy = lastEffect(applied->edit.state, tl.seq, target);
+    CHECK(copy.effect == "wabcut.audio.dynamicsProcessing");
+    CHECK(effectParameterAt(copy, "band1Mode", Ticks{}) == 1.0);
+    CHECK(effectParameterAt(copy, "crossover1", Ticks{}) == 200.0);
+    CHECK(effectParameterAt(copy, "limiterEnable", Ticks{}) == 1.0);
+    CHECK(keyTimes(copy.find("band1Threshold")) == std::vector<Ticks>{f(4), f(20)});
+    // A video clip does not take it.
+    Timeline mixed(R"(
+        V1 tgt |Aaaaaaaaaaaaaaaaaaaaaaaa|
+        A1 tgt |Aaaaaaaaaaaaaaaaaaaaaaaa|
+    )");
+    CHECK_FALSE(edit::applyEffectPreset(mixed.state, mixed.seq, std::vector<ClipId>{mixed.clip("V1@0")}, *reread));
 }

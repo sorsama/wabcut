@@ -19,7 +19,7 @@ Names in quotes are the exact labels you see in the app. Shortcuts are the Windo
 ## Install
 
 **What you need.**
-- Windows 10 (22H2) or 11, x64.
+- Windows 10 (22H2) or 11, x64 (or Windows 11 on ARM64: [below](#windows-on-arm64-linux-and-macos-preview)).
 - A DirectX 11 GPU. NVIDIA (NVENC/NVDEC), AMD (AMF) and Intel (Quick Sync) hardware decoding and encoding are used when
   present.
 - 16 GB of RAM recommended (8 GB minimum; local AI models need more).
@@ -29,8 +29,8 @@ Names in quotes are the exact labels you see in the app. Shortcuts are the Windo
 
 | Package | How |
 |---|---|
-| `wabcut-0.6.0-windows-x64.msi` | Double-click it. It installs **for your user only**, with no administrator rights, to `%LOCALAPPDATA%\Programs\Wabcut` (or a folder you choose). Wabcut appears in the Start menu and in Settings > Apps. The options page has an unticked *Open .wabcut project files with Wabcut* box: tick it to open projects by double-clicking them. |
-| `wabcut-0.6.0-windows-x64-portable.zip` | Unzip it anywhere, for example a USB drive, and run `bin\wabcut.exe`. Nothing is installed. |
+| `wabcut-0.7.0-windows-x64.msi` | Double-click it. It installs **for your user only**, with no administrator rights, to `%LOCALAPPDATA%\Programs\Wabcut` (or a folder you choose). Wabcut appears in the Start menu and in Settings > Apps. The options page has an unticked *Open .wabcut project files with Wabcut* box: tick it to open projects by double-clicking them. |
+| `wabcut-0.7.0-windows-x64-portable.zip` | Unzip it anywhere, for example a USB drive, and run `bin\wabcut.exe`. Nothing is installed. |
 
 **SmartScreen.** The packages are not code-signed yet, so Windows SmartScreen may say "Windows protected your PC".
 Choose **More info**, then **Run anyway**.
@@ -39,7 +39,7 @@ Choose **More info**, then **Run anyway**.
 downloaded AI models, settings and API keys stay.
 
 Admins can install silently:
-`msiexec /i wabcut-0.6.0-windows-x64.msi /qn [INSTALL_ROOT="D:\Apps\Wabcut"] [WABCUT_ASSOCIATE=1]`.
+`msiexec /i wabcut-0.7.0-windows-x64.msi /qn [INSTALL_ROOT="D:\Apps\Wabcut"] [WABCUT_ASSOCIATE=1]`.
 
 **Updates** (0.5) are off until you turn them on: **Settings > General > Updates > "Check for updates
 automatically"** looks once a day at most and says when a new version is out (**"Skip This Version"** keeps it quiet
@@ -50,6 +50,45 @@ update and checks its signature and checksum; then **"Install When I Quit"** or 
 after Wabcut closes (unsaved changes and running exports ask first, as on any quit) and opens Wabcut again.
 **"Later"** keeps the download. The portable ZIP opens the release page instead. 0.5.0 is the first version that can
 update itself: from 0.4 or older, install it by hand.
+
+### Windows on ARM64, Linux and macOS (preview)
+
+These builds are made and started automatically on GitHub's machines for every release, but nobody has edited a real
+project with them yet: expect rough edges and please report what you find on the project's issue tracker. They share the
+editor, the Premiere shortcuts (Cmd instead of Ctrl on a Mac), the AI features that use your own key, and smart search.
+They do not yet have **local transcription** or **audio plug-ins** (CLAP and VST3), and the **local assistant** is
+Windows x64 only.
+
+**Windows on ARM64** (0.7; Snapdragon X and similar). `wabcut-<version>-windows-arm64.msi` or
+`-windows-arm64-portable.zip`, used exactly like the x64 packages above. It is a native ARM64 program, not the x64 one
+under emulation. Differences: video is decoded by the graphics driver where it offers Direct3D 11 decoding and exported
+with the software encoders (there is no NVIDIA, AMD or Intel hardware encoder on these PCs), smart search uses DirectML,
+and the update check tells you a version is out and opens the release page instead of installing it (the installer it
+could fetch is the x64 one).
+
+**Linux** (x64; Ubuntu 24.04 or a distribution as new; X11 or Wayland). Download the AppImage and run
+`chmod +x wabcut-<version>-linux-x64.AppImage && ./wabcut-<version>-linux-x64.AppImage`, or unpack the `.tar.gz` and run
+`bin/wabcut`. Qt and the libraries Wabcut needs come with it; the system supplies the graphics drivers, X11 or Wayland,
+and the sound server.
+- *Window.* Wabcut starts on X11 (through XWayland on a Wayland desktop) and falls back to native Wayland when there is
+  no X server; set `QT_QPA_PLATFORM=wayland` to force Wayland.
+- *Picture.* Vulkan, then OpenGL, then software drawing. Install your GPU's Mesa or proprietary driver as usual.
+- *Hardware video.* Install the VA-API driver for your GPU (`intel-media-va-driver` or `mesa-va-drivers`; NVIDIA uses
+  NVDEC/NVENC with its driver): Wabcut then decodes with VA-API and exports with `h264_vaapi` and friends. Without one it
+  decodes and encodes in software, only slower. The first-run performance check shows which decoder was picked.
+- *Sound.* PulseAudio, which PipeWire provides by default (`pipewire-pulse`), or ALSA, or JACK. If no device opens, Wabcut
+  stays silent instead of stopping.
+- *Keys.* Your AI provider keys go to the desktop's Secret Service (GNOME Keyring or KWallet). Without one they are kept
+  for the session only.
+- *Project files.* Packages from a distribution register the `.wabcut` type (Open With); the AppImage and the tar.gz do
+  not, but `wabcut project.wabcut` opens a project from any terminal or launcher.
+
+**macOS** (15 or newer, Apple silicon). Open the `.dmg`, drag Wabcut to Applications. When the release is signed and
+notarized (the release text says so) it opens like any other app; otherwise the first start is refused once: open
+**System Settings > Privacy & Security** and choose **Open Anyway**. Pictures are drawn with Metal, video is decoded and
+exported with VideoToolbox (H.264, HEVC, ProRes), sound goes through Core Audio, and your keys live in the Keychain.
+Double-clicking a `.wabcut` file, or choosing Open With on a recording, opens it in Wabcut. The first voice-over recording
+asks for microphone access.
 
 ## First run
 
@@ -66,7 +105,9 @@ update itself: from 0.4 or older, install it by hand.
 
    **"New project"** (or File > New Project, Ctrl+Alt+N) opens the **New project page**: pick a **format** tile
    (Landscape: 1080p at 23.976 / 25 / 29.97 / 30 / 60 fps, 4K UHD, 1440p60, 4K UHD 60; Vertical & square: 9:16, 1:1,
-   9:16 at 60 fps; Custom), check the **name** (a free one is filled in: "Untitled Project", "Untitled Project 2"…) and
+   9:16 at 60 fps; Custom), check the **name** (a free one is filled in: "Untitled Project", "Untitled Project 2"…; names
+   Windows keeps for devices - Con, Prn, Aux, Nul, Com1-9, Lpt1-9, with or without an extension - are refused, as are
+   renames and duplicates to them) and
    the **location** (**"Browse…"**), then **"Create project"**. **"Advanced settings"** opens the rest: frame size, frame
    rate (up to 240 fps) and drop-frame timecode, pixel aspect, fields, start timecode, audio sample rate, audio master
    (stereo or 5.1), the number of video and audio tracks and their format, colour management and the preview file
@@ -87,7 +128,7 @@ update itself: from 0.4 or older, install it by hand.
      timeline one after another. A game recording with several audio streams also shows the **audio streams**: each on
      its own named track ("Game", "Mic", "Discord"), or left out; the project gets one audio track per stream you keep
      (unless you set the number in Advanced settings). Going to another page and back keeps the page as it was; Cancel
-     or Esc drops it. A dotLottie archive (`.lottie`) or a picture dragged from a web browser says what to do instead.
+     or Esc drops it. A picture dragged from a web browser says what to do instead (a dotLottie archive imports like Lottie JSON since 0.7).
 
    Messages (an import that failed, guidance) show in a strip under the top bar; a long one scrolls. A project that
    fails to open (a damaged file) offers **"Recover a version…"** when Wabcut kept autosaves or backups of it: pick one
@@ -114,6 +155,13 @@ update itself: from 0.4 or older, install it by hand.
 Everything here can be reopened later from the **Help** menu: "Welcome and Setup…", "Take the Tour", "Keyboard
 Trainer…", "What's New", "Keyboard Shortcuts…".
 
+**The tour (0.7)** has seven steps, each pointing at a part of the window while the rest dims: the Library, the Timeline,
+the menu bar (every command is in a menu, with its shortcut; Window opens a panel as a tab of the group you clicked
+last), the Program Monitor (the playback resolution button and clicking the timecode to type a time), the Effects panel
+(the step opens it when it is closed or hidden behind another tab), the command palette (Ctrl+Shift+P, ⇧⌘P on macOS: a
+card in the middle, no highlight) and Export, where opening the Export workspace finishes it. Right or Return goes on,
+Left goes back, Esc or **End tour** stops it.
+
 ## The window
 
 **The menu bar** sits in the title bar after the logo, in Premiere's order: **File, Edit, Clip, Sequence, Markers,
@@ -133,7 +181,13 @@ menus inside. The logo opens the File menu as well.
 - "Home", "New Project…" (Ctrl+Alt+N), "New Sequence…" (Ctrl+N), "New Sequence From Clip";
 - "Open Project…" (Ctrl+O), **"Open Recent"** (the last ten projects, and "Clear Recent"), "Open Project Next to This
   One…". A `.wabcut` you double-click in File Explorer while Wabcut runs opens in that window (not in a second
-  Wabcut). Choosing the project you are working in (from Open Recent, the palette or Explorer) only brings it forward:
+  Wabcut). So does anything else you open with Wabcut (0.7: **Open with** on a recording, a timeline file or several
+  files at once): while the editor is shown the media goes into the bin the Library has open and a message says how many
+  came in (a timeline file is imported like File > Import does); while Home is shown the New project page starts with
+  those files, as when you drop them on Home; a project among them opens. Started from Explorer with Wabcut closed, a
+  recording opens Home on the New project page with it. (Explorer's Open with may start Wabcut once per file of a
+  selection: with Wabcut running, every file reaches it; with Wabcut closed, launches that start at the same moment may
+  each open a window of their own.) `--new-instance` starts a separate Wabcut that takes none of this. Choosing the project you are working in (from Open Recent, the palette or Explorer) only brings it forward:
   it is not read again, so its undo history and unsaved changes stay. "Open Project…", "Import…" or a drop of that
   project's own file does not read it again either (they may ask about unsaved changes first); "Revert" is the way to go
   back to the saved file. A project open next to it comes into the panels;
@@ -142,7 +196,22 @@ menus inside. The logo opens the File menu as well.
   projects open, the current one closes; with only one, it closes and Home shows (the sample project waits behind
   it). Unsaved changes are asked about first;
 - "Save" (Ctrl+S), "Save As…" (Ctrl+Shift+S), **"Save a Copy…"** (Ctrl+Alt+S: the project as it is now goes to another
-  file; you keep working in this one), **"Revert"** (back to the version last saved, after a confirmation: the unsaved
+  file; you keep working in this one; ".wabcut" is added unless the name has it already, in any case - a project called
+  "Show.WABCUT" saves as "Show.WABCUT", not "Show.WABCUT.wabcut"), **"Save Version…"** and **"Version History…"** (0.7: the
+  project's version history lives next to its saved file, so both are greyed out for a project that has not been saved
+  - the message says so; "Save Version…" asks for a name and keeps the project as it is now under it, never an undo step;
+  "Version History…" opens the Review panel on its Versions page, where a version is renamed, restored, compared or exported;
+  they have no keys until you give them one in Keyboard Shortcuts: `file.saveVersion`, `file.versionHistory`. Wabcut also
+  keeps a version now and then while you edit: **Settings > General > Projects > Keep versions every** (Off, 2, 5 -
+  the default - 10 or 30 minutes; only when something changed), and **File > Recover…**'s "All versions" tab has a
+  **"Version History"** button for the open project), **"Save for an Older Version…"** (0.7: a copy for someone who has not updated Wabcut:
+  choose **Wabcut 0.6** or **Wabcut 0.2 to 0.5**; the dialog lists what that version has no place for - for 0.6 the
+  0.7 additions such as bilingual caption tracks, the new kinetic caption looks, EQ Match curves, LUT folders, custom
+  transcription words, track groups, clip notes, locked clips, pinned keyframes and the new 0.7 effects (the effects stay in
+  the file as unknown effects that do nothing); for 0.2 to 0.5 also auditions, Master Clip Effects, text strokes and the HDR output settings - and
+  the copy is written without them, with everything else unchanged and the project you are working in untouched. Wabcut
+  0.1 projects can be opened by this version but a copy for 0.1 is not offered. The command is `file.saveForOlderVersion`,
+  with no default key), **"Revert"** (back to the version last saved, after a confirmation: the unsaved
   changes and the undo history go). A project that cannot be opened or saved says why in a message at the bottom
   right (on Home while Home is open); a save that failed offers **"Save As…"** there. Leaving the sample project after
   editing it (opening, creating or importing a project) first asks **"Discard your changes to the sample project?"**:
@@ -161,7 +230,10 @@ menus inside. The logo opens the File menu as well.
   ("Imported 12 files from Session1 into 3 bins. 2 files were left out (not media)."). The Library's ··· menu has
   **"Import folder…"** too, and folders dropped on the Library from File Explorer come in the same way. A folder dropped
   on the timeline comes in as bins at the top of the Library and is not edited in (the message says so; drag its clips
-  to the timeline from there); files dropped with it are edited in as before. Import… and Import Folder… open in the
+  to the timeline from there); files dropped with it are edited in as before. (0.7) Files - and a `.wabcut` - dropped on any other place of the
+  editor (the Program Monitor, Effect Controls, the title bar, the other panels) are imported or opened the same way: a
+  "Drop to import" outline shows while they hover, a message says how many came into the Library, and the Library opens if
+  it was closed. Panels in windows of their own do not take drops yet. Import… and Import Folder… open in the
   folder your last import came from (for a folder: the one around it), else the project's folder;
 - numbered stills (an image sequence from a renderer, a game's photo mode or a timelapse) come in as one clip from the
   Library's ··· menu, **"Import image sequence…"** (Premiere's Import with "Image Sequence" ticked): choose the first
@@ -170,14 +242,16 @@ menus inside. The logo opens the File menu as well.
   named after its first file; the stills stay where they are (the first one stands for the clip when Wabcut looks for
   offline media). Command: `media.importImageSequence`. CinemaDNG frames (.dng) import the same way and play
   developed into Rec.709. For ProRes RAW and CinemaDNG items, the Library's right-click **Modify > Source Settings…**
-  sets the exposure and white balance they are developed with (As Shot, or the colour temperature and tint of the
-  light to balance for); commands `media.rawSourceSettings`, `media.setRawSourceSettings`.
+  sets the exposure, the ISO (As Shot, or the ISO the clip was shot at and the one to develop it for: a stop per
+  doubling, since the file does not carry the camera's own ISO) and the white balance they are developed with (As Shot,
+  or the colour temperature and tint of the light to balance for); commands `media.rawSourceSettings`, `media.setRawSourceSettings`.
 
   A Photoshop file (.psd, .psb) opens **Import Layered File**: Merge All Layers, Merged Layers (the ones you tick),
   Individual Layers (a bin with one clip per layer) or Sequence (those clips stacked on tracks of a sequence of the
   document's size), each at Document Size or Layer Size. RGB, grayscale and CMYK files (converted to RGB) of 8, 16 or
   32 bits import, with their blend modes. The clips read the file each time, so what you save in Photoshop comes
-  through. Commands: `media.layeredFileInfo`, `media.importLayeredFile`.
+  through. A flattened file (no layers) imports as its picture; a saved selection or spot colour channel in it is not
+  transparency, so the still stays opaque. Commands: `media.layeredFileInfo`, `media.importLayeredFile`.
 
   The **Media Browser** (Window > "Media Browser", Shift+8) browses drives and folders. A camera card (AVCHD, Canon XF,
   P2, XDCAM, XAVC) shows its clips instead of its folders, and a recording the camera split into several files (GoPro
@@ -189,7 +263,8 @@ menus inside. The logo opens the File menu as well.
   shows the current clip's metadata (format, duration, the video and audio streams). Turn on **Ingest** and open
   **Ingest Settings** beside it to choose what an import does first: **Copy** the clips into a folder (so the card can
   be taken out), **Transcode** them into a folder with an export preset (they import at once and switch to the new files
-  when the export queue has made them), or **Create Proxies**; Ingest applies to clips, not to folders. The folder
+  when the export queue has made them), **Create Proxies**, or **Copy and Create Proxies** (copies first, then makes the
+  proxies of the copies); Ingest applies to clips, not to folders. The folder
   button (**Drives and places**) lists Videos and your home folder, then the game capture folders that exist on this
   computer: **"Game Bar captures"** (Videos\Captures), **"NVIDIA ShadowPlay"** (Videos\NVIDIA) and **"OBS recordings"**
   (each OBS Studio profile's recording folder); then **"Recent: …"** for the folders your last imports came from, then
@@ -200,10 +275,15 @@ menus inside. The logo opens the File menu as well.
 - "Exit" (Ctrl+Q).
 
 **Edit:** "Undo", "Redo", "Cut", "Copy", "Paste", "Paste Insert", "Paste Attributes…", "Remove Attributes…", "Clear",
-"Ripple Delete", "Duplicate", "Select All", "Deselect All", "Find…", "Edit Original", "Keyboard Shortcuts…"
-(Ctrl+Alt+K), "Media and Timeline Preferences…" and **"Settings…"** (Ctrl+,). While you type in a text field (a
+"Ripple Delete", "Duplicate", "Select All", **"Select All Disabled Clips"** (0.7), "Deselect All", "Find…",
+"Edit Original", "Keyboard Shortcuts…" (Ctrl+Alt+K), "Media and Timeline Preferences…" and **"Settings…"**
+(Ctrl+,). "Undo" and "Redo" name the edit they act on on the timeline - "Undo Razor", "Redo Ripple Delete" - as
+the toolbar's tooltips do. While you type in a text field (a
 search, a name, a title's text), "Undo", "Redo", "Cut", "Copy", "Paste", "Clear" and "Select All" work on its text,
-as their keys do there, not on the timeline.
+as their keys do there, not on the timeline (Undo and Redo then read just that). Copy a lower third or a graded
+clip in one project and paste it into another (0.7): the pictures its graphic shows, an Image Matte Key's picture
+and the LUT files its grade uses come along and are found in the other project (by id, else by path) or added to it,
+so the pasted clip looks as it did.
 
 **Clip:** "Make Subclip…", "Speed/Duration…", **"Scene Edit Detection…"** (0.5, see
 [Premiere's sequence and editing tools](#premieres-sequence-and-editing-tools)), "Audio Gain…", "Audio Channels…",
@@ -213,7 +293,8 @@ Offline", "Reveal in Project", and the gaming moments "Slow-mo at Playhead" and 
 
 **Sequence:** "Sequence Settings…", "Render Effects In to Out", "Render Selection", "Delete Render Files", "Delete
 Render Files In to Out", "Match Frame", "Reverse Match Frame", "Add Edit", "Add
-Edit to All Tracks", "Trim Edit", the ripple trims to the playhead, the transitions, "Lift", "Extract", "Close Gap",
+Edit to All Tracks", "Trim Edit", the ripple trims to the playhead, the transitions (0.7: **"Remove Transitions from
+Selection"** and **"Remove All Transitions"**), "Lift", "Extract", "Close Gap", **"Remove Disabled Clips"** (0.7),
 "Join Through Edits", "Replace With Clip", "Make Subsequence", zoom, "Go to Gap", **"Snap in Timeline"**, **"Audio
 Scrubbing"** (0.5, Shift+S), "Select Clip at Playhead" and **"Selection Follows Playhead"** (the three switches show a
 dot while on).
@@ -233,19 +314,38 @@ Dropped Frame Indicator", "Show Audio Time Units" and "Full Screen".
 **Window:** **"Workspaces"** (switch to one, "New Workspace" from a preset, "Duplicate Workspace", "Rename Workspace…",
 "Delete Workspace…", and since 0.6 **"Save Changes to This Workspace"**, **"Save as New Workspace…"**, **"Reset to
 <Preset> Preset…"** and **"Lock Workspace"**), **"Maximize Frame"** (Shift+`), **"Reset to Saved Layout"**
-(Alt+Shift+0), then every panel - History among them since 0.6 (a dot shows the ones open in this workspace; Generate
+(Alt+Shift+0), then every panel in alphabetical order (0.7; the order follows the language of the interface) - History
+among them since 0.6 (a dot shows the ones open in this workspace; Generate
 is listed while AI is on). Choosing one opens it, or brings
 it forward where it is, and puts the keyboard in it.
 
 **Help:** "Wabcut User Guide", "Getting Started", "Coming from Premiere Pro" and "Keyboard Shortcuts Guide" (on
 [wabcut.zyphite.com](https://wabcut.zyphite.com/guide)), "Keyboard Shortcuts…", "Welcome and Setup…", "Take the Tour",
 "Keyboard Trainer…", "What's New", "Release Notes", **"Check for Updates…"** (0.5, see [Install](#install)), **"Open
-the Sample Project"**, "Report an Issue" and "About Wabcut".
+the Sample Project"**, **"Report a Bug…"** and "About Wabcut". **Report a Bug…** (0.7; also in the command palette) shows the
+system information a bug report needs - Wabcut's version, the operating system, the graphics card and driver, the graphics API
+it draws with, the video decoders, Qt's version, the interface size and the number of screens - exactly as it is copied:
+no paths, no user name, nothing of your project. **Copy System Info** puts it on the clipboard; **Open on GitHub** opens the
+bug report form in your browser with the version and the system information filled in (Wabcut sends nothing itself: you
+read, complete and send the report); **Show Crash Reports** opens the folder with the reports of earlier crashes. About
+Wabcut has a **Copy** button for the version.
 
 The **command palette** (Ctrl+Shift+P) has these too, plus **"Open panel: …"** for every panel, **"Workspace: …"** for
 every workspace and **"Open Recent: …"** for the recent projects.
 
+The palette's edit commands list only what it can run (0.7): a command that needs an effect, a transition or another id it
+cannot ask for, and the ones that belong to a panel (the version history, review notes, the export queue, the effects
+library), are not listed - agents and the CLI still have them all ([commands.md](commands.md)).
+
 **The title bar** has:
+- **The window's own menu and Windows 11 Snap Layouts** (0.7, Windows): right-click an empty part of the title bar (or
+  press **Alt+Space**) for the system menu - Restore, Move, Size, Minimize, Maximize, Close, the ones that fit the window's
+  state - and hover the maximize button for Windows 11's snap layouts (pick a spot to tile the window). Dragging the title
+  bar to a screen edge and double-clicking it already snapped and maximized the window. On Linux and macOS the title bar has
+  none of these; **Settings > General > "Use native window frame"** gives the system's own title bar everywhere.
+- **A "Read-only" badge** (0.7) beside the project's name when another session has the project open (project locking):
+  Save is refused and nothing is autosaved, so Wabcut says so once when it opens, with **"Save As…"**; hover the badge
+  for who has it. Save As makes the project yours and the badge goes.
 - **The sequence pill.** Switches sequences. Its list has "New Sequence…" (Ctrl+N), "Reframe…", "Rough Cut from
   Script…", "Narration from Script…" and "Podcast Workflow…".
 - **The command palette** button (**Ctrl+Shift+P**).
@@ -255,8 +355,8 @@ every workspace and **"Open Recent: …"** for the recent projects.
 - **"Save"** and **"Export"** (Ctrl+M). A dot on Save means there are unsaved changes; its tooltip says when the
   project was last autosaved. (The GPU and autosave status are in Settings; Settings > Interface can show them in the
   title bar again.) When autosave cannot write your project (a drive gone, a full disk, no permission), Wabcut says so
-  once with **"Save As…"**, the dot turns red and the tooltip gives the reason; it keeps trying, and the next autosave
-  or save that works clears it (0.4).
+  once with **"Save As…"**, the dot turns red and the tooltip gives the reason (it names your project, never the
+  temporary file the autosave wrote to); it keeps trying, and the next autosave or save that works clears it (0.4).
 - **The Background tasks pill** (0.4, after the sequence pill) shows while exports, Render In to Out, proxies,
   transcription, Highlights, Shorts, Collect Files or an extension's AI command run or wait: "Exporting 38 % · 0:42
   left", "Rendering 60 %", "2 exports waiting", with **+N** when more run (only the percentage when the title bar is
@@ -279,14 +379,25 @@ every workspace and **"Open Recent: …"** for the recent projects.
 **Workspaces.** The tabs in the title bar are your workspaces; none is built in. The first start makes one from the
 **Edit** preset. **"+"** after the tabs makes a new one from a preset, or as a copy of the current one:
 
-| Preset | What it lays out | Its key opens (or makes) the first one |
-|---|---|---|
-| Edit | Library, Source and Program Monitors, Effect Controls, the timeline with the Audio Meters right of it (0.5) | Alt+Shift+6 |
-| Color | Scopes, Program Monitor, Color, the timeline | Alt+Shift+5 |
-| Audio | Audio Tools, Program Monitor, Audio Track Mixer, the timeline with volume lines | Alt+Shift+3 |
-| Captions | Transcript, Program Monitor, Caption Style, the timeline | Alt+Shift+4 |
-| Export | Program Monitor, the export settings, the timeline | Ctrl+M, the "Export" button |
+| Preset | What it lays out |
+|---|---|
+| Edit | Library, Source and Program Monitors, Effect Controls, the timeline with the Audio Meters right of it (0.5) |
+| Color | Scopes, Program Monitor, Color, the timeline |
+| Audio | Audio Tools, Program Monitor, Audio Track Mixer, the timeline with volume lines |
+| Captions | Transcript, Program Monitor, Caption Style, the timeline |
+| Export | Program Monitor, the export settings, the timeline |
+| Gaming (0.7) | Highlights (with Shorts and the Library as tabs), Program Monitor, Effect Controls (with Essential Sound as a tab), the timeline |
 
+- **Hide the tabs** (0.7): **Window > Workspaces > "Show Workspace Tabs"** (or Settings > Interface > "Workspace tabs")
+  takes the tabs out of the title bar and gives their room to the menus and the title. The workspaces stay in Window >
+  Workspaces, on their keys (Alt+Shift+1 to 9) and in the command palette; "Rename Workspace…" needs the tabs.
+
+- **Keys (0.7).** **Alt+Shift+1 … Alt+Shift+9** open the workspaces by their place in the tab bar, as Premiere's keys do:
+  dragging a tab to another place moves its key. A tab's tooltip and **Window > Workspaces** show its key. With fewer
+  tabs than the number, the key keeps its first-run meaning and opens (or makes) a workspace from a preset: 3 Audio,
+  4 Captions, 5 Color, the others Edit. **Next Workspace** and **Previous Workspace** (the command palette; no default
+  key: assign one in Keyboard Shortcuts) step through the tabs and wrap round the ends. The Export workspace is also
+  **Ctrl+M** and the "Export" button.
 - **Right-click a tab** for "Rename", "Duplicate", "Move left" / "Move right", "Save Changes to This Workspace",
   "Save as New Workspace…", "Reset to Saved Layout", "Reset to <Preset> Preset…", "Lock Workspace" and "Delete
   workspace" (the last one stays). Double-click a tab to rename it; drag a tab to move it.
@@ -348,16 +459,46 @@ top that turns red at 0 dB; click it (or press Space) to clear it. Workspaces ma
 right of the timeline; a workspace saved before keeps its layout until you add it from the Window menu. Like any
 panel it can be a tab, get a window of its own or close.
 
+**The Loudness panel** (0.7, Window > **"Loudness"**) opens a slim column between the timeline and the Audio Meters and
+shows the loudness of what plays: two bars for the momentary and short-term loudness on the EBU R128 scale around your
+target (YouTube −14, Podcast −16, Broadcast −23 LUFS or custom), the integrated loudness, the true peak and the loudness
+range. Its **Radar** view draws the short-term loudness round a clock face (one turn of 1 to 60 minutes while you play,
+or the whole mix after **Analyze mix**), with the target as a ring and the loudness range shaded. See [audio.md](audio.md).
+
+**The Graph Editor** (0.7, Window > **"Graph Editor"**, or the curve button in Effect Controls' header) draws the animated
+parameters of the selected clip as coloured curves in a panel of any size: a legend with an eye per curve, a value graph
+and a speed graph, box select, dragging keys in whole frames and in value, Bezier handles, typed Time and Value, the
+interpolation buttons and thirty-two easing presets (docs/effects.md, "Graph Editor"). It shows the same keyframes as
+Effect Controls' lanes - one selection, one undo step per gesture.
+
 **Settings** (Edit > "Settings…", **Ctrl+,**, or Home's gear) is one window with these pages:
   - **Search** (the field at the top, ready to type when Settings opens): type what you are after ("proxies",
     "dark", "default folder") and pick a result: its page opens on that setting, which lights up for a moment.
     The command palette lists every setting too ("Settings" rows);
   - **"General"**: what Wabcut shows when it starts (**Home**, or **Reopen the last project**), the workspace it opens
-    in, the native window frame; **Projects**: the save state, how often to autosave, the default location for new
+    in, the native window frame; **Projects**: the save state, how often to autosave, **Keep versions every** (0.7: how
+    often the version history keeps a version while you edit; Off keeps only the ones you save), the default location for new
     projects (Home's New project page starts there; **Automatic** = the last project's folder), how many recent
     projects Home and File > Open Recent show (a lower number hides the older ones until you raise it again; starred
     ones always show), and project locking; the save state says **"Autosave failed"** (red) with the reason while
-    autosave cannot write; **Background work** (0.4): **"Keep the computer awake while exporting"** (on by default;
+    autosave cannot write; **Autosaves and backups** (0.7): where a saved project's autosave and its earlier saved
+    versions (`<project>.bak1`, ...) are kept - **Next to the project** (how every version before 0.7 did it; the
+    default for an install that already existed), the **Auto-Save folder** (a `Wabcut Auto-Save` folder next to the
+    project; the default of a new install) or **A folder** you choose (one folder per project below it) - **Backups
+    to keep** (0 to 10, default 5) and **Autosave versions to keep** (1 to 10, default 3); File > Recover and
+    "Versions…" look in all three places, so changing the setting never hides the copies already written; **Show
+    recent projects in the taskbar jump list** (0.7, Windows, on by default): right-click Wabcut's taskbar button for
+    your starred and recent projects (a click opens one in the running Wabcut; items you remove from the list stay
+    off); **Backup and reset** (0.7): **"Export settings…"** saves your settings, keyboard shortcuts, export and effect
+    presets, graphic templates and personal dictionary to one file (API keys are never in it: they stay in the system
+    keychain; neither are the cloud locations), **"Import settings…"** shows what such a file holds before it replaces yours
+    (untrusted input: names, sizes and secrets are checked, and a file never sets where keys or media go: the AI providers'
+    addresses and custom providers, the export watch folders, the cloud locations and any network path are left out and
+    counted in the preview), and **"Reset all settings…"** goes back to the defaults, keeping your recent
+    projects and AI/update opt-ins if you want; both save a backup file of your current settings first (named in the
+    confirmation, `backups/settings-<date>-<time>.json` in Wabcut's settings folder; the newest 20 are kept) and restart
+    Wabcut to apply the change (after the unsaved-changes question). Holding **Shift** while Wabcut starts (Windows)
+    offers the default settings too; **Background work** (0.4): **"Keep the computer awake while exporting"** (on by default;
     Windows only) - while exports, Render In to Out, proxies, transcription, Highlights, Shorts or Collect Files run,
     Windows does not go to sleep on its own (the screen can still turn off); **Updates** (0.5): **"Check for updates
     automatically"** (off by default) and **"Check for Updates…"** (see [Install](#install));
@@ -368,14 +509,15 @@ panel it can be a tab, get a window of its own or close.
     **"Restart now"** closes and reopens it with your project (asking about unsaved changes first). Sizes that would
     leave less than 1100 x 700 for the window on your screen are greyed ("Too large for this screen"); 90 % fits a
     1080p laptop at 150 % Windows scaling. The window never opens larger than the screen;
-  - **"Interface"**: the GPU and save status in the title bar, and "Resize panels live";
+  - **"Interface"**: the GPU and save status in the title bar, the workspace tabs (0.7: hide them for room), and "Resize panels live";
   - **"Timeline & editing"**: linked selection, the snap line, trim offsets, thumbnails, waveforms, **"Play audio while
     scrubbing"** (0.5, on by default; Shift+S turns it on and off) and more;
   - **"Playback & performance"**: the GPU and video decoding in use, and "Media & cache…" (0.6: **"Save proxies"**
     next to the project or in a folder you choose, such as a fast drive, from the next proxy on; the **media cache**
     (thumbnails and waveforms) and **AI models and analysis results** folders, used from the next start with
     **"Restart now"**; each shows the free space on its drive. Files already made stay where they were: clean them from
-    the cache rows. The **"Render files (this project)"** row shows the size of the project's preview files; its
+    the cache rows. **"Background rendering"** (0.7) turns on the rendering of effect-heavy stretches while Wabcut is
+    idle and sets when it starts and what it waits for (see Render In to Out below). The **"Render files (this project)"** row shows the size of the project's preview files; its
     **"Clean"** deletes them all. **"Keep the caches within their limits automatically"** (on by default) applies the
     thumbnail and waveform limits shortly after Wabcut starts, after each batch of proxies and soon after a limit
     changes, without opening this dialog; it waits while you play, render or export. Only those two caches have a limit:
@@ -418,20 +560,63 @@ More of the Tracks panel, as in Premiere:
   Enter goes there, Esc cancels ([the monitors](monitors.md#type-a-time-drop-a-clip-read-a-marker) work the same way).
 - **Track headers**: right-click one (or press the Menu key on its name) for **"Rename…"**, **"Add Video Track
   Above"** / **"Add Audio Track Below"**, **"Add Tracks…"** (how many of each kind, where, and the audio format),
-  **"Delete Track"** (it asks first when the track has clips), **"Delete Empty Tracks"** and **"Sync Lock"**; an audio
+  **"Delete Track"** (it asks first when the track has clips), **"Delete Empty Tracks"**, **"Sync Lock"** and **"Label"**
+  (the track's colour, see "Timeline: gaps, labels and the keyboard menu (0.7)"); an audio
   track's menu also has its channel format. Double-click a header (or press F2 on its name) to rename the track; its
   name shows beside V1 / A1 where there is room. Each is one undo step.
 - **Gaps**: click the empty space between two clips to select the gap; **Delete** (while the Tracks panel has the
   focus) or right-click > **"Ripple Delete"** closes it. When another sync-locked track has clips in that time, nothing
-  moves and a message says why.
+  moves and a message says why. 0.7: the same menu has **"Close Gaps on V1"** (every gap of the track you clicked, in one
+  undo step) and **"Close Gaps in Sequence"** (Sequence > Close Gap with nothing selected).
 - **Transitions**: right-click one for **"Set Duration…"**, its alignment on the cut, **"Replace with"** the default
   transition, **"Set as Default Transition"** and **"Clear"**. The default video and audio transitions (what Ctrl+D,
   Ctrl+Shift+D and Shift+D add) are also in Settings > Timeline & editing.
+- **Sources and citations (0.7).** For video essays and documentaries: **Window > Sources** lists the claims of the
+  sequence by time with the source behind each. **+** cites a source for a claim: write the claim, choose where it is (at the
+  playhead, from In to Out, over the selected clips, or at the words selected in the Transcript tab) and fill in what you know - the address, title, author, publisher, date,
+  an archive link, a screenshot (a file name or address) and a note. Leave the title and address out and the claim is
+  marked **Needs a source** (a red dot): the panel counts those, **Needs a source** shows only them, and every export names
+  them. Click a row to move the playhead to the claim, double-click (or the pencil) to edit it; each change is one undo step.
+  The **export** button copies or saves the list as a **YouTube description block** (`0:42 claim - title, author, publisher,
+  date address`, ready to paste: YouTube reads lines that start with a time as chapters when the description has enough of them),
+  a **numbered list**, **Markdown**, an **APA bibliography** (one entry per distinct source, alphabetical) or a **PDF**; the
+  **lower-third** button puts each cited source on screen over its claim (`Source: title - author`, on new "Sources" video
+  tracks, as long as the claim or 4 s) - graphics you can restyle like any. A source is a marker of type Source (it ripples with
+  the edit and shows on the ruler and in the Markers panel). Commands: `sources.add`, `sources.update`, `sources.remove`,
+  `sources.list`, `sources.export` (text), `sources.lowerThirds`. A copy saved for Wabcut 0.6 or earlier keeps them as plain markers
+  named after the claim. With words selected in the **Transcript** tab, **+** takes them as the claim and puts it
+  where they are spoken (**Transcript line** in the form). Not yet: a bibliography style other than APA.
+- **Import markers (0.7).** The Markers panel's **Import** button (next to Export) reads a marker list from another tool or
+  a spreadsheet: **"Import markers…"**, **"Import markers at the playhead…"** (the file's times count from the
+  playhead) or **"Replace the markers with a file…"**. In the **Sequence** tab the markers join the sequence's, in the
+  **Clip** tab they go onto the selected clip's media, in its own time. One undo step; a toast says how many came in and
+  how many lines were skipped. A file read twice adds nothing (exact copies are left out). Three shapes are
+  recognised from the content: a **CSV** (or tab- or semicolon-separated table) with a header row - Premiere's marker
+  export and Wabcut's own read back; `Marker Name` / `Name` / `Title`, `Description` / `Comment` / `Notes`, `In` / `Start` /
+  `Time`, `Out`, `Duration`, `Marker Type`, `Color` are known, and without a header the columns are time, name,
+  comment; a **text file** with one marker a line (YouTube chapters like `0:00 Intro`, `00:01:23:10 - Name`, tab-separated
+  Audacity labels); and **JSON** (an array, or an object with a `markers` array; the `marker.list` command's output
+  reads back). A time is `HH:MM:SS:FF` at the sequence's frame rate (the clip's own in the Clip tab), a clock
+  `H:MM:SS.fff` or `M:SS`, seconds (`12.5`, `12.5s`) or `1500ms`; they land on the frame grid. Colour names are
+  Premiere's eight. Files in Windows-1252 (a spreadsheet's CSV) are read too. Commands `marker.import` and
+  `source.importMarkers` (`path`, `format`, `offset`, `replace`) do the same for scripts, `wabcut-cli` and the assistant.
 - **Markers** show their names on the ruler (cut short before the next marker); point at one for its comment, time and
   length. 0.6: with the playhead stopped on a marker, **M** opens it instead of adding a second one; **Markers** >
   **"Edit Marker…"** opens the marker at the playhead and **"Add Chapter Marker…"** adds a chapter marker there and
   opens it. Right-click a marker (its flag on the ruler, the Program Monitor's time bar or a row of the Markers panel)
   for **"Edit Marker…"**, **"Marker Colour"**, **"Marker Type"**, **"Go to Marker"** and **"Delete Marker"**.
+- **Several markers at once (0.7).** In the Markers panel **Ctrl-click** a row to add it to the selection (or take it out),
+  **Shift-click** to select the rows between, **Ctrl+A** for every listed row; on the ruler click a flag (Ctrl-click adds
+  it, Shift-click selects the flags between) or **Ctrl-drag** over the ruler to draw a marquee (Ctrl+Shift adds to the
+  selection). Then **Delete**, **Ctrl+X**, **Ctrl+C** and **Ctrl+V** act on all of them: Paste puts the copied markers at
+  the playhead (clip scope: at the frame the selected clip shows there) with the first one on it and the others keeping
+  their distances, and works in another sequence or project too. **Alt+Left / Right** (with Shift: ten frames) moves the
+  selection; dragging one selected flag on the ruler moves them all by the same distance, stopping where the first
+  reaches 0. A bar under the colour filters counts the selection and has the same actions as buttons, and the
+  right-click menu of a marker in the selection acts on the whole selection ("Delete 3 markers"). **Clear Selected
+  Marker** (Ctrl+Alt+M) clears the selected markers when there are some, else the marker at the playhead. Each action is one
+  undo step. Commands `marker.removeMany`, `marker.moveMany` (`indexes`, `by`) and `marker.duplicate` (`indexes`,
+  `offset`) do the same for scripts, `wabcut-cli` and the assistant.
 - **Shift-click** (0.6) a track header's eye, mute, solo, sync lock or lock (or its V1 / A1 target chip) to set it on
   every track of that kind at once, in one undo step. The **sync lock** toggle before the lock shows which tracks a
   ripple edit shifts. Ctrl+0 / Ctrl+9 target every video / audio track (again: none), Ctrl+Alt+0 / Ctrl+Alt+9 switch
@@ -479,7 +664,8 @@ More of the Tracks panel, as in Premiere:
   the assistant proposes the commands, you review them, then choose **"Accept"**, **"Refine"** or **"Reject"**.
 
 **The monitors** work like Premiere's: double-click a clip in the Program Monitor to move, scale and rotate it there;
-**Loop**, **Play In to Out**, **Toggle Full Screen** (Ctrl+`) and **Transmit** to a second display; rulers and guides
+**Loop**, **Play In to Out**, **Toggle Full Screen** (Ctrl+`) and **Transmit** to a second display (**Video Output
+Settings** in the gear: which display, Fit / Fill / 1:1, safe lines, sync offset, Match Refresh Rate); rulers and guides
 (Ctrl+R, Ctrl+;); the **Transparency Grid**; and **Export Frame** (Ctrl+Shift+E) in DPX, JPEG, PNG, TIFF, Targa, BMP,
 GIF or OpenEXR. The gear in each monitor holds their settings. See [monitors.md](monitors.md).
 
@@ -584,7 +770,7 @@ The goal is a 10-20 minute YouTube video at 1440p60 from a long OBS recording wi
 
   It cleans and levels a gaming mic to -16 LUFS, and every effect stays editable in **"Effect Controls"**.
 - **Game under voice.** Open **"Audio Tools"** (the Audio workspace, or the Window menu). In the **"Auto-duck"** card
-  choose **"Game under my voice"** (it is chosen for you when a track is named for the game, as Start with media names
+  choose the **"Game"** tab (Game under my voice; it is chosen for you when a track is named for the game, as Start with media names
   them). A line says which tracks it uses ("Mic → ducks Game, Music"): the voice is a track named Mic, Microphone,
   Voice or Commentary (else a dialogue-role track), the game a track named Game, Desktop Audio or Gameplay (else an
   effects-role track), and with **"Include music"** on the music tracks dip too. Each mode keeps its own amount,
@@ -629,6 +815,14 @@ keyframes you can edit.
    - **"Settings"** shows every option.
 2. Under **"Save to"**, set the file (**"Browse…"**), then choose **"Export"**, pinned at the foot of the panel.
 3. Exports run in the background. **"Add to queue"** lines up more; they show under **"Queue"**.
+   - **"Check before export…"** (0.7) lists what is likely to go wrong first: offline media, gaps, flash frames, mixed
+     frame rates, a size that does not suit the sequence, captions, loudness. Each row has **"Go to"** and, where Wabcut
+     can, a fix. **"Export"** runs the same check and shows the list (with **"Export anyway"**) when it finds a problem
+     or a warning; the switch is in the list.
+   - **"Queue…"** > **"History"** (0.7) keeps the last 100 finished exports with **"Show"**, **"Open"** and
+     **"Export Again"** (the same preset and settings on the project as it is now).
+   - **"Smart Render"** (Settings > Render) copies untouched ProRes / DNx frames, and from 0.7 whole GOPs of H.264 and
+     HEVC sources that match the export, so a cut-only edit of a file Wabcut exported before is not encoded again.
 
 ---
 
@@ -670,6 +864,11 @@ The goal is a vertical 1080x1920 clip at 60 fps with the gameplay, your facecam 
      remembered for that recording: it comes back whenever the same file is the gameplay, in any project.
   4. Choose **"Apply"** (one undo step). The picker opens with these options next time; **"Reset"** puts the defaults
      back.
+  If no gameplay clip is selected, the picker says so once and offers **"Use the clip under the playhead"** (or the
+  nearest video clip). On a wide sequence a vertical layout shows a hint under the cards, and **"Create a Shorts
+  sequence"** becomes the main button. Controls that cannot be used say why in their tooltip (Apply, the facecam
+  clip). The picker fits the smallest window (it scrolls when the window is short) and opens beside the Program Monitor
+  when there is room.
 
   The vertical layouts belong on a 9:16 sequence. On a wide one, **"Create a Shorts sequence"** makes a new 1080 × 1920
   sequence at 60 fps: put the gameplay on it, then open **"Layout…"** again.
@@ -729,7 +928,8 @@ The goal is a narrated essay: voice-over, B-roll, captions, a title, music under
   captions in the video (H.264 / HEVC).
 
 **4. Title and lower third.**
-- The Library's **"Text"** tab has **"New Title"**.
+- **Graphics > New Layer > Text** adds a text layer at the playhead; style it in the **"Essential Graphics"** panel
+  (**"Edit"** tab). The command palette's **"New Title"** adds a simple title clip too.
 - For an animated lower third, open **"Callouts"** and add **"Lower third"**: a name and a handle, in a box that grows
   with the name. Change the text in the **"Edit"** tab. **"Intro"** makes an opening title.
 
@@ -766,7 +966,17 @@ a file and as a timeline for Premiere or Resolve.
   takes the camera's or another editor's XMP; **"Write XMP"** writes it out. XMP goes into a sidecar `<clip>.xmp` next to
   the file unless you turn on **Preferences > Media > "Write XMP metadata into MP4 and MOV files"**: then those files take
   it themselves (a checked copy replaces the file; if anything fails it stays as it was). In the Library's list view the
-  same fields are columns (choose them in the column chooser); a click ticks **Good**.
+  same fields are columns (choose them in the column chooser); a click ticks **Good**. While a cell is open for
+  editing, **Tab** / **Shift+Tab** move to the next / previous editable cell (along the row, then on to the next row) and
+  **Enter** / **Shift+Enter** to the same column one row down / up, keeping what you typed; **Esc** cancels, and in the Name
+  column **Enter** just renames (Premiere's Next / Previous Column Field and Row Field; the keys are the keymap's).
+- **Date created, column layouts (0.7).** The list view has a **Date created** column (from the column chooser) that
+  shows when a sequence was made; media and bins leave it blank, and sequences from projects saved before it show nothing.
+  The chosen columns, their order and widths are remembered; the column chooser's **Saved layouts** keep a named set
+  (**Save**, click a name to apply it, the bin icon to delete it) for logging, delivery or review.
+- **Where nests go (0.7).** Right-click a bin > **"File Nested Sequences Here"**: **Nest…** then puts "Nested Sequence 01"
+  in that bin instead of beside the sequence it came from (one bin at most; choose it again to stop; one undo step each;
+  Make Subsequence is not a nest and stays beside its parent).
 - **Search Bins.** Type in the Library's search field, then **"Create new search bin"** next to it: the bin keeps
   listing whatever matches (for example Good takes of scene 12), from every bin, as you log more.
 - **Freeform view.** The Library's third view: drag thumbnails anywhere, pile alternates into stacks (Ctrl+wheel goes
@@ -774,6 +984,10 @@ a file and as a timeline for Premiere or Resolve.
 - **Thumbnail size.** In the icon view, the slider under the cards (with its − and + buttons) sizes them from half to
   double, as do Ctrl+wheel, **=** / **-** and **Shift+]** / **Shift+[** while the Library has the focus. **Home**,
   **End**, **Page Up** and **Page Down** move the selection there (Shift extends it), as in Premiere's Project panel.
+- **Thumbnails in the list (0.7).** The ··· menu's **"Thumbnails in list view"** puts each media item's and sequence's
+  picture (16:9) in the Name column; the rows grow to hold it, and the same slider, Ctrl+wheel and keys that size the
+  cards size the rows (twice the height of a text row at 100 %). The choice is saved. Bins keep their folder icon, and
+  items without a picture (sound, titles) their kind's icon.
 - **Reorganise bins (0.6).** Drag a bin onto another bin, a breadcrumb or a bin tab to move it there (the bin under
   the pointer lights up and a chip shows what moves). Or right-click > **"Move to Bin"** and pick a bin from the tree
   (**"New Bin…"** makes one from the selection), or **Ctrl+X** in the Library (the items dim) and **Ctrl+V** with a bin
@@ -783,6 +997,47 @@ a file and as a timeline for Premiere or Resolve.
   total size and length. **File > Get Properties for Selection…** (**Ctrl+Shift+H**, or **"Properties…"** on a Library
   item) shows a clip's format, codec and profile, frame rate (variable or not), bit depth, chroma, field order, every
   audio stream with its title, file size, data rate, proxy and how many clips use it; **"Copy all"** copies it as text.
+- **Collect Files (0.7).** File > **Collect Files…** copies the project and what it uses into one folder. **Media**: whole
+  files, or **Used ranges + handles** with a **Handles** field of 0 to 10 s (steps of half a second, remembered; it
+  applies to used ranges only and the size estimate follows it; what is keyed to a file's own time - keyframes, masks, marks,
+  redactions and Spectral Repair edits - moves with the cut, so it stays on the same picture and sound). **Folders**: **All in one folder** (the default: every
+  file in `Media`), **Project bins** (the Project panel's bins become folders, so the capsule reads like the panel: `Media/
+  Interviews/Day 1/...`; items in no bin stay in `Media`) or **Original folders** (the folders the files came from, below
+  the folder they all share: `Media/Day 1/Cam A/...`; files on different drives get a folder named after the drive).
+  The choice is remembered. Folder names are made valid on Windows, macOS and Linux (no `:` `?` `*`, no reserved device
+  names), names that differ only by case share one folder, and nothing can leave `Media`; a path more than 8 folders or
+  120 characters deep keeps its last folders and the result says so. **Sequences**: tick the ones to archive (all by
+  default; **All** / **None**) - the sequences a chosen one nests or plays come with it, and media only the others use
+  stays out, so archiving the final cut does not copy every abandoned version's footage. The manifest lists the
+  sequences it holds and the layout.
+- **Consolidate Duplicates (0.7).** When the same file was imported more than once, **Edit > Consolidate Duplicates…**
+  (also Library ··· > **"Consolidate duplicates…"**) merges each set into one item. The confirmation lists, per set, the
+  item that is kept - the one that is online, then the one with most clips, then the oldest - and the ones that go; every
+  clip, audition take, graphic image, AI object mask, redaction, subclip, brand logo and provenance that named a removed
+  item names the kept one, transcript corrections move over when the kept item has none, its empty comment, description,
+  label, metadata and rights are filled from the others, and their markers are added (a marker with the same start and
+  name once). Items read differently - another Interpret Footage, timecode, audio channel map, frame scaling, camera RAW
+  setting or Master Clip Effects - stay and are listed with the reason. One undo step; the files stay on disk.
+  **Edit > Remove Unused…** is in the Edit menu too. Command: `project.consolidateDuplicates` (a dry run shows the plan).
+- **Rights and clearance (0.7).** For archival footage, stock and music: right-click a clip > **"Rights and
+  Clearance…"**, or **File > Export > Rights and Clearance Log…**. Each source keeps a **status** (cleared, pending, fair
+  use, not required), where it came from, its licence and reference number, the territory, the day it expires, what it
+  cost (with a currency), the credit line as it must appear, and notes. The log lists the sources the sequence uses in
+  the order they first appear (or every file of the project), says how often and where each is used, and flags what needs
+  attention on the day the film goes out (**Judge on**: not cleared yet, status never set, licence expired, licence runs
+  out within 30 days); a source with no record is the editor's own and is not flagged. Pick rows (click, Ctrl or Shift+
+  click, the arrow keys, Ctrl+A) to edit them together: only the fields you change are written, in one undo step.
+  **Export log…** writes a spreadsheet (CSV, or JSON) with the totals per status and the cost per currency; **Make credits
+  roll** puts a rolling credits graphic of the credit lines of the sources the sequence uses (each distinct line once)
+  after the last clip, where it can be edited like any graphic. A subclip uses its master's record. File > Export >
+  Media Usage Report… gains the same columns and a **Rights Flags** column. Commands: `media.setRights`,
+  `project.rightsLog`, `sequence.creditsRoll`.
+- **Channel names of a poly WAV (0.7).** Field recorders name the tracks of a multichannel WAV ("Boom", "Lav A", "Mix L")
+  in its iXML chunk (some also in the Broadcast Wave description). Wabcut reads them when the file is imported:
+  Properties shows **Audio channels** ("1 Boom · 2 Lav A"), the **Audio Channels** dialog names each source channel
+  above its level, and **Split to Mono** names the new clips after the microphones. A mono WAV with a name uses it as the
+  stream's name, like an OBS track name. Names are plain text of at most 128 bytes; a file's names that are not valid
+  UTF-8 are ignored, and the iXML is read without following anything it refers to.
 - **Proxies for many clips (0.6).** Select clips and right-click > **Proxy > "Create proxies (12)"**, or right-click a
   bin > **Proxy > "Create proxies for all media in this bin"**: a toast says how many were queued and how many already
   had one.
@@ -801,6 +1056,9 @@ a file and as a timeline for Premiere or Resolve.
   clips in 3 sequences." **"Delete and Remove Clips"** removes it and those clips (the gaps stay) in one undo step.
   **Ctrl+Delete** (Delete with Options…) always asks; turn off "Remove their clips from sequences" there and
   **"Delete Unused Items"** deletes only the selected items no sequence uses (the used ones stay).
+- **Masters of subclips (0.7).** A subclip plays the Master Clip Effects of the item it was made from, so that master
+  counts as used while a subclip of it is on a timeline: **Find > Unused** and **Remove Unused** leave it alone. Deleting
+  such a master asks first and says how many clips of its subclips would play without its effects.
 - **Twirl-down bins (0.6).** In the list view, a bin's arrow (or **Right**) shows what it holds under it, indented;
   **Alt+click** (Alt+Right) opens every bin inside too, and **Left** closes it or goes up to the bin a row is in. Rows
   inside bins select, rename, drag and sort like the others (each level sorted on its own). Wabcut remembers which
@@ -812,7 +1070,25 @@ a file and as a timeline for Premiere or Resolve.
   read-only to bring its sequences or bins over: they come in as copies with their media, which is never copied on disk,
   and remember where they came from (**"Reveal in Source Project"** in the Library's item menu; the **link** button
   offers the copies a relink their source project made). **Production Settings** (the gear) choose where every project's
-  previews and media cache go. A project a colleague has open shows a lock and opens read-only for you.
+  previews and media cache go (each project gets a folder of its own there, "<name> Preview Files" and a short code of its
+  location, so two projects called "Edit" in different folders keep their rendered previews apart). A project a colleague
+  has open shows a lock and opens read-only for you. A production
+  refuses the names Windows keeps for devices (Con, Prn, Aux, Nul, Com1-9, Lpt1-9, with or without an extension) for a new
+  project or folder, as New project does.
+- **Search the whole production (0.7).** With a production open, the **"Production"** panel has a search field above its
+  project list: type a few words and it finds sequences and footage in **any project of the production**, not only the one
+  you are editing. A result shows the item's name, the project it is in, its bin, its size and length, and where your
+  words were found (the name, a comment, a tape name, the file path, a marker...). Quote words (`"river at dusk"`) to find
+  them together; every word must be found. The row of tabs narrows the search to **Sequences**, **Video**, **Audio** or
+  **Stills**, and **"Search in"** limits it to one thing: the name, the comment, the description, the file path, the tape
+  name, the log note, the scene, the markers or the bins. Choose a type with no words to list everything of that type.
+  Each result has three buttons: **Import into this project** (a copy comes in with what it plays, one undo step, the
+  media never copied on disk), **Browse the project read-only** (it opens next to the project you are editing with the item
+  pointed at; a result in the project you are editing is shown in the Library) and **Open the project to edit**. **Enter**
+  or a double click on a result browses it; **Down** moves from the field into the list, **Esc** clears the field. The
+  projects are read in the background, with a progress bar and **Stop**: one you have open is searched as it is now,
+  unsaved changes included, and a file that has not changed since your last search is not read again, so a second search is
+  quick. A project that cannot be read is named in the summary and the others are still searched.
 
 **1. Multicam synced by audio.**
 1. In the **"Library"**, select the camera clips (and a separate audio recorder file if you have one).
@@ -820,6 +1096,10 @@ a file and as a timeline for Premiere or Resolve.
    "Timecode", "In points", "Out points" and "Clip markers" also work.
 3. Put the multicam source sequence in your edit.
 4. Open the Program Monitor's **"Multi-Camera View"** (**Shift+0**) and switch angles live with **1-9** while playing.
+   (0.7) If one camera is a few frames off, right-click its tile (or focus it with Tab and press the Menu key): **Sync 1
+   Frame Earlier / Later**, **Sync 10 Frames Earlier / Later**, **Reset to Measured Sync** and **Open Multi-Camera
+   Source**. A nudge is one undo step (an angle cannot start before 0: the others move later instead), and a tile that
+   is off the sync Wabcut measured wears a "+2 f" badge.
 5. **"Auto Switch…"** on a multicam clip cuts to whoever is talking.
 
 **2. Edit by text, through the multicam.**
@@ -880,17 +1160,30 @@ regions are never sent to a cloud service in clear.
 
 These work as in Premiere Pro; each is also a command for scripts and agents ([commands.md](commands.md)).
 
-- **Frame size.** Right-click a clip > **"Video Options"** > **"Scale to Frame Size"** (fits the picture, Scale stays
-  100 %), **"Set to Frame Size"** or **"Set to Fill Frame"** (writes Motion's Scale).
+- **Frame size.** Right-click a clip > **"Video Options"** > **"Auto Fit to Frame"** (fits the picture, Scale stays
+  100 %), **"Set Scale to Fit Frame"** or **"Set Scale to Fill Frame"** (writes Motion's Scale). Since 0.7 the names say
+  what each does; Premiere calls them Scale to Frame Size, Set to Frame Size and Fill Frame (the command palette and
+  the shortcut list still find them under those names, and hovering a menu row explains it). **"Nearest Neighbor Scaling"**
+  (same menu, also under Clip > Video Options) resizes the clip without smoothing, so pixel art and low-resolution game
+  captures keep hard pixel edges when you enlarge them; choose it again to go back to smooth scaling.
   **"Media and Timeline Preferences…"** (Edit menu, or Settings > Timeline & editing) > **"Media"** >
   **"Default Media Scaling"** applies one of them to everything you import.
-- **Sequences.** **"Sequence Settings…"** (Sequence menu, or a sequence's Library menu) changes the frame size, frame rate,
+- **Sequences.** **"Sequence Settings…"** (Sequence menu, or a sequence's Library menu; 0.7: it shows the sequence's **work
+  area** too, with **Clear**; Alt+[ and Alt+] set the work area's In and Out at the playhead, and Export's Range can use
+  it) changes the frame size, frame rate,
   pixel aspect, fields, audio sample rate, preview format, start timecode and time display, with presets from 23.976 to
   240 fps, vertical 1080x1920 and square 1080x1080. A new frame rate keeps every cut where it was, on the new frames.
   **"New Sequence From Clip"** makes a sequence that matches a clip; **"Duplicate"** copies a sequence or a clip.
+  With several clips selected in the Library, **"New Sequence per Clip"** (File menu or right-click) makes one sequence
+  for each of them in one step (one undo), and **"New Sequence From All Selected Clips"** makes one sequence that
+  matches the first clip and holds them all one after another.
 - **Replace.** Shift-drag from the Source Monitor (or Alt/Shift-drag from the Library) onto a clip, or right-click >
   **"Replace With Clip"**: the new clip takes the old one's place and keeps its effects. In the Library: **"Replace
-  Footage…"**, **"Make Offline"** and **"Edit Original"** (**Ctrl+E**).
+  Footage…"**, **"Make Offline"** and **"Edit Original"** (**Ctrl+E**). When another program re-exported or changed a
+  clip's file, **Clip > "Reload Footage"** (or right-click > **"Reload Footage"**) reads it again where it is: the new
+  length, streams and frame size show up and the clips, marks, markers and effects stay. Items that share the file reload
+  with it, a proxy made of the old file is dropped, and clips that now run past the end of a shorter file are named in the
+  message. A file that reads the same as before changes nothing; a clip that lost a stream a clip plays is refused.
 - **Timeline.** Right-click > **"Make Subsequence"**, **"Join Through Edits"** (on a razor cut), **"Video Options"** >
   **"Frame Hold Options…"**; the palette has **"Next in Sequence"** / **"Next in Track"** (gaps) and **"Close Gap"**.
 - **Scene Edit Detection** (0.5). Select video clips (an exported edit, a clip with several shots), then Clip >
@@ -956,6 +1249,14 @@ Some download a model the first time; you are asked first.
   The Assistant then works offline.
 - **The Assistant.** Palette > **"Ask AI…"**. It proposes ordinary Wabcut commands, previews them, and changes nothing
   until you choose **"Accept"**. Every accepted change is one undo step.
+
+## Cloud projects, review links and stock media (0.7)
+
+Keep a project on storage you own (a folder your sync service mirrors, WebDAV, an S3-compatible bucket) and edit it from more than one computer:
+**File > Cloud Project…**, then **Sync now**. Send a draft to a client as a web page where they comment on exact frames, and read their comments
+back as review notes: **File > Share Review Link…**. Search free videos and photos from Pexels and Pixabay and add one with its licence and credit
+recorded: **Window > Stock Media**. Nothing is uploaded before a button that says so, and offline mode stops all of it. All of it, with
+what the storage must be able to do, is in [cloud.md](cloud.md).
 
 ## Keyboard: Premiere shortcuts
 
@@ -1023,6 +1324,24 @@ Wabcut uses **Premiere Pro's default shortcuts** (Windows and macOS tables, per 
   render files?"); the edit does not change, and those segments turn red or yellow again on the render bar. The rows
   are greyed, with the reason, while there is nothing to render or delete. They have no default key (as in Premiere);
   give them one in Keyboard Shortcuts.
+- **Background rendering** (0.7). Wabcut renders the red and yellow stretches of the open sequence by itself while
+  nothing else happens, so they turn green without a visit to Render In to Out. It starts after you have not touched
+  the keyboard, mouse or pen for 10 seconds (Settings > Media & cache > Background rendering: 5 s, 10 s, 30 s, 1 min or
+  5 min), renders one stretch at a time (red ones first, from the playhead on) on half of the processor cores, with Wabcut's
+  render, decode and conversion threads at low priority (the encoder's own threads are limited to those cores, not slowed),
+  and **pauses at once** when you use the keyboard or mouse, play, drag or trim, start an export or a render of
+  your own, or when other programs use the processor (and, on NVIDIA graphics cards, the graphics card) or the
+  computer is on battery power ("Wait while on battery power", "Wait while other programs are busy": both on by
+  default). It goes on where it stopped when you are idle again; a stretch left paused for two minutes is given up and
+  started again later. An edit that changes a stretch's picture makes its render file unused at once (the monitor
+  plays live, the bar turns red or yellow) and the stretch is rendered again when you are idle; an edit elsewhere
+  keeps it. Colour management changes count: a render file made under another setup is never used. It only renders the
+  sequence you have open, never past the render files' size limit (20 GB) or onto a nearly full drive. **Sequence >
+  Background Rendering** turns it on or off (the command palette has it too); the title bar's **Background tasks**
+  popover shows what it is doing ("3 segments left", "Paused: you used the keyboard or mouse.") with a **Stop** that
+  holds it until your next edit. **Delete Render Files** holds it the same way, so the files you deleted are not made
+  again behind your back. Linux and macOS do not read the processor, graphics card or battery load yet: input,
+  playback, exports and your own renders still pause it there.
 - **The other tools.** R (Rate Stretch), P (Pen), H (Hand), Z (Zoom) and T (Type) work as in Premiere, and so do G
   and Shift+G (Audio Gain, Audio Channels).
 
@@ -1037,7 +1356,17 @@ Wabcut uses **Premiere Pro's default shortcuts** (Windows and macOS tables, per 
   bind a key). While it is on, moving the playhead selects the clips under it on the targeted tracks (all tracks when
   none is targeted), with their groups and links.
 - **Go to Gap.** **Shift+;** moves the playhead to the next gap in the sequence (a stretch where no track has a clip),
-  **Ctrl+Shift+;** to the previous one ("Next in Sequence" / "Previous in Sequence").
+  **Ctrl+Shift+;** to the previous one ("Next in Sequence" / "Previous in Sequence"). **Next in Track** and **Previous in
+  Track** (0.7, below) also select the gap.
+- **Track Select Forward and the markers** (0.7). Drag with the **Track Select Forward Tool (A)** and the sequence
+  markers at or after the first clip you move go with it by the same distance, in the move's undo step; with
+  **Markers > Ripple Sequence Markers** off they stay. Markers before the first moved clip never move.
+- **Clean up before delivery** (0.7). **Sequence > "Remove Transitions from Selection"** deletes the transitions on and
+  between the selected clips (fades at a clip's edge too) and **"Remove All Transitions"** every transition of the
+  unlocked tracks: the edit points become plain cuts, one undo step. **Edit > "Select All Disabled Clips"** selects every
+  disabled clip of the sequence (then Delete, Ripple Delete or Enable act on them) and **Sequence > "Remove Disabled
+  Clips"** deletes them in one step, leaving gaps; a disabled picture's enabled sound stays. Locked tracks are left
+  alone. Commands: `sequence.removeTransitions`, `sequence.removeDisabledClips` (`ripple` closes the gaps).
 - **Select Next Clip / Select Previous Clip** (**Ctrl+Down** / **Ctrl+Up** in the Timeline panel): the clip after / before the
   selected one on its track, with its links and group; with nothing selected, the clip at or after the playhead.
 - **Pen on video opacity.** With the **Pen tool (P)** video clips show their **Opacity** as a line (100 % at the top of
@@ -1090,6 +1419,141 @@ Wabcut uses **Premiere Pro's default shortcuts** (Windows and macOS tables, per 
   sound. Its **"Paste"** is the same as Ctrl+V: effects you copied in Effect Controls go onto the selected clips.
 - **Track headers.** The speaker is crossed only when a track is muted; mute is amber and solo green, as in the mixer.
 
+### Timeline: navigation, track keys and clip labels (0.7)
+
+- **Pan with the middle button.** Hold the mouse wheel's button and drag on the timeline: it scrolls in both directions
+  with any tool and edits nothing. **Hold H or Z** for the **Hand** or **Zoom** tool for as long as the key is down; when
+  you let go, the tool you had comes back. A quick tap of H or Z still chooses the tool, as before.
+- **Solo a video track.** Video track headers have a solo button (a crosshair) next to the eye. While any video track is
+  soloed, only the soloed video tracks show in the Program Monitor and in exports, as only soloed audio tracks are heard.
+  Shift-click soloes every video track; the project keeps the solo. MCP: `track.setState` with `solo` works on video tracks.
+- **Track keys.** They act on the tracks of the selected clips (a linked picture and sound: both), or on the targeted tracks
+  when nothing is selected, in one undo step: **Alt+Shift+O** "Toggle Track Output" (the eye; video), **Alt+Shift+U**
+  "Toggle Track Mute" (audio) and **Ctrl+Alt+Shift+S** "Toggle Track Solo" (macOS: Opt for Alt, ⌘ for Ctrl).
+  **Alt+Shift+S** "Solo Selected Clip's Track" solos the track of the selected clip alone (the other tracks of its kind
+  are unsoloed); press it again to end the solo, to audition one element and come back. They are in the Sequence menu and
+  in Keyboard Shortcuts; a key that cannot run says why.
+- **A range marker from In and Out.** Markers > **"Add Marker from In/Out"** (**Shift+X**) makes a marker as long as the
+  range between the In and Out marks (one undo step). The marks stay. Greyed with "Set In and Out first" until both are set.
+- **Overlay, Insert Before, Insert After and Append at End on keys** (Clip menu), for the clip loaded in the Source Monitor, at
+  the playhead and the targeted tracks, as the Program Monitor's edit overlay does when you drag: **Ctrl+Alt+O** Overlay (a
+  free video track above, or a new one), **Ctrl+Alt+,** Insert Before and **Ctrl+Alt+.** Insert After the clip under the
+  playhead (it goes in at that clip's start or end and moves the rest later), **Ctrl+Alt+P** Append at End (macOS: Opt+⌘
+  with the same keys). Each is one undo step named after the edit.
+- **Snap to.** The Tracks panel's display settings (and Settings > "Timeline & editing") choose what Snap sticks to: **clip
+  edges** (cuts, transitions, gaps), the **playhead**, the **In and Out marks**, **markers** and **beats**. All are on by
+  default; **S** stays the master switch. Drags, drops, ruler scrubs and caption cue drags follow the choice.
+- **Clip notes (0.7).** Right-click a clip > **"Clip Note…"** to write a free-text note on it (Ctrl+Enter or **Save**; **Clear**
+  removes it; up to 2,000 bytes). The note belongs to that clip: it is saved with the project, both halves of a razor cut keep
+  it and a copy carries it, while other clips of the same file do not have it. With **"Clip notes"** on (Timeline Display and
+  Settings > "Timeline & editing"; on by default) the first lines of the note are printed on the clip, at its foot; the whole
+  note is in the clip's tooltip and in `clip.details`. One undo step; `clip.setNote` does it for scripts and the assistant.
+- **Pacing strip (0.7).** Turn on **"Pacing strip"** (Timeline Display, or Settings > "Timeline & editing") for a thin strip
+  between the ruler and the tracks that colours the stretches of the edit where a viewer may get bored: amber when the pace
+  eases off, strong amber when it is slow, red when it is likely to drag. It grades what is measured on this computer, with no
+  upload and no model: how long the same shot has run without a cut (a cutaway over a longer shot counts as a cut), how
+  little moves in the picture (a still screen, a locked-off shot), how long the sound stays quiet and, when the sequence has a
+  transcript, how slowly the words come (under 100 a minute). A moment's score adds those up, so two weak reasons count as
+  one strong one. Point at a stretch for why, in numbers, and what to try (a cut, a cutaway or B-roll; trim or speed up the
+  pause); **click** it to put the In and Out marks around it, **Shift-click** to select the clips that play in it, or right-click
+  for **"Add a Marker for This Stretch"**. The footage is measured in the background, one file after another, and the strip fills
+  in as each file is done; a file that cannot be measured is left ungraded rather than called silent. Cuts through the same
+  media (a through edit) do not count as cuts.
+- **Clip duration** (display settings > "Clip duration", off by default) prints each clip's length after its name, in the
+  sequence's time format: `Interview [50%] · 00:00:04:12`. **Audio track names** (on by default) shows the track name a
+  recording with several audio tracks carries (OBS, ShadowPlay, Game Bar, field recorders) after an audio clip's name:
+  `Gameplay · Mic`. A file's single audio track shows nothing extra.
+- **Label colours.** Settings > Appearance > **"Label colours"** chooses Echo's bright labels or the softer **Classic** set
+  (older Premiere's look, not its exact values); single labels can still be changed under Custom colours, and "Reset labels"
+  comes back to the choice.
+- **Add tracks when editing clips in** (Settings > "Timeline & editing", on by default, as Premiere 26.3's preference).
+  On: an edit that needs a track the sequence lacks adds it (a recording's second audio stream, a paste that spans more
+  tracks than exist, an Overlay with no free track). Off: those edits use the tracks that are there, leave out what has
+  no track, and say so when nothing fits. Add Track, Add Tracks… and a drag held below the last track still add tracks.
+- **Track Select Backward carries markers**, like Track Select Forward: dragging with it moves the markers at or before the
+  end of the last clip moved, in the same undo step, while Markers > "Ripple Sequence Markers" is on.
+
+### Timeline: gaps, labels and the keyboard menu (0.7)
+
+- **Go to Gap in a track selects the gap.** Sequence > Go to Gap > **"Next in Track"** / **"Previous in Track"** (also in
+  Keyboard Shortcuts and the command palette; no default key) move the playhead to the next or previous gap of the targeted
+  tracks (every track when none is targeted) and **select that gap**: Delete, Backspace and Shift+Delete then close it, as
+  they do for a gap you clicked, in one undo step. "Next in Sequence" / "Previous in Sequence" (**Shift+;**) only move the
+  playhead. Sequence > Gaming > **"Auto Reframe Sequence…"** opens the Reframe dialog.
+- **Context menus from the keyboard.** With the focus in the timeline (Tab reaches the lanes and the clip list), the **Menu
+  key** or **Shift+F10** opens the right-click menu of what is selected: the selected transition's, else the selected gap's,
+  else the clip's. The menu opens where the clip, gap or transition is (the view scrolls to it first). With nothing
+  selected it is the menu of the first targeted track's header. In the Timeline list the keys open the clip menu of the
+  current row, selecting its clip first. A lone panel's tab opens its tab menu the same way.
+- **Named label colours.** A clip's right-click menu names its sixteen label swatches (Premiere's names) and rings the colour
+  the selected clips share. **Edit > Label** lists the sixteen names for the selected clips (the shared one is checked), then
+  **"Select Label Group"**, which selects every clip of the sequence with the label colour of the selected clips (their
+  linked partners too while Linked Selection is on). It changes the selection only: no undo step. The command
+  `edit.selectLabelGroup` has no default key; the same row ends the clip menu's swatch area. The Library item menu and the
+  sequence tab's Label menu check the current label too.
+- **Track label colours.** Right-click a track header > **"Label"** gives the track one of the sixteen label colours (or **"No
+  Label"**): a bar down the header's left edge, a faint wash over the track's lane, and the same colour on its mixer strip.
+  Use them for telops, B-roll, music or game audio so a busy timeline reads at a glance. One undo step "Track Color", saved in
+  the project (older versions ignore it). MCP / CLI: `track.setState` with `colorIndex` (0-15, -1 for none); `sequence.summary`
+  lists it.
+- **Slip from trim mode (Avid style).** In trim mode **Shift-click the other edge of a clip whose edge is selected** (or press
+  **Sequence > "Slip Trim"** with clips selected, or on the clip under the playhead; or choose **Slip** in the Trim view's
+  type tabs): both edges of the clip are the edit points and the trim slips its content. The Trim view shows the clip's first
+  frame (left) and last frame (right) with their source timecodes and how many frames were slipped; **+1 / +5**, **−1 / −5**,
+  Ctrl+arrows and J/K/L dynamic trimming move the source In and Out together (later source frames with +) while the clip keeps
+  its place and length; the linked sound slips with the picture while Linked Selection is on. It stops at the media's ends.
+  One undo step "Slip" each; Toggle Trim Type goes back to the roll.
+
+### Timeline: insert a copy, lock clips, move tracks, match a nest (0.7)
+
+- **Alt-drag, then Ctrl: insert the copy.** Start a drag with **Alt** (the copy cursor), then press **Ctrl** (macOS: ⌘)
+  before you drop: the copy is **inserted** where you drop it, so the clips after it move later (and so do the sync-locked
+  tracks), instead of covering what is there. The readout says "Insert Copy", the cursor shows two plus signs, and the
+  undo step is "Insert Duplicate". Let go of Ctrl before the drop to get the plain copy again. The order of the keys
+  matters, as in Premiere: **Ctrl first and then Alt**, or both from the start, is still the **rearrange** drag above.
+- **Show a clip's keyframes.** Click the **fx badge** on a clip: the clip is selected and a menu lists its properties,
+  Motion and Opacity on a picture, Volume and Panner on a sound, then the parameters of each effect; a diamond marks the
+  ones that have keyframes. Choose one to draw its **value line and keyframes on the clip** (the line is ranged to the
+  keys, so a Position or a Blur reads the same way; a property without keys shows a flat line). **Previous / Next
+  Keyframe** in the same menu move the playhead between the shown keys, **Hide Clip Keyframes** (or choosing the shown
+  property again) removes the line. It is only a view: nothing is edited and there is no undo step; the keys themselves
+  are edited in Effect Controls. One property per clip.
+- **Lock Clip.** Select clips and choose Clip > **"Lock Clip"** (or the clip's right-click menu; **"Unlock Clip"** when they
+  are all locked). A locked clip wears a padlock and **cannot change at all**: not moved, trimmed, split, retimed,
+  renamed, deleted, overwritten or pushed by a ripple or an insert (an edit that would says "clip 'Name' is locked" and
+  changes nothing, in the lanes as a readout while you drag). It can still be selected, copied (the copy is not locked)
+  and played, and the razor leaves it whole. Unlike a locked track, the clips next to it stay editable. Locking a linked
+  picture does not lock its sound unless it is selected too (Linked Selection selects both). One undo step; saved with the
+  project (older versions open it unlocked). MCP / CLI: `clip.lock` with `clips` and `locked`.
+- **Reorder tracks by dragging.** Drag a track header's **name chip** (V1, A2 ...), or the free space of the header around its buttons, up or down: a line shows which header it
+  takes the place of, and on release the track moves there, with its clips, links, targeting and effects, in one undo step
+  "Move Track". Video stacks upward (a higher track is in front), audio downward. A click on the chip still targets the
+  track. The header menu has **"Move Track Up"** and **"Move Track Down"** for the keyboard. A locked track can move
+  (its clips are not touched). MCP / CLI: `sequence.moveTrack` with `track` and `position`.
+- **Track groups.** Group tracks that belong together (Dialogue, SFX, Music) and work on them as one. Target the tracks (the
+  name chips; Shift-click targets every track of a kind) and choose **"Group Targeted Tracks"** in a track header's menu (or
+  the palette), or **"New Group from This Track"** and then **"Add to Group"** on the others. The group gets a **header row**
+  above its tracks: a chevron that folds the tracks into the row (a collapsed group is that row alone, and its lane shows
+  where its tracks have clips; the tracks still play and export), the name (double-click renames it), how many tracks it
+  holds, and Mute (video: output), Solo and Lock for **all** of them at once - lit while every track has the switch, ringed
+  while only some do. Right-click the row for the group's menu: Rename Group, **Label** (a colour bar on the row and a wash on
+  its lane), Collapse / Expand, **Track Height** (the group's tracks at the minimum, the default or large), Mute / Solo /
+  Lock / **Target Group**, an audio group's **Output** (the Mix, or **New Submix for This Group**: a submix track named after
+  the group, so one fader and one effect stack apply to the whole group - that is how you put a level or effects on a group)
+  and **Ungroup Tracks**. A group keeps its tracks next to each other: dragging a track out of the group takes it out, dropping
+  one between two of its tracks puts it in, and a track header's menu has **"Remove from Group"**. The palette has **Group
+  Targeted Tracks**, **Collapse All Track Groups** and **Expand All Track Groups** (no default keys). In the **Audio Track
+  Mixer** a group's strips carry a tag with its name; click it and the strips fold into one group strip (name, number of
+  tracks, Mute, Solo, where it goes, **Expand**) - the same collapsed state as the timeline's. Every change is one undo step
+  (Group Tracks, Collapse Group, Mute Group ...); groups are saved with the project (older versions open it with the tracks
+  ungrouped) and a copy of a sequence keeps them. MCP / CLI: `trackGroup.create`, `trackGroup.set`,
+  `trackGroup.setTracksState`, `trackGroup.addTracks`, `trackGroup.removeTracks`, `trackGroup.route` and
+  `trackGroup.ungroup`; `sequence.summary` lists the groups.
+- **Match Frame into a nest.** With the playhead over a **nested or multi-camera clip**, **F** (Match Frame) opens its source
+  sequence in a tab with the playhead on the frame the clip shows there (the breadcrumb leads back), the same as
+  double-clicking the clip. On any other clip it loads the media into the Source Monitor as before. `sequence.matchFrame`
+  answers a nest with `"nested": true`, its `sequence` and the `sequenceTime`, and stores nothing.
+
 ### Auditions: several takes at one cut (0.6)
 
 An **audition** keeps alternatives for the same place in the edit - other performances of a line, two readings of a
@@ -1127,6 +1591,40 @@ DaVinci Resolve's Take Selector; Premiere has nothing like it.
   take that plays and the export report lists the others. See [interchange](interchange.md#auditions-06).
 - Scripts: `audition.create`, `audition.addTakes`, `audition.addSource`, `audition.setActive`, `audition.removeTake`,
   `audition.moveTake`, `audition.renameTake`, `audition.duplicateTake`, `audition.flatten`, `audition.describe`.
+
+### Render and Replace a nest, and the keys that did nothing (0.7)
+
+- **Render and Replace.** A nested sequence is composited again at every frame, so a heavy nest (many layers, effects) can
+  stutter. Select its clip (the picture and sound halves of one nest count as one) and choose **Clip > Render and
+  Replace…** (also in the clip's right-click menu and the command palette). The window lists the nest, the stretch the clip
+  plays and the stretch that is rendered - what the clip plays plus the **handles** (extra seconds either side, 1 s unless
+  you change it, so a later trim still has picture) - and asks for the **format**: ProRes 422 HQ, DNxHR HQ, H.264 or ProRes
+  4444, which keeps transparency (the window picks it when the nest's lowest track has a gap or a graphic, and warns when
+  you choose a format that would fill it with black). The files go to a folder named after the project next to it
+  ("My Film Rendered Media"; for a project that is not saved yet, under the default export folder), or any folder you
+  choose with **Folder…**.
+- **It runs in the export queue**, off the editing window: **Background tasks** shows its progress, and the window shows it
+  too, with **Stop**. **Hide** closes the window and the render goes on. When a file is done, the clip plays it from then on -
+  same place, In and Out, speed, links, keyframes and effects; picture and sound of one nest come from one file - as one
+  undo step named "Render and Replace", and a message says so. Nothing is replaced when the render fails or is stopped, when
+  the nest (or anything it plays) was edited while it rendered, or when the clips changed; the clips keep playing the live
+  nest. The file stays where it was made.
+- **Restore Unrendered** (Clip menu, or right-click a rendered clip) plays the nest again, exactly as it was, as one undo
+  step. The rendered file stays in the project's bin beside the nest (Remove Unused deletes it from the project). While a
+  clip plays the file, edits to the nest do not show; restore it first.
+- **Not rendered:** multi-camera clips (they show one angle of their source), auditions (flatten first), locked clips,
+  clips with Time Remapping or an object mask. The menu rows grey out with the reason.
+- **The keys that did nothing now act (card 024).** In the **Media Browser**: **Shift+O** opens the current clip in the
+  Source Monitor (without importing it), **Shift+Right** selects the list of clips and **Shift+Left** opens its Drives and
+  places menu (the browser has one list, so the directories are the places). **Ctrl+L** in **Effect Controls** and the
+  **Audio Track Mixer** turns the Program Monitor's **Loop** on or off, with a message, so Link keeps Ctrl+L everywhere
+  else. **Alt+[** and **Alt+]** set the **work area**'s In and Out at the playhead; it shows as a thin bar at the bottom of
+  the ruler, **Sequence > Clear Work Area** removes it (one undo step), and Export's **Work Area** range is greyed out
+  until there is one.
+- **Two Premiere keys are unbound** because Wabcut has no feature behind them: the Metadata panel's **Loop** and **Play**. The
+  commands are still listed in Keyboard Shortcuts, and a Premiere key set that binds them still imports. The Audio Track
+  Mixer's **Show/Hide Tracks** (Ctrl+Alt+T) and **Meter Inputs Only** (Ctrl+Shift+I, which clears the In mark everywhere
+  else) act in the mixer. See [keymap](keymap.md).
 
 ## Scripts and agents
 

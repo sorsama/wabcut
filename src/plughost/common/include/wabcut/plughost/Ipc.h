@@ -56,12 +56,24 @@ private:
     void* m_handle = nullptr;
 };
 
+/// What a child process may do, enforced by a job object of its own (0.7: the OpenFX helper runs third-party code, so it
+/// is held to little more than computing: no other processes, no desktop, a memory cap).
+struct ChildLimits {
+    bool noChildProcesses = false; ///< the child cannot start another process
+    bool noDesktopAccess = false;  ///< no clipboard, global atoms, display settings, system parameters, log off
+    std::uint64_t memoryBytes = 0; ///< 0: no cap; else the most committed memory the child may use
+    static ChildLimits restricted(std::uint64_t memoryBytes = 0) { return {true, true, memoryBytes}; }
+    bool any() const noexcept { return noChildProcesses || noDesktopAccess || memoryBytes != 0; }
+};
+
 /// A child process with its stdin and stdout connected to this process (the control channel).
 class ChildProcess {
 public:
-    /// Starts `exe` with `args` (each quoted as needed). stderr goes to `stderrFile` when given, else is discarded.
+    /// Starts `exe` with `args` (each quoted as needed). stderr goes to `stderrFile` when given, else is discarded. `limits`
+    /// restricts what the child may do (above); it is also ended with this process, as every helper is.
     static std::unique_ptr<ChildProcess> start(const std::filesystem::path& exe, const std::vector<std::string>& args,
-                                               const std::filesystem::path& stderrFile, std::string& error);
+                                               const std::filesystem::path& stderrFile, std::string& error,
+                                               const ChildLimits& limits = {});
     ~ChildProcess(); ///< terminates the process if it still runs
     ChildProcess(const ChildProcess&) = delete;
     ChildProcess& operator=(const ChildProcess&) = delete;
@@ -84,6 +96,7 @@ private:
     void* m_process = nullptr;
     void* m_stdinWrite = nullptr;
     void* m_stdoutRead = nullptr;
+    void* m_job = nullptr; ///< the child's own limited job (ChildLimits), closed with it
     std::uint32_t m_pid = 0;
     std::string m_pending; ///< bytes read past the last line
 };

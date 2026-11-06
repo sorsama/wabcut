@@ -18,6 +18,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace wabcut {
 
@@ -43,15 +44,31 @@ struct CaptionBrandRefs {
 enum class CaptionPlacement : std::uint8_t { Bottom, Top, Custom };
 /// How lines align inside the block.
 enum class CaptionAlign : std::uint8_t { Left, Center, Right };
-/// Reserved for kinetic captions (the renderer draws None today): pop in, fade in, reveal word by word.
-enum class CaptionAnimation : std::uint8_t { None, Pop, Fade, WordByWord };
+/// Kinetic captions (the renderer evaluates them per frame): the whole caption pops or fades in, or each word follows the
+/// speech. card 074 added the per-word looks: WordPop (words appear as spoken, each popping in), Bounce (all words
+/// shown, the spoken one hops), HighlightBar (a bar slides to the spoken word, like CapCut and Opus), Typewriter (letters
+/// appear one by one), Zoom (the spoken word grows). New values are only ever appended: projects name them as text.
+enum class CaptionAnimation : std::uint8_t { None, Pop, Fade, WordByWord, WordPop, Bounce, HighlightBar, Typewriter, Zoom };
+/// The curve of a word's transition: Smooth (ease out), Overshoot (ease out back: a little past, then settles), Linear.
+enum class CaptionEase : std::uint8_t { Smooth, Overshoot, Linear };
+/// Which words of a caption are emphasised (drawn in the emphasis colour and a little larger): none, the style's own
+/// keywords, or those plus numbers, words in capitals and words followed by "!" (card 074).
+enum class CaptionEmphasis : std::uint8_t { None, Keywords, Auto };
+/// The case of the caption text as drawn and exported (card 114): as written, lower or UPPER case.
+enum class CaptionTextCase : std::uint8_t { AsWritten, Lower, Upper };
 
 std::string_view toString(CaptionPlacement value);
 std::string_view toString(CaptionAlign value);
 std::string_view toString(CaptionAnimation value);
+std::string_view toString(CaptionEase value);
+std::string_view toString(CaptionEmphasis value);
+std::string_view toString(CaptionTextCase value);
 std::optional<CaptionPlacement> captionPlacementFromString(std::string_view text);
 std::optional<CaptionAlign> captionAlignFromString(std::string_view text);
 std::optional<CaptionAnimation> captionAnimationFromString(std::string_view text);
+std::optional<CaptionEase> captionEaseFromString(std::string_view text);
+std::optional<CaptionEmphasis> captionEmphasisFromString(std::string_view text);
+std::optional<CaptionTextCase> captionTextCaseFromString(std::string_view text);
 
 struct CaptionStyle {
     std::string fontFamily;            ///< empty = the platform's sans-serif; missing glyphs fall back
@@ -81,9 +98,21 @@ struct CaptionStyle {
     double lineSpacing = 1.0;          ///< 0.5..3
     CaptionRgb highlight{1.0, 0.82, 0.25}; ///< karaoke: colour of the words already spoken
     CaptionAnimation animation = CaptionAnimation::None;
+    double animationSpeed = 0.15;      ///< seconds one word's transition takes (0.05..1); Fade takes a third longer
+    CaptionEase animationEase = CaptionEase::Overshoot;
+    CaptionEmphasis emphasis = CaptionEmphasis::None;
+    std::vector<std::string> emphasisWords; ///< the keywords (compared without case; at most kMaxCaptionEmphasisWords)
+    CaptionRgb emphasisColor{1.0, 0.86, 0.0};
+    double emphasisScale = 1.12;       ///< how much larger an emphasised word is drawn (1..1.5)
+    CaptionTextCase textCase = CaptionTextCase::AsWritten; ///< card 114: the case the text is drawn and exported in
+    bool stripPunctuation = false;     ///< card 114: no commas, full stops, quotes... (apostrophes, hyphens inside words stay)
+    bool stripAccents = false;         ///< card 114: é -> e, ł -> l, ð -> d... (not Thai vowel and tone marks)
     bool showSpeakers = false;         ///< a cue with a speaker starts with the speaker's name in the speaker's colour
     bool allowOverlap = false;         ///< cues of the track may overlap (the renderer stacks them)
     CaptionBrandRefs brand;            ///< C.13: brand kit colours and font that override the ones above
+    /// 0.7 (card #138): OpenType features for the shaper (parseFontFeatures, Graphics.h): contextual alternates, ligatures,
+    /// stylistic sets, ... for Persian, Arabic and branded fonts; empty = the font's defaults. Saved only when set.
+    std::string features;
 
     bool operator==(const CaptionStyle&) const = default;
 };
@@ -104,10 +133,16 @@ struct CaptionPreset {
     bool operator==(const CaptionPreset&) const = default;
 };
 
-/// The built-in presets: "Clean", "Bold Box", "Podcast", "Shorts", "Thai-friendly".
+/// The built-in presets: "Clean", "Bold Box", "Podcast", "Shorts", "Thai-friendly", and the animated gallery (card 074):
+/// "Word Pop", "Highlighter", "Bounce", "Typewriter", "Zoom", "Hype".
 std::span<const CaptionPreset> builtinCaptionPresets();
 /// A built-in preset by name (case-insensitive), or null.
 const CaptionPreset* findBuiltinCaptionPreset(std::string_view name);
+/// Whether `name` is one of the five built-in presets that shipped before 0.7 (Clean, Bold Box, Podcast, Shorts,
+/// Thai-friendly). A project cannot hold a preset of its own with such a name. The animated gallery added more built-in
+/// names later, and a project made before that may already have a preset called "Bounce" or "Zoom": it still loads, and
+/// the project's own preset wins over the built-in one of the same name (captionPresetStyle).
+bool isOriginalBuiltinCaptionPreset(std::string_view name);
 
 // Bounds for untrusted project files and requests.
 inline constexpr std::size_t kMaxCaptionTracks = 64;          ///< per sequence
@@ -116,5 +151,7 @@ inline constexpr std::size_t kMaxCaptionTextBytes = 4096;     ///< per cue
 inline constexpr std::size_t kMaxCaptionNameBytes = 256;      ///< track and preset names, languages
 inline constexpr std::size_t kMaxCaptionFontBytes = 256;
 inline constexpr std::size_t kMaxCaptionPresets = 256;        ///< per project
+inline constexpr std::size_t kMaxCaptionEmphasisWords = 64;   ///< per style
+inline constexpr std::size_t kMaxCaptionEmphasisWordBytes = 64;
 
 } // namespace wabcut

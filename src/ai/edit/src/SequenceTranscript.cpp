@@ -103,6 +103,10 @@ void MapTranscriptProvider::add(MediaId media, int audioStream, std::shared_ptr<
     m_transcripts[{media.value, audioStream}] = std::move(transcript);
 }
 
+bool MapTranscriptProvider::remove(MediaId media, int audioStream) {
+    return m_transcripts.erase({media.value, audioStream}) > 0;
+}
+
 std::shared_ptr<const Transcript> MapTranscriptProvider::transcript(const MediaItem& media, int audioStream) const {
     const auto it = m_transcripts.find({media.id.value, audioStream});
     return it == m_transcripts.end() ? nullptr : it->second;
@@ -481,7 +485,8 @@ std::string_view SequenceTranscript::text(std::size_t i) const {
 }
 
 std::string_view SequenceTranscript::language(std::size_t i) const {
-    return m_transcripts[m_words[i].transcript]->language;
+    // 0.7 (card 111): a transcript of mixed languages names the language of each segment.
+    return m_transcripts[m_words[i].transcript]->wordLanguage(m_words[i].word);
 }
 
 std::string SequenceTranscript::textOf(std::size_t first, std::size_t last) const {

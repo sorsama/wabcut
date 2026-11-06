@@ -111,7 +111,8 @@ public:
     std::expected<void, Error> setSettings(ProductionSettings settings);
     /// A setting as an absolute folder: a relative one under the production folder; empty stays empty.
     std::filesystem::path resolve(const std::string& setting) const;
-    /// Where a project's preview renders go: "<previews>/<project> Preview Files" when the production sets previews,
+    /// Where a project's preview renders go: "<previews>/<project> Preview Files <hash>" when the production sets
+    /// previews (the hash is six hex digits of the project's path: file names repeat across the production's folders),
     /// else empty (the default, next to the project).
     std::filesystem::path previewFolderFor(const std::filesystem::path& projectFile) const;
 

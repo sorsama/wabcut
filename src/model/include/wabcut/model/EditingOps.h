@@ -55,6 +55,24 @@ std::optional<Ticks> replaceMatchFrameIn(const Clip& clip, Ticks sourcePlayhead,
 std::expected<ProjectState, Error> replaceFootage(const ProjectState& state, MediaId media, const MediaItem& replacement,
                                                   bool rename = true);
 
+/// 0.7 (card 143), Reload Footage: `file` is `media`'s own file read again (editor::describeMediaFile of the item's path).
+struct ReloadedFootage {
+    MediaId media;
+    MediaItem file;
+};
+struct ReloadOutcome {
+    ProjectState state;
+    /// The items that changed on disk (or were offline) and now hold the file as it is.
+    std::vector<MediaId> reloaded;
+    /// Clips that now run past the end of a shorter file (they stay as they are and play what the file has).
+    std::vector<std::string> warnings;
+};
+/// Reload Footage: each item takes its file's new probe (length, streams, frame size and rate) and fingerprint in place -
+/// its clips, marks, markers, effects and settings stay - and its proxy is dropped when the content changed. An item whose
+/// file reads the same as before is left alone (no change at all); an offline one comes back. Refused (InvalidArgument,
+/// nothing reloaded) when a clip plays a stream the new file lacks. Errors: NotFound, InvalidArgument (a generated item).
+std::expected<ReloadOutcome, Error> reloadFootage(const ProjectState& state, std::span<const ReloadedFootage> files);
+
 /// Make Offline (media files remain on disk): the items are offline (their clips show Media Offline) until they are
 /// linked again (MediaItem::madeOffline). Generated items and unknown ids are errors.
 std::expected<ProjectState, Error> makeOffline(const ProjectState& state, std::span<const MediaId> media);
@@ -98,6 +116,26 @@ std::optional<Ticks> previousGap(const Sequence& sequence, Ticks t, std::span<co
 /// linked clips stay in sync; other unlocked sync-locked tracks lose the same time, and a gap where one of them has
 /// material is left alone. Caption cues follow. Errors: NotFound, InvalidArgument (no gap to close).
 EditOutcome closeGaps(const ProjectState& state, SequenceId sequence, std::span<const ClipId> clips);
+
+// ---------------------------------------------------------------------------------------------------
+// Clean-up (Sequence > Remove Transitions, Remove All Transitions, Remove Disabled Clips; Edit > Select All Disabled Clips)
+
+/// Remove Transitions: deletes the transitions of `clips` - one goes when the clip on either side of it is listed (a
+/// one-sided fade or dip at a clip's edge belongs to that clip) - or, with no clips, every transition of the sequence's
+/// unlocked tracks. The clips are taken as listed (no linked partners: select them too); transitions on locked tracks
+/// stay. One edit: the edit points become plain cuts. Errors: NotFound (a clip is not in the sequence), InvalidArgument
+/// (no transition to remove, or every one is on a locked track).
+EditOutcome removeTransitions(const ProjectState& state, SequenceId sequence, std::span<const ClipId> clips = {});
+
+/// Every disabled clip (Clip::enabled false) of the sequence, on every track in track order (V1..Vn, then A1..An) and
+/// time order within a track: what Select All Disabled Clips selects.
+std::vector<ClipId> disabledClips(const Sequence& sequence);
+
+/// Remove Disabled Clips: deletes every disabled clip of the sequence's unlocked tracks (each clip on its own: a linked
+/// partner that is enabled stays) and leaves gaps - or, with `ripple`, closes the time they occupied like Ripple Delete
+/// (which refuses when that would take an unselected clip off a track). Transitions of the removed clips go with them.
+/// One edit. Errors: NotFound, InvalidArgument (no disabled clip; every one is on a locked track).
+EditOutcome removeDisabledClips(const ProjectState& state, SequenceId sequence, bool ripple = false);
 
 // ---------------------------------------------------------------------------------------------------
 // Frame Hold Options (Clip > Video Options)

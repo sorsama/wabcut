@@ -10,6 +10,9 @@ import QtQuick.Dialogs
 //     New Folder, Add Project (a copy that keeps playing the same media), Production Settings (scratch disks for its
 //     previews and media cache). Double-click a project to open it next to the others; opening a project of a
 //     production opens its production here.
+//   * Search (0.7, card 094): a field above the project list finds sequences and footage in any project of the production
+//     (names, comments, tape names, file paths, bins, markers; a type and a field narrow it). Each result can be imported as a
+//     copy, browsed read-only (the item pointed at) or its project opened.
 //   * Another project browsed read only ("Browse read-only", or Reveal in Source Project): its bins, sequences and
 //     media. Import the selected ones (or drag them onto the Library): copies come in, in one undo step, with what they
 //     play, reusing media this project already has; media files are never copied. Copies remember their source, and
@@ -30,8 +33,14 @@ Panel {
     function focusContent() {
         if (Production.browsing.toString() !== "")
             browseList.forceActiveFocus(Qt.TabFocusReason)
+        else if (search.active)
+            search.focusField()
         else
             entryList.forceActiveFocus(Qt.TabFocusReason)
+    }
+    /// Puts the cursor in the production search.
+    function focusSearch() {
+        search.focusField()
     }
     function togglePick(key, extend) {
         const next = extend ? root.picked.slice() : []
@@ -49,7 +58,9 @@ Panel {
     Connections {
         target: Production
         function onBrowsingChanged() {
-            root.picked = Production.revealedKey !== "" ? [Production.revealedKey] : []
+            if (Production.browsing.toString() !== "")
+                search.collapse() // a result was browsed: the project's items take the room
+            root.picked =Production.revealedKey !== "" ? [Production.revealedKey] : []
             if (Production.revealedKey !== "") {
                 for (let i = 0; i < Production.browseItems.length; ++i) {
                     if (Production.browseItems[i].key === Production.revealedKey) {
@@ -214,13 +225,16 @@ Panel {
 
         Text {
             width: parent.width
+            visible: !search.active // while searching, the room goes to the results
             text: Production.folder
             color: Theme.textTertiary
             elide: Text.ElideMiddle
             font.family: Theme.fontMono
             font.pixelSize: Theme.textXs
         }
-        Row {
+        Flow {
+            width: parent.width // wraps on a narrow panel instead of running off its edge
+            visible: !search.active
             spacing: Theme.space(1)
             PillButton {
                 objectName: "productionNewProject"
@@ -275,11 +289,19 @@ Panel {
             }
         }
 
+        // 0.7 (card 094): find sequences and footage in any project of the production.
+        ProductionSearch {
+            id: search
+            maxHeight: productionArea.parent.height - productionArea.y - search.y - Theme.space(2)
+            onOpenProjectRequested: url => root.openProjectRequested(url)
+        }
+
         ListView {
             id: entryList
             objectName: "productionEntries"
             width: parent.width
             height: Math.min(contentHeight, Theme.space(70))
+            visible: !search.active
             clip: true
             model: Production.entries
             boundsBehavior: Flickable.StopAtBounds

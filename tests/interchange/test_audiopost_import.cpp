@@ -14,6 +14,7 @@
 #include <wabcut/interchange/AudioPostExport.h>
 #include <wabcut/interchange/FileUrl.h>
 #include <wabcut/interchange/Import.h>
+#include <wabcut/model/AudioChannelOps.h>
 #include <wabcut/model/ProjectIO.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -499,7 +500,7 @@ TEST_CASE("AAF import: a Pro Tools style session at 96 kHz with 44.1 kHz media a
     REQUIRE(r.unresolvedMedia.size() == 1);
     CHECK(r.unresolvedMedia.front().name == "Room tone");
     CHECK(it::hasEntry(r.report, ReportOutcome::Approximated, ReportCategory::Media, "'Room tone' is offline"));
-    CHECK(it::hasEntry(r.report, ReportOutcome::Carried, ReportCategory::AudioMapping, "44100 Hz media, converted to the sequence's 96000 Hz"));
+    CHECK(it::hasEntry(r.report, ReportOutcome::Carried, ReportCategory::AudioMapping, "Media at 44100 Hz, converted to the sequence's 96000 Hz"));
     CHECK(it::mediaNamed(r, "Dialog_01").info.audio.front().sampleRate == Rate{96000, 1});
     CHECK_FALSE(it::mediaNamed(r, "Dialog_01").locator.offline);
 }
@@ -592,6 +593,127 @@ TEST_CASE("AAF import: 5.1 as six mono files, as one six-channel file and as six
     }
     CHECK(it::hasEntry(r.report, ReportOutcome::Carried, ReportCategory::AudioMapping, "5.1 layout: tracks 'Mix L' to 'Mix Rs'"));
     CHECK(it::hasEntry(r.report, ReportOutcome::Approximated, ReportCategory::AudioMapping, "became six linked tracks"));
+}
+
+TEST_CASE("AAF and OMF: a 7.1 track is written as eight named mono tracks and comes back as a 7.1 layout (0.7)",
+          "[interchange][aaf-import][omf-import][surround71]") {
+    for (const bool omf : {false, true}) {
+        INFO(std::string(omf ? "OMF" : "AAF"));
+        auto tl = audioPostTimeline();
+        edit::TrackStateChange change;
+        change.format = ChannelFormat::Surround71;
+        tl.state = it::ok(edit::setTrackState(tl.state, tl.seq, tl.track("A2"), change)).state;
+        tl.state = it::ok(edit::setMasterFormat(tl.state, tl.seq, ChannelFormat::Surround71)).state;
+
+        const fs::path dir = it::scratchDir(std::string(omf ? "omf" : "aaf") + "-surround71");
+        TestRenderer renderer;
+        AudioPostHost host;
+        host.audio = &renderer;
+        const fs::path file = dir / (omf ? "Mix.omf" : "Mix.aaf");
+        ImportReport report;
+        if (omf) {
+            OmfExportOptions o;
+            o.timestamp = fixedTime();
+            o.audio.handleFrames = 2;
+            const auto result = exportOmfToFile(tl.state, tl.seq, file, o, host);
+            REQUIRE(result.has_value());
+            report = result->report;
+        } else {
+            AafExportOptions o;
+            o.timestamp = fixedTime();
+            o.audio.handleFrames = 2;
+            const auto result = exportAafToFile(tl.state, tl.seq, file, o, host);
+            REQUIRE(result.has_value());
+            report = result->report;
+        }
+        // The clip of the 7.1 track is rendered with eight channels, and the report says what the master does not carry.
+        const auto c = std::find_if(renderer.requests.begin(), renderer.requests.end(), [&](const AudioPostRenderRequest& r) {
+            return r.clip == wabcut::test::clipAt(tl.state, tl.seq, "A2@4");
+        });
+        REQUIRE(c != renderer.requests.end());
+        CHECK(c->channels == 8);
+        CHECK(it::hasEntry(report, ReportOutcome::Approximated, ReportCategory::AudioMapping, "The 7.1 master is not written"));
+
+        const ImportResult r = importOk(file, scratchOptions(dir));
+        const Sequence& s = it::sequenceAt(r, 0);
+        CHECK(s.masterFormat == ChannelFormat::Surround71);
+        const std::vector<std::string> names = trackNames(s);
+        REQUIRE(names.size() == 2 + 8);
+        CHECK(std::vector<std::string>(names.begin() + 2, names.end()) ==
+              std::vector<std::string>{"Audio 2 L", "Audio 2 R", "Audio 2 C", "Audio 2 LFE", "Audio 2 Lrs", "Audio 2 Rrs", "Audio 2 Ls",
+                                       "Audio 2 Rs"});
+        // Track k plays channel k of the 7.1 mix: L R C LFE Lrs Rrs Ls Rs, the order of a 7.1 file.
+        for (std::size_t k = 0; k < 8; ++k) {
+            const Track& t = *s.audioTracks[2 + k];
+            CHECK(t.format == ChannelFormat::Adaptive);
+            REQUIRE_FALSE(t.clips.empty());
+            const AudioChannelMap* map = t.clips[0].channelMap();
+            REQUIRE(map != nullptr);
+            REQUIRE(map->channels.size() == 8);
+            for (std::size_t ch = 0; ch < 8; ++ch) {
+                CHECK(map->channels[ch].sources == (ch == k ? std::vector<std::int32_t>{0} : std::vector<std::int32_t>{}));
+            }
+        }
+        CHECK(it::hasEntry(r.report, ReportOutcome::Carried, ReportCategory::AudioMapping, "7.1 layout: tracks 'Audio 2 L' to 'Audio 2 Rs'"));
+    }
+}
+
+TEST_CASE("AAF import: 7.1 as eight mono files in a combiner or as eight named tracks routes the speakers (0.7)",
+          "[interchange][aaf-import][surround71]") {
+    // Speaker names: the rear pair is its own, Ls and Rs stay the side pair in a 7.1 layout.
+    CHECK(graph::speakerOfName("Mix Lrs") == 6);
+    CHECK(graph::speakerOfName("Mix Rrs") == 7);
+    CHECK(graph::speakerOfName("Mix Lsr") == 6);
+    CHECK(graph::speakerOfName("Mix Rsr") == 7);
+    CHECK(graph::speakerOfName("Mix Ls") == 4);
+    CHECK(graph::channelOf71Speaker(4) == 6);
+    CHECK(graph::channelOf71Speaker(5) == 7);
+    CHECK(graph::channelOf71Speaker(6) == 4);
+    CHECK(graph::channelOf71Speaker(7) == 5);
+    CHECK(graph::channelOf71Speaker(3) == 3);
+    CHECK(graph::channelOf71Speaker(8) == -1);
+    CHECK(graph::channelOf71Speaker(-1) == -1);
+
+    const fs::path dir = it::scratchDir("aaf-import-71");
+    // Eight mono files under one channel combiner, named for their speakers (Pro Tools order L C R Lss Rss Lsr Rsr LFE).
+    static constexpr const char* kFilm[8] = {"L", "C", "R", "Ls", "Rs", "Lrs", "Rrs", "LFE"};
+    static constexpr int kChannelOfFilm[8] = {0, 2, 1, 6, 7, 4, 5, 3}; // the channel of the 7.1 mix each plays
+    AafWriter w;
+    std::vector<aaf::MobId> mono;
+    for (const char* ch : kFilm) {
+        const std::string name = std::string("Score.") + ch;
+        writeWav(dir / (name + ".wav"), 1, 48000, 48000 * 3);
+        mono.push_back(w.media(name, 48000, 1, 48000 * 3, pathToFileUrl(pathToUtf8(dir / (name + ".wav")), FileUrlStyle::Triple)));
+    }
+    aaf::Object& comp = w.composition("Surround71");
+    AafWriter::timecode(comp, 1, 25, 1, 25, 0, 75);
+    aaf::Object& score = AafWriter::slot(comp, 2, 48000, 1, "Score", 1);
+    aaf::Object& scoreSeq = AafWriter::component(score, "Segment", false, "Sequence", kSound, 48000 * 3);
+    aaf::Object& combiner = AafWriter::component(scoreSeq, "Components", true, "OperationGroup", kSound, 48000 * 2);
+    combiner.setWeakRef("Operation", kCombiner);
+    for (const aaf::MobId& m : mono) {
+        AafWriter::clip(combiner, "InputSegments", true, m, 0, 48000 * 2);
+    }
+    const fs::path file = w.write(dir / "Surround71.aaf");
+
+    const ImportResult r = importOk(file, scratchOptions(dir));
+    const Sequence& s = it::sequenceAt(r, 0);
+    CHECK(s.masterFormat == ChannelFormat::Surround71);
+    REQUIRE(s.audioTracks.size() == 8);
+    for (std::size_t k = 0; k < 8; ++k) {
+        const Track& t = *s.audioTracks[k];
+        CHECK(t.name == std::string("Score ") + kFilm[k]);
+        CHECK(t.format == ChannelFormat::Adaptive);
+        REQUIRE(t.clips.size() == 1);
+        const AudioChannelMap* map = t.clips[0].channelMap();
+        REQUIRE(map != nullptr);
+        REQUIRE(map->channels.size() == 8);
+        for (std::size_t ch = 0; ch < 8; ++ch) {
+            CHECK(map->channels[ch].sources ==
+                  (static_cast<int>(ch) == kChannelOfFilm[k] ? std::vector<std::int32_t>{0} : std::vector<std::int32_t>{}));
+        }
+    }
+    CHECK(it::hasEntry(r.report, ReportOutcome::Approximated, ReportCategory::AudioMapping, "became eight linked tracks"));
 }
 
 TEST_CASE("AAF import: Media Composer subclips gain keyframes muted clips fades track pan markers and effects (0.6)",

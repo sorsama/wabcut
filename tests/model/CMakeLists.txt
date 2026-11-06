@@ -12,6 +12,7 @@ wabcut_add_test_suite(model
         test_builtin_templates.cpp
         test_bulk_build.cpp
         test_caption_workshop.cpp
+        test_project_downgrade.cpp # 0.7 (card 059): Save for an Older Version
         test_captions.cpp
         test_changeset.cpp
         test_clipboard.cpp
@@ -31,12 +32,14 @@ wabcut_add_test_suite(model
         test_fixture.cpp
         test_field_options.cpp
         test_frame_scaling.cpp
+        test_vr.cpp # 0.7 (card 38): VR / 360 video
         test_gaming_ops.cpp
         test_graphic_ops.cpp
         test_graphics.cpp
         test_graphics_roll.cpp
         test_graphics_styles.cpp
         test_graphics_text.cpp
+        test_graphics_typography.cpp # 0.7 (card #138): OpenType features and Optical kerning
         test_history.cpp
         test_keyframes.cpp
         test_layouts.cpp
@@ -59,6 +62,9 @@ wabcut_add_test_suite(model
         test_project_ops.cpp
         test_project_state.cpp
         test_redaction_media.cpp
+        test_r08_c3.cpp
+        test_clip_lock.cpp # 0.7 (batch A6): Lock Clip and Move Track
+        test_r08_c5.cpp
         test_sequence_extent.cpp
         test_sequence_settings.cpp
         test_session_history.cpp
@@ -77,8 +83,11 @@ wabcut_add_test_suite(model
         test_time_remap.cpp
         test_timecode.cpp
         test_titles.cpp
+        test_track_color.cpp
         test_track_effects.cpp
         test_track_faders.cpp
+        test_track_groups.cpp # 0.7 (batch A9, card 124): track groups
+        test_video_solo.cpp # 0.7 (card 106): video track solo
         test_audio_takes.cpp
         test_voice_over_model.cpp
         test_audio_channels_model.cpp
@@ -88,3 +97,19 @@ wabcut_add_test_suite(model
 
 # P.2 (E6, monitors): Motion set as one edit (MotionOps.h).
 target_sources(wabcut_model_tests PRIVATE test_motion_ops.cpp)
+# 0.7: the AI video effects' descriptors, chain and hash (AiEffects.h).
+target_sources(wabcut_model_tests PRIVATE test_ai_effects.cpp)
+target_sources(wabcut_model_tests PRIVATE test_eye_contact.cpp)
+
+# 0.7 (card 029): where the .bakN copies and autosave files of a project are kept (beside it, an Auto-Save folder, a chosen root).
+target_sources(wabcut_model_tests PRIVATE test_backup_location.cpp)
+# 0.7 (card 046): a split edit (L/J cut) stays split through trims, ripples and moves.
+target_sources(wabcut_model_tests PRIVATE test_split_edit_ops.cpp)
+# 0.7 (batch A7): several markers at once (card 119), keyframes that follow edits (card 120), notes on clips (card 125).
+target_sources(wabcut_model_tests PRIVATE test_a7_model.cpp)
+# 0.7 (card 180): the pacing heat strip's analysis.
+target_sources(wabcut_model_tests PRIVATE test_a7_pacing.cpp)
+# 0.7 (card 069): Render and Replace for nested sequences, Restore Unrendered.
+target_sources(wabcut_model_tests PRIVATE test_render_replace.cpp)
+# 0.7 (batch A10): the Graph Editor's easing presets (card 96) and Motion Blur's shutter instants and descriptor (card 58).
+target_sources(wabcut_model_tests PRIVATE test_a10_model.cpp)

@@ -221,7 +221,10 @@ TEST_CASE("Caption styles: the default is today's look; presets built in and sav
         names.push_back(p.name);
         CHECK_FALSE(captionStyleProblem(p.style));
     }
-    CHECK(names == std::vector<std::string>{"Clean", "Bold Box", "Podcast", "Shorts", "Thai-friendly"});
+    // The five that always were there, then the animated gallery (see "the animated gallery" test below).
+    REQUIRE(names.size() >= 5);
+    CHECK(std::vector<std::string>(names.begin(), names.begin() + 5) ==
+          std::vector<std::string>{"Clean", "Bold Box", "Podcast", "Shorts", "Thai-friendly"});
     CHECK(findBuiltinCaptionPreset("bold box"));
     CHECK(findBuiltinCaptionPreset("Thai-friendly")->style.fontFamily == "Noto Sans Thai");
 
@@ -527,4 +530,290 @@ TEST_CASE("Caption cues: a split on a track with overlaps keeps the cues in star
     const auto later = ok(edit::splitCaptionCue(s, tl.seq, id, 1, f(6), std::nullopt, simpleLineBreaker()));
     const auto both = ok(edit::splitCaptionCue(later.state, tl.seq, id, 0, f(6), std::nullopt, simpleLineBreaker()));
     CHECK(cues(both.state, tl.seq) == "0-6 one | 4-6 three | 6-14 four | 6-10 two | 20-24 five");
+}
+
+// --- 0.7: the animated gallery, timing, emphasis and text rules (cards 074 and 114) --------------------------------------------
+
+TEST_CASE("Caption styles: the animated gallery and timing and emphasis and text rules are valid and named and saved",
+          "[model][captions][style][animation]") {
+    // The names projects save: new values are only ever appended.
+    for (const auto& [animation, name] : {std::pair{CaptionAnimation::None, "none"}, {CaptionAnimation::Pop, "pop"},
+                                           {CaptionAnimation::Fade, "fade"}, {CaptionAnimation::WordByWord, "wordByWord"},
+                                           {CaptionAnimation::WordPop, "wordPop"}, {CaptionAnimation::Bounce, "bounce"},
+                                           {CaptionAnimation::HighlightBar, "highlightBar"},
+                                           {CaptionAnimation::Typewriter, "typewriter"}, {CaptionAnimation::Zoom, "zoom"}}) {
+        INFO(name);
+        CHECK(toString(animation) == name);
+        CHECK(captionAnimationFromString(name) == animation);
+    }
+    CHECK_FALSE(captionAnimationFromString("spin"));
+    CHECK(captionEaseFromString("overshoot") == CaptionEase::Overshoot);
+    CHECK(captionEmphasisFromString("auto") == CaptionEmphasis::Auto);
+    CHECK(captionTextCaseFromString("upper") == CaptionTextCase::Upper);
+    CHECK(toString(CaptionTextCase::AsWritten) == "asWritten");
+    CHECK_FALSE(captionTextCaseFromString("title"));
+
+    // The defaults are today's look: no new effect unless asked for.
+    const CaptionStyle look;
+    CHECK(look.animationSpeed == 0.15);
+    CHECK(look.animationEase == CaptionEase::Overshoot);
+    CHECK(look.emphasis == CaptionEmphasis::None);
+    CHECK(look.emphasisWords.empty());
+    CHECK(look.textCase == CaptionTextCase::AsWritten);
+    CHECK_FALSE(look.stripPunctuation);
+    CHECK_FALSE(look.stripAccents);
+
+    // The gallery after the five that always were there.
+    std::vector<std::string> names;
+    for (const CaptionPreset& p : builtinCaptionPresets()) {
+        names.push_back(p.name);
+        INFO(p.name);
+        CHECK_FALSE(captionStyleProblem(p.style));
+    }
+    CHECK(names == std::vector<std::string>{"Clean", "Bold Box", "Podcast", "Shorts", "Thai-friendly", "Word Pop", "Highlighter",
+                                            "Bounce", "Typewriter", "Zoom", "Hype"});
+    CHECK(findBuiltinCaptionPreset("word pop")->style.animation == CaptionAnimation::WordPop);
+    CHECK(findBuiltinCaptionPreset("Highlighter")->style.animation == CaptionAnimation::HighlightBar);
+    CHECK(findBuiltinCaptionPreset("Bounce")->style.animation == CaptionAnimation::Bounce);
+    CHECK(findBuiltinCaptionPreset("Typewriter")->style.animation == CaptionAnimation::Typewriter);
+    CHECK(findBuiltinCaptionPreset("Zoom")->style.animation == CaptionAnimation::Zoom);
+    const CaptionStyle& hype = findBuiltinCaptionPreset("Hype")->style;
+    CHECK(hype.textCase == CaptionTextCase::Upper);
+    CHECK(hype.stripPunctuation);
+    CHECK(hype.emphasis == CaptionEmphasis::Auto);
+    // The five older ones keep their names reserved; the gallery's can be a project's own (they may already be).
+    CHECK(isOriginalBuiltinCaptionPreset("shorts"));
+    CHECK(isOriginalBuiltinCaptionPreset("Thai-friendly"));
+    CHECK_FALSE(isOriginalBuiltinCaptionPreset("Zoom"));
+
+    // Out-of-range values, and keywords that are not one short line of UTF-8, are refused.
+    const auto problem = [](auto change) {
+        CaptionStyle s;
+        change(s);
+        return captionStyleProblem(s).has_value();
+    };
+    CHECK(problem([](CaptionStyle& s) { s.animationSpeed = 0.0; }));
+    CHECK(problem([](CaptionStyle& s) { s.animationSpeed = 1.5; }));
+    CHECK_FALSE(problem([](CaptionStyle& s) { s.animationSpeed = 0.05; }));
+    CHECK(problem([](CaptionStyle& s) { s.emphasisScale = 0.9; }));
+    CHECK(problem([](CaptionStyle& s) { s.emphasisScale = 1.6; }));
+    CHECK(problem([](CaptionStyle& s) { s.emphasisColor = {2.0, 0.0, 0.0}; }));
+    CHECK(problem([](CaptionStyle& s) { s.emphasisWords = std::vector<std::string>(kMaxCaptionEmphasisWords + 1, "gg"); }));
+    CHECK_FALSE(problem([](CaptionStyle& s) { s.emphasisWords = std::vector<std::string>(kMaxCaptionEmphasisWords, "gg"); }));
+    CHECK(problem([](CaptionStyle& s) { s.emphasisWords = {""}; }));
+    CHECK(problem([](CaptionStyle& s) { s.emphasisWords = {"two\nlines"}; }));
+    CHECK(problem([](CaptionStyle& s) { s.emphasisWords = {std::string(kMaxCaptionEmphasisWordBytes + 1, 'x')}; }));
+    CHECK(problem([](CaptionStyle& s) { s.emphasisWords = {"bad\xC3\x28"}; }));
+}
+
+TEST_CASE("Caption styles: the new fields are saved and loaded; older projects get the old look; gallery names can be the project's own",
+          "[model][captions][io][animation]") {
+    Timeline tl(R"(
+        V1 tgt |Aaaaaaaaaa|
+    )");
+    CaptionStyle style;
+    style.animation = CaptionAnimation::HighlightBar;
+    style.animationSpeed = 0.3;
+    style.animationEase = CaptionEase::Linear;
+    style.emphasis = CaptionEmphasis::Keywords;
+    style.emphasisWords = {"GG", "clutch", "ชนะ"};
+    style.emphasisColor = {1.0, 0.2, 0.2};
+    style.emphasisScale = 1.25;
+    style.textCase = CaptionTextCase::Lower;
+    style.stripPunctuation = true;
+    style.stripAccents = true;
+    ProjectState s = withCaptions(tl.state, tl.seq, {{0, 4, "hello"}}, style);
+    s = *edit::saveCaptionPreset(s, {"Mine", style});
+
+    const auto json = io::toJson(s);
+    REQUIRE(json);
+    const auto loaded = io::fromJson(*json);
+    INFO((loaded ? std::string() : loaded.error().message));
+    REQUIRE(loaded);
+    CHECK(*loaded == s);
+    CHECK(captionsOf(*loaded, tl.seq).style == style);
+    requireValid(*loaded);
+
+    // A project from before the animated gallery has none of these keys: the old look (the defaults) loads.
+    std::string old = *io::toJson(withCaptions(tl.state, tl.seq, {{0, 4, "hello"}}));
+    for (const char* key : {"animationSpeed", "animationEase", "emphasis", "emphasisWords", "emphasisColor", "emphasisScale",
+                            "textCase", "stripPunctuation", "stripAccents"}) {
+        const std::string value = R"((\[[^\]]*\]|[^,\n}]*))";
+        old = std::regex_replace(old, std::regex(std::string(R"(\s*")") + key + R"(": )" + value + ","), "");  // not the last key
+        old = std::regex_replace(old, std::regex(std::string(R"(,\s*")") + key + R"(": )" + value), "");      // the last key
+        INFO(key);
+        REQUIRE(old.find(std::string("\"") + key + "\"") == std::string::npos);
+    }
+    const auto migrated = io::fromJson(old);
+    INFO((migrated ? std::string() : migrated.error().message));
+    REQUIRE(migrated);
+    CHECK(captionsOf(*migrated, tl.seq).style == CaptionStyle{});
+
+    // Untrusted files: a bad speed, scale or keyword is refused.
+    for (const auto& [from, to] : {std::pair{std::string("\"animationSpeed\": 0.3"), std::string("\"animationSpeed\": 30")},
+                                   {std::string("\"emphasisScale\": 1.25"), std::string("\"emphasisScale\": 9")},
+                                   {std::string("\"animationEase\": \"linear\""), std::string("\"animationEase\": \"wobble\"")}}) {
+        INFO(from);
+        std::string broken = *json;
+        const auto at = broken.find(from);
+        REQUIRE(at != std::string::npos);
+        broken.replace(at, from.size(), to);
+        CHECK_FALSE(io::fromJson(broken));
+    }
+
+    // A project made before the gallery may hold its own preset called "Bounce": it loads, shows instead of the built-in
+    // one, can be updated and removed; a preset with one of the five older built-in names is still refused.
+    CaptionStyle mine;
+    mine.fontWeight = 700;
+    ProjectState own = tl.state;
+    own.captionPresets.push_back(CaptionPreset{"Bounce", mine});
+    const auto ownJson = io::toJson(own);
+    REQUIRE(ownJson);
+    const auto ownLoaded = io::fromJson(*ownJson);
+    INFO((ownLoaded ? std::string() : ownLoaded.error().message));
+    REQUIRE(ownLoaded);
+    CHECK(edit::captionPresetStyle(*ownLoaded, "bounce")->fontWeight == 700); // the project's, not the gallery's 900
+    mine.fontWeight = 800;
+    const auto updated = edit::saveCaptionPreset(*ownLoaded, {"Bounce", mine});
+    REQUIRE(updated);
+    CHECK(updated->captionPresets.size() == 1);
+    CHECK(edit::captionPresetStyle(*updated, "Bounce")->fontWeight == 800);
+    const auto removed = edit::removeCaptionPreset(*updated, "Bounce");
+    REQUIRE(removed);
+    CHECK(removed->captionPresets.empty());
+    CHECK(edit::captionPresetStyle(*removed, "Bounce")->animation == CaptionAnimation::Bounce); // the gallery's again
+    CHECK(errorOf(edit::removeCaptionPreset(*removed, "Bounce")).find("built-in") != std::string::npos);
+    CHECK(errorOf(edit::saveCaptionPreset(tl.state, {"Zoom", mine})).find("built-in") != std::string::npos);
+
+    ProjectState clash = tl.state;
+    clash.captionPresets.push_back(CaptionPreset{"Clean", mine});
+    const auto clashJson = io::toJson(clash);
+    if (clashJson) {
+        CHECK_FALSE(io::fromJson(*clashJson));
+    }
+}
+
+// ---- 0.7 (card 061): custom words for transcription -------------------------------------------------------------------
+
+TEST_CASE("Custom words are cleaned, kept in order and saved only when there are some", "[model][captions][words]") {
+    Timeline tl(R"(
+        V1 tgt |Aaaaaaaaaa|
+    )");
+    CHECK(tl.state.customWords.empty());
+    CHECK(io::toJson(tl.state)->find("customWords") == std::string::npos); // older builds see an unchanged file
+
+    auto set = edit::setCustomWords(tl.state, {"  Malenia ", "elden   ring", "MALENIA", "", "Elden Ring", "Radahn\n"});
+    REQUIRE(set);
+    // Trimmed, runs of white space collapsed, empty ones and later spellings of a word dropped (any case).
+    CHECK(set->customWords == std::vector<std::string>{"Malenia", "elden ring", "Radahn"});
+    CHECK(validate(*set, Validation::Structure));
+
+    SECTION("saved with the project and read back") {
+        const auto json = io::toJson(*set);
+        REQUIRE(json);
+        CHECK(json->find("\"customWords\"") != std::string::npos);
+        const auto loaded = io::fromJson(*json);
+        REQUIRE(loaded);
+        CHECK(loaded->customWords == set->customWords);
+        CHECK(*loaded == *set);
+    }
+    SECTION("the same words are no change; another list is one") {
+        auto again = edit::setCustomWords(*set, {"Malenia", "elden ring", "Radahn"});
+        REQUIRE(again);
+        CHECK(*again == *set);
+        CHECK_FALSE(diff(*set, *again).customWordsChanged);
+        CHECK(diff(*set, *again).empty());
+        auto other = edit::setCustomWords(*set, {"Godrick"});
+        REQUIRE(other);
+        const ChangeSet changes = diff(*set, *other);
+        CHECK(changes.customWordsChanged);
+        CHECK_FALSE(changes.empty());
+    }
+    SECTION("an empty list clears them") {
+        auto cleared = edit::setCustomWords(*set, {});
+        REQUIRE(cleared);
+        CHECK(cleared->customWords.empty());
+    }
+    SECTION("bounds: too many words, a word that is too long, text that is not UTF-8") {
+        std::vector<std::string> many;
+        for (std::size_t i = 0; i < kMaxCustomWords + 1; ++i) {
+            many.push_back("word" + std::to_string(i));
+        }
+        CHECK_FALSE(edit::setCustomWords(tl.state, many));
+        many.pop_back();
+        CHECK(edit::setCustomWords(tl.state, many));
+        CHECK_FALSE(edit::setCustomWords(tl.state, {std::string(kMaxCustomWordBytes + 1, 'x')}));
+        CHECK(edit::setCustomWords(tl.state, {std::string(kMaxCustomWordBytes, 'x')}));
+        CHECK_FALSE(edit::setCustomWords(tl.state, {std::string("bad\xC3\x28 utf8")}));
+    }
+    SECTION("a file with damaged words does not load") {
+        std::string json = *io::toJson(*set);
+        const auto at = json.find("\"Malenia\"");
+        REQUIRE(at != std::string::npos);
+        json.replace(at, 9, "\"Radahn\""); // twice
+        CHECK_FALSE(io::fromJson(json));
+    }
+}
+
+TEST_CASE("Free text splits into custom words by line, comma or semicolon", "[model][captions][words]") {
+    CHECK(edit::splitCustomWords("Malenia, Elden Ring;Radahn\nGodrick\r\nMorgott") ==
+          std::vector<std::string>{"Malenia", " Elden Ring", "Radahn", "Godrick", "", "Morgott"});
+    CHECK(edit::splitCustomWords("") == std::vector<std::string>{""});
+    // setCustomWords trims and drops the empty ones.
+    Timeline tl(R"(
+        V1 tgt |Aaaaaaaaaa|
+    )");
+    const auto set = edit::setCustomWords(tl.state, edit::splitCustomWords("A, B\n\n C ;A"));
+    REQUIRE(set);
+    CHECK(set->customWords == std::vector<std::string>{"A", "B", "C"});
+}
+
+// ---- 0.7 (card 115): caption presets in a file of their own -----------------------------------------------------------
+
+TEST_CASE("Caption presets are written to a file and read back for another project", "[model][captions][presets][io]") {
+    CaptionStyle channel;
+    channel.fontWeight = 800;
+    channel.box = false;
+    channel.outlineWidth = 0.12;
+    channel.animation = CaptionAnimation::WordPop;
+    channel.fill = {1.0, 0.8, 0.1};
+    channel.emphasisWords = {"boss", "win"};
+    CaptionStyle plain;
+    const std::vector<CaptionPreset> presets{{"Channel look", channel}, {"Plain", plain}};
+
+    const auto text = io::captionPresetsToJson(presets);
+    REQUIRE(text);
+    CHECK(text->find(std::string(io::kCaptionPresetsFileFormat)) != std::string::npos);
+    const auto back = io::captionPresetsFromJson(*text);
+    REQUIRE(back);
+    REQUIRE(back->size() == 2);
+    CHECK((*back)[0].name == "Channel look");
+    CHECK((*back)[0].style == channel);
+    CHECK((*back)[1].style == plain);
+
+    SECTION("a file that is not caption presets, too new, too deep or damaged is refused, not half read") {
+        CHECK_FALSE(io::captionPresetsFromJson("not json"));
+        CHECK_FALSE(io::captionPresetsFromJson("[]"));
+        CHECK_FALSE(io::captionPresetsFromJson(R"({"format": "wabcut-effect-presets", "version": 1, "presets": []})"));
+        const auto newer = io::captionPresetsFromJson(R"({"format": "wabcut-caption-presets", "version": 99, "presets": []})");
+        REQUIRE_FALSE(newer);
+        CHECK(newer.error().code == ErrorCode::VersionMismatch);
+        CHECK_FALSE(io::captionPresetsFromJson(std::string(io::kMaxJsonNesting + 8, '[') + std::string(io::kMaxJsonNesting + 8, ']')));
+        CHECK_FALSE(io::captionPresetsFromJson(R"({"format": "wabcut-caption-presets", "version": 1, "presets": [{"name": "", "style": {}}]})"));
+        CHECK_FALSE(io::captionPresetsFromJson(R"({"format": "wabcut-caption-presets", "version": 1, "presets": [{"name": "x", "style": {"placement": "sideways"}}]})"));
+        CHECK_FALSE(io::captionPresetsFromJson(std::string(io::kMaxCaptionPresetsFileBytes + 1, ' ')));
+    }
+    SECTION("each preset goes into a project as its own") {
+        Timeline tl(R"(
+            V1 tgt |Aaaaaaaaaa|
+        )");
+        ProjectState state = tl.state;
+        for (const CaptionPreset& p : *back) {
+            auto saved = edit::saveCaptionPreset(state, p);
+            REQUIRE(saved);
+            state = *saved;
+        }
+        CHECK(state.captionPresets.size() == 2);
+        CHECK(edit::captionPresetStyle(state, "channel look")->fontWeight == 800);
+    }
 }

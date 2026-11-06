@@ -13,13 +13,17 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QClipboard>
 #include <QDir>
 #include <QFile>
+#include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QQuickItem>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QTemporaryDir>
+#include <QUrl>
 
 #include <functional>
 
@@ -376,6 +380,218 @@ TEST_CASE("Keyboard Shortcuts dialog in the shell: Ctrl+Alt+K, + and a typed key
     spin(200);
     CHECK_FALSE(dialog->property("opened").toBool());
     shortcuts->resetAll();
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+// ---- Card 027: Changed by me, Copy and the printable cheat sheet --------------------------------------------------------
+
+TEST_CASE("Shortcuts: the Changed by me filter lists the commands whose keys the user changed (card 027)", "[app][shortcuts]") {
+    Fixture fx;
+    ShortcutsBridge& s = fx.shortcuts;
+    const auto scopeEntry = [&](const QString& id) {
+        for (const QVariant& v : s.scopes()) {
+            if (v.toMap().value("id").toString() == id)
+                return v.toMap();
+        }
+        return QVariantMap();
+    };
+    // The entry is in the filter's choices, named for the user, counting nothing on the default keys.
+    REQUIRE_FALSE(scopeEntry(QStringLiteral("modified")).isEmpty());
+    CHECK(scopeEntry(QStringLiteral("modified")).value("name").toString() == QStringLiteral("Changed by me"));
+    CHECK(scopeEntry(QStringLiteral("modified")).value("count").toInt() == 0);
+    s.setScopeFilter(QStringLiteral("modified"));
+    CHECK(s.commands()->rowCount() == 0);
+
+    // One command gets another key: it is the only row, the count follows, and the row says it is changed.
+    s.setScopeFilter({});
+    const auto assigned = s.assign(QStringLiteral("tool.razor"), QStringLiteral("Ctrl+Alt+Shift+R"));
+    REQUIRE(assigned.value("ok").toBool());
+    CHECK(scopeEntry(QStringLiteral("modified")).value("count").toInt() >= 1);
+    s.setScopeFilter(QStringLiteral("modified"));
+    REQUIRE(s.commands()->rowCount() >= 1);
+    CHECK(s.commands()->indexOf(QStringLiteral("tool.razor")) >= 0);
+    for (int i = 0; i < s.commands()->rowCount(); ++i)
+        CHECK(s.commands()->get(i).value("overridden").toBool());
+    // It combines with the search.
+    s.setSearch(QStringLiteral("razor"));
+    CHECK(s.commands()->indexOf(QStringLiteral("tool.razor")) >= 0);
+    s.setSearch(QStringLiteral("zebra"));
+    CHECK(s.commands()->rowCount() == 0);
+    s.setSearch({});
+
+    // Resetting the command takes it off the list again.
+    REQUIRE(s.resetCommand(QStringLiteral("tool.razor")));
+    CHECK(s.commands()->indexOf(QStringLiteral("tool.razor")) < 0);
+    CHECK(scopeEntry(QStringLiteral("modified")).value("count").toInt() == 0);
+    s.setScopeFilter({});
+}
+
+TEST_CASE("Shortcuts: Copy puts the shown commands on the clipboard as tab-separated text (card 027)", "[app][shortcuts]") {
+    Fixture fx;
+    ShortcutsBridge& s = fx.shortcuts;
+    QClipboard* clipboard = QGuiApplication::clipboard();
+    REQUIRE(clipboard != nullptr);
+    clipboard->setText(QStringLiteral("before"));
+
+    s.setSearch(QStringLiteral("razor"));
+    const QString text = s.copyToClipboard();
+    CHECK(clipboard->text() == text);
+    const QStringList lines = text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    REQUIRE(lines.size() >= 2);
+    CHECK(lines.front() == QStringLiteral("Command\tPanel\tShortcut"));
+    CHECK(lines.size() - 1 == s.commands()->rowCount());
+    const QString razorName = s.commandName(QStringLiteral("tool.razor"));
+    QString razorLine;
+    for (const QString& line : lines) {
+        if (line.startsWith(razorName + QLatin1Char('\t')))
+            razorLine = line;
+    }
+    REQUIRE_FALSE(razorLine.isEmpty());
+    const QStringList cells = razorLine.split(QLatin1Char('\t'));
+    REQUIRE(cells.size() == 3);
+    CHECK(cells[1] == QStringLiteral("Application"));
+    CHECK(cells[2] == QStringLiteral("C")); // the Razor's key in Premiere's set
+    for (const QString& line : lines)
+        CHECK(line.count(QLatin1Char('\t')) == 2); // never a tab or a line break inside a cell
+
+    // A command with two keys lists both, comma separated; a command with none leaves the cell empty.
+    s.setSearch(QStringLiteral("Redo"));
+    s.setSearch({});
+    s.setScopeFilter(QStringLiteral("modified"));
+    clipboard->setText(QStringLiteral("untouched"));
+    CHECK(s.copyToClipboard().isEmpty()); // nothing is shown: nothing is copied
+    CHECK(clipboard->text() == QStringLiteral("untouched"));
+    s.setScopeFilter({});
+    const QString everything = s.copyToClipboard();
+    CHECK(everything.count(QLatin1Char('\n')) == s.commands()->rowCount() + 1);
+    CHECK(everything.contains(QStringLiteral("\t\n"))); // commands without a key
+}
+
+TEST_CASE("Shortcuts: the cheat sheet is one self-contained page of the keys in use (card 027)", "[app][shortcuts]") {
+    Fixture fx;
+    ShortcutsBridge& s = fx.shortcuts;
+    REQUIRE(s.assign(QStringLiteral("tool.razor"), QStringLiteral("Ctrl+Alt+Shift+R")).value("ok").toBool());
+    const QString html = s.cheatSheetHtml();
+
+    // One page, nothing to load: a policy that refuses scripts and remote files, inline style, a print style.
+    CHECK(html.startsWith(QStringLiteral("<!DOCTYPE html>")));
+    CHECK(html.contains(QStringLiteral("Content-Security-Policy")));
+    CHECK(html.contains(QStringLiteral("default-src 'none'")));
+    CHECK(html.contains(QStringLiteral("@media print")));
+    CHECK_FALSE(html.contains(QStringLiteral("<script")));
+    CHECK_FALSE(html.contains(QStringLiteral("<link")));
+    CHECK_FALSE(html.contains(QStringLiteral("<img")));
+    CHECK_FALSE(html.contains(QStringLiteral("src=")));
+    CHECK_FALSE(html.contains(QStringLiteral("href=")));
+    CHECK_FALSE(html.contains(QStringLiteral("http://")));
+    CHECK_FALSE(html.contains(QStringLiteral("https://")));
+    CHECK_FALSE(html.contains(QStringLiteral("url(")));
+    // The title, the key set, grouped by menu group, only commands that have keys.
+    CHECK(html.contains(QStringLiteral("<title>Wabcut keyboard shortcuts</title>")));
+    CHECK(html.contains(QStringLiteral("Premiere Pro (default)")));
+    CHECK(html.contains(QStringLiteral("<h2>Edit</h2>")));
+    CHECK(html.contains(QStringLiteral("<kbd>Ctrl+K</kbd>")));
+    const QString addEdit = s.commandName(QStringLiteral("sequence.addEdit"));
+    CHECK(html.contains(QStringLiteral("<td>") + addEdit));
+    const QString unbound = s.commandName(QStringLiteral("sequence.selectionFollowsPlayhead")); // no default key
+    REQUIRE_FALSE(unbound.isEmpty());
+    CHECK_FALSE(html.contains(QStringLiteral("<td>") + unbound));
+    // The key the user changed carries a tag; nothing else does.
+    CHECK(html.contains(QStringLiteral("<kbd>Ctrl+Alt+Shift+R</kbd>")));
+    CHECK(html.count(QStringLiteral("class=\"tag\"")) >= 1);
+    // Text is escaped: no command name leaves a bare ampersand or angle bracket outside the markup.
+    static const QRegularExpression bareAmpersand(QStringLiteral("&(?!amp;|lt;|gt;|quot;|#39;|#x27;)"));
+    CHECK_FALSE(html.contains(bareAmpersand));
+
+    // Written next to nothing else: UTF-8, ".html" added, atomically; an unwritable place is an error, not a crash.
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("keys"));
+    CHECK(s.exportCheatSheet(QUrl::fromLocalFile(path)).isEmpty());
+    QFile file(path + QStringLiteral(".html"));
+    REQUIRE(file.open(QIODevice::ReadOnly));
+    CHECK(QString::fromUtf8(file.readAll()).contains(QStringLiteral("<kbd>Ctrl+K</kbd>")));
+    CHECK_FALSE(s.exportCheatSheet(QUrl::fromLocalFile(dir.filePath(QStringLiteral("no/such/folder/keys.html")))).isEmpty());
+    // The default keys alone carry no tag.
+    s.resetAll();
+    CHECK_FALSE(s.cheatSheetHtml().contains(QStringLiteral("class=\"tag\"")));
+}
+
+TEST_CASE("Keyboard Shortcuts dialog: Copy and Cheat sheet buttons, and the Changed by me choice; screenshot",
+          "[app][shortcuts][screenshots][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* keys = shell.engine.singletonInstance<KeymapDispatcher*>("Wabcut", "KeymapDispatcher");
+    auto* shortcuts = shell.engine.singletonInstance<ShortcutsBridge*>("Wabcut", "Shortcuts");
+    REQUIRE(keys != nullptr);
+    REQUIRE(shortcuts != nullptr);
+    QTemporaryDir config;
+    keys->setOverridesPath(config.filePath(QStringLiteral("keymap/overrides.json")));
+    keys->setPlatform(QStringLiteral("windows"));
+    QObject* dialog = shell.object("keyboardShortcutsDialog");
+    REQUIRE(dialog != nullptr);
+    QMetaObject::invokeMethod(dialog, "openDialog");
+    spin(200);
+    REQUIRE(dialog->property("opened").toBool());
+
+    QQuickItem* copy = shell.item("shortcutsCopy");
+    QQuickItem* sheet = shell.item("shortcutsCheatSheet");
+    QQuickItem* scope = shell.item("shortcutsScope");
+    REQUIRE(copy != nullptr);
+    REQUIRE(sheet != nullptr);
+    REQUIRE(scope != nullptr);
+    CHECK(copy->isVisible());
+    CHECK(sheet->isVisible());
+    // Nothing overflows the dialog at the smallest window.
+    const QRectF dialogRect = shell.item("shortcutsSearch")->mapRectToScene(QRectF(0, 0, 1, 1));
+    CHECK(dialogRect.width() > 0);
+
+    // Copy: the commands shown (filtered by a search) are on the clipboard and the dialog says how many.
+    shortcuts->setSearch(QStringLiteral("razor"));
+    spin(100);
+    QGuiApplication::clipboard()->setText(QStringLiteral("before"));
+    click(shell.window.get(), copy);
+    spin(100);
+    const QString copied = QGuiApplication::clipboard()->text();
+    CHECK(copied.startsWith(QStringLiteral("Command\tPanel\tShortcut\n")));
+    CHECK(copied.contains(shortcuts->commandName(QStringLiteral("tool.razor"))));
+    const QString say = shell.item("shortcutsMessageText")->property("text").toString();
+    INFO(say.toStdString());
+    CHECK(say.startsWith(QStringLiteral("Copied ")));
+    CHECK(say.contains(QStringLiteral("shortcut")));
+    CHECK_FALSE(say.contains(QStringLiteral("(s)")));
+    shortcuts->setSearch({});
+
+    // Changed by me: the filter button names the choice, and lists only changed commands.
+    REQUIRE(shortcuts->assign(QStringLiteral("tool.razor"), QStringLiteral("Ctrl+Alt+Shift+R")).value("ok").toBool());
+    shortcuts->setScopeFilter(QStringLiteral("modified"));
+    spin(100);
+    CHECK(scope->property("text").toString() == QStringLiteral("Changed by me"));
+    CHECK(shortcuts->commands()->rowCount() >= 1);
+    {
+        const QPointF away(shell.window->width() / 2.0, shell.window->height() - 4.0);
+        QMouseEvent move(QEvent::MouseMove, away, away, Qt::NoButton, Qt::NoButton, {});
+        QCoreApplication::sendEvent(shell.window.get(), &move);
+        spin(50);
+    }
+    REQUIRE(shell.grab().save(outputDir() + QStringLiteral("/shortcuts-changed-by-me.png")));
+
+    // Light theme as well.
+    shell.theme->setProperty("dark", false);
+    spin(150);
+    REQUIRE(shell.grab().save(outputDir() + QStringLiteral("/shortcuts-changed-by-me-light.png")));
+    shell.theme->setProperty("dark", true);
+    shortcuts->setScopeFilter({});
+    shortcuts->resetAll();
+    QMetaObject::invokeMethod(dialog, "close");
+    spin(100);
 
     const QStringList messages = takeMessages();
     INFO(join(messages));

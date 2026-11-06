@@ -153,8 +153,8 @@ inline std::vector<std::pair<double, std::string>> brollLines() {
             {54.0, "Thanks for watching and see you next time."}};
 }
 
-inline Recording brollEssay() {
-    Recording r(60, brollLines());
+inline Recording brollEssay(const std::string& picture = {}) {
+    Recording r(60, brollLines(), picture);
     r.describe('B', "drone_city_night.mp4");
     r.describe('C', "IMG_2041.MOV", "cooking pasta in the kitchen");
     r.describe('D', "Beach day.mp4", {}, {{12.0, "surfing at the beach"}});

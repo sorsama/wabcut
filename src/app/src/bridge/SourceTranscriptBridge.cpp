@@ -3,6 +3,7 @@
 #include "ProjectController.h"
 #include "SourceMonitorBridge.h"
 
+#include <wabcut/ai/SpokenLanguages.h>
 #include <wabcut/ai/edit/TranscriptCommands.h>
 #include <wabcut/command/SourceServices.h>
 #include <wabcut/model/EditOps.h>
@@ -107,6 +108,8 @@ QString SourceTranscriptBridge::state() const {
 QString SourceTranscriptBridge::mediaName() const { return m_source && m_source->loaded() ? m_source->name() : QString(); }
 
 QString SourceTranscriptBridge::language() const { return fromStd(m_words.language()); }
+
+bool SourceTranscriptBridge::rtl() const { return ai::isRightToLeftLanguage(m_words.language()); }
 
 int SourceTranscriptBridge::defaultStream(const MediaItem& item) const {
     if (const auto it = m_streamChoice.find(item.id.value); it != m_streamChoice.end())
@@ -453,5 +456,25 @@ QString SourceTranscriptBridge::transcribe(bool allowOnce) {
 }
 
 QVariantMap SourceTranscriptBridge::consentFor() const { return m_transcript ? m_transcript->consentForMedia() : QVariantMap{}; }
+
+QString SourceTranscriptBridge::redo(bool allowOnce) {
+    if (!m_transcript || !m_media.isValid() || m_streams.isEmpty()) {
+        setMessage(tr("Load a clip with sound in the Source Monitor first"));
+        return m_message;
+    }
+    const QString result = m_transcript->transcribeMedia(m_media, m_stream, allowOnce, true);
+    setMessage(result);
+    return result;
+}
+
+QString SourceTranscriptBridge::deleteTranscript() {
+    if (!m_transcript || !m_media.isValid() || m_streams.isEmpty()) {
+        setMessage(tr("Load a clip with sound in the Source Monitor first"));
+        return m_message;
+    }
+    const QString result = m_transcript->deleteMediaTranscript(m_media, m_stream);
+    setMessage(result.isEmpty() ? tr("Deleted this clip's transcript") : result);
+    return result;
+}
 
 } // namespace wabcut::app

@@ -124,3 +124,57 @@ TEST_CASE("interchange: format names are stable", "[interchange][detect]") {
     CHECK(toString(ReportCategory::SequenceSetting) == "sequence-setting");
     CHECK(toString(ReportCategory::AudioMapping) == "audio-mapping");
 }
+
+TEST_CASE("interchange: OTIO and EDL files saved with a UTF-8 byte order mark are read like the same text without one",
+          "[interchange][detect]") {
+    const std::string bom = "\xEF\xBB\xBF";
+
+    // OTIO (Notepad, Python's utf-8-sig): detected and imported, same sequences as the plain file.
+    const std::string otio = readFixture("resolve_timeline.otio");
+    CHECK(ImportRouter::detectData(bom + otio, "cut.otio").format == Format::Otio);
+    CHECK(ImportRouter::detectData(bom + otio, "cut.otio").supported);
+    const ImportResult plain = importText(otio, Format::Otio);
+    const ImportResult marked = importText(bom + otio, Format::Otio);
+    REQUIRE(marked.sequences.size() == plain.sequences.size());
+    CHECK(sequenceAt(marked, 0).name == sequenceAt(plain, 0).name);
+    CHECK(clips(sequenceAt(marked, 0), "V1") == clips(sequenceAt(plain, 0), "V1"));
+
+    // The same file on disk, through File > Import's route (detect, then importFile).
+    const auto dir = scratchDir("detect-bom");
+    writeFile(dir / "cut.otio", bom + otio);
+    CHECK(ImportRouter::detect(dir / "cut.otio").format == Format::Otio);
+    const auto fromFile = ImportRouter::importFile(dir / "cut.otio");
+    REQUIRE(fromFile);
+    CHECK(sequenceAt(*fromFile, 0).name == sequenceAt(plain, 0).name);
+
+    // A real non-OTIO file after a BOM is still refused, with the same guidance.
+    const Detection notOtio = ImportRouter::detectData(bom + "{\"a\": 1}", "x.otio");
+    CHECK(notOtio.format == Format::Unknown);
+    CHECK(notOtio.guidance.find("OTIO_SCHEMA") != std::string::npos);
+
+    // EDL: the title on the first line survives and nothing is reported as ignored.
+    const std::string edl = readFixture("promo_2997df.edl");
+    CHECK(ImportRouter::detectData(bom + edl, "promo.edl").format == Format::Edl);
+    const ImportResult edlMarked = importText(bom + edl, Format::Edl);
+    const ImportResult edlPlain = importText(edl, Format::Edl);
+    CHECK(sequenceAt(edlMarked, 0).name == "Promo_30s_v2");
+    CHECK(clips(sequenceAt(edlMarked, 0), "V1") == clips(sequenceAt(edlPlain, 0), "V1"));
+    // The report is the same as for the plain file (the fixture has lines of its own that are ignored): the BOM adds none.
+    CHECK(reasons(edlMarked.report, ReportOutcome::Dropped, ReportCategory::Effect) ==
+          reasons(edlPlain.report, ReportOutcome::Dropped, ReportCategory::Effect));
+    // A small EDL with nothing to ignore: the title survives the BOM and the report says nothing was ignored.
+    const std::string small =
+        "TITLE: My Cut\nFCM: NON-DROP FRAME\n"
+        "001  X        V     C        00:00:00:00 00:00:01:00 00:00:00:00 00:00:01:00\n";
+    const ImportResult smallMarked = importText(bom + small, Format::Edl);
+    CHECK(sequenceAt(smallMarked, 0).name == "My Cut");
+    CHECK_FALSE(hasEntry(smallMarked.report, ReportOutcome::Dropped, ReportCategory::Effect, "Ignored, not CMX3600 events or comments"));
+    CHECK(sequenceAt(importText(small, Format::Edl), 0).name == "My Cut");
+    writeFile(dir / "promo.edl", bom + edl);
+    const auto edlFile = ImportRouter::importFile(dir / "promo.edl");
+    REQUIRE(edlFile);
+    CHECK(sequenceAt(*edlFile, 0).name == "Promo_30s_v2");
+
+    // Binary formats are not text: their bytes are never trimmed (an AAF is still found by its magic).
+    CHECK(ImportRouter::detectData(std::string("\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", 8), "x.bin").format == Format::Aaf);
+}

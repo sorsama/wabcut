@@ -199,6 +199,7 @@ private:
     void reportGaps(const IrTrack& track, TrackId trackId, std::size_t trackIndex);
     std::expected<void, Error> applyMarkers(const IrSequence& ir);
     std::expected<void, Error> applyMarks(const IrSequence& ir);
+    void applyWorkArea(const IrSequence& ir);
     void applySequenceDuration(const IrSequence& ir);
     std::expected<void, Error> applyLocks(const IrSequence& ir);
 
@@ -1537,6 +1538,43 @@ std::expected<void, Error> Builder::applyMarks(const IrSequence& ir) {
     return {};
 }
 
+/// 0.7 (card 046): the work area of the file. Premiere writes one for every sequence, the whole of it by default: that is no
+/// work area. Others are snapped to frames and kept inside the sequence; the report says when they moved.
+void Builder::applyWorkArea(const IrSequence& ir) {
+    if (!ir.workIn || !ir.workOut || ir.workOut->value <= ir.workIn->value) {
+        return;
+    }
+    const Sequence& s = sequence();
+    const Ticks end = std::max(s.duration, s.contentEnd());
+    if (ir.workIn->value <= 0 && *ir.workOut >= end) {
+        return; // the whole sequence: Premiere's default
+    }
+    const auto snap = [&](Ticks t) {
+        const auto count = ticksToFrames(t, m_rate, Rounding::Nearest);
+        const auto back = count ? framesToTicks(*count, m_rate, Rounding::Nearest) : std::nullopt;
+        return back.value_or(t);
+    };
+    Ticks in = std::max(snap(*ir.workIn), Ticks{});
+    Ticks out = std::min(snap(*ir.workOut), s.duration);
+    const bool moved = in != *ir.workIn || out != *ir.workOut;
+    if (out <= in) {
+        report(ReportOutcome::Dropped, ReportCategory::SequenceSetting,
+               "work area " + at(*ir.workIn) + " - " + at(*ir.workOut) + " lies outside the sequence", ir.location, m_seqName);
+        return;
+    }
+    auto set = edit::setWorkArea(m_state, m_seq, TimeRange::fromStartEnd(in, out));
+    if (!set) {
+        report(ReportOutcome::Dropped, ReportCategory::SequenceSetting,
+               "work area " + at(*ir.workIn) + " - " + at(*ir.workOut) + " could not be kept: " + set.error().message,
+               ir.location, m_seqName);
+        return;
+    }
+    m_state = std::move(set->state);
+    report(moved ? ReportOutcome::Approximated : ReportOutcome::Carried, ReportCategory::SequenceSetting,
+           "work area " + at(in) + " - " + at(out) + (moved ? " (snapped to frame boundaries and the sequence)" : ""),
+           ir.location, m_seqName);
+}
+
 void Builder::applySequenceDuration(const IrSequence& ir) {
     // An explicit duration past the last clip is a trailing gap; the model keeps it as the sequence duration.
     if (!ir.duration) {
@@ -1726,6 +1764,7 @@ std::expected<void, Error> Builder::buildSequence(const IrSequence& original) {
         }
     }
     applySequenceDuration(original);
+    applyWorkArea(original);
     return applyLocks(original);
 }
 

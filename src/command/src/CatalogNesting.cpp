@@ -116,7 +116,8 @@ void registerNestingCommands(CommandRegistry& registry) {
     addBuiltin(
         registry,
         {"sequence.nest", 1, "Nest",
-         "Premiere's Nest: the clips (and, with \"linked\", their partners) move into a new sequence in the same bin, "
+         "Premiere's Nest: the clips (and, with \"linked\", their partners) move into a new sequence in the bin chosen for "
+         "nests (bin.setNestTarget), else in the same bin as the sequence they come from, "
          "keeping their tracks, effects, links and the transitions between them, and one nested clip per kind (picture "
          "on the lowest selected video track, the mix on the lowest audio track, linked) takes their place. Returns "
          "the new sequence's id and the nested clips.",

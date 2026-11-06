@@ -211,6 +211,9 @@ void registerClipboardCommands(CommandRegistry& registry) {
                        {"audioTrack", trackParam("Destination of the lowest copied audio track.")},
                        {"markers", schema::boolean("Paste the copied markers (default true).")},
                        {"captions", schema::boolean("Paste the copied caption cues (default true).")},
+                       {"addTracks", schema::boolean("Add the video / audio tracks the pasted clips need and the sequence "
+                                                     "lacks (default true); false pastes only onto the tracks there and "
+                                                     "fails when they are not enough.")},
                        {"document", Json{{"type", "string"},
                                          {"maxLength", static_cast<std::int64_t>(kMaxClipboardBytes)},
                                          {"description", "A clipboard as JSON text (clipboard.copy with \"export\"); "
@@ -238,6 +241,7 @@ void registerClipboardCommands(CommandRegistry& registry) {
              }
              options.markers = c.boolean("markers", true);
              options.captions = c.boolean("captions", true);
+             options.addTracks = c.boolean("addTracks", true); // 0.7 (card 182): Settings > Add tracks when editing
              const Ticks at = c.time("at");
              PasteResult pasted = c.take(pasteClips(c.state(), c.sequenceId(), doc, at, options));
              Json clips = Json::array();

@@ -166,7 +166,19 @@ Panel {
                     surroundColor: Theme.videoBlack
                     transparencyGrid: Monitors.sourceTransparencyGrid
                     previewDivisor: MediaReadiness.previewDivisor
+                    // 0.7 (VR / 360 video): the VR viewer on a 360 item.
+                    vrView: Monitors.sourceVrView && SourceMonitor.vrProjection !== "none"
+                    vrProjection: SourceMonitor.vrProjection
+                    vrStereo: SourceMonitor.vrStereo
                     Component.onCompleted: SourceMonitor.attachMonitor(picture)
+                }
+                VrViewOverlay {
+                    objectName: "sourceVrViewOverlay"
+                    anchors.fill: parent
+                    monitor: picture
+                    subject: qsTr("Source")
+                    visible: picture.vrView
+                    z: 5 // above the picture drag
                 }
                 SafeMarginsOverlay {
                     anchors.fill: parent
@@ -258,7 +270,9 @@ Panel {
                 anchors.left: parent.left
                 anchors.top: parent.top
                 anchors.margins: Theme.space(1.5)
-                width: Math.min(parent.width - Theme.space(3), sourceName.implicitWidth + recentButton.width + Theme.space(5))
+                // 0.7: leaves room for the mute pill at the top right when that shows.
+                width: Math.min(parent.width - Theme.space(3) - (mutePill.visible ? mutePill.width + Theme.space(1.5) : 0),
+                                sourceName.implicitWidth + recentButton.width + Theme.space(5))
                 height: Theme.controlHeightSmall
                 radius: height / 2
                 color: Theme.raised
@@ -294,6 +308,36 @@ Panel {
                     RecentSourcesMenu {
                         id: recentMenu
                     }
+                }
+            }
+
+            // 0.7: mute the source's sound (top right, on a pill like the name): only this monitor's playback goes silent,
+            // never the volume, the project or the sequence. It stays muted for the next clips.
+            Rectangle {
+                id: mutePill
+                objectName: "sourceMutePill"
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: Theme.space(1.5)
+                width: muteButton.width + Theme.space(1)
+                height: Theme.controlHeightSmall
+                radius: height / 2
+                color: Theme.raised
+                visible: SourceMonitor.loaded && SourceMonitor.hasAudio
+
+                IconButton {
+                    id: muteButton
+                    objectName: "sourceMuteButton"
+                    anchors.centerIn: parent
+                    compact: true
+                    checkable: true
+                    checked: SourceMonitor.muted
+                    iconName: SourceMonitor.muted ? "volume-x" : "volume-2"
+                    checkedColor: Theme.warning
+                    checkedIconColor: Theme.clipInk
+                    tooltip: SourceMonitor.muted ? qsTr("Unmute the source's sound") : qsTr("Mute the source's sound")
+                    command: "sourceMonitor.toggleMute"
+                    onToggled: SourceMonitor.muted = checked
                 }
             }
 
@@ -751,6 +795,23 @@ Panel {
                     command: "file.exportFrame"
                     enabled: SourceMonitor.hasVideo
                     onClicked: Monitors.requestExportFrame(true)
+
+                    // 0.7: right-click for Copy Frame (the picture on the clipboard, no dialog).
+                    TapHandler {
+                        acceptedButtons: Qt.RightButton
+                        onTapped: sourceCopyFrameMenu.popup(exportFrame, 0, -sourceCopyFrameMenu.implicitHeight - Theme.space(1))
+                    }
+                    ContextMenu {
+                        id: sourceCopyFrameMenu
+                        objectName: "sourceCopyFrameMenu"
+                        ContextMenuItem {
+                            objectName: "sourceCopyFrameItem"
+                            text: qsTr("Copy Frame")
+                            iconName: "copy"
+                            command: "monitor.copyFrame"
+                            onTriggered: Monitors.copyFrame(true)
+                        }
+                    }
                 }
                 IconButton {
                     id: sourceSettingsButton

@@ -123,6 +123,49 @@ std::shared_ptr<const Transcript> CachedTranscriptProvider::transcript(const Med
     return nullptr;
 }
 
+std::expected<std::size_t, Error> CachedTranscriptProvider::remove(const MediaItem& media, int audioStream) const {
+    const auto path = mediaPath(media, m_projectFile);
+    if (!path) {
+        return std::size_t{0};
+    }
+    const auto fingerprint = media::sourceFingerprint(*path);
+    if (!fingerprint) {
+        return std::size_t{0};
+    }
+    AnalysisCache cache(m_root);
+    std::vector<int> streams;
+    if (const int index = containerStream(media, audioStream); index >= 0) {
+        streams.push_back(index);
+    } else {
+        // No recorded container index: the audioStream-th stream that has transcripts (as transcript() finds it).
+        const std::filesystem::path sourceDir =
+            cache.pathFor(AnalysisKey{*fingerprint, 0, "transcript", "m", "p"}).parent_path().parent_path().parent_path();
+        std::error_code ec;
+        std::vector<int> found;
+        for (const auto& entry : std::filesystem::directory_iterator(sourceDir, ec)) {
+            try {
+                found.push_back(std::stoi(pathToUtf8(entry.path().filename())));
+            } catch (...) {
+            }
+        }
+        std::ranges::sort(found);
+        if (audioStream >= 0 && static_cast<std::size_t>(audioStream) < found.size()) {
+            streams.push_back(found[static_cast<std::size_t>(audioStream)]);
+        }
+    }
+    std::size_t removed = 0;
+    for (const int stream : streams) {
+        auto n = cache.removeAnalyzer(*fingerprint, stream, "transcript"); // bumps AnalysisCache::writeCount(): lookups look again
+        if (!n) {
+            return std::unexpected(n.error());
+        }
+        removed += *n;
+    }
+    std::lock_guard lock(m_mutex);
+    m_found.erase(std::pair{*path, audioStream});
+    return removed;
+}
+
 // --- DecoderEnergyProbe --------------------------------------------------------------------------------------
 
 struct DecoderEnergyProbe::Decoders {
@@ -198,6 +241,9 @@ std::expected<MediaTranscriber::Result, Error> ServiceMediaTranscriber::transcri
     TranscribeJobOptions job;
     job.provider = options.provider;
     job.language = options.language;
+    job.translate = options.translate;
+    job.mixedLanguages = options.mixedLanguages; // 0.7 (card 111)
+    job.vocabulary = options.vocabulary; // 0.7 (card 061)
     job.useCache = !options.force;
     job.allowOnce = m_allowOnce;
     std::stop_source stop;
@@ -217,6 +263,14 @@ std::expected<MediaTranscriber::Result, Error> ServiceMediaTranscriber::transcri
 bool ServiceMediaTranscriber::hasTranscript(const MediaItem& media, int audioStream) const {
     const auto path = mediaPath(media, m_projectFile);
     return path && m_service->cached(TranscribeSource{*path, containerStream(media, audioStream)}) != nullptr;
+}
+
+std::expected<std::size_t, Error> ServiceMediaTranscriber::forget(const MediaItem& media, int audioStream) {
+    const auto path = mediaPath(media, m_projectFile);
+    if (!path) {
+        return std::unexpected(Error{ErrorCode::NotFound, "the media file of '" + media.name + "' is missing (relink it)"});
+    }
+    return m_service->forget(TranscribeSource{*path, containerStream(media, audioStream)});
 }
 
 std::vector<MediaTranscriber::Provider> ServiceMediaTranscriber::providers() const {

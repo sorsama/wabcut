@@ -33,7 +33,8 @@ Item {
                                              effects: "window.effects", effectControls: "window.effectControls",
                                              source: "window.sourceMonitor", program: "window.programMonitor",
                                              timeline: "window.timeline", mixer: "window.audioTrackMixer",
-                                             audioMeters: "window.audioMeters", history: "window.history" })
+                                             audioMeters: "window.audioMeters", history: "window.history",
+                                             loudness: "window.loudness" })
 
     /// The width every tab would take at its label's size.
     readonly property real naturalWidth: {

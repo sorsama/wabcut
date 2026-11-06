@@ -105,6 +105,9 @@ struct SchedulerStats {
     /// Stack effects bypassed (unknown id, newer version) in the latest published composite: the monitor's
     /// warning badge.
     int bypassedEffects = 0;
+    /// 0.7 (AI video effects): layers of the latest published composite whose AI chain had no processed picture, so they
+    /// show the unprocessed one (the monitor's badge; nested composites count too).
+    int aiUnprocessedLayers = 0;
     /// Decode backends in use, e.g. "d3d11va x3" or "d3d11va x2, software x1" (principle 4).
     std::string decodeBackends;
     /// What the latest published composite was decoded from (the monitor's honest quality badge).

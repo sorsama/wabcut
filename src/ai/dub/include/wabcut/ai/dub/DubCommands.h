@@ -23,6 +23,7 @@
 #include <wabcut/command/ExecutionContext.h>
 #include <wabcut/command/Registry.h>
 
+#include <algorithm>
 #include <expected>
 #include <filesystem>
 #include <functional>
@@ -85,9 +86,12 @@ struct PlanError {
 /// Checks a request and plans it without sending anything: the lines, the model and voice, the language, the cost,
 /// and for a clone the speaker's recordings (refused without rightsConfirmed, for a speaker with redacted speech, or
 /// with less than 5 s of their speech). Errors: InvalidParams, NotFound, PermissionDenied (no-cloud, clone policy).
+/// r07 (QA-07): `onThisComputer` says whether the chosen voice model runs on this computer (a custom provider on
+/// localhost): a no-cloud project may use such a model. Without it a no-cloud project refuses every run.
 std::expected<DubPlan, PlanError> planDub(const ProjectState& state, SequenceId sequence, const DubRequest& request,
                                       const ModelRegistry& registry, const ai::edit::TranscriptProvider* transcripts,
-                                      std::chrono::year_month_day today);
+                                      std::chrono::year_month_day today,
+                                      const std::function<bool(const ModelSpec&)>& onThisComputer = {});
 
 /// Where a run stops and asks: the host that may spend the user's money.
 class DubServices : public command::CommandServices {
@@ -98,6 +102,14 @@ public:
     virtual std::string defaultModel(std::string_view language) const {
         (void)language;
         return {};
+    }
+    /// r07 (QA-02): the host's model registry (the app's: catalogue, models the user added, custom providers), a copy
+    /// made on the host's thread; null = the shipped file (ModelRegistry::builtin()).
+    virtual std::shared_ptr<const ModelRegistry> registry() const { return {}; }
+    /// r07 (QA-07): whether a voice model runs on this computer (the host knows the addresses the user set).
+    virtual bool onThisComputer(const ModelSpec& model) const {
+        (void)model;
+        return false;
     }
     /// True for a host that only proposes (the app's assistant: a prefilled Dub dialog where the user sets the cap,
     /// consents and runs it): such a request needs no "maxCost".
@@ -110,17 +122,25 @@ class DirectDubServices final : public DubServices {
 public:
     using SpeechOpener = std::function<std::expected<std::unique_ptr<ISpeechSynth>, AiError>(const ModelSpec& model, std::optional<MicroUsd> cap)>;
 
-    DirectDubServices(SpeechOpener speech, std::shared_ptr<SpeechAudio> audio, std::filesystem::path directory, std::string defaultModel = {})
-        : m_speech(std::move(speech)), m_audio(std::move(audio)), m_directory(std::move(directory)), m_defaultModel(std::move(defaultModel)) {}
+    DirectDubServices(SpeechOpener speech, std::shared_ptr<SpeechAudio> audio, std::filesystem::path directory, std::string defaultModel = {},
+                      std::shared_ptr<const ModelRegistry> registry = {}, std::vector<std::string> localModels = {})
+        : m_speech(std::move(speech)), m_audio(std::move(audio)), m_directory(std::move(directory)), m_defaultModel(std::move(defaultModel)),
+          m_registry(std::move(registry)), m_localModels(std::move(localModels)) {}
 
     command::CommandOutput dub(const DubPlan& plan, command::ExecutionContext& context) override;
     std::string defaultModel(std::string_view) const override { return m_defaultModel; }
+    std::shared_ptr<const ModelRegistry> registry() const override { return m_registry; }
+    bool onThisComputer(const ModelSpec& model) const override {
+        return std::find(m_localModels.begin(), m_localModels.end(), model.id) != m_localModels.end();
+    }
 
 private:
     SpeechOpener m_speech;
     std::shared_ptr<SpeechAudio> m_audio;
     std::filesystem::path m_directory;
     std::string m_defaultModel;
+    std::shared_ptr<const ModelRegistry> m_registry;
+    std::vector<std::string> m_localModels; ///< voice models on this computer (QA-07)
 };
 
 /// Runs a plan to the staged state (what DirectDubServices does; the app's Dub dialog calls it on its worker).

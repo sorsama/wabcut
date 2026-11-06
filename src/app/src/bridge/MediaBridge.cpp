@@ -4,12 +4,15 @@
 
 #include <wabcut/media/ThumbnailService.h>
 #include <wabcut/media/WaveformPeaks.h>
+#include <wabcut/model/MediaLocator.h>
+#include <wabcut/render/VectorImage.h>
 
 #include <QImage>
 #include <QMetaObject>
 #include <QPointer>
 #include <QQuickImageResponse>
 #include <QQuickTextureFactory>
+#include <QThreadPool>
 #include <QUrl>
 
 #include <algorithm>
@@ -323,6 +326,61 @@ private:
     QString m_error;
 };
 
+/// 0.7 (card #86): the thumbnail of vector artwork (SVG, Illustrator, EPS): the artwork drawn at the thumbnail's height on a
+/// pool thread (Ghostscript is a process), not decoded by FFmpeg. Transparent where nothing is drawn.
+class VectorThumbnailResponse final : public QQuickImageResponse {
+public:
+    VectorThumbnailResponse(const std::string& path, int height) : m_link(std::make_shared<Link>()) {
+        m_link->target = this;
+        const int shown = std::clamp(height, 8, 2160);
+        QThreadPool::globalInstance()->start([link = m_link, path, shown] {
+            QImage image;
+            QString error;
+            const std::filesystem::path file = pathFromUtf8(path);
+            auto& pictures = render::VectorPictures::shared();
+            if (const auto info = pictures.info(file)) {
+                const double width = shown * info->width / info->height;
+                image = pictures.picture(file, width, shown);
+                if (image.isNull()) {
+                    error = QStringLiteral("the artwork could not be drawn");
+                } else if (image.height() != shown) {
+                    image = image.scaledToHeight(shown, Qt::SmoothTransformation);
+                }
+            } else {
+                error = QString::fromStdString(info.error().message);
+            }
+            std::lock_guard lock(link->mutex);
+            if (VectorThumbnailResponse* target = link->target) {
+                QMetaObject::invokeMethod(
+                    target,
+                    [target, image = std::move(image), error = std::move(error)] {
+                        target->m_image = image;
+                        target->m_error = error;
+                        emit target->finished();
+                    },
+                    Qt::QueuedConnection);
+            }
+        });
+    }
+
+    ~VectorThumbnailResponse() override {
+        std::lock_guard lock(m_link->mutex);
+        m_link->target = nullptr;
+    }
+
+    QQuickTextureFactory* textureFactory() const override { return QQuickTextureFactory::textureFactoryForImage(m_image); }
+    QString errorString() const override { return m_error; }
+
+private:
+    struct Link {
+        std::mutex mutex;
+        VectorThumbnailResponse* target = nullptr;
+    };
+    std::shared_ptr<Link> m_link;
+    QImage m_image;
+    QString m_error;
+};
+
 } // namespace
 
 ThumbnailImageProvider::ThumbnailImageProvider(std::filesystem::path cacheDir) : m_cacheDir(std::move(cacheDir)) {}
@@ -351,6 +409,9 @@ QQuickImageResponse* ThumbnailImageProvider::requestImageResponse(const QString&
         }
     }
     const int height = requestedSize.height() > 0 ? requestedSize.height() : 180;
+    if (render::vectorFormatOf(pathFromUtf8(path))) {
+        return new VectorThumbnailResponse(path, height); // 0.7 (card #86): one picture; a strip repeats it
+    }
     return new ThumbnailResponse(service(), path, height, count);
 }
 

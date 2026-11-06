@@ -386,3 +386,88 @@ TEST_CASE("Workspaces: the accent plate sits under the active tab after the tabs
     INFO(join(messages));
     CHECK(messages.isEmpty());
 }
+
+TEST_CASE("Workspaces: Alt+Shift+1 to 9 open the workspaces in their tab order (card 026)", "[app][workspaces][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    const auto run = [&](const char* command) {
+        REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "runCommand", Q_ARG(QVariant, QVariant(QString::fromLatin1(command)))));
+        spin(120);
+    };
+    const auto current = [&] { return evaluateInt(shell, QStringLiteral("window.workspace")); };
+    const auto tabIds = [&] { return evaluate(shell, QStringLiteral("Workspaces.all.map(w => w.id)")).toList(); };
+    const auto commandOf = [&](int id) {
+        return evaluate(shell, QStringLiteral("Workspaces.commandOf(%1)").arg(id)).toString();
+    };
+
+    // A fresh start: one workspace. The keys keep their first-run meaning (3 Audio, 4 Captions, 5 Color, the rest Edit).
+    REQUIRE(tabIds().size() == 1);
+    const int edit = current();
+    run("window.workspace3");
+    CHECK(evaluate(shell, QStringLiteral("window.workspaceSpec.preset")).toString() == QStringLiteral("audio"));
+    run("window.workspace1");
+    CHECK(current() == edit);
+    run("window.workspace7"); // no seventh tab: the Edit workspace
+    CHECK(current() == edit);
+
+    // A copy of the Edit workspace sits right after it and takes the next key, pushing Audio to the third place.
+    const int audio = evaluateInt(shell, QStringLiteral("Workspaces.firstOf('audio')"));
+    const int copy = evaluateInt(shell, QStringLiteral("Workspaces.create(%1, 'Edit copy')").arg(edit));
+    spin(100);
+    REQUIRE(tabIds() == QVariantList({edit, copy, audio}));
+    CHECK(commandOf(edit) == QStringLiteral("window.workspace1"));
+    CHECK(commandOf(copy) == QStringLiteral("window.workspace2"));
+    CHECK(commandOf(audio) == QStringLiteral("window.workspace3"));
+    CHECK(commandOf(99999).isEmpty());
+    run("window.workspace3"); // the third tab, which is the Audio workspace here
+    CHECK(current() == audio);
+    run("window.workspace2"); // the second tab, a duplicate: it never had a key before
+    CHECK(current() == copy);
+    run("window.workspace1");
+    CHECK(current() == edit);
+
+    // Reordering the tabs reorders the keys.
+    evaluate(shell, QStringLiteral("Workspaces.moveTo(%1, 0)").arg(copy)); // Edit copy, Edit, Audio
+    spin(100);
+    CHECK(commandOf(copy) == QStringLiteral("window.workspace1"));
+    CHECK(commandOf(edit) == QStringLiteral("window.workspace2"));
+    run("window.workspace1");
+    CHECK(current() == copy);
+    run("window.workspace2");
+    CHECK(current() == edit);
+
+    // Next and Previous Workspace step through the tabs and wrap round the ends.
+    run("window.workspace1");
+    run("window.nextWorkspace");
+    CHECK(current() == edit);
+    run("window.nextWorkspace");
+    CHECK(current() == audio);
+    run("window.nextWorkspace");
+    CHECK(current() == copy); // round the end
+    run("window.previousWorkspace");
+    CHECK(current() == audio); // round the start
+    run("window.previousWorkspace");
+    CHECK(current() == edit);
+
+    // Past the ninth tab only the first Export workspace has a key (Export Media); the nine keys are the first nine tabs.
+    for (int i = 0; i < 6; ++i)
+        evaluate(shell, QStringLiteral("Workspaces.create(%1, 'Spare %2')").arg(edit).arg(i));
+    const int exportId = evaluateInt(shell, QStringLiteral("Workspaces.createFromPreset('export', '')"));
+    spin(100);
+    const QVariantList tabs = tabIds();
+    REQUIRE(tabs.size() == 10);
+    CHECK(tabs.last().toInt() == exportId);
+    for (int i = 0; i < 9; ++i)
+        CHECK(commandOf(tabs[i].toInt()) == QStringLiteral("window.workspace%1").arg(i + 1));
+    CHECK(commandOf(exportId) == QStringLiteral("file.exportMedia"));
+    run("window.workspace9");
+    CHECK(current() == tabs[8].toInt());
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}

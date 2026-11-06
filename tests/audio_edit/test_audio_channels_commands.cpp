@@ -162,6 +162,35 @@ TEST_CASE("audio.splitToMono: the two mics onto separate tracks, linked, one und
           "InvalidParams");
 }
 
+TEST_CASE("audio.splitToMono names the clips after the channel names of a poly WAV (062)", "[audio][edit][channels]") {
+    Timeline tl(kPicture);
+    tl.linkMatching();
+    // Media A is a poly WAV whose recorder named its two channels (iXML): the second one is left unnamed.
+    const MediaId a = tl.media('A');
+    for (MediaPtr& m : tl.state.media) {
+        if (m->id == a) {
+            auto item = std::make_shared<MediaItem>(*m);
+            item->info.audio.front().channelNames = {"Boom", ""};
+            m = item;
+        }
+    }
+    CommandHarness h(std::move(tl), command::EnginePolicy{command::CapabilitySet::all(), 64, nullptr}, ai::edit::editingCommands());
+    auto r = h.ok("audio.splitToMono", {{"clip", h.clip("A1@0").value}});
+    REQUIRE(r.data["clips"].size() == 2);
+    const Sequence& seq = h.sequence(h.state());
+    const Clip& first = seq.findClip(ClipId{r.data["clips"][0]["clip"].get<std::uint64_t>()})->clip();
+    const Clip& second = seq.findClip(ClipId{r.data["clips"][1]["clip"].get<std::uint64_t>()})->clip();
+    CHECK(first.name() == "Boom");
+    CHECK(r.data["clips"][0]["name"] == "Boom");
+    CHECK(second.name() == "A"); // no name from the recorder: the clip keeps its own
+    CHECK_FALSE(r.data["clips"][1].contains("name"));
+    // Still one undo step.
+    const std::size_t steps = h.session.undoCount();
+    REQUIRE(h.session.undo());
+    CHECK(h.session.undoCount() == steps - 1);
+    CHECK(h.sequence(h.state()).findClip(h.clip("A1@0"))->clip().name() == "A");
+}
+
 TEST_CASE("audio.channels and audio.channelLevels report what plays and which channels have sound", "[audio][edit][channels]") {
     auto analyzer = std::make_shared<LeftOnlyAnalyzer>();
     auto services = std::make_shared<AudioServices>(nullptr, nullptr);
@@ -224,7 +253,11 @@ TEST_CASE("track.setFormat, track.setSurroundPan and sequence.setMasterFormat", 
     h.ok("track.setFormat", {{"track", "A1"}, {"format", "5.1"}});
     CHECK(h.sequence(h.state()).findTrack(h.tl.track("A1"))->format == ChannelFormat::Surround51);
     CHECK_FALSE(h.errorOf("track.setFormat", {{"track", "V1"}, {"format", "mono"}}).empty());
-    CHECK(h.errorOf("track.setFormat", {{"track", "A1"}, {"format", "7.1"}}) == "InvalidParams");
+    CHECK(h.errorOf("track.setFormat", {{"track", "A1"}, {"format", "9.1"}}) == "InvalidParams");
+    // 0.7 (card 048): 7.1 tracks.
+    h.ok("track.setFormat", {{"track", "A1"}, {"format", "7.1"}});
+    CHECK(h.sequence(h.state()).findTrack(h.tl.track("A1"))->format == ChannelFormat::Surround71);
+    h.ok("track.setFormat", {{"track", "A1"}, {"format", "5.1"}});
     auto pan = h.ok("track.setSurroundPan", {{"track", "A2"}, {"x", -0.5}, {"lfeDb", -12}});
     const SurroundPan& s = h.sequence(h.state()).findTrack(h.tl.track("A2"))->surround;
     CHECK(s.x == ParamValue(-0.5));
@@ -236,4 +269,14 @@ TEST_CASE("track.setFormat, track.setSurroundPan and sequence.setMasterFormat", 
     CHECK(h.sequence(h.state()).masterFormat == ChannelFormat::Surround51);
     CHECK(h.session.undoCount() == undo + 1);
     CHECK(h.errorOf("sequence.setMasterFormat", {{"format", "mono"}}) == "InvalidParams");
+    // 0.7 (card 048): a 7.1 master, and the command says what the change did to the sound.
+    const auto up = h.ok("sequence.setMasterFormat", {{"format", "7.1"}});
+    CHECK(h.sequence(h.state()).masterFormat == ChannelFormat::Surround71);
+    REQUIRE(up.data.contains("note"));
+    CHECK(up.data["note"].get<std::string>().find("rear pair") != std::string::npos);
+    CHECK(up.data["note"].get<std::string>().find("silent") != std::string::npos);
+    const auto down = h.ok("sequence.setMasterFormat", {{"format", "5.1"}});
+    CHECK(down.data["note"].get<std::string>().find("folded") != std::string::npos);
+    CHECK(h.ok("sequence.setMasterFormat", {{"format", "5.1"}}).data.contains("note") == false); // no change: nothing to say
+    CHECK(h.errorOf("sequence.setMasterFormat", {{"format", "9.1"}}) == "InvalidParams");
 }

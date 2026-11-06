@@ -2,7 +2,7 @@ pragma Singleton
 import QtQuick
 
 // Workspaces (0.1.3): the workspaces the title bar shows, in their order, each with its own panel layout. None is
-// built in: every workspace is the user's, made from a preset layout (Edit, Color, Audio, Captions, Export) or as a
+// built in: every workspace is the user's, made from a preset layout (Edit, Color, Audio, Captions, Export, Gaming) or as a
 // copy of another one, and renamed, reordered or deleted at will (the last one stays). The first start makes one from
 // the Edit preset.
 //
@@ -11,7 +11,7 @@ import QtQuick
 //   * id: 100 and up. The ids 0-4 were the built-in workspaces (0 Edit, 1 Audio, 2 Export, 3 Color, 4 Captions); the
 //     workspace keys, the welcome and Settings still use them to mean "the first workspace made from that preset"
 //     (legacyPresets, Main.openPreset, which makes one when there is none).
-//   * preset: the preset it was made from ("edit", "color", "audio", "captions" or "export"): Reset goes back to it.
+//   * preset: the preset it was made from ("edit", "color", "audio", "captions", "export" or "gaming"): Reset goes back to it.
 //   * layout: the docking tree (DockManager): splits ({ split: "row" | "column", children, weights }) of panel groups
 //     ({ group: id, panels: [catalog keys], current: the one shown }); a group shows its panels as tabs. null: every
 //     panel is closed.
@@ -31,7 +31,7 @@ QtObject {
 
     readonly property int version: 2
     readonly property int firstId: 100
-    readonly property var presetOrder: ["edit", "color", "audio", "captions", "export"]
+    readonly property var presetOrder: ["edit", "color", "audio", "captions", "export", "gaming"]
     /// What the former built-in ids mean.
     readonly property var legacyPresets: ({ 0: "edit", 1: "audio", 2: "export", 3: "color", 4: "captions" })
 
@@ -58,6 +58,8 @@ QtObject {
         { key: "metadata", label: qsTr("Metadata"), icon: "tag", browser: true, column: "left", hue: "blue" },
         { key: "production", label: qsTr("Production"), icon: "folders", browser: true, column: "left", hue: "violet" },
         { key: "review", label: qsTr("Review"), icon: "message-square", browser: true, column: "left", hue: "blue" },
+        // 0.7 (card 035): free videos and photos from Pexels and Pixabay, added with their licence and credit.
+        { key: "stock", label: qsTr("Stock Media"), icon: "image", browser: true, column: "left", hue: "orange" },
         { key: "shorts", label: qsTr("Shorts"), icon: "clapperboard", browser: true, column: "left", hue: "orange" },
         { key: "takes", label: qsTr("Takes"), icon: "repeat", browser: true, column: "left", hue: "violet" },
         { key: "generate", label: qsTr("Generate"), icon: "sparkles", browser: true, column: "left", hue: "violet" },
@@ -70,10 +72,16 @@ QtObject {
         { key: "mixer", label: qsTr("Audio Track Mixer"), icon: "volume-2", browser: false, column: "right", hue: "mint" },
         // 0.5: Premiere's Audio Meters (the mix's level), along the timeline; the Edit preset docks it right of it.
         { key: "audioMeters", label: qsTr("Audio Meters"), icon: "audio-lines", browser: false, column: "timeline", hue: "mint" },
+        // 0.7 (card 104): the live loudness meter and the Loudness Radar; opens right of the Audio Meters (or the timeline).
+        { key: "loudness", label: qsTr("Loudness"), icon: "gauge", browser: false, column: "timeline", hue: "mint" },
+        // 0.7 (card 177): Sources, the claims of a video essay with the source behind each (with the clip editors when it opens).
+        { key: "sources", label: qsTr("Sources"), icon: "bookmark", browser: false, column: "right", hue: "blue" },
         // P1 round (#4): History, Premiere's dockable History panel (with the clip editors when it opens).
         { key: "history", label: qsTr("History"), icon: "undo-2", browser: false, column: "right", hue: "blue" },
         // 0.6 (card #74): the Take Selector, the takes of an audition (with the clip editors when it opens).
         { key: "takeSelector", label: qsTr("Take Selector"), icon: "layers", browser: false, column: "right", hue: "violet" },
+        // 0.7 (card 96): the Graph Editor, the keyframes of the clip as curves (value and speed graphs) in a panel of any size.
+        { key: "graphEditor", label: qsTr("Graph Editor"), icon: "spline", browser: false, column: "right", hue: "lime" },
         { key: "color", label: qsTr("Color"), icon: "contrast", browser: false, column: "right", hue: "orange" },
         { key: "export", label: qsTr("Export"), icon: "upload", browser: false, column: "right", hue: "lime" },
         { key: "timeline", label: qsTr("Timeline"), icon: "layers", browser: false, column: "timeline", hue: "violet" }
@@ -111,7 +119,9 @@ QtObject {
             return { split: "column", weights: [0.62, 0.38], children: [
                 { split: "row", weights: [0.24, 0.3, 0.46],
                   children: [root.group("g1", ["audio"]), root.group("g2", ["program"]), root.group("g3", ["mixer"])] },
-                root.group("g4", ["timeline"])] }
+                // 0.7 (card 104): the Loudness meter in a slim column at the timeline's right, where you mix by ear and eye.
+                { split: "row", weights: [0.86, 0.14],
+                  children: [root.group("g4", ["timeline"]), root.group("g5", ["loudness"])] }] }
         case "captions":
             // C.7: the transcript and the cue list, the Program Monitor, the Caption Style panel.
             return { split: "column", weights: [0.5, 0.5], children: [
@@ -123,6 +133,15 @@ QtObject {
             return { split: "column", weights: [0.66, 0.34], children: [
                 { split: "row", weights: [0.6, 0.4], children: [root.group("g1", ["program"]), root.group("g2", ["export"])] },
                 root.group("g3", ["timeline"])] }
+        case "gaming":
+            // 0.7: the gaming workflow: Highlights (with Shorts and the Library as tabs), the Program Monitor and Effect
+            // Controls (with Essential Sound as a tab) over the timeline. Not reached by a workspace key: Alt+Shift+1..9
+            // follow Premiere's numbering.
+            return { split: "column", weights: [0.55, 0.45], children: [
+                { split: "row", weights: [0.3, 0.4, 0.3],
+                  children: [root.group("g1", ["highlights", "shorts", "library"]), root.group("g2", ["program"]),
+                             root.group("g3", ["effectControls", "essential"])] },
+                root.group("g4", ["timeline"])] }
         }
         // Premiere's Editing workspace: the Library, Source and Program side by side, Effect Controls; the timeline with the
         // Audio Meters at its right (0.5; workspaces made or reset from the preset from then on).
@@ -139,6 +158,7 @@ QtObject {
         case "audio": return qsTr("Audio")
         case "captions": return qsTr("Captions")
         case "export": return qsTr("Export")
+        case "gaming": return qsTr("Gaming")
         }
         return qsTr("Edit")
     }
@@ -185,20 +205,15 @@ QtObject {
             return w.preset
         return "custom" + id
     }
-    /// The keymap command that opens it (Premiere's workspace keys; Export Media) for the first workspace of each preset,
-    /// for the tooltips; "" for none.
+    /// The keymap command that opens it, for the tooltips and menus: Premiere's workspace keys are positional, so the first
+    /// nine tabs have window.workspace1..9 (Alt+Shift+1..9); a later first Export workspace has Export Media; "" for none.
     function commandOf(id: int): string {
-        const w = root.find(id)
-        if (!w || root.firstOf(w.preset) !== id)
+        const index = root.all.findIndex(w => w.id === id)
+        if (index < 0)
             return ""
-        switch (w.preset) {
-        case "edit": return "window.workspace6"
-        case "audio": return "window.workspace3"
-        case "export": return "file.exportMedia"
-        case "color": return "window.workspace5"
-        case "captions": return "window.workspace4"
-        }
-        return ""
+        if (index < 9)
+            return "window.workspace" + (index + 1)
+        return root.firstOf("export") === id ? "file.exportMedia" : ""
     }
 
     // ---- Layouts ----

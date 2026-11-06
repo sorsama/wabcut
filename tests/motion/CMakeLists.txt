@@ -5,6 +5,8 @@
 wabcut_add_test_suite(motion
     SOURCES
         MovingTexture.h
+        SyntheticFace.h
+        test_face_align.cpp
         test_flow.cpp
     LIBS wabcut_motion
     PROPERTIES LABELS motion)

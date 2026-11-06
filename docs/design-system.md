@@ -359,7 +359,7 @@ The sections below record what each milestone built. Their behaviour still holds
 ### Tools (keys from docs/keymap.md; buttons in the Tracks header with keymap tooltips)
 | Tool | Key | Press / drag |
 |---|---|---|
-| Selection | V | Body drag moves the selection. Ctrl/⌘ at the drop inserts; Alt at the drop copies (Alt at the press: only the clicked side of a linked clip); Ctrl+Alt (⌘⌥) rearranges; Shift during the drag keeps the time. Dragging across tracks moves video up and linked audio down. Edge drag trims; Ctrl/⌘ on an edge ripple-trims. |
+| Selection | V | Body drag moves the selection. Ctrl/⌘ at the drop inserts; Alt at the drop copies (Alt at the press: only the clicked side of a linked clip); Alt first and then Ctrl inserts the copy (0.7: "Insert Copy", the `insertCopy` cursor); Ctrl+Alt (⌘⌥) rearranges (Ctrl first, or both from the press); Shift during the drag keeps the time. Dragging across tracks moves video up and linked audio down. Edge drag trims; Ctrl/⌘ on an edge ripple-trims. |
 | Track select forward / backward | A / Shift+A | Click selects every clip from the click on (or before it), on all tracks; Shift: the clicked track only. A drag then moves them. |
 | Ripple edit | B | Edge drag ripple-trims. |
 | Rolling edit | N | Drag an edit point to roll it. |
@@ -527,8 +527,10 @@ unlocked sync-locked track.
 - **Parameter prompts:** an edit command with parameters opens a short form:
   - timecode and text fields, number fields, `Toggle`, choice pills, track pills and the label-colour swatches;
   - clips and the sequence come from the selection, never typed; parameters that name an object by id (an effect
-    instance, a transition) are never asked for, so commands that need one are disabled ("Needs values the palette
-    cannot ask for yet") until the palette can pick them;
+    instance, a transition) are never asked for, so commands that need one are not listed (0.7; they were disabled
+    before) until the palette can pick them - agents and the CLI keep them in the catalog. Commands that need services
+    the app gives its own panels (the version history, review notes, the export queue, the effects library) are not
+    listed either: they would fail;
   - a clip parameter (`param`) is a choice of the stable parameter keys; any catalog time or length is a timecode
     field;
   - every change runs a **dry run** ("Preview: Changes 1 clip"); Apply commits one undo step named after the command.
@@ -659,7 +661,10 @@ unlocked sync-locked track.
 - Every change is dry-run through the typed command `clip.speedDuration`: "Preview: changes 1 clip", or the reason
   in amber. OK applies it as one undo step.
 
-### Titles (Library ▸ Text: Essential Graphics)
+### Titles (the Titles bridge; the command palette's New Title)
+- r07: the Library's Text tab (this title maker) was removed. Text is made with Graphics ▸ New Layer ▸ Text and
+  styled in the Essential Graphics panel; a title clip's style shows in Effect Controls. The bridge below stays for the
+  palette's New Title and for title clips.
 - **Style:** a live preview card plus New Title, brand presets (one per Theme accent: accent fill on its deep
   tone), text, font (Sans/Serif/Mono/Display), size, bold, alignment, fill swatches (white, ink, clip colours),
   stroke and shadow.
@@ -822,8 +827,8 @@ unlocked sync-locked track.
     each, "Add the clips to the sequence", and for a recording with several audio streams the streams table.
 - **The all-in-one Import:** Import… (several files), Import folder… and drops all go through `Home.classifyImport`:
   a project opens; timelines import into a new project with the report; a `.prproj` waits for the experimental reader
-  (a warning strip with Cancel / Import with the experimental reader); unreadable files (a dotLottie archive and a web
-  address dragged from a browser too) get guidance with "How to export"; media open the New project page in "Start
+  (a warning strip with Cancel / Import with the experimental reader); unreadable files (a web
+  address dragged from a browser) get guidance with "How to export"; media open the New project page in "Start
   with media". Notes (files left out) show in the message strip; a note that goes with an open or an import shows in
   the editor only when that request succeeds.
 - **Create:** a refusal before the project exists (the name, the folder - one that cannot be made too: a missing drive
@@ -917,7 +922,7 @@ unlocked sync-locked track.
 - **Dry runs:** measuring commands run on a worker thread over a copy of the project.
   - While one runs, an accent-wash bar says what is being measured, with Cancel.
   - A dry run waits in a warning-tinted card: the title ("Duck the music by 12.0 dB"), what it changes
-    ("1 speech region(s), 6 volume keyframes on 1 music clip(s)", or per-target "before → after LUFS (gain)"),
+    ("1 speech region, 6 volume keyframes on 1 music clip", or per-target "before → after LUFS (gain)"),
     warnings, then Cancel and **Apply**.
   - Apply commits the previewed project as one undo step, but only if nothing changed since the preview. Any edit
     drops the preview.
@@ -951,6 +956,8 @@ unlocked sync-locked track.
   slope (`edit::setKeyframe`, one undo step).
   - The two handles of a key stay linked: the other side takes the same slope and keeps its length.
   - Alt breaks them.
+  - Shift (0.7) pins the dragged handle level with its key (slope 0: a flat ease); only its length follows the pointer,
+    the other side of a linked pair takes the flat slope, and letting go of Shift mid-drag frees the height again.
 - **Becoming Bezier:** a key turned Bezier from the interpolation menu gets smooth tangents, the slope between its
   neighbours (Premiere's Auto Bezier), instead of flat ones.
 
@@ -1036,6 +1043,15 @@ unlocked sync-locked track.
   - Shift+= expands all tracks; Shift+- minimises them to `Theme.trackHeightMin`.
 - **Presets:** the display settings save and recall them, as Premiere does (`Preferences.trackHeightPresets`).
 - **Waveforms:** they scale with the audio track's height.
+- **Track groups (0.7):** a group has a header row (`Theme.trackGroupHeight`, the style's `groupHeaderHeight`) before its first
+  track in the display: `TimelineView.groupRows` lists the rows, and every header (caption rows, group rows, track rows) sits
+  at its row's y in the header column (`trackYOf()`), not in a flow, so the row can stand between the headers. A collapsed
+  group's tracks are `Row::hidden` (no height, no gap, no geometry, no hit) and their headers are not visible
+  (`trackVisible()`); the group's lane draws one thin bar per clip of its tracks, in the clip's label colour. A group's height
+  setting (`setGroupTrackHeight`) is view state like a track's. The row is a raised pill like the headers: chevron, name, count
+  badge, then Mute / Solo / Lock (a ring in amber / green / plain while only some tracks have the switch), a bar down the left
+  edge and a wash on the lane in the group's label colour. The Repeater of rows counts them (`groupRows.length`), so a change
+  updates a row in place and keeps the focus on its chevron.
 
 ### Video filmstrips (Premiere's Video Head / Head and Tail / Continuous)
 - **Pipeline:** `MediaFilmstripSource` extracts frames with media::ThumbnailService (disk-cached), using the media's
@@ -1059,6 +1075,11 @@ unlocked sync-locked track.
   - Trim Edit (Shift+T) selects the edit points nearest the playhead on the targeted tracks as a roll and opens the
     Trim view.
   - Toggle Trim Type (Ctrl+Shift+T; Control+T on macOS, Premiere's shipped keys) cycles roll → ripple → regular.
+  - Slip (0.7, Avid's slip): Shift-click the other edge of a clip whose edge is selected, Sequence > Slip Trim
+    (`sequence.slipTrim`: the selected clips, else the clips under the playhead on the targeted tracks) or the Trim view's
+    Slip tab make both edges of a clip the edit points and the trim type `slip`. The trims then call `edit::slip` (later
+    source frames with +; the linked partners follow while Linked Selection is on): the clip keeps its place and length.
+    Toggle Trim Type leaves it for the roll.
   - Clicking a clip, or Esc, leaves trim mode.
 - **Trimming:**
   - Ctrl/⌥+arrows trim one frame; with Shift, the Large trim offset (`Preferences.trimLargeOffset`, 5).
@@ -1066,9 +1087,11 @@ unlocked sync-locked track.
     one frame.
   - Every trim is one undo step.
 - **The Trim view:** while open it takes the whole monitor area.
-  - Outgoing | incoming frames, each rendered with only its track visible, off the GUI thread.
+  - Outgoing | incoming frames, each rendered with only its track visible, off the GUI thread. In slip mode the same two
+    sides show the clip itself: its first frame on the left and its last frame on the right, and the offset badges count the
+    frames slipped.
   - Each side's clip name, source timecode and offset badge (frames trimmed since trim mode started).
-  - Buttons: −5, −1, Play Around (a preroll/postroll loop), +1, +5, exit, and the trim type.
+  - Buttons: −5, −1, Play Around (a preroll/postroll loop), +1, +5, exit, and the trim type (Regular, Ripple, Roll, Slip).
 
 ### Markers 2.0
 - **Colours:** Premiere's eight (`Theme.markerColors`: green, red, purple, orange, yellow, white (a cool grey in light
@@ -1154,7 +1177,8 @@ unlocked sync-locked track.
   Choosing a clip moves the playhead to it and reveals it on the lanes.
 
 ### Keyboard only, end to end
-- Tab and Shift+Tab always move focus (the dispatcher never takes them); a button reached with the keyboard takes
+- Tab and Shift+Tab always move focus (the dispatcher never takes them) - except in the Library list's open cell editor,
+  where they step to the next / previous cell (0.7, `fieldStepping`); a button reached with the keyboard takes
   Space; media cards and sequence chips take Return.
 - Shift+1 / Shift+3 / Shift+7 (Premiere's panel keys) focus the Library, the Timeline and Effects. The path import →
   Source Monitor → Insert → edit → export works without a mouse (a test drives it).
@@ -1182,10 +1206,12 @@ unlocked sync-locked track.
   with your own provider key; a cloud call asks for consent first and stays within your monthly cap; the no-cloud
   lock in Settings > AI); ready (the tour or the Keyboard Trainer). Every choice applies at once
   behind the scrim. Skip or Esc on any page ends it; either way `Preferences.welcomeDone` keeps it from coming back.
-- **Tour (`CoachMarks`)**: three slice-style coach marks, Library → Timeline → Export. The rest of the window dims;
-  the highlighted part stays live, so opening Export on the last step completes the tour. The callout is a slice
-  card beside the highlight (else below or above it), with a slice tag "2 / 3" on the frame. Right/Return go on, Left
-  goes back, Esc ends; focus goes back where it was.
+- **Tour (`CoachMarks`)**: seven slice-style coach marks, Library → Timeline → menu bar → Program Monitor → Effects →
+  command palette → Export (0.7). The rest of the window dims; the highlighted part stays live, so opening Export on the
+  last step completes the tour. The callout is a slice card beside the highlight (else below or above it; a step with
+  no target, the palette, puts it in the middle), with a slice tag "2 / 7" on the frame. Steps that point at a panel
+  (Program Monitor, Effects) show it first (a closed panel opens, a hidden tab comes forward) without moving the
+  keyboard focus off the card. Right/Return go on, Left goes back, Esc ends; focus goes back where it was.
 - **Keyboard Trainer (`KeyboardTrainer`, bridge `Trainer`)**: Wabcut names an action and you press its shortcut,
   resolved from the active keymap (an imported or edited key set trains its own keys). Rounds of ten from Editing,
   Clipboard (Paste Attributes, Paste Insert), Markers (In/Out and markers), Trim, Playback, Tools, Timeline, Multicam
@@ -1287,7 +1313,7 @@ unlocked sync-locked track.
   right of the row under the grid, a ValueSlider between zoom-out / zoom-in icon buttons, beside the proxy pill, grid
   view only; it keeps its arrows while focused; the keys = / - and Shift+] / Shift+[ step it); hover scrub; Show unused media / Remove unused media (a confirmation popover; one
   undo step; the files stay on disk); Show duplicate media (the same file content imported twice; subclips do not
-  count); Make subclip. Reveal in File Explorer (Finder on macOS) is in the item menu.
+  count); Consolidate duplicates… (0.7: a popover lists each set's kept item and the ones that go, then one undo step); Make subclip. Reveal in File Explorer (Finder on macOS) is in the item menu.
 - **Proxies (I.3) and analysis:** proxy state from MediaReadiness; transcript, search index and shot detection from a
   background scan of the analysis cache and the smart-search index (never on the GUI thread).
 - **Privacy (review P2-9):** thumbnails, posters, hover-scrub tiles and timeline filmstrips are decoded from the raw
@@ -1331,7 +1357,10 @@ unlocked sync-locked track.
   audio", then a four-column grid (angle · name, where it starts as a timecode in mono, the confidence: "exact" for the
   marks, "93 %" by sound, a drift or problem note in warning) and the warnings. The Library shows the new source.
 - **The multi-camera view** (Program Monitor; the monitor bar's grid button, Shift+0): the well splits in two, the
-  **angle grid** on the left (`panels/multicam/MulticamView.qml`), the program picture on the right.
+  **angle grid** on the left (`panels/multicam/MulticamView.qml`), the program picture on the right. 0.7: each tile has a
+  right-click menu (also the Menu key / Shift+F10 on a focused tile, `MulticamAngleMenu.qml`: Sync 1 / 10 Frames Earlier
+  / Later, Reset to Measured Sync, Open Multi-Camera Source) and wears a warning-coloured "+2 f" badge top right when its
+  sync is off the measured one.
   - The grid is the multicam clip under the playhead (the topmost video track that has one): 2×2 up to 4 angles, 3×3
     up to 9, 4×4 up to 16. It is **one picture** drawn by the export renderer (`MulticamGrid`: a private copy of the
     project where each angle's track is scaled into its cell, one composite per frame, the monitor's colour
@@ -1378,6 +1407,23 @@ unlocked sync-locked track.
   automation; Touch writes while the fader or knob is held and returns to the automation on release; Latch writes from
   the first touch until playback stops; Write writes the whole pass. The pass is written when playback stops: thinned
   keys, anchored one 40 ms gap before and after each written stretch, **one undo step** ("Mixer Automation").
+- **Loudness panel** (`LoudnessPanel`, Window > Loudness, 0.7): a slim panel beside the timeline. A wrapping row (view tabs
+  Meter | Radar, the target pill, Reset), then either the Meter view - two vertical level bars (M, S) on the target + 9 to
+  target - 18 LU scale with a target tick and the numbers beside them (short-term large, momentary, integrated with its delta
+  to the target, true peak red over the ceiling, range) - or the Radar view: a Live | Programme switch, the lap pill or
+  **Analyze mix**, the radar and its one-line summary. Zone colours are the theme's: `success` within 1 LU of the target,
+  `warning` up to 3 LU above, `danger` past that, `info` below. It scrolls vertically when short and never clips a row.
+- **Loudness Radar** (`LoudnessRadar`, 0.7): a canvas disc (`sunken`), wedge per slot from a hole to the loudness radius, the
+  target as a `textPrimary` ring, the range as a faint `accentFill` band, the live sweep a `textPrimary` spoke, the lap before
+  at 32 % alpha; the target and quarter-revolution times in `textTertiary` mono.
+- **Match tab** (`MatchTab`, `MatchSpectrum`, Audio Tools' second tab, 0.7): cards (`sunken`, hairline) for Reference, Target,
+  EQ match (the spectra chart, legend, Amount and Smooth `PropSlider`s) and Level match (a reference | target table, the
+  mode tabs, Headroom `NumberField`, the Limit `Toggle`, the report); Learn is the primary pill, Apply EQ / Preview / Reset
+  the others. The chart draws the reference in `accentStroke`, the target in `textTertiary`, the matched target dashed, and
+  the correction as `hueOrange` (boost) and `hueBlue` (cut) bars around a zero line.
+- **Mixer menu** (`MixerPanelMenu`, `ShowHideTracksPopover`, 0.7): a ghost "⋯" pill in the Audio Track Mixer's header opens a
+  `ContextMenu` of check rows with their keys; Show/Hide Tracks opens a `Popover` listing the strips (colour dot, short name,
+  `Toggle`) with a Show All pill.
 - **Live loudness** (`LiveLoudness`, the master strip, above the analysis card): momentary, short-term and integrated
   LUFS and true peak from the player's loudness tap (BS.1770-4), mono `textMd` readings with small captions ("M ·
   LUFS"), the true peak in danger above the target's ceiling, "0.6 LU below the target" under them, **Reset** (a new
@@ -1476,7 +1522,7 @@ unlocked sync-locked track.
   (standard and the user's, Add folder…), Scan all again / Rescan, and the blocklist with the reason and "Try again".
 
 ### Essential Sound and Remix (A.7; bridge `EssentialSound`)
-- **The Essential Sound panel** (panel key "essential", the sliders icon): "n audio clip(s) selected", the type buttons
+- **The Essential Sound panel** (panel key "essential", the sliders icon): "3 audio clips selected", the type buttons
   (Dialogue, Music, SFX, Ambience as PillButtons, the current one primary; Clear), the preset menu, then the type's
   sections (`essential/EssentialSection`: a raised card with a title, one line of what it does and a switch that
   bypasses its effects; the controls inside): Loudness (target, Auto-match), Repair (reduce noise, Enhance Speech,
@@ -1595,10 +1641,28 @@ unlocked sync-locked track.
 - **Track format:** an audio track that is not stereo shows a mono-font badge on its name chip's corner (1.0 mono, 5.1,
   1:1 adaptive; `raised`, `borderStrong`); right-click the header, the badge, or Menu / Shift+F10 on the chip for the
   format menu (`TrackHeaderMenu`: checkable Mono, Stereo, 5.1, Adaptive).
+- **Track label colour** (0.7): `TrackHeaderMenu` > Label lists `Library.labelNames` (checkable, the current one ringed;
+  No Label clears it); the header draws `trackLabelStripe_<name>`, a 3 px bar in `Theme.clipColor(label)` inside its left edge,
+  and the lanes wash the track with the same colour at 16 % (`TimelineStyle::laneLabelWash`). `TrackListModel` has the roles
+  `labelIndex` (-1: none) and `colorIndex` (the label, else the default by position: the mixer strips use it).
 - **5.1 master** (the master strip's Format tabs, Stereo | 5.1): mono and stereo strips show the 5.1 panner instead of
   the pan knob (`audio/SurroundPanner`: a `sunken` square with the listener's circle, the L C R Ls Rs labels and the
   `accentFill` puck; drag, arrow keys, double-click for the front centre; the LFE send below, off under -60 dB). 5.1
   and adaptive tracks keep a disabled knob. The master meter shows six bars.
+- **7.1 master** (0.7, card 048; the Format tabs read Stereo | 5.1 | 7.1): `SurroundPanner` with `surround71` draws seven
+  speakers (L, C, R, Ls, Rs at -30 / 0 / +30 / -90 / +90 degrees and Lrs, Rrs at -150 / +150), the master meter eight bars
+  (L R C LFE Lrs Rrs Ls Rs; `Theme.meterBarWidth` x 4), and a `masterFormatNote` line under the tabs says what the last change of
+  layout did ("5.1 became 7.1: the surround channels play from the side pair; the rear pair is silent"). The track header's
+  badge and menu, Add Tracks, the Audio Channels dialog and the export's Audio channels tabs list 7.1.
+- **Dynamics Processing graph** (0.7, card 044; `audio/DynamicsGraph`, a row of Effect Controls under the effect's header,
+  kind `dynamics`): a toolbar (Presets menu, Bands 1 to 4 tabs), one chip per band (colour dot, range, gain reduction, Solo
+  and Bypass `IconButton`s; the chip of the selected band is washed and outlined in the band's hue: `hueBlue`, `hueMint`,
+  `hueOrange`, `huePink`), the frequency view and the transfer curve side by side (stacked in a narrow panel; both are
+  `Canvas` pictures on `Theme.sunken`, the 1:1 line dashed, grid and labels in `textTertiary`), the round handles (`Grabber`:
+  `raised` with a ring in the band's colour, `accentFill` while hovered or pressed, a focus ring, arrow keys nudge), the
+  selected band's mode as `PillTabs` and its number fields, then Input, Output, Mix and the Limiter and Auto Gate switches.
+  The meters (-60 to 0 dB: `success`, `warning` over -9, `danger` over -1) and the reduction bars fall at 24 dB a second and poll
+  at 30 Hz while the graph shows. Nothing is clipped at the panel's narrowest: the chips, the fields and the switches wrap.
 - **Timeline:** a clip that does not play its stream as it is carries a micro-tag after its name (FILL L, FILL R, SWAP,
   MONO, CH n, SUM, 5.1, MUTED, CH VOL, MAP), drawn in the scene graph, after ENHANCED when both apply.
 - **Export settings:** Audio channels (As the master, Mono, Stereo, 5.1) and Audio codec (AAC, AC-3; not for WAV); the

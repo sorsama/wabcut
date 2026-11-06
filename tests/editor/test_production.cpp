@@ -100,6 +100,34 @@ TEST_CASE("A production is a folder of projects with a production file", "[edito
     CHECK_FALSE(opened->contains(dir / "elsewhere.wabcut"));
 }
 
+TEST_CASE("A production refuses Windows device names for a new folder or project like Home does", "[editor][production][names]") {
+    const fs::path dir = scratch("device-names");
+    auto made = Production::create(dir / "Shows", "Shows");
+    REQUIRE(made);
+    ProjectState empty;
+    // The rule of Home's new / rename / duplicate (card 168): the part before the first dot, trailing spaces trimmed.
+    for (const char* name : {"CON", "con", "Con", "PRN", "AUX", "NUL", "nul", "CONIN$", "CONOUT$", "COM1", "com9", "COM0", "LPT1",
+                             "lpt9", "LPT0", "Con.wabcut", "nul.txt", "con.x", "NUL .x", "COM1 .x", "COM\xC2\xB9", "LPT\xC2\xB2"}) {
+        INFO(name);
+        const auto project = made->newProject("", name, empty);
+        REQUIRE_FALSE(project);
+        CHECK(project.error().code == ErrorCode::InvalidArgument);
+        CHECK(project.error().message.find("reserved name on Windows") != std::string::npos);
+        const auto folder = made->newFolder("", name);
+        REQUIRE_FALSE(folder);
+        CHECK(folder.error().code == ErrorCode::InvalidArgument);
+    }
+    // Nothing was made for any of them.
+    CHECK(made->entries().empty());
+    // Names that only look like devices are fine.
+    for (const char* name : {"Console", "COM10", "Communion", "LPT", "Aux1", "Nullable", "COM", "Con tent"}) {
+        INFO(name);
+        CHECK(made->newProject("", name, empty));
+        CHECK(made->newFolder("", std::string(name) + " folder"));
+    }
+    CHECK(made->entries().size() == 16);
+}
+
 TEST_CASE("Projects are locked for one session and open read-only for the others", "[editor][production][lock]") {
     const fs::path dir = scratch("locks");
     const fs::path project = dir / "Film.wabcut";
@@ -157,7 +185,11 @@ TEST_CASE("Production Settings put every project's previews and media cache in t
     CHECK(production->resolve("Previews") == (production->folder() / "Previews").lexically_normal());
     CHECK(production->resolve(pathToUtf8(cache)) == cache.lexically_normal());
     CHECK(production->resolve("").empty());
-    CHECK(previewFolderFor(project) == (production->folder() / "Previews" / "Reel 1 Preview Files").lexically_normal());
+    // Card #159: the folder names its project (a short hash of the project's path) on the shared scratch disk.
+    const fs::path previews = previewFolderFor(project);
+    CHECK(previews.parent_path() == (production->folder() / "Previews").lexically_normal());
+    CHECK(previews.filename().string().starts_with("Reel 1 Preview Files "));
+    CHECK(previews.filename().string().size() == std::string("Reel 1 Preview Files ").size() + 6);
     REQUIRE(production->rename("Feature (cut)"));
     auto reopened = Production::open(production->folder());
     REQUIRE(reopened);
@@ -253,4 +285,30 @@ TEST_CASE("Importing media fills its clip metadata from the file's XMP sidecar",
     const MediaImportResult off = importMediaFiles(plain, files, {.readXmp = false});
     REQUIRE(off.added.size() == 1);
     CHECK(plain.snapshot()->findMedia(off.added.front())->metadata.isEmpty());
+}
+
+// Card #159: file names repeat across a production's folders; the shared scratch disk must keep the projects apart.
+TEST_CASE("Two projects with one file name in a production keep separate preview folders (159)", "[editor][production][settings]") {
+    const fs::path dir = scratch("preview-folders");
+    auto production = Production::create(dir / "Series", "Series");
+    REQUIRE(production);
+    REQUIRE(production->setSettings({.previews = "Scratch"}));
+    const fs::path ep1 = production->folder() / "Ep1" / "Edit.wabcut";
+    const fs::path ep2 = production->folder() / "Ep2" / "Edit.wabcut";
+    const fs::path first = previewFolderFor(ep1);
+    const fs::path second = previewFolderFor(ep2);
+    CHECK(first != second);
+    CHECK(first.parent_path() == second.parent_path());
+    CHECK(first.parent_path() == (production->folder() / "Scratch").lexically_normal());
+    CHECK(first.filename().string().starts_with("Edit Preview Files "));
+    CHECK(second.filename().string().starts_with("Edit Preview Files "));
+    // The same project always gets the same folder (previews found again after a restart), however its path is spelled.
+    CHECK(previewFolderFor(ep1) == first);
+    CHECK(previewFolderFor(production->folder() / "Ep1" / ".." / "Ep1" / "Edit.wabcut") == first);
+    // A same-named project in a third folder, and a differently named one, are apart as well.
+    CHECK(previewFolderFor(production->folder() / "Ep3" / "Edit.wabcut") != first);
+    CHECK(previewFolderFor(production->folder() / "Ep1" / "Cut.wabcut") != first);
+    // Without the production's scratch disk the folder stays next to the project, with the plain name.
+    REQUIRE(production->setSettings({}));
+    CHECK(previewFolderFor(ep1) == production->folder() / "Ep1" / "Edit Preview Files");
 }

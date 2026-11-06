@@ -155,6 +155,9 @@ struct Track {
     /// A.8, audio tracks: armed for voice-over recording (Premiere's track R button); a recording pass records onto
     /// the armed tracks. Always false on video tracks. Saved only when set.
     bool recordArmed = false;
+    /// 0.7: the track's label colour (one of the 16 labels, an index into the label palette: Library.labelNames; shown
+    /// as a stripe on the header and a wash on the lane, and as the mixer strip's colour); -1 = none. Saved only when set.
+    std::int32_t colorIndex = -1;
     /// Sorted by start; clips never overlap and have positive duration. Chunked and shared between
     /// revisions (see ClipList).
     ClipList clips;
@@ -217,7 +220,8 @@ struct Track {
     bool sameHeader(const Track& o) const {
         return id == o.id && kind == o.kind && name == o.name && enabled == o.enabled && locked == o.locked &&
                syncLocked == o.syncLocked && muted == o.muted && solo == o.solo && targeted == o.targeted &&
-               role == o.role && recordArmed == o.recordArmed && format == o.format && surround == o.surround &&
+               role == o.role && recordArmed == o.recordArmed && colorIndex == o.colorIndex && format == o.format &&
+               surround == o.surround &&
                effects == o.effects && volume == o.volume && pan == o.pan && output == o.output && sends == o.sends;
     }
 

@@ -26,8 +26,8 @@
         "opus",
         "zlib",
         { "name": "nvcodec", "platform": "(windows | linux) & x64" },
-        { "name": "amf", "platform": "windows | linux" },
-        { "name": "qsv", "platform": "windows | linux" },
+        { "name": "amf", "platform": "(windows | linux) & !arm64" },
+        { "name": "qsv", "platform": "(windows | linux) & !arm64" },
         { "name": "vaapi", "platform": "linux" }
       ]
     },

@@ -53,9 +53,10 @@ class TranscriptBridge;
 /// What the creator commands get in the app: transcripts and audio (aiEditingServices), take audio (AudioEnergyService),
 /// the Library's smart search (B-roll, the text encoder), the recordings' frames and sidecars (auto zoom), and when given
 /// the user's guarded cloud chat model (outline interpretation).
+/// `chatLocal` (r07, QA-07): the chat model runs on this computer, so a no-cloud project may use it.
 std::shared_ptr<command::CommandServices> creatorServices(QQmlEngine* engine, TranscriptBridge* transcripts,
                                                           const std::filesystem::path& projectFile,
-                                                          std::shared_ptr<ai::IChatModel> chat = nullptr);
+                                                          std::shared_ptr<ai::IChatModel> chat = nullptr, bool chatLocal = false);
 
 /// The common part of the three bridges: the project, the services, one job at a time, a staged state.
 class CreatorBase : public QObject {
@@ -111,7 +112,7 @@ protected:
     /// Runs `command` on a scratch copy of `base` (a dry run when `dryRun`), then `finish` on the GUI thread.
     bool runJob(QString phase, ProjectSnapshot base, std::string command, command::Json params, bool dryRun,
                 std::function<void(Run&&)> finish, std::shared_ptr<command::CommandServices> services = nullptr);
-    std::shared_ptr<command::CommandServices> services(std::shared_ptr<ai::IChatModel> chat = nullptr);
+    std::shared_ptr<command::CommandServices> services(std::shared_ptr<ai::IChatModel> chat = nullptr, bool chatLocal = false);
     /// Commits the staged state as one undo step labelled `label` if the session is still at the revision it was made
     /// from. Returns an error message, or "".
     QString commitStaged(const QString& label);

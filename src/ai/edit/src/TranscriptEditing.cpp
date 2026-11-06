@@ -93,7 +93,7 @@ void rebuildSegments(Transcript& t) {
             seg.t0 = std::min(seg.t0, t.words[i].t0);
             seg.t1 = std::max(seg.t1, t.words[i].t1);
         }
-        seg.text = joinWords(words, t.language);
+        seg.text = joinWords(words, seg.language.empty() ? t.language : seg.language); // 0.7 (card 111): its own language
         out.push_back(std::move(seg));
         first += counts[k];
     }

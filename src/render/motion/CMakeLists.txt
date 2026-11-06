@@ -6,6 +6,7 @@
 find_package(Threads REQUIRED)
 
 add_library(wabcut_motion STATIC
+    src/FaceAlign.cpp
     src/Flow.cpp
     src/Geometry.cpp
     src/Image.cpp

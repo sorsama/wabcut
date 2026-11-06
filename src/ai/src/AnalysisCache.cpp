@@ -235,6 +235,45 @@ std::expected<std::size_t, Error> AnalysisCache::invalidateSource(std::uint64_t 
     return files;
 }
 
+std::expected<std::size_t, Error> AnalysisCache::removeAnalyzer(std::uint64_t fingerprint, int streamIndex,
+                                                                std::string_view analyzerId) {
+    if (fingerprint == 0 || analyzerId.empty()) {
+        return std::unexpected(Error{ErrorCode::InvalidArgument, "an analysis to remove needs a source and an analyser"});
+    }
+    // <root>/v1/<fingerprint>/<stream>/<analyser>/: the folder pathFor() puts every entry of the analyser in.
+    const std::filesystem::path dir =
+        pathFor(AnalysisKey{fingerprint, streamIndex, std::string(analyzerId), "m", "p"}).parent_path();
+    std::error_code ec;
+    std::size_t files = 0;
+    if (std::filesystem::exists(dir, ec)) {
+        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+            files += entry.is_regular_file(ec) ? 1 : 0;
+        }
+        std::filesystem::remove_all(dir, ec);
+        if (ec) {
+            return std::unexpected(Error{ErrorCode::IoError, "cannot remove " + pathToUtf8(dir) + ": " + ec.message()});
+        }
+    }
+    g_writes.fetch_add(1, std::memory_order_relaxed);
+    return files;
+}
+
+std::int64_t AnalysisCache::sidecarBytesEstimate(std::uint64_t fingerprint) const {
+    const std::filesystem::path dir = m_root / ("v" + std::to_string(kFormatVersion)) / detail::hex64(fingerprint);
+    std::error_code ec;
+    if (!std::filesystem::is_directory(dir, ec)) {
+        return 0;
+    }
+    std::int64_t total = 0;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(dir, ec)) {
+        std::error_code sizeEc;
+        if (entry.is_regular_file(sizeEc) && entry.path().extension() == ".json") {
+            total += static_cast<std::int64_t>(entry.file_size(sizeEc));
+        }
+    }
+    return total > 0 ? total + 256 : 0; // plus the document around the entries
+}
+
 std::expected<std::string, Error> AnalysisCache::exportSidecar(std::uint64_t fingerprint) const {
     const std::filesystem::path dir = m_root / ("v" + std::to_string(kFormatVersion)) / detail::hex64(fingerprint);
     std::vector<std::filesystem::path> files;

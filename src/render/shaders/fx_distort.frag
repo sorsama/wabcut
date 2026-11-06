@@ -51,6 +51,8 @@ const int OP_BASIC_3D = 54;
 const int OP_BEVEL_EDGES = 55;
 const int OP_DIRECTIONAL_BLUR = 56;
 const int OP_CAMERA_BLUR = 57;
+const int OP_EYE_CONTACT = 58; // 0.7: AI Eye Contact (CPU twin: reference/LibraryDistort.cpp)
+const int OP_VR_REORIENT = 59;
 
 float q[32];
 
@@ -390,6 +392,97 @@ vec4 transformAt(vec2 f, float k)
 vec3 rotX(vec3 v, float a) { return vec3(v.x, v.y * cos(a) - v.z * sin(a), v.y * sin(a) + v.z * cos(a)); }
 vec3 rotY(vec3 v, float a) { return vec3(v.x * cos(a) + v.z * sin(a), v.y, -v.x * sin(a) + v.z * cos(a)); }
 
+// ---- 0.7 AI Eye Contact (model/EyeContact.h; CPU twin: reference/LibraryDistort.cpp "EyeContact") ----
+// The eyes' measurements arrive baked in q: 5 = Show, 6 = the number of eyes, then 11 values per eye from q[8]: cx, cy (fractions of the frame),
+// angle, halfWidth, upper, lower, irisX, irisY, irisRadius, shiftX, shiftY (the lengths are fractions of the frame's width, the last four in the
+// eye's own frame: x along the corner line, y down). The iris disc moves by the shift inside the opening between the lids, the sclera on its
+// two sides fills what it left, nothing outside the opening changes.
+
+float eyeSmooth(float e0, float e1, float x)
+{
+    float t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// How much of the eye-frame point `l` (pixels) lies in the opening: the lens |x| < a, -up (1 - u^2) < y < lo (1 - u^2), soft at the lids and corners.
+float eyeOpening(vec2 l, float a, float up, float lo)
+{
+    float au = abs(l.x / a);
+    if (!(au < 1.0))
+        return 0.0;
+    float k = 1.0 - au * au;
+    float dist = min(l.y + up * k, lo * k - l.y);
+    float e = 1.0 + 0.05 * (up + lo); // the lid's own edge is crisp: the ramp starts at the contour and is full a pixel or two inside it
+    return eyeSmooth(0.0, e, dist) * (1.0 - eyeSmooth(0.9, 1.0, au));
+}
+
+vec4 eyeContact(vec2 f, vec2 s, vec4 c)
+{
+    int view = int(floor(q[5] + 0.5));
+    int n = int(floor(q[6] + 0.5));
+    vec3 map = vec3(0.0);
+    vec4 result = c;
+    for (int i = 0; i < 2; ++i) {
+        if (i >= n)
+            break;
+        int o = 8 + 11 * i;
+        vec2 center = vec2(q[o], q[o + 1]) * s;
+        vec2 ax = vec2(cos(q[o + 2]), sin(q[o + 2]));
+        vec2 pe = vec2(-ax.y, ax.x);
+        float a = q[o + 3] * s.x;
+        float up = q[o + 4] * s.x;
+        float lo = q[o + 5] * s.x;
+        vec2 iris = vec2(q[o + 6], q[o + 7]) * s.x;
+        float r = q[o + 8] * s.x;
+        vec2 sh = vec2(q[o + 9], q[o + 10]) * s.x;
+        if (!(a > 0.0) || !(dot(sh, sh) >= 0.0025))
+            continue; // no eye, or a shift under 1/20 pixel: nothing to do (also for a measurement that is not a number)
+        vec2 d = f - center;
+        vec2 l = vec2(dot(d, ax), dot(d, pe));
+        float cover = eyeOpening(l, a, up, lo);
+        if (!(cover > 0.0))
+            continue;
+        vec2 newIris = iris + sh;
+        float newCov = 1.0 - eyeSmooth(1.02 * r, 1.14 * r + 1.0, length(l - newIris));
+        float oldCov = 1.0 - eyeSmooth(1.06 * r, 1.18 * r + 1.0, length(l - iris));
+        float vac = oldCov * (1.0 - newCov);
+        map = max(map, vec3(newCov * cover, cover, vac * cover));
+        // The iris at its new place: the picture one shift back, where that is inside the opening too.
+        vec2 shF = ax * sh.x + pe * sh.y;
+        float srcCover = eyeOpening(l - sh, a, up, lo);
+        vec4 sprite = sampleRaw(f - shF);
+        // What the old iris leaves: the sclera of this row on the far side of it, from both sides by distance, where it is sclera.
+        float rp = 1.3 * r + 1.0;
+        float tt = clamp((l.x - (iris.x - rp)) / (2.0 * rp), 0.0, 1.0);
+        vec4 colorSide[2];
+        float availSide[2];
+        for (int side = 0; side < 2; ++side) {
+            vec4 sum = vec4(0.0);
+            float w = 0.0;
+            float px = iris.x + (side == 0 ? -rp : rp);
+            float kp = max(1.0 - (px / a) * (px / a), 0.0);
+            for (int k = -1; k <= 1; ++k) {
+                // The same row, or the nearest row of the opening there where the lids have come together (towards the corners).
+                vec2 pl = vec2(px, min(max(l.y + float(k), -up * kp + 1.5), lo * kp - 1.5));
+                float avail = eyeOpening(pl, a, up, lo) * eyeSmooth(r, 1.25 * r, length(pl - newIris)) * eyeSmooth(r, 1.25 * r, length(pl - iris));
+                sum += sampleRaw(center + ax * pl.x + pe * pl.y) * avail;
+                w += avail;
+            }
+            colorSide[side] = w > 1e-6 ? sum / w : vec4(0.0);
+            availSide[side] = w / 3.0;
+        }
+        // From both sides by distance where both have sclera; from the one that has it, whatever the pixel's place, when only one does.
+        float wl = max(1.0 - tt, 0.02) * availSide[0];
+        float wr = max(tt, 0.02) * availSide[1];
+        vec4 fill = wl + wr > 1e-6 ? (colorSide[0] * wl + colorSide[1] * wr) / (wl + wr) : c;
+        float fillWeight = eyeSmooth(0.05, 0.5, max(availSide[0], availSide[1]));
+        vec4 filled = mix(c, fill, vac * cover * fillWeight);
+        result = mix(filled, sprite, newCov * srcCover * cover);
+        break; // the eyes' openings do not overlap
+    }
+    return view == 1 ? vec4(map, 1.0) : result;
+}
+
 vec4 basic3d(vec2 f)
 {
     vec2 s = frameSize();
@@ -421,6 +514,76 @@ vec4 basic3d(vec2 f)
         color.rgb += vec3(0.8 * spec) * color.a;
     }
     return color;
+}
+
+// ---- 0.7 (VR / 360 video): VR Reorient (model/Vr.h; the CPU twin is LibraryDistort.cpp) ----
+// The picture is an equirectangular sphere: 360 (longitude -180..180 across) or 180 (-90..90), mono or with both eyes in
+// one frame (1 = top-bottom, 2 = side-by-side). Each eye is turned by yaw * pitch * roll (degrees) about the viewer.
+
+mat3 vrRotation(float yawDeg, float pitchDeg, float rollDeg)
+{
+    float cy = cos(radians(yawDeg));
+    float sy = sin(radians(yawDeg));
+    float cp = cos(radians(pitchDeg));
+    float sp = sin(radians(pitchDeg));
+    float cr = cos(radians(rollDeg));
+    float sr = sin(radians(rollDeg));
+    // GLSL matrices are column-major: transpose(mat3(row0, row1, row2)) is the matrix with those rows.
+    mat3 yaw = transpose(mat3(cy, 0.0, sy, 0.0, 1.0, 0.0, -sy, 0.0, cy));
+    mat3 pitch = transpose(mat3(1.0, 0.0, 0.0, 0.0, cp, sp, 0.0, -sp, cp));
+    mat3 roll = transpose(mat3(cr, sr, 0.0, -sr, cr, 0.0, 0.0, 0.0, 1.0));
+    return yaw * pitch * roll;
+}
+
+// The rectangle one eye occupies: xy = top-left, zw = bottom-right, as fractions of the frame.
+vec4 vrEyeRect(int stereo, int eye)
+{
+    if (stereo == 1)
+        return eye == 0 ? vec4(0.0, 0.0, 1.0, 0.5) : vec4(0.0, 0.5, 1.0, 1.0);
+    if (stereo == 2)
+        return eye == 0 ? vec4(0.0, 0.0, 0.5, 1.0) : vec4(0.5, 0.0, 1.0, 1.0);
+    return vec4(0.0, 0.0, 1.0, 1.0);
+}
+
+vec2 vrUvOf(vec3 d, bool half180, out bool inside)
+{
+    d = normalize(d);
+    float lon = atan(d.x, d.z);
+    float lat = asin(clamp(d.y, -1.0, 1.0));
+    vec2 uv = vec2(0.0, 0.5 - lat / PI);
+    inside = true;
+    if (half180) {
+        uv.x = lon / PI + 0.5;
+        inside = abs(lon) <= PI * 0.5;
+    } else {
+        uv.x = lon / (2.0 * PI) + 0.5;
+        uv.x -= floor(uv.x);
+    }
+    return uv;
+}
+
+vec4 vrReorient(vec2 f)
+{
+    vec2 s = frameSize();
+    vec2 uv = f / s;
+    bool half180 = q[3] > 0.5;
+    int stereo = int(q[4] + 0.5);
+    int eye = 0;
+    if (stereo == 1)
+        eye = uv.y >= 0.5 ? 1 : 0;
+    else if (stereo == 2)
+        eye = uv.x >= 0.5 ? 1 : 0;
+    vec4 rect = vrEyeRect(stereo, eye);
+    vec2 local = (uv - rect.xy) / (rect.zw - rect.xy);
+    float lon = (local.x - 0.5) * (half180 ? PI : 2.0 * PI);
+    float lat = (0.5 - local.y) * PI;
+    vec3 outDir = vec3(cos(lat) * sin(lon), sin(lat), cos(lat) * cos(lon));
+    vec3 srcDir = transpose(vrRotation(q[0], q[1], q[2])) * outDir;
+    bool inside;
+    vec2 e = vrUvOf(srcDir, half180, inside);
+    if (!inside)
+        return vec4(0.0);
+    return sampleRaw((rect.xy + e * (rect.zw - rect.xy)) * s) * frameCoverage(f);
 }
 
 void main()
@@ -576,6 +739,8 @@ void main()
             }
             fragColor = acc / float(taps);
         }
+    } else if (op == OP_VR_REORIENT) {
+        fragColor = vrReorient(f);
     } else if (op == OP_CAMERA_BLUR) {
         float radius = q[0] / 100.0 * 40.0;
         if (radius < 0.5 * div) {
@@ -589,6 +754,8 @@ void main()
             }
             fragColor = acc / 64.0;
         }
+    } else if (op == OP_EYE_CONTACT) {
+        fragColor = eyeContact(f, s, c);
     } else {
         fragColor = c;
     }

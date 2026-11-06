@@ -11,7 +11,14 @@ import QtQuick.Controls.Basic
 //   * rows: click selects (Ctrl/⌘ adds, Shift extends), double-click opens (a bin opens in place, media in the Source
 //     Monitor, a sequence in its timeline tab); a click on the name of a selected item, F2 or Enter renames inline;
 //     double-click a Comment or Description cell to edit it. Every edit is one undo step (Library);
+//   * 0.7 (card 021), while a cell is open: Tab / Shift+Tab move to the next / previous editable cell (along the row,
+//     then on to the next row), Enter / Shift+Enter to the same column one row down / up (Premiere's Next / Previous
+//     Column Field and Row Field: the keymap's project.nextColumnField ... via Library.fieldStepRequested); the value
+//     is kept as the cell is left. In the Name column Enter just renames. Esc cancels.
 //   * drag rows onto a bin row, a crumb or a bin tab to move them; media rows drag onto the timeline too.
+//   * 0.7 (card 023), Premiere's List view > Thumbnails (Library.listThumbnails, in the ... menu): the Name cell shows
+//     the item's thumbnail (16:9, at the row's height) and the rows grow with the size slider (Library.thumbnailScale:
+//     the slider under the list, Ctrl+wheel over it, the zoom keys); off, the rows are Theme.rowHeight text lines.
 //   * P1 round (#46), Premiere's twirl-down bins: a bin's chevron (or Right / Left) shows its contents under it,
 //     indented, sorted within each level; Alt+click (Alt+Right) opens every level inside it; Left on a row inside a bin
 //     goes to that bin. Find and search bins list flat, as before. Which bins are open is kept per project.
@@ -34,7 +41,7 @@ FocusScope {
         if (inView.x < 0 || inView.y < 0 || inView.x >= table.width || inView.y >= table.height)
             return ""
         const p = table.contentItem.mapFromItem(null, sceneX, sceneY)
-        const row = Math.floor(p.y / Theme.rowHeight)
+        const row = Math.floor(p.y / root.rowHeight)
         return row >= 0 && row < table.rows ? Library.items.keyOf(row) : ""
     }
 
@@ -79,7 +86,14 @@ FocusScope {
         }
     }
     /// Rows in view (Page Up / Page Down move by this many: LibraryPanel.moveSelection).
-    readonly property int pageRows: Math.max(1, Math.floor(table.height / Theme.rowHeight))
+    readonly property int pageRows: Math.max(1, Math.floor(table.height / root.rowHeight))
+    /// 0.7 (card 023): a row's height - a text line, or (thumbnails on) twice that at the slider's 100 %, following it.
+    readonly property int rowHeight: Library.listThumbnails ? Math.round(Theme.rowHeight * 2 * Library.thumbnailScale)
+                                                            : Theme.rowHeight
+    onRowHeightChanged: {
+        table.forceLayout()
+        Qt.callLater(table.forceLayout) // and once the bindings behind the change have settled
+    }
     property string editingKey: ""
     property string editingColumn: ""
 
@@ -87,7 +101,8 @@ FocusScope {
         root.editingKey = key
         root.editingColumn = column
     }
-    function finishEdit(value, commit) {
+    // `refocus` false while the edit moves on to another cell (the next editor takes the focus itself).
+    function finishEdit(value, commit, refocus = true) {
         const key = root.editingKey
         const column = root.editingColumn
         root.editingKey = ""
@@ -102,7 +117,89 @@ FocusScope {
             Library.setDescription(key, value)
         else // 0.2 (P.3): scene, shot, take, logNote, client, tapeName
             Library.setMetadata([key], column, value)
-        table.forceActiveFocus()
+        if (refocus)
+            table.forceActiveFocus()
+    }
+
+    // ---- Next / Previous Column Field and Row Field (0.7, card 021) ----
+    /// The field of the open cell's editor (set by the editor while it exists).
+    property var cellEditor: null
+    /// Whether the cell of column `columnId` in a row of `kind` can be edited: Name on bins and media (a sequence is
+    /// renamed from its own menu); the metadata columns on media only; Good is a check box.
+    function canEditCell(kind: string, columnId: string): bool {
+        if (columnId === "good" || kind === "")
+            return false
+        if (columnId === "name")
+            return kind !== "sequence"
+        return kind !== "bin" && kind !== "sequence"
+    }
+    /// Tab, Shift+Tab, Enter and Shift+Enter (what the open editor leaves to the keymap).
+    function stepsFieldKey(event): bool {
+        return (event.modifiers & ~(Qt.ShiftModifier | Qt.KeypadModifier)) === 0
+               && [Qt.Key_Tab, Qt.Key_Backtab, Qt.Key_Return, Qt.Key_Enter].includes(event.key)
+    }
+    /// The cell `columnDelta` cells along the row order (then on to the next row) or `rowDelta` rows down in the same
+    /// column that can be edited, as { key, column }, or null at the end of the list.
+    function stepTarget(key: string, columnId: string, columnDelta: int, rowDelta: int): var {
+        const row = Library.items.rowOf(key)
+        if (row < 0)
+            return null
+        if (rowDelta !== 0) {
+            for (let r = row + rowDelta; r >= 0 && r < table.rows; r += rowDelta) {
+                const k = Library.items.keyOf(r)
+                if (root.canEditCell(Library.details(k).kind ?? "", columnId))
+                    return { key: k, column: columnId }
+            }
+            return null
+        }
+        const ids = root.columns.filter(c => c.editable && c.id !== "good").map(c => c.id)
+        let c = ids.indexOf(columnId) + columnDelta
+        for (let r = row; r >= 0 && r < table.rows; r += columnDelta) {
+            const k = Library.items.keyOf(r)
+            const kind = Library.details(k).kind ?? ""
+            for (; c >= 0 && c < ids.length; c += columnDelta) {
+                if (root.canEditCell(kind, ids[c]))
+                    return { key: k, column: ids[c] }
+            }
+            c = columnDelta > 0 ? 0 : ids.length - 1
+        }
+        return null
+    }
+    /// Scrolls the cell into view (a cell not built yet is made when it comes in sight).
+    function showCell(key: string, columnId: string) {
+        const row = Library.items.rowOf(key)
+        const column = root.columns.findIndex(c => c.id === columnId)
+        if (row >= 0 && column >= 0)
+            table.positionViewAtCell(Qt.point(column, row), TableView.Contain)
+    }
+    /// Keeps the value typed, then opens the next cell (nothing further: the edit just ends).
+    function stepField(columnDelta: int, rowDelta: int) {
+        if (root.editingKey === "" || root.cellEditor === null)
+            return
+        const key = root.editingKey
+        const column = root.editingColumn
+        const value = root.cellEditor.text
+        // Enter in the Name column only renames (the plain rename-commit).
+        const target = rowDelta !== 0 && column === "name" ? null : root.stepTarget(key, column, columnDelta, rowDelta)
+        root.finishEdit(value, true, target === null)
+        if (target === null)
+            return
+        Qt.callLater(() => {
+            root.startEdit(target.key, target.column)
+            root.showCell(target.key, target.column)
+        })
+    }
+    Connections {
+        target: Library
+        function onFieldStepRequested(columnDelta: int, rowDelta: int) {
+            root.stepField(columnDelta, rowDelta)
+        }
+    }
+    // The keymap's field keys are the Library's only while a cell is open.
+    Binding {
+        target: Library
+        property: "fieldEditing"
+        value: root.editingKey !== ""
     }
     // A click on the name of the item already selected renames it after the double-click interval (a double-click
     // opens it instead).
@@ -147,8 +244,10 @@ FocusScope {
     }
     // The arrows, Return and F2 belong to the list while it has focus (Delete stays project.delete).
     // P1 round (#46): Right / Left (Alt: every level) twirl bins while the list shows the tree.
+    // 0.7 (card 021): with a cell open Return belongs to the field keys (project.nextRowField), not to the list.
     Keys.onShortcutOverride: event => event.accepted = ((event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) === 0
-                                                         && [Qt.Key_Up, Qt.Key_Down, Qt.Key_Return, Qt.Key_Enter, Qt.Key_F2].includes(event.key))
+                                                         && [Qt.Key_Up, Qt.Key_Down, Qt.Key_Return, Qt.Key_Enter, Qt.Key_F2].includes(event.key)
+                                                         && !(root.editingKey !== "" && [Qt.Key_Return, Qt.Key_Enter].includes(event.key)))
                                                         || (root.tree && (event.modifiers & (Qt.ControlModifier | Qt.MetaModifier | Qt.ShiftModifier)) === 0
                                                             && [Qt.Key_Left, Qt.Key_Right].includes(event.key))
 
@@ -294,7 +393,7 @@ FocusScope {
         interactive: false // desktop: the wheel and the scroll bars scroll; drags move rows
         boundsBehavior: Flickable.StopAtBounds
         columnWidthProvider: column => column < root.columns.length ? root.columns[column].width : 0
-        rowHeightProvider: () => Theme.rowHeight
+        rowHeightProvider: () => root.rowHeight
         ScrollBar.vertical: ThinScrollBar {}
         ScrollBar.horizontal: ThinScrollBar {}
         Accessible.role: Accessible.Table
@@ -307,9 +406,20 @@ FocusScope {
             }
         }
 
+        // 0.7 (card 023): with thumbnails on, Ctrl+wheel sizes them (as over the grid) instead of scrolling.
+        WheelHandler {
+            objectName: "libraryListThumbnailZoom"
+            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+            acceptedModifiers: Qt.ControlModifier
+            enabled: Library.listThumbnails
+            onWheel: event => Library.thumbnailScale += (event.angleDelta.y > 0 ? Library.thumbnailScaleStep
+                                                                               : -Library.thumbnailScaleStep)
+        }
         WheelHandler {
             acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
             onWheel: event => {
+                if (Library.listThumbnails && (event.modifiers & Qt.ControlModifier))
+                    return
                 const dy = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y / 120 * Theme.rowHeight * 3
                 const dx = event.pixelDelta.x !== 0 ? event.pixelDelta.x : event.angleDelta.x / 120 * Theme.space(16)
                 table.contentY = Math.max(0, Math.min(table.contentHeight - table.height, table.contentY - dy))
@@ -340,6 +450,7 @@ FocusScope {
             required property bool expandable
             required property bool expanded
             required property int masterEffects // 0.6 (#71): the Name cell's fx chip
+            required property string thumbnail // 0.7 (card 023): the Name cell's picture ("" in the other columns)
 
             readonly property bool editing: root.editingKey === key && root.editingColumn === columnId
             readonly property bool isName: columnId === "name"
@@ -347,8 +458,11 @@ FocusScope {
             /// P1 round (#46): where the Name cell's chevron sits (the tree indents each level).
             readonly property real indent: isName && root.tree ? Theme.space(1) + depth * Theme.space(4) : 0
 
+            /// 0.7 (card 023): the Name cell of a media item or sequence shows its thumbnail (bins keep their folder icon).
+            readonly property bool showsThumb: isName && Library.listThumbnails && kind !== "bin"
+
             implicitWidth: 120
-            implicitHeight: Theme.rowHeight
+            implicitHeight: root.rowHeight
             color: selected ? Theme.accentWash : (row % 2 === 1 ? Theme.sunken : "transparent")
 
             Accessible.role: Accessible.Cell
@@ -382,7 +496,7 @@ FocusScope {
             // Name: the kind's icon; Label: the colour.
             Icon {
                 id: kindIcon
-                visible: cell.isName
+                visible: cell.isName && !cell.showsThumb
                 x: root.tree ? cell.indent + Theme.iconXs + Theme.space(1) : Theme.space(2)
                 anchors.verticalCenter: parent.verticalCenter
                 size: Theme.iconXs
@@ -390,6 +504,40 @@ FocusScope {
                       : cell.kind === "audio" ? "music" : cell.kind === "title" ? "type"
                       : cell.kind === "subclip" ? "scissors" : cell.kind === "still" ? "image" : "film"
                 color: cell.kind === "bin" ? Theme.accentStroke : Theme.textTertiary
+            }
+            // 0.7 (card 023): the thumbnail, 16:9 at the row's height; the kind's icon where there is no picture.
+            Rectangle {
+                id: thumbBox
+                objectName: cell.showsThumb ? "libraryListThumb_" + cell.key : ""
+                visible: cell.showsThumb
+                x: root.tree ? cell.indent + Theme.iconXs + Theme.space(1) : Theme.space(2)
+                anchors.verticalCenter: parent.verticalCenter
+                height: parent.height - Theme.space(1)
+                width: Math.round(height * 16 / 9)
+                radius: Theme.radiusBadge
+                color: Theme.sunken
+                border.width: Theme.hairline
+                border.color: Theme.border
+                clip: true
+                opacity: cell.cut ? 0.45 : 1
+                Image {
+                    id: thumbImage
+                    anchors.fill: parent
+                    visible: status === Image.Ready
+                    source: cell.showsThumb ? cell.thumbnail : ""
+                    sourceSize.height: thumbBox.height * 2
+                    fillMode: Image.PreserveAspectCrop
+                    asynchronous: true
+                    cache: true
+                }
+                Icon {
+                    anchors.centerIn: parent
+                    visible: !thumbImage.visible
+                    size: Math.min(Theme.iconMd, thumbBox.height - Theme.space(1))
+                    name: cell.kind === "sequence" ? "film" : cell.kind === "audio" ? "music" : cell.kind === "title" ? "type"
+                          : cell.kind === "subclip" ? "scissors" : cell.kind === "still" ? "image" : "film"
+                    color: Theme.textTertiary
+                }
             }
             Rectangle {
                 id: labelChip
@@ -427,7 +575,8 @@ FocusScope {
                 }
             }
             Text {
-                anchors.left: cell.isName ? kindIcon.right : labelChip.visible ? labelChip.right : parent.left
+                anchors.left: cell.isName ? (cell.showsThumb ? thumbBox.right : kindIcon.right)
+                              : labelChip.visible ? labelChip.right : parent.left
                 anchors.leftMargin: Theme.space(2)
                 anchors.right: masterFxChip.visible ? masterFxChip.left : parent.right
                 anchors.rightMargin: Theme.space(2)
@@ -472,13 +621,21 @@ FocusScope {
                 anchors.fill: parent
                 active: cell.editing
                 sourceComponent: FieldInput {
+                    id: editor
                     objectName: "libraryCellEditor"
+                    /// 0.7 (card 021): Tab, Shift+Tab, Enter and Shift+Enter are the keymap's (the dispatcher reads this).
+                    readonly property bool fieldStepping: true
                     text: cell.isName ? cell.display : cell.display
                     Accessible.name: cell.isName ? qsTr("Name") : qsTr("Edit %1").arg((root.columns.find(c => c.id === cell.columnId) ?? {}).title ?? "")
                     font.pixelSize: Theme.textSm
                     Component.onCompleted: {
+                        root.cellEditor = editor
                         forceActiveFocus()
                         selectAll()
+                    }
+                    Component.onDestruction: {
+                        if (root.cellEditor === editor)
+                            root.cellEditor = null
                     }
                     onAccepted: root.finishEdit(text, true)
                     Keys.onEscapePressed: event => {
@@ -486,7 +643,8 @@ FocusScope {
                         event.accepted = true
                     }
                     onActiveFocusChanged: if (!activeFocus && cell.editing) root.finishEdit(text, true)
-                    Keys.onShortcutOverride: event => event.accepted = true
+                    // Typing keys stay in the field; the field-step keys go to the keymap.
+                    Keys.onShortcutOverride: event => event.accepted = !root.stepsFieldKey(event)
                 }
             }
 
@@ -613,24 +771,96 @@ FocusScope {
             y: chooserButton.height + Theme.space(1)
             transformOrigin: Item.TopRight
 
-            Column {
-                spacing: Theme.space(1)
-                Repeater {
-                    model: Library.allColumns
-                    delegate: Toggle {
-                        required property var modelData
-                        objectName: "libraryColumnToggle_" + modelData.id
-                        text: modelData.title
-                        checked: modelData.visible
-                        enabled: modelData.id !== "name"
-                        onToggled: Library.setColumnVisible(modelData.id, checked)
+            // Scrolls when the window is too short for all of it (the smallest window is 1100 x 700).
+            Flickable {
+                id: chooserScroll
+                objectName: "libraryColumnChooserScroll"
+                width: chooserColumn.implicitWidth + Theme.space(3)
+                height: Math.min(chooserColumn.implicitHeight, Math.max(Theme.space(60), root.Window.height - Theme.space(32)))
+                contentWidth: chooserColumn.implicitWidth
+                contentHeight: chooserColumn.implicitHeight
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ThinScrollBar {}
+                Column {
+                    id: chooserColumn
+                    spacing: Theme.space(1)
+                    // Two columns of switches keep the list within a small window.
+                    Grid {
+                        columns: 2
+                        columnSpacing: Theme.space(4)
+                        rowSpacing: Theme.space(1)
+                        Repeater {
+                            model: Library.allColumns
+                            delegate: Toggle {
+                                required property var modelData
+                                objectName: "libraryColumnToggle_" + modelData.id
+                                text: modelData.title
+                                checked: modelData.visible
+                                enabled: modelData.id !== "name"
+                                onToggled: Library.setColumnVisible(modelData.id, checked)
+                            }
+                        }
                     }
-                }
-                PillButton {
-                    variant: "ghost"
-                    compact: true
-                    text: qsTr("Reset columns")
-                    onClicked: Library.resetColumns()
+                    PillButton {
+                        variant: "ghost"
+                        compact: true
+                        text: qsTr("Reset columns")
+                        onClicked: Library.resetColumns()
+                    }
+                    // 0.7 (card 144): named layouts - which columns show, in what order and width.
+                    Text {
+                        text: qsTr("Saved layouts")
+                        color: Theme.textTertiary
+                        font.family: Theme.fontSans
+                        font.pixelSize: Theme.textXs
+                        font.weight: Font.Medium
+                    }
+                    Repeater {
+                        model: Library.columnPresets
+                        delegate: Row {
+                            id: presetRow
+                            required property string modelData
+                            spacing: Theme.space(1)
+                            PillButton {
+                                objectName: "libraryColumnPreset_" + presetRow.modelData
+                                compact: true
+                                text: presetRow.modelData
+                                tooltip: qsTr("Show the columns as saved in this layout")
+                                onClicked: Library.applyColumnPreset(presetRow.modelData)
+                            }
+                            IconButton {
+                                objectName: "libraryColumnPresetDelete_" + presetRow.modelData
+                                compact: true
+                                iconName: "trash-2"
+                                tooltip: qsTr("Delete this layout")
+                                onClicked: Library.deleteColumnPreset(presetRow.modelData)
+                            }
+                        }
+                    }
+                    Row {
+                        spacing: Theme.space(1)
+                        FieldInput {
+                            id: presetName
+                            objectName: "libraryColumnPresetName"
+                            width: Theme.space(40)
+                            placeholderText: qsTr("Layout name")
+                            Accessible.name: qsTr("Name for the column layout")
+                            onAccepted: saveLayout.clicked()
+                        }
+                        PillButton {
+                            id: saveLayout
+                            objectName: "libraryColumnPresetSave"
+                            compact: true
+                            text: qsTr("Save")
+                            tooltip: qsTr("Save the columns as they are now under this name")
+                            enabled: presetName.text.trim() !== ""
+                            onClicked: {
+                                if (Library.saveColumnPreset(presetName.text))
+                                    presetName.text = ""
+                            }
+                        }
+                    }
                 }
             }
         }

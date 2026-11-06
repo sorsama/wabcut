@@ -10,6 +10,8 @@ import QtQuick
 // channels through one to one. The items run once the menu has closed: a field or a dialog would lose its focus to the
 // closing menu, and adding or deleting a track rebuilds the headers (this menu's header with them). Its own file,
 // importing only QtQuick, so QtQuick.Controls' ContextMenu does not shadow ours.
+// 0.7 (card 077): Label, the track's colour (Premiere's 16 label colours with their names, the current one checked, and No
+// Label): a bar on the header, a wash on the lane and the mixer strip's colour; one undo step "Track Color".
 ContextMenu {
     id: menu
     objectName: "trackHeaderMenu"
@@ -23,8 +25,10 @@ ContextMenu {
     readonly property string format: AudioChannels.trackFormats[trackId] ?? "stereo"
     /// Why the last choice was refused ("" after a good one).
     property string error: ""
-    // The item to run once the menu has closed: "rename", "addTrack", "addTracks", "delete" or "deleteEmpty".
+    // The item to run once the menu has closed: "rename", "addTrack", "addTracks", "delete" or "deleteEmpty"; 0.7: "groupTargeted",
+    // "groupNew", "groupAdd" (the group in `pendingGroup`) or "groupRemove".
     property string pending: ""
+    property string pendingGroup: ""
 
     /// Rename...: the header opens its name field.
     signal renameRequested()
@@ -32,6 +36,8 @@ ContextMenu {
     signal addTracksRequested()
     /// Delete Track on a track with clips: the Tracks panel asks first.
     signal deleteRequested(var info)
+    /// 0.7 (card #139): Video Track Effects...: the Tracks panel opens the track's effect stack.
+    signal trackEffectsRequested()
     /// An edit was refused: `message` says why (the Tracks panel shows it).
     signal failed(string message)
 
@@ -70,8 +76,17 @@ ContextMenu {
         case "rename": menu.renameRequested(); break
         case "addTrack": menu.addOne(); break
         case "addTracks": menu.addTracksRequested(); break
+        case "trackEffects": menu.trackEffectsRequested(); break
+        // 0.7 (card 067): Move Track Up / Down, one place up or down the stack as the header is drawn.
+        case "moveUp": menu.report(ProjectController.moveTrackBy(menu.trackId, menu.audio ? -1 : 1)); break
+        case "moveDown": menu.report(ProjectController.moveTrackBy(menu.trackId, menu.audio ? 1 : -1)); break
         case "delete": menu.deleteTrack(); break
         case "deleteEmpty": menu.report(ProjectController.deleteEmptyTracks("") > 0); break
+        // 0.7 (card 124): track groups
+        case "groupTargeted": menu.report(ProjectController.groupTargetedTracks(menu.audio ? "audio" : "video") !== ""); break
+        case "groupNew": menu.report(ProjectController.createTrackGroup([menu.trackId], "") !== ""); break
+        case "groupAdd": menu.report(ProjectController.addTracksToTrackGroup(menu.pendingGroup, [menu.trackId])); break
+        case "groupRemove": menu.report(ProjectController.removeTracksFromTrackGroups([menu.trackId])); break
         }
     }
 
@@ -98,6 +113,43 @@ ContextMenu {
         iconName: "pencil"
         onTriggered: menu.pending = "rename"
     }
+    ContextMenu {
+        id: labelMenu
+        objectName: "trackMenuLabel"
+        title: qsTr("Label")
+        Instantiator {
+            model: Library.labelNames
+            delegate: ContextMenuItem {
+                id: colour
+                required property string modelData
+                required property int index
+                objectName: "trackMenuLabel_" + index
+                text: modelData
+                iconName: "square"
+                iconColor: Theme.clipColor(index)
+                checkable: true
+                checked: (menu.info.colorIndex ?? -1) === index
+                onTriggered: {
+                    colour.checked = Qt.binding(() => (menu.info.colorIndex ?? -1) === colour.index)
+                    menu.report(ProjectController.setTrackColor(menu.trackId, colour.index))
+                }
+            }
+            onObjectAdded: (index, object) => labelMenu.insertItem(index, object as ContextMenuItem)
+            onObjectRemoved: (index, object) => labelMenu.removeItem(object as ContextMenuItem)
+        }
+        ContextMenuSeparator {}
+        ContextMenuItem {
+            id: noLabel
+            objectName: "trackMenuLabelNone"
+            text: qsTr("No Label")
+            checkable: true
+            checked: (menu.info.colorIndex ?? -1) < 0
+            onTriggered: {
+                noLabel.checked = Qt.binding(() => (menu.info.colorIndex ?? -1) < 0)
+                menu.report(ProjectController.setTrackColor(menu.trackId, -1))
+            }
+        }
+    }
     ContextMenuSeparator {}
     ContextMenuItem {
         objectName: "trackMenuAddTrack"
@@ -110,6 +162,81 @@ ContextMenu {
         text: qsTr("Add Tracks…")
         iconName: "layers"
         onTriggered: menu.pending = "addTracks"
+    }
+    // 0.7 (card #139): the effects that apply to every clip on this video track at once.
+    ContextMenuItem {
+        objectName: "trackMenuEffects"
+        visible: !menu.audio
+        height: visible ? implicitHeight : 0
+        text: qsTr("Video Track Effects…")
+        iconName: "sparkles"
+        onTriggered: menu.pending = "trackEffects"
+    }
+    // 0.7 (card 067): move the track one place up or down its stack (dragging the name chip does it too).
+    ContextMenuItem {
+        objectName: "trackMenuMoveUp"
+        readonly property int index: menu.info.index ?? 0
+        readonly property int count: menu.info.kindCount ?? 1
+        text: qsTr("Move Track Up")
+        iconName: "chevron-up"
+        enabled: menu.audio ? index > 0 : index < count - 1
+        onTriggered: menu.pending = "moveUp"
+    }
+    ContextMenuItem {
+        objectName: "trackMenuMoveDown"
+        readonly property int index: menu.info.index ?? 0
+        readonly property int count: menu.info.kindCount ?? 1
+        text: qsTr("Move Track Down")
+        iconName: "chevron-down"
+        enabled: menu.audio ? index < count - 1 : index > 0
+        onTriggered: menu.pending = "moveDown"
+    }
+    // 0.7 (card 124): track groups. Group Targeted Tracks (two or more targeted tracks of this kind in no group), New Group
+    // from This Track, Add to Group (the groups of this kind), Remove from Group.
+    ContextMenuSeparator {}
+    ContextMenuItem {
+        objectName: "trackMenuGroupTargeted"
+        text: (menu.info.targetedFree ?? 0) >= 2 ? qsTr("Group Targeted Tracks (%1)").arg(menu.info.targetedFree)
+                                                  : qsTr("Group Targeted Tracks")
+        iconName: "folder-plus"
+        enabled: (menu.info.targetedFree ?? 0) >= 2
+        hint: qsTr("Makes a group of the targeted tracks that are in no group")
+        onTriggered: menu.pending = "groupTargeted"
+    }
+    ContextMenuItem {
+        objectName: "trackMenuGroupNew"
+        text: qsTr("New Group from This Track")
+        iconName: "folder"
+        enabled: (menu.info.groupId ?? "") === ""
+        onTriggered: menu.pending = "groupNew"
+    }
+    ContextMenu {
+        id: groupMenu
+        objectName: "trackMenuGroupAdd"
+        title: qsTr("Add to Group")
+        Instantiator {
+            model: menu.info.groups ?? []
+            delegate: ContextMenuItem {
+                required property var modelData
+                objectName: "trackMenuGroupAdd_" + modelData.id
+                text: modelData.name
+                iconName: "folders"
+                onTriggered: {
+                    menu.pendingGroup = modelData.id
+                    menu.pending = "groupAdd"
+                }
+            }
+            onObjectAdded: (index, object) => groupMenu.insertItem(index, object as ContextMenuItem)
+            onObjectRemoved: (index, object) => groupMenu.removeItem(object as ContextMenuItem)
+        }
+    }
+    ContextMenuItem {
+        objectName: "trackMenuGroupRemove"
+        text: (menu.info.groupName ?? "") !== "" ? qsTr("Remove from Group “%1”").arg(menu.info.groupName)
+                                                 : qsTr("Remove from Group")
+        iconName: "minus"
+        enabled: (menu.info.groupId ?? "") !== ""
+        onTriggered: menu.pending = "groupRemove"
     }
     ContextMenuSeparator {}
     ContextMenuItem {
@@ -217,6 +344,19 @@ ContextMenu {
         onTriggered: {
             format2.checked = Qt.binding(() => menu.format === "5.1")
             menu.choose("5.1")
+        }
+    }
+    ContextMenuItem {
+        id: format71
+        objectName: "trackFormat_7.1"
+        visible: menu.audio
+        height: visible ? implicitHeight : 0
+        text: qsTr("7.1")
+        checkable: true
+        checked: menu.format === "7.1"
+        onTriggered: {
+            format71.checked = Qt.binding(() => menu.format === "7.1")
+            menu.choose("7.1")
         }
     }
     ContextMenuItem {

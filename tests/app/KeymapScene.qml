@@ -51,6 +51,30 @@ Window {
         width: 200
     }
 
+    // 0.7 (card 021): the Library list's cell editor - a text field in the Project panel that leaves Tab, Shift+Tab,
+    // Enter and Shift+Enter to the keymap (`fieldStepping`), and an ordinary one next to it that does not.
+    Item {
+        objectName: "projectPanel"
+        KeymapScope.scope: "project"
+        x: 400
+        y: 500
+        width: 300
+        height: 100
+
+        TextField {
+            objectName: "steppingField"
+            readonly property bool fieldStepping: true
+            width: 140
+            Keys.onShortcutOverride: event => event.accepted = !([Qt.Key_Tab, Qt.Key_Backtab, Qt.Key_Return, Qt.Key_Enter].includes(event.key)
+                                                                  && (event.modifiers & ~(Qt.ShiftModifier | Qt.KeypadModifier)) === 0)
+        }
+        TextField {
+            objectName: "plainProjectField"
+            x: 150
+            width: 140
+        }
+    }
+
     // A custom control that wants J for itself claims it through ShortcutOverride.
     Item {
         objectName: "claimsJ"

@@ -558,3 +558,112 @@ TEST_CASE("Auditions 0.6: a merge keeps the media and sequences the merged takes
     CHECK(merged->merged.findMedia(tl.media('B')) != nullptr);
     CHECK(clipUsesMedia(clipOf(merged->merged, tl.seq, a), tl.media('B')));
 }
+
+// ---- Card 092: a copy of an audition has effect instance ids of its own on every take --------------------------------
+
+namespace {
+
+std::vector<std::uint64_t> takeEffectIds(const Clip& clip) {
+    std::vector<std::uint64_t> ids;
+    if (const Audition* a = clip.audition()) {
+        for (const AuditionTake& take : a->others) {
+            if (take.content) {
+                for (const EffectInstance& e : take.content->effects) {
+                    ids.push_back(e.id.value);
+                }
+            }
+        }
+    }
+    return ids;
+}
+
+/// An audition A (V1) whose other take B carries a blur; the id generator is already far on.
+struct BlurTake {
+    Timeline tl{R"(
+        V2 |Bbbb......|
+        V1 |Aaaa......|
+    )"};
+    ProjectState state;
+    ClipId audition;
+
+    BlurTake() {
+        tl.state.ids.next = 900;
+        const ClipId b = tl.clip("V2@0");
+        audition = tl.clip("V1@0");
+        state = ok(edit::addEffect(tl.state, tl.seq, std::span(&b, 1), "wabcut.blur.gaussian",
+                                   {EffectParam{"radius", ParamValue(9.0)}}))
+                    .state;
+        const ClipId ids[] = {audition, b};
+        state = ok(edit::createAudition(state, tl.seq, ids)).state;
+    }
+};
+
+} // namespace
+
+TEST_CASE("Auditions 0.6: pasting an audition into another project renews the effect ids of its other takes", "[model][auditions]") {
+    BlurTake src;
+    const auto original = takeEffectIds(clipOf(src.state, src.tl.seq, src.audition));
+    REQUIRE(original.size() == 1);
+    CHECK(original.front() >= 900);
+
+    // The destination project has issued far fewer ids than the source did.
+    Timeline dest(R"(
+        V1 |..........|
+    )");
+    REQUIRE(dest.state.ids.next < original.front());
+    const auto doc = copyClips(src.state, src.tl.seq, std::span(&src.audition, 1));
+    REQUIRE(doc.has_value());
+    const auto json = clipboardToJson(*doc);
+    REQUIRE(json.has_value());
+    const auto back = clipboardFromJson(*json);
+    REQUIRE(back.has_value());
+    const auto pasted = pasteClips(dest.state, dest.seq, *back, f(2));
+    REQUIRE(pasted.has_value());
+    requireValid(pasted->edit.state); // before the fix: "effect N has an id that is not below the id generator"
+    REQUIRE(pasted->report.pasted.size() == 1);
+    const Clip& copy = clipOf(pasted->edit.state, dest.seq, pasted->report.pasted.front());
+    REQUIRE(takeCount(copy) == 2);
+    const auto ids = takeEffectIds(copy);
+    REQUIRE(ids.size() == 1);
+    CHECK(ids.front() < pasted->edit.state.ids.next);
+    // The take kept its effect (name and parameter), only the instance id is new; the new id is reported as created.
+    const AuditionTake& take = copy.audition()->others.front();
+    REQUIRE(take.content != nullptr);
+    CHECK(take.content->effects.front().effect == "wabcut.blur.gaussian");
+    CHECK(std::ranges::find(pasted->edit.createdEffects, EffectInstanceId{ids.front()}) != pasted->edit.createdEffects.end());
+    // ... and the project saves and loads again.
+    const auto saved = io::toJson(pasted->edit.state);
+    REQUIRE(saved.has_value());
+    CHECK(io::fromJson(*saved).has_value());
+}
+
+TEST_CASE("Auditions 0.6: a paste in the same project and an Alt-drag copy do not share effect ids with the original", "[model][auditions]") {
+    BlurTake src;
+    const auto original = takeEffectIds(clipOf(src.state, src.tl.seq, src.audition));
+    REQUIRE(original.size() == 1);
+
+    // Paste (clipboard round trip) in the same project.
+    const auto doc = copyClips(src.state, src.tl.seq, std::span(&src.audition, 1));
+    REQUIRE(doc.has_value());
+    const auto pasted = pasteClips(src.state, src.tl.seq, *doc, f(5));
+    REQUIRE(pasted.has_value());
+    requireValid(pasted->edit.state);
+    REQUIRE(pasted->report.pasted.size() == 1);
+    const auto pastedIds = takeEffectIds(clipOf(pasted->edit.state, src.tl.seq, pasted->report.pasted.front()));
+    REQUIRE(pastedIds.size() == 1);
+    CHECK(pastedIds.front() != original.front());
+    CHECK(takeEffectIds(clipOf(pasted->edit.state, src.tl.seq, src.audition)) == original); // the original is untouched
+
+    // Alt-drag copy (MoveOps duplicateClips).
+    const auto dup = ok(edit::duplicateClips(src.state, src.tl.seq, std::span(&src.audition, 1), f(5)));
+    REQUIRE(dup.created.size() == 1);
+    const auto dupIds = takeEffectIds(clipOf(dup.state, src.tl.seq, dup.created.front()));
+    REQUIRE(dupIds.size() == 1);
+    CHECK(dupIds.front() != original.front());
+    CHECK(dupIds.front() < dup.state.ids.next);
+    CHECK(takeEffectIds(clipOf(dup.state, src.tl.seq, src.audition)) == original);
+    CHECK(std::ranges::find(dup.createdEffects, EffectInstanceId{dupIds.front()}) != dup.createdEffects.end());
+    // The copy's other take plays what the original's does: only the id differs.
+    const Clip& copyClip = clipOf(dup.state, src.tl.seq, dup.created.front());
+    CHECK(copyClip.audition()->others.front().content->effects.front().effect == "wabcut.blur.gaussian");
+}

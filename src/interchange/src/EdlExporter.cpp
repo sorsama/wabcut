@@ -1003,6 +1003,10 @@ private:
             report(ReportOutcome::Dropped, ReportCategory::SequenceSetting,
                    "its In/Out marks are not carried: an EDL has none", m_seq.location);
         }
+        if (m_seq.workIn && m_seq.workOut) { // 0.7 (card 046)
+            report(ReportOutcome::Dropped, ReportCategory::SequenceSetting,
+                   "its work area is not carried: an EDL has none", m_seq.location);
+        }
     }
 
     void reportLength(std::int64_t contentEnd) const {

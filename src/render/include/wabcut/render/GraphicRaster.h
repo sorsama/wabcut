@@ -25,6 +25,7 @@
 #include <wabcut/render/FrameView.h>
 
 #include <QImage>
+#include <QSizeF>
 
 #include <atomic>
 #include <cstddef>
@@ -42,6 +43,13 @@ class GraphicImageSource {
 public:
     virtual ~GraphicImageSource() = default;
     virtual QImage picture(MediaId media) const = 0;
+    /// 0.7 (card #86): the picture for an image item drawn into a box of about `devicePixels` device pixels. Vector artwork
+    /// (SVG, Illustrator, EPS: VectorImage.h) is drawn at that size, so it is sharp however far it is scaled; any other
+    /// picture is the one picture(media) gives.
+    virtual QImage picture(MediaId media, QSizeF devicePixels) const {
+        static_cast<void>(devicePixels);
+        return picture(media);
+    }
 };
 
 /// Measures text exactly as the rasteriser lays it out (for ResolveOptions::measurer and command::GraphicsServices).

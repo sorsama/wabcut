@@ -202,6 +202,56 @@ TEST_CASE("Auto B-roll matches by picture with the smart search and places only 
     CHECK(h.session.undoCount() == undoNow + 1);
 }
 
+TEST_CASE("Auto B-roll skips video tracks that are switched off or locked (card 167)", "[app][ai][autopilot][broll]") {
+    const std::string clip = "A" + std::string(60 * 25 - 1, 'a');
+    const std::string base = "V1 tgt |" + clip + "|\nA1 tgt |" + clip + "|\n";
+    SECTION("an empty hidden V2 is passed over: the B-roll gets a track of its own that shows") {
+        Recording essay = brollEssay("V2 off |.|\n" + base);
+        Harness h(essay.tl.state, bundle({std::make_shared<ai::edit::TranscriptServices>(essay.transcripts)}));
+        const command::CommandResult preview = h.ok("autopilot.broll", Json::object(), true);
+        CHECK(preview.data["track"]["created"] == true);
+        CHECK(preview.data["track"]["label"] == "V3");
+        const command::CommandResult applied = h.ok("autopilot.broll", Json::object());
+        CHECK(applied.data["placed"] == 3);
+        const Sequence& seq = *h.session.snapshot()->findSequence(essay.tl.seq);
+        REQUIRE(seq.videoTracks.size() == 3);
+        CHECK_FALSE(seq.videoTracks[1]->enabled);
+        CHECK(seq.videoTracks[1]->clips.empty()); // the hidden track stays as it was
+        CHECK(seq.videoTracks[2]->name == "B-roll");
+        CHECK(seq.videoTracks[2]->enabled);
+        CHECK(seq.videoTracks[2]->clips.size() == 3);
+    }
+    SECTION("a free visible track above the hidden one is used") {
+        Recording essay = brollEssay("V3 |.|\nV2 off |.|\n" + base);
+        Harness h(essay.tl.state, bundle({std::make_shared<ai::edit::TranscriptServices>(essay.transcripts)}));
+        const command::CommandResult applied = h.ok("autopilot.broll", Json::object());
+        CHECK(applied.data["track"]["label"] == "V3");
+        CHECK(applied.data["track"]["created"] == false);
+        const Sequence& seq = *h.session.snapshot()->findSequence(essay.tl.seq);
+        REQUIRE(seq.videoTracks.size() == 3);
+        CHECK(seq.videoTracks[1]->clips.empty());
+        CHECK(seq.videoTracks[2]->clips.size() == 3);
+    }
+    SECTION("a locked V2 is passed over too") {
+        Recording essay = brollEssay("V2 lock |.|\n" + base);
+        Harness h(essay.tl.state, bundle({std::make_shared<ai::edit::TranscriptServices>(essay.transcripts)}));
+        const command::CommandResult applied = h.ok("autopilot.broll", Json::object());
+        CHECK(applied.data["track"]["label"] == "V3");
+        CHECK(applied.data["track"]["created"] == true);
+        const Sequence& seq = *h.session.snapshot()->findSequence(essay.tl.seq);
+        REQUIRE(seq.videoTracks.size() == 3);
+        CHECK(seq.videoTracks[1]->clips.empty());
+        CHECK(seq.videoTracks[2]->clips.size() == 3);
+    }
+    SECTION("a visible free V2 is still the first choice") {
+        Recording essay = brollEssay("V2 |.|\n" + base);
+        Harness h(essay.tl.state, bundle({std::make_shared<ai::edit::TranscriptServices>(essay.transcripts)}));
+        const command::CommandResult applied = h.ok("autopilot.broll", Json::object());
+        CHECK(applied.data["track"]["label"] == "V2");
+        CHECK(applied.data["track"]["created"] == false);
+    }
+}
+
 TEST_CASE("Auto B-roll needs transcripts and says why nothing was placed", "[app][ai][autopilot][broll]") {
     Recording essay = brollEssay();
     Harness none(essay.tl.state, bundle({}));
@@ -290,6 +340,46 @@ TEST_CASE("Publishing kit writes complete files with chapters from markers and u
     CHECK(saved["thumbnails"][0]["file"] == "thumbnail-1.jpg");
     CHECK(*h.session.snapshot() == *before);
     CHECK(h.session.undoCount() == 0);
+}
+
+TEST_CASE("Publishing kit markdown pairs each thumbnail file with its own time when an earlier one failed to write",
+          "[app][ai][autopilot][kit]") {
+    Recording essay(120, telescopeLines());
+    // A still writer that cannot write thumbnail-1.jpg (disk full, antivirus lock) and writes the others.
+    auto stills = std::make_shared<command::FrameExportServices>(
+        [](const ProjectState&, SequenceId, Ticks, const std::filesystem::path& file, const std::string&,
+           const command::FrameExportServices::Options& o) -> std::expected<command::FrameExportServices::Written, Error> {
+            if (file.filename() == "thumbnail-1.jpg") {
+                return std::unexpected(Error{ErrorCode::IoError, "disk full"});
+            }
+            std::ofstream(file, std::ios::binary) << "JPEG";
+            return command::FrameExportServices::Written{file, o.width, o.height, 4, 92};
+        },
+        command::FrameExportServices::Describer{}, std::vector<std::string>{"jpeg", "png"});
+    Harness h(essay.tl.state, bundle({std::make_shared<ai::edit::TranscriptServices>(essay.transcripts),
+                                      std::make_shared<autopilot::AutopilotServices>(drawnFrame), stills}));
+    ai::search::test::TempDir dir("kit-fail");
+    const command::CommandResult written =
+        h.ok("autopilot.publishKit", Json{{"thumbnails", 4}, {"folder", pathToUtf8(dir.path)}});
+    const Json& thumbs = written.data["thumbnails"];
+    INFO(written.data.dump(2));
+    REQUIRE(thumbs.size() >= 2); // at least one candidate after the one that failed
+    CHECK(std::ranges::any_of(written.warnings, [](const std::string& w) { return w.find("thumbnail-1.jpg") != std::string::npos; }));
+    const std::filesystem::path folder = dir.path / "Telescope build - publishing kit";
+    const std::string md = readFile(folder / "publishing-kit.md");
+    CHECK(md.find("thumbnail-1.jpg") == std::string::npos);
+    // Every file that was written is listed with the time of ITS candidate (not of the one at its position among the
+    // files written), and the JSON agrees.
+    for (std::size_t i = 0; i < thumbs.size(); ++i) {
+        const std::string file = "thumbnail-" + std::to_string(i + 1) + ".jpg";
+        INFO(file);
+        if (i == 0) {
+            CHECK_FALSE(thumbs[i].contains("file"));
+            continue;
+        }
+        CHECK(thumbs[i]["file"] == file);
+        CHECK(md.find("- " + file + " at " + thumbs[i]["time"].get<std::string>() + " (") != std::string::npos);
+    }
 }
 
 TEST_CASE("Publishing kit finds chapters in the topics without markers and warns about YouTube rules", "[app][ai][autopilot][kit]") {

@@ -451,6 +451,7 @@ void registerCloudAdapters(ProviderRegistry& registry, AdapterOptions options) {
     registry.registerMediaGenerator("gemini-veo", makeVeoGenerator);
     registry.registerMediaGenerator("runway-generation", makeRunwayGenerator);
     registry.registerMediaGenerator("elevenlabs-sound-generation", makeElevenLabsSoundEffects);
+    registry.registerMediaGenerator("sound-generation", makeCompatibleSoundEffects); // r07: OpenAI-compatible servers
     registry.registerChat("anthropic-messages", [](ProviderContext c) { return makeAnthropicChat(std::move(c)); });
     registry.registerChat("openai-responses", [](ProviderContext c) { return makeOpenAiResponsesChat(std::move(c)); });
     registry.registerChat("chat-completions", [](ProviderContext c) { return makeChatCompletionsChat(std::move(c)); });
@@ -463,6 +464,24 @@ void registerCloudAdapters(ProviderRegistry& registry, AdapterOptions options) {
     registry.registerSpeechSynth("gemini-tts", [](ProviderContext c) { return makeGeminiSpeech(std::move(c)); });
     registry.registerTranscriber("assemblyai",
                                  [options](ProviderContext c) { return makeAssemblyAiTranscriber(std::move(c), options); });
+    // r07
+    registry.registerTranscriber("openai-transcriptions", [](ProviderContext c) { return makeOpenAiTranscriber(std::move(c)); });
+    registry.registerTranscriber("speechmatics",
+                                 [options](ProviderContext c) { return makeSpeechmaticsTranscriber(std::move(c), options); });
+    registry.registerTranscriber("gladia", [options](ProviderContext c) { return makeGladiaTranscriber(std::move(c), options); });
+    registry.registerSpeechSynth("deepgram-speak", [](ProviderContext c) { return makeDeepgramSpeech(std::move(c)); });
+    registry.registerSpeechSynth("cartesia-tts", [](ProviderContext c) { return makeCartesiaSpeech(std::move(c)); });
+    registry.registerSpeechSynth("fish-tts", [](ProviderContext c) { return makeFishSpeech(std::move(c)); });
+    registry.registerTranslator("deepl", [](ProviderContext c) { return makeDeepLTranslator(std::move(c)); });
+    registry.registerTranslator("google-translate", [](ProviderContext c) { return makeGoogleTranslator(std::move(c)); });
+    registry.registerMediaGenerator("openai-images", makeOpenAiImages);
+    registry.registerMediaGenerator("openai-videos", makeOpenAiVideos);
+    registry.registerMediaGenerator("stability-image", makeStabilityImages);
+    registry.registerMediaGenerator("bfl-flux", makeBflImages);
+    registry.registerMediaGenerator("ideogram", makeIdeogramImages);
+    registry.registerMediaGenerator("xai-video", makeXaiVideo);
+    registry.registerMediaGenerator("fal-queue", makeFalGenerator);
+    registry.registerMediaGenerator("replicate", makeReplicateGenerator);
 }
 
 } // namespace wabcut::ai::net

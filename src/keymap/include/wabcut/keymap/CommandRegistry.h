@@ -38,6 +38,11 @@ struct CommandInfo {
     /// Whether a held key's auto-repeat re-triggers the command (frame steps, nudges, zoom, undo). Toggles
     /// such as Play/Stop must not repeat.
     bool autoRepeat = false;
+    /// 0.7 (card 063): a command that is also held, like Photoshop's tools: a tap runs it as usual; when its key is
+    /// held past the hold threshold (or key repeat began) the dispatcher also reports its release
+    /// (KeyResult::released), so the app can hand the previous state back. Tool.hand and tool.zoom: hold H / Z to use
+    /// the Hand / Zoom tool for as long as the key is down, then the tool you had comes back.
+    bool momentary = false;
 };
 
 /// Ids of the shuttle commands that drive the J/K/L gesture (TransportGesture turns them into intents).

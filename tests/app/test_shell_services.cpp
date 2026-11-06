@@ -21,6 +21,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QQmlComponent>
@@ -32,10 +33,12 @@
 #include <QWindow>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <vector>
 
 using namespace wabcut;
 using namespace wabcut::app;
@@ -214,6 +217,151 @@ TEST_CASE("Single instance: with nobody listening a launch starts on its own", "
     CHECK_FALSE(alone.handOver({QUrl::fromLocalFile(QDir::temp().filePath(QStringLiteral("a.wabcut")))}, 2000));
     CHECK_FALSE(alone.handOver({}, 2000)); // nothing to hand over
     CHECK_FALSE(alone.isListening());
+}
+
+// ---- Review (card 005): "Open with" on several files ---------------------------------------------------------------------
+
+TEST_CASE("Single instance: only the first launch gets the launch lock and a closed one gives it back", "[app][shell][instance]") {
+    const QString name = uniqueName("wabcut-test-");
+    SingleInstance first(name);
+    SingleInstance second(name);
+    CHECK_FALSE(first.holdsLaunch());
+    CHECK(first.claimLaunch());
+    CHECK(first.holdsLaunch());
+    CHECK(first.claimLaunch()); // again: still the owner
+    CHECK_FALSE(second.claimLaunch());
+    CHECK_FALSE(second.holdsLaunch());
+    first.close(); // the Wabcut that restarts itself lets go
+    CHECK_FALSE(first.holdsLaunch());
+    CHECK(second.claimLaunch());
+    CHECK(second.holdsLaunch());
+    // Another name is another user's / another settings location's: its own lock.
+    SingleInstance other(uniqueName("wabcut-test-"));
+    CHECK(other.claimLaunch());
+}
+
+TEST_CASE("Single instance: a launch that names files claims the lock when nobody runs and gives up on a Wabcut that never answers",
+          "[app][shell][instance]") {
+    const QUrl file = QUrl::fromLocalFile(QDir::temp().filePath(QStringLiteral("wait.mkv")));
+    // Nobody runs and nobody starts: this launch is the first, it starts the Wabcut at once.
+    SingleInstance alone(uniqueName("wabcut-test-"));
+    QElapsedTimer clock;
+    clock.start();
+    CHECK_FALSE(alone.handOverOrWait({file}, 5000, 500));
+    CHECK(alone.holdsLaunch());
+    CHECK(clock.elapsed() < 2000);
+    CHECK_FALSE(alone.handOverOrWait({}, 5000, 500)); // nothing to hand over
+
+    // A Wabcut that holds the lock but never listens (hung while starting): the wait ends and the launch starts on its own.
+    const QString name = uniqueName("wabcut-test-");
+    SingleInstance hung(name);
+    REQUIRE(hung.claimLaunch());
+    SingleInstance later(name);
+    clock.restart();
+    CHECK_FALSE(later.handOverOrWait({file}, 700, 300));
+    CHECK(clock.elapsed() >= 600);
+    CHECK(clock.elapsed() < 5000);
+    CHECK_FALSE(later.holdsLaunch());
+}
+
+TEST_CASE("Single instance: files launched together while Wabcut is closed start one Wabcut and arrive as one batch",
+          "[app][shell][instance]") {
+    const QString name = uniqueName("wabcut-test-");
+    constexpr int kLaunches = 4;
+    std::vector<std::unique_ptr<SingleInstance>> launches;
+    QList<QList<QUrl>> received;
+    for (int i = 0; i < kLaunches; ++i) {
+        launches.push_back(std::make_unique<SingleInstance>(name));
+        launches.back()->setBatchWindow(1500); // generous: the waiting launches retry every 150 ms
+        QObject::connect(launches.back().get(), &SingleInstance::filesRequested,
+                         [&](const QList<QUrl>& files) { received.append(files); });
+    }
+    std::array<QUrl, kLaunches> files;
+    for (int i = 0; i < kLaunches; ++i)
+        files[static_cast<std::size_t>(i)] = QUrl::fromLocalFile(QDir::temp().filePath(QStringLiteral("clip%1.mkv").arg(i)));
+
+    // File Explorer starts the processes at the same moment; here they are threads that block while they wait, as main() does.
+    std::array<std::atomic<int>, kLaunches> result{};
+    for (auto& r : result)
+        r = -1;
+    std::atomic<int> finished{0};
+    std::vector<std::unique_ptr<QThread>> threads;
+    for (int i = 0; i < kLaunches; ++i) {
+        threads.emplace_back(QThread::create([&, i] {
+            result[static_cast<std::size_t>(i)] = launches[static_cast<std::size_t>(i)]->handOverOrWait(
+                                                      {files[static_cast<std::size_t>(i)]}, 20000, 3000)
+                                                      ? 1
+                                                      : 0;
+            ++finished;
+        }));
+        threads.back()->start();
+    }
+    // Exactly one of them (the one that got the lock) starts the Wabcut; the rest wait for it.
+    REQUIRE(waitFor([&] { return finished >= 1; }, 15000));
+    spin(300);
+    CHECK(finished == 1);
+    int winner = -1;
+    for (int i = 0; i < kLaunches; ++i) {
+        if (result[static_cast<std::size_t>(i)] == 0) {
+            CHECK(winner == -1); // one only
+            winner = i;
+        }
+    }
+    REQUIRE(winner >= 0);
+    CHECK(launches[static_cast<std::size_t>(winner)]->holdsLaunch());
+    // Its window is up: it listens, and the others hand their files over.
+    REQUIRE(launches[static_cast<std::size_t>(winner)]->listen());
+    REQUIRE(waitFor([&] { return finished == kLaunches; }, 30000)); // the event loop runs: the Wabcut answers the others
+    for (auto& thread : threads)
+        REQUIRE(thread->wait(30000));
+    for (int i = 0; i < kLaunches; ++i)
+        CHECK(result[static_cast<std::size_t>(i)] == (i == winner ? 0 : 1));
+    REQUIRE(waitFor([&] { return !received.isEmpty(); }, 15000));
+    spin(300);
+    REQUIRE(received.size() == 1); // ONE import, one undo step, one toast
+    CHECK(received.front().size() == kLaunches - 1);
+    for (int i = 0; i < kLaunches; ++i)
+        CHECK(received.front().contains(files[static_cast<std::size_t>(i)]) == (i != winner));
+}
+
+TEST_CASE("Single instance: hand-overs within the batch window are one list without doubles and later ones are the next",
+          "[app][shell][instance]") {
+    const QString name = uniqueName("wabcut-test-");
+    SingleInstance running(name);
+    REQUIRE(running.listen());
+    CHECK(running.batchWindow() == 300);
+    running.setBatchWindow(700);
+    QList<QList<QUrl>> received;
+    QObject::connect(&running, &SingleInstance::filesRequested, [&](const QList<QUrl>& files) { received.append(files); });
+    const auto fileUrl = [](const char* name) { return QUrl::fromLocalFile(QDir::temp().filePath(QString::fromLatin1(name))); };
+    const auto handOverOnThread = [&](const QList<QUrl>& files) {
+        std::atomic<int> handed{-1};
+        std::unique_ptr<QThread> launch(QThread::create([&] {
+            const SingleInstance later(name);
+            handed = later.handOver(files) ? 1 : 0;
+        }));
+        launch->start();
+        REQUIRE(waitFor([&] { return launch->isFinished(); }));
+        CHECK(handed == 1);
+    };
+    handOverOnThread({fileUrl("a.mkv")});
+    handOverOnThread({fileUrl("b.mkv"), fileUrl("a.mkv")}); // a again: once
+    handOverOnThread({fileUrl("c.mkv")});
+    CHECK(received.isEmpty()); // still collecting
+    REQUIRE(waitFor([&] { return !received.isEmpty(); }));
+    REQUIRE(received.size() == 1);
+    CHECK(received.front() == QList<QUrl>{fileUrl("a.mkv"), fileUrl("b.mkv"), fileUrl("c.mkv")}); // in the order they came
+
+    // Long after the window: its own batch.
+    handOverOnThread({fileUrl("d.mkv")});
+    REQUIRE(waitFor([&] { return received.size() == 2; }));
+    CHECK(received.back() == QList<QUrl>{fileUrl("d.mkv")});
+
+    // No batch window: every hand-over is emitted at once, as before.
+    running.setBatchWindow(0);
+    handOverOnThread({fileUrl("e.mkv")});
+    REQUIRE(waitFor([&] { return received.size() == 3; }, 3000));
+    CHECK(received.back() == QList<QUrl>{fileUrl("e.mkv")});
 }
 
 TEST_CASE("Single instance: only a launch naming a project hands over and the new-instance switch never does",

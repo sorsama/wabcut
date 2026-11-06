@@ -9,7 +9,10 @@ wabcut_add_test_suite(render_reference
         ReferenceTestSupport.cpp
         test_blend.cpp
         test_golden.cpp
+        test_eye_contact.cpp # 0.7: AI Eye Contact (the CPU twin)
         test_layout.cpp
+        test_motion_blur.cpp
+        test_retouch.cpp # 0.7: Skin Smoothing and AI Face Retouch (the CPU twins)
         test_synthetic.cpp
         test_ultra_key.cpp
     LIBS wabcut_render_reference

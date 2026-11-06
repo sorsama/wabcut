@@ -953,7 +953,7 @@ TEST_CASE("Library: the thumbnail slider sizes the cards and the selection keys 
     resetSettings();
 }
 
-TEST_CASE("Library selection keys: Shift grows and shrinks the range and hidden items never move", "[app][library][qml][ux]") {
+TEST_CASE("Library selection keys: Shift grows and shrinks the range; the tabs are Media and Audio", "[app][library][qml][ux]") {
     resetSettings();
     clearMessages();
     Shell shell;
@@ -1011,33 +1011,14 @@ TEST_CASE("Library selection keys: Shift grows and shrinks the range and hidden 
     REQUIRE(library->runCommand(QStringLiteral("project.extendSelectionLeft")));
     CHECK(library->selection() == rows(2, 3));
 
-    // The Text tab hides the items: the selection keys leave the hidden selection alone (Delete would act on it), and
-    // a focused Text tab slider gets its arrows instead of the Library's keys (the card size stays too).
+    // r07: the Library has Media and Audio tabs only (the Text tab, a title maker, went: text is made with Graphics >
+    // New Layer > Text and the Essential Graphics panel); on the Audio tab and back the keys still move the selection.
     QQuickItem* tabs = named(content, QStringLiteral("libraryTabs"));
     REQUIRE(tabs != nullptr);
-    tabs->setProperty("currentIndex", 2);
+    CHECK(tabs->property("model").toList().size() == 2);
+    CHECK(named(content, QStringLiteral("essentialGraphics")) == nullptr);
+    tabs->setProperty("currentIndex", 1);
     spin(50);
-    const QStringList before = library->selection();
-    for (const char* id : {"project.moveSelectionEnd", "project.moveSelectionHome", "project.moveSelectionDown",
-                           "project.extendSelectionUp", "project.moveSelectionPageDown"}) {
-        INFO(id);
-        library->runCommand(QString::fromLatin1(id));
-        CHECK(library->selection() == before);
-    }
-    QQuickItem* slider = findWith(panel, [](QQuickItem* i) { return i->inherits("QQuickSlider") && i->isVisible(); });
-    REQUIRE(slider != nullptr);
-    CHECK(slider->objectName() != QStringLiteral("libraryThumbnailSlider"));
-    slider->forceActiveFocus(Qt::TabFocusReason);
-    const double value = slider->property("value").toDouble();
-    const double scale = library->thumbnailScale();
-    tapKey(w, Qt::Key_Right);
-    CHECK(slider->property("value").toDouble() > value);
-    tapKey(w, Qt::Key_End);
-    tapKey(w, Qt::Key_Equal);
-    CHECK(library->selection() == before);
-    CHECK(library->thumbnailScale() == scale);
-
-    // Back on the Media tab the keys move the selection again.
     tabs->setProperty("currentIndex", 0);
     spin(50);
     REQUIRE(library->runCommand(QStringLiteral("project.moveSelectionHome")));

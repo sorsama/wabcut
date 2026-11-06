@@ -17,8 +17,12 @@
 // letterboxing and decoding of wabcut/ai/vision/Detection.h (so the editor's tests cover them on fixture tensors).
 //
 // A.4 adds the audio models (AudioModels.h): Enhance Speech (DeepFilterNet3) and stem separation (HTDemucs).
+//
+// 0.7 adds the image-to-image models of the AI video effects (PictureModels.h): Real-ESRGAN, NAFNet and DRUNet over one
+// picture at a time, in overlapping tiles. Four stay loaded (the least recently used is released): AI Face Retouch needs two at once.
 
 #include "AudioModels.h"
+#include "PictureModels.h"
 #include "SegmentModels.h"
 #include "TranslateModels.h"
 
@@ -298,6 +302,9 @@ public:
                 m_segment.reset(); // AI-14: SAM 2.1's video tracker, one object at a time
                 m_segment.emplace(r.segmentation, r.device, r.threads, factory);
             }
+            for (const embed::PictureModelFile& file : r.pictures) {
+                loadPicture(file, r.device, r.threads, factory);
+            }
         } catch (const std::invalid_argument& e) {
             send(embed::Failure{r.id, "model", e.what()});
             return;
@@ -306,7 +313,8 @@ public:
             return;
         }
         if (!m_vision && !m_text) { // detectors or audio models only
-            const std::string device = !r.speech.empty() && m_speech             ? m_speech->device()
+            const std::string device = !r.pictures.empty() && !m_pictures.empty() ? m_pictures.front()->device()
+                                       : !r.speech.empty() && m_speech             ? m_speech->device()
                                        : !r.stems.empty() && m_stems            ? m_stems->device()
                                        : !r.translation.empty() && m_translation ? m_translation->device()
                                        : !r.segmentation.empty() && m_segment    ? m_segment->device()
@@ -465,6 +473,35 @@ public:
         send(wabcut::embed_segment::segment(r, *m_segment));
     }
 
+    void picture(const embed::ProcessPicture& r) {
+        for (auto it = m_pictures.begin(); it != m_pictures.end(); ++it) {
+            if ((*it)->key() == r.model) {
+                std::rotate(m_pictures.begin(), it, it + 1); // most recently used first
+                if (m_pictures.front()->kind() == wabcut::embed_picture::PictureKind::FaceParse ||
+                    m_pictures.front()->kind() == wabcut::embed_picture::PictureKind::FaceLandmarks) {
+                    // AI Face Retouch / AI Eye Contact: the parser or the landmark network works on the faces the detector finds.
+                    wabcut::embed_picture::PictureModel* detector = nullptr;
+                    for (auto& model : m_pictures) {
+                        if (model->kind() == wabcut::embed_picture::PictureKind::FaceDetect) {
+                            detector = model.get();
+                        }
+                    }
+                    if (detector == nullptr) {
+                        send(embed::Failure{r.id, "bad_request", "picture model \"face detector\" is not loaded"});
+                        return;
+                    }
+                    send(m_pictures.front()->kind() == wabcut::embed_picture::PictureKind::FaceLandmarks
+                             ? wabcut::embed_picture::processGaze(r, *m_pictures.front(), *detector)
+                             : wabcut::embed_picture::processFaces(r, *m_pictures.front(), *detector));
+                    return;
+                }
+                send(wabcut::embed_picture::process(r, *m_pictures.front()));
+                return;
+            }
+        }
+        send(embed::Failure{r.id, "bad_request", "picture model \"" + r.model + "\" is not loaded"});
+    }
+
     void translate(const embed::TranslateText& r) {
         if (!m_translation) {
             send(embed::Failure{r.id, "bad_request", "no translation model loaded"});
@@ -474,6 +511,21 @@ public:
     }
 
 private:
+    /// Loads a picture model unless it is (the same file) loaded; keeps the four most recently used.
+    void loadPicture(const embed::PictureModelFile& file, const std::string& device, int threads, const wabcut::embed_audio::SessionFactory& factory) {
+        for (auto it = m_pictures.begin(); it != m_pictures.end(); ++it) {
+            if ((*it)->key() == file.key) {
+                std::rotate(m_pictures.begin(), it, it + 1);
+                return;
+            }
+        }
+        auto model = std::make_unique<wabcut::embed_picture::PictureModel>(file.key, file.path, device, threads, factory);
+        m_pictures.insert(m_pictures.begin(), std::move(model));
+        while (m_pictures.size() > 4) {
+            m_pictures.pop_back();
+        }
+    }
+
     /// Every output of one run of `net` on a 1 x 3 x size x size input; on the GPU first, then the CPU. Nothing (and
     /// m_error) when both fail.
     std::optional<std::vector<Ort::Value>> infer(Net& net, const std::filesystem::path& file, std::vector<float>& input, int size) {
@@ -541,6 +593,7 @@ private:
     std::optional<wabcut::embed_audio::StemModel> m_stems;
     std::optional<wabcut::embed_translate::TranslationModel> m_translation;
     std::optional<wabcut::embed_segment::Sam2Tracker> m_segment;
+    std::vector<std::unique_ptr<wabcut::embed_picture::PictureModel>> m_pictures; ///< most recently used first
     std::filesystem::path m_facesFile;
     std::filesystem::path m_objectsFile;
     std::string m_error;
@@ -595,6 +648,8 @@ int main() {
                 server->translate(*translate);
             } else if (const auto* segment = std::get_if<embed::SegmentFrame>(&*request)) {
                 server->segment(*segment);
+            } else if (const auto* picture = std::get_if<embed::ProcessPicture>(&*request)) {
+                server->picture(*picture);
             }
         } catch (const std::exception& e) {
             send(embed::Failure{"", "inference", e.what()});

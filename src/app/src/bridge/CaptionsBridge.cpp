@@ -18,6 +18,7 @@
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/Graphics.h>
 #include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/Spelling.h>
 #include <wabcut/model/Timecode.h>
 
@@ -27,11 +28,17 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QQmlEngine>
+#include <QRegularExpression>
 #include <QSettings>
+#include <QStandardPaths>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <expected>
+#include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <set>
 
 namespace wabcut::app {
@@ -39,6 +46,14 @@ namespace wabcut::app {
 using command::Json;
 
 namespace {
+
+/// 0.7 (card 115): two preset names are the same ignoring case (ASCII), as a project treats them.
+bool sameLookName(const std::string& a, const std::string& b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+               return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+           });
+}
+std::filesystem::path captionLibraryFile(); // defined below with My looks
 
 #define LABEL(text) QT_TRANSLATE_NOOP("wabcut::app::ProjectController", text)
 
@@ -79,6 +94,32 @@ std::optional<double> numberIn(const QVariant& value, double lo, double hi) {
 
 } // namespace
 
+QString emphasisWordsText(const std::vector<std::string>& words) {
+    QStringList list;
+    for (const std::string& w : words)
+        list << fromStd(w);
+    return list.join(QStringLiteral(", "));
+}
+
+/// The keywords typed in the style panel: separated by commas, semicolons or line breaks, trimmed, each once (without
+/// regard to case), at most kMaxCaptionEmphasisWords of at most kMaxCaptionEmphasisWordBytes bytes. nullopt: one is too long.
+std::optional<std::vector<std::string>> emphasisWordsOf(const QString& text) {
+    std::vector<std::string> out;
+    QStringList seen;
+    for (const QString& part : text.split(QRegularExpression(QStringLiteral("[,;\n]")), Qt::SkipEmptyParts)) {
+        const QString word = part.trimmed();
+        if (word.isEmpty() || seen.contains(word, Qt::CaseInsensitive))
+            continue;
+        if (static_cast<std::size_t>(word.toUtf8().size()) > kMaxCaptionEmphasisWordBytes)
+            return std::nullopt;
+        seen << word;
+        out.push_back(word.toStdString());
+        if (out.size() >= kMaxCaptionEmphasisWords)
+            break;
+    }
+    return out;
+}
+
 QVariantMap captionStyleMap(const CaptionStyle& s, Ticks at) {
     return {{QStringLiteral("fontFamily"), fromStd(s.fontFamily)},
             {QStringLiteral("fontWeight"), s.fontWeight},
@@ -97,6 +138,7 @@ QVariantMap captionStyleMap(const CaptionStyle& s, Ticks at) {
             {QStringLiteral("boxOpacity"), s.boxOpacity},
             {QStringLiteral("boxPadding"), s.boxPadding},
             {QStringLiteral("boxRadius"), s.boxRadius},
+            {QStringLiteral("features"), fromStd(s.features)}, // 0.7 (card #138)
             {QStringLiteral("placement"), fromStd(std::string(toString(s.placement)))},
             {QStringLiteral("safeArea"), s.safeArea},
             {QStringLiteral("positionX"), s.positionX.valueAt(at)},
@@ -107,6 +149,16 @@ QVariantMap captionStyleMap(const CaptionStyle& s, Ticks at) {
             {QStringLiteral("lineSpacing"), s.lineSpacing},
             {QStringLiteral("highlight"), hexOf(s.highlight)},
             {QStringLiteral("animation"), fromStd(std::string(toString(s.animation)))},
+            // cards 074 and 114: timing, emphasis and the text rules.
+            {QStringLiteral("animationSpeed"), s.animationSpeed},
+            {QStringLiteral("animationEase"), fromStd(std::string(toString(s.animationEase)))},
+            {QStringLiteral("emphasis"), fromStd(std::string(toString(s.emphasis)))},
+            {QStringLiteral("emphasisWordsText"), emphasisWordsText(s.emphasisWords)},
+            {QStringLiteral("emphasisColor"), hexOf(s.emphasisColor)},
+            {QStringLiteral("emphasisScale"), s.emphasisScale},
+            {QStringLiteral("textCase"), fromStd(std::string(toString(s.textCase)))},
+            {QStringLiteral("stripPunctuation"), s.stripPunctuation},
+            {QStringLiteral("stripAccents"), s.stripAccents},
             {QStringLiteral("showSpeakers"), s.showSpeakers},
             {QStringLiteral("allowOverlap"), s.allowOverlap},
             // C.13: the brand kit's colour names (and font role) the style uses instead of its own ("" = none).
@@ -207,6 +259,13 @@ bool setCaptionStyleField(CaptionStyle& s, const QString& key, const QVariant& v
         return set(s.boxPadding, 0.0, 2.0);
     if (key == QLatin1String("boxRadius"))
         return set(s.boxRadius, 0.0, 2.0);
+    if (key == QLatin1String("features")) { // 0.7 (card #138): OpenType features, normalised; unreadable ones change nothing
+        const auto parsed = parseFontFeatures(value.toString().trimmed().toStdString());
+        if (!parsed)
+            return false;
+        s.features = toString(*parsed);
+        return true;
+    }
     if (key == QLatin1String("placement")) {
         const auto p = captionPlacementFromString(value.toString().toStdString());
         if (p)
@@ -240,6 +299,44 @@ bool setCaptionStyleField(CaptionStyle& s, const QString& key, const QVariant& v
         if (a)
             s.animation = *a;
         return a.has_value();
+    }
+    if (key == QLatin1String("animationSpeed"))
+        return set(s.animationSpeed, 0.05, 1.0);
+    if (key == QLatin1String("animationEase")) {
+        const auto e = captionEaseFromString(value.toString().toStdString());
+        if (e)
+            s.animationEase = *e;
+        return e.has_value();
+    }
+    if (key == QLatin1String("emphasis")) {
+        const auto e = captionEmphasisFromString(value.toString().toStdString());
+        if (e)
+            s.emphasis = *e;
+        return e.has_value();
+    }
+    if (key == QLatin1String("emphasisWords")) {
+        const auto words = emphasisWordsOf(value.toString());
+        if (words)
+            s.emphasisWords = *words;
+        return words.has_value();
+    }
+    if (key == QLatin1String("emphasisColor"))
+        return color(s.emphasisColor);
+    if (key == QLatin1String("emphasisScale"))
+        return set(s.emphasisScale, 1.0, 1.5);
+    if (key == QLatin1String("textCase")) {
+        const auto c = captionTextCaseFromString(value.toString().toStdString());
+        if (c)
+            s.textCase = *c;
+        return c.has_value();
+    }
+    if (key == QLatin1String("stripPunctuation")) {
+        s.stripPunctuation = value.toBool();
+        return true;
+    }
+    if (key == QLatin1String("stripAccents")) {
+        s.stripAccents = value.toBool();
+        return true;
     }
     if (key == QLatin1String("showSpeakers")) {
         s.showSpeakers = value.toBool();
@@ -326,6 +423,24 @@ QString CaptionsBridge::bleepProfanity(const QString& mode) {
     const auto words = static_cast<int>(result.data.contains("words") ? result.data["words"].size() : 0);
     setMessage(words == 0 ? tr("No profanity found in the transcript")
                           : mode == QLatin1String("mute") ? tr("%n word(s) muted", nullptr, words) : tr("%n word(s) bleeped", nullptr, words));
+    return {};
+}
+
+QString CaptionsBridge::replaceProfanity(const QUrl& file) {
+    if (!m_transcript || !m_controller)
+        return tr("No transcript");
+    if (!file.isLocalFile())
+        return tr("Choose a sound file on this computer");
+    Json params{{"sound", file.toLocalFile().toStdString()},
+                {"profanityWords", wordList(m_profanityWords)},
+                {"allowedWords", wordList(m_allowedWords)}};
+    const command::CommandResult result = m_transcript->run("audio.replaceProfanity", std::move(params));
+    if (!result.ok()) {
+        setMessage(fromStd(result.error->message));
+        return m_message;
+    }
+    const auto words = static_cast<int>(result.data.contains("words") ? result.data["words"].size() : 0);
+    setMessage(words == 0 ? tr("No profanity found in the transcript") : tr("%n word(s) replaced with your sound", nullptr, words));
     return {};
 }
 
@@ -502,6 +617,7 @@ QVariantMap CaptionsBridge::trackInfo() const {
     return {{QStringLiteral("name"), fromStd(t->name)},
             {QStringLiteral("language"), fromStd(t->language)},
             {QStringLiteral("enabled"), t->enabled},
+            {QStringLiteral("showTogether"), t->showTogether},
             {QStringLiteral("trackStyle"), fromStd(t->trackStyle)}};
 }
 
@@ -561,21 +677,48 @@ QVariantMap CaptionsBridge::style() const {
 QVariantList CaptionsBridge::presets() const {
     QVariantList out;
     const CaptionTrack* t = shownTrack();
-    const auto row = [&](const CaptionPreset& p, bool builtin) {
+    const std::vector<CaptionPreset>& mine = library(); // 0.7 (card 115): My looks
+    const auto row = [&](const CaptionPreset& p, bool builtin, bool libraryOnly = false) {
+        const bool inLibrary = !builtin && std::any_of(mine.begin(), mine.end(), [&](const CaptionPreset& q) { return sameLookName(q.name, p.name); });
         out.append(QVariantMap{{QStringLiteral("name"), fromStd(p.name)},
                                {QStringLiteral("builtin"), builtin},
+                               {QStringLiteral("inLibrary"), inLibrary},
+                               {QStringLiteral("libraryOnly"), libraryOnly},
                                {QStringLiteral("current"), t && t->style == p.style},
                                {QStringLiteral("fill"), hexOf(p.style.fill)},
                                {QStringLiteral("box"), p.style.box},
                                {QStringLiteral("boxColor"), hexOf(p.style.boxColor)},
                                {QStringLiteral("outlineWidth"), p.style.outlineWidth},
-                               {QStringLiteral("fontWeight"), p.style.fontWeight}});
+                               {QStringLiteral("fontWeight"), p.style.fontWeight},
+                               // card 074: what the gallery tile needs to show the look moving.
+                               {QStringLiteral("highlight"), hexOf(p.style.highlight)},
+                               {QStringLiteral("animation"), fromStd(std::string(toString(p.style.animation)))},
+                               {QStringLiteral("animationSpeed"), p.style.animationSpeed},
+                               {QStringLiteral("animationEase"), fromStd(std::string(toString(p.style.animationEase)))},
+                               {QStringLiteral("emphasis"), fromStd(std::string(toString(p.style.emphasis)))},
+                               {QStringLiteral("emphasisColor"), hexOf(p.style.emphasisColor)},
+                               {QStringLiteral("emphasisScale"), p.style.emphasisScale},
+                               {QStringLiteral("textCase"), fromStd(std::string(toString(p.style.textCase)))},
+                               {QStringLiteral("stripPunctuation"), p.style.stripPunctuation},
+                               {QStringLiteral("fontFamily"), fromStd(p.style.fontFamily)},
+                               {QStringLiteral("alignment"), fromStd(std::string(toString(p.style.alignment)))}});
     };
-    for (const CaptionPreset& p : builtinCaptionPresets())
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    for (const CaptionPreset& p : builtinCaptionPresets()) {
+        // A project preset of the same name (made before the animated gallery took it) is the one shown.
+        if (snap && snap->findCaptionPreset(p.name))
+            continue;
         row(p, true);
-    if (const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr) {
+    }
+    if (snap) {
         for (const CaptionPreset& p : snap->captionPresets)
             row(p, false);
+    }
+    // 0.7 (card 115): looks of My looks this project does not have yet: applying one copies it in.
+    for (const CaptionPreset& p : mine) {
+        if (isOriginalBuiltinCaptionPreset(p.name) || (snap && snap->findCaptionPreset(p.name)))
+            continue;
+        row(p, false, true);
     }
     return out;
 }
@@ -749,6 +892,15 @@ QString CaptionsBridge::setTrackEnabled(bool enabled) {
                      });
 }
 
+QString CaptionsBridge::setTrackShowTogether(bool together) {
+    return editTrack(together ? LABEL("Show Captions Together") : LABEL("Show Captions Alone"),
+                     [&](const ProjectState& s, SequenceId seq, CaptionTrackId track) {
+                         edit::CaptionTrackChange change;
+                         change.showTogether = together;
+                         return edit::setCaptionTrackInfo(s, seq, track, change);
+                     });
+}
+
 QString CaptionsBridge::removeTrack() {
     if (!m_controller || !shownTrack())
         return {};
@@ -787,7 +939,27 @@ QString CaptionsBridge::applyPreset(const QString& name) {
     if (!shownTrack())
         return tr("Make a caption track first");
     endEdit();
-    return runCommand("captions.applyPreset", {{QStringLiteral("preset"), name}});
+    // 0.7 (card 115): a look of My looks that this project does not have yet is copied into it first (captions.importPresets
+    // from the library file), in the same undo step as the apply.
+    const std::string wanted = name.toStdString();
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    const std::vector<CaptionPreset>& mine = library();
+    const bool fromLibrary = snap && !snap->findCaptionPreset(wanted) && !findBuiltinCaptionPreset(wanted) &&
+                             std::any_of(mine.begin(), mine.end(), [&](const CaptionPreset& p) { return sameLookName(p.name, wanted); });
+    if (!fromLibrary)
+        return runCommand("captions.applyPreset", {{QStringLiteral("preset"), name}});
+    m_controller->beginGesture(tr("Apply Caption Preset"));
+    const command::CommandResult copied = CommandJob::runNow(
+        m_controller, nullptr, "captions.importPresets",
+        Json{{"path", pathToUtf8(captionLibraryFile())}, {"names", Json::array({wanted})}});
+    QString error = commandErrorText(copied);
+    if (error.isEmpty())
+        error = runCommand("captions.applyPreset", {{QStringLiteral("preset"), name}});
+    else
+        setMessage(error);
+    m_controller->endGesture();
+    emit styleChanged();
+    return error;
 }
 
 QString CaptionsBridge::savePreset(const QString& name) {
@@ -811,6 +983,172 @@ QString CaptionsBridge::removePreset(const QString& name) {
     setMessage(commandErrorText(result));
     emit styleChanged();
     return commandErrorText(result);
+}
+
+// ---- 0.7 (card 115): My looks - caption presets for every project -----------------------------------------------------
+
+namespace {
+
+/// The file My looks lives in: $WABCUT_CAPTION_PRESETS (tests, packagers), else "caption-presets.json" in the app's data
+/// folder.
+std::filesystem::path captionLibraryFile() {
+    const QString env = qEnvironmentVariable("WABCUT_CAPTION_PRESETS");
+    const QString file = !env.isEmpty() ? env
+                                        : QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+                                              .filePath(QStringLiteral("caption-presets.json"));
+    return std::filesystem::path(file.toStdU16String());
+}
+
+/// A file's caption presets, or why not.
+std::expected<std::vector<CaptionPreset>, QString> readLooks(const std::filesystem::path& file) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(file, ec)) {
+        return std::unexpected(CaptionsBridge::tr("The file does not exist"));
+    }
+    if (std::filesystem::file_size(file, ec) > io::kMaxCaptionPresetsFileBytes) {
+        return std::unexpected(CaptionsBridge::tr("The file is too large to be caption presets"));
+    }
+    std::ifstream in(file, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    auto looks = io::captionPresetsFromJson(text);
+    if (!looks) {
+        return std::unexpected(fromStd(looks.error().message));
+    }
+    return std::move(*looks);
+}
+
+/// Writes looks to a file (the folder is made), atomically; "" or why not.
+QString writeLooks(const std::filesystem::path& file, const std::vector<CaptionPreset>& looks) {
+    const auto text = io::captionPresetsToJson(looks);
+    if (!text) {
+        return fromStd(text.error().message);
+    }
+    std::error_code ec;
+    if (file.has_parent_path()) {
+        std::filesystem::create_directories(file.parent_path(), ec);
+    }
+    if (const auto written = io::writeFileAtomically(file, *text); !written) {
+        return CaptionsBridge::tr("The presets could not be saved: %1").arg(fromStd(written.error().message));
+    }
+    return {};
+}
+
+} // namespace
+
+const std::vector<CaptionPreset>& CaptionsBridge::library() const {
+    const std::filesystem::path file = captionLibraryFile();
+    std::error_code ec;
+    long long stamp = -1;
+    if (const auto size = std::filesystem::file_size(file, ec); !ec) {
+        const auto time = std::filesystem::last_write_time(file, ec);
+        stamp = static_cast<long long>(size) * 1000003LL + (ec ? 0 : static_cast<long long>(time.time_since_epoch().count() % 1000003));
+    }
+    if (stamp != m_libraryStamp) {
+        m_libraryStamp = stamp;
+        m_library.clear();
+        if (stamp >= 0) {
+            if (auto looks = readLooks(file)) {
+                m_library = std::move(*looks);
+            }
+        }
+    }
+    return m_library;
+}
+
+int CaptionsBridge::libraryCount() const { return static_cast<int>(library().size()); }
+
+QString CaptionsBridge::setInLibrary(const QString& name, bool inLibrary) {
+    const std::string wanted = name.trimmed().toStdString();
+    std::vector<CaptionPreset> looks = library();
+    std::erase_if(looks, [&](const CaptionPreset& p) { return sameLookName(p.name, wanted); });
+    if (inLibrary) {
+        const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+        const CaptionPreset* preset = snap ? snap->findCaptionPreset(wanted) : nullptr;
+        if (!preset) {
+            return tr("Only the project's own looks can be added to My looks");
+        }
+        if (looks.size() >= kMaxCaptionPresets) {
+            return tr("My looks holds the most it can (%1)").arg(kMaxCaptionPresets);
+        }
+        looks.push_back(*preset);
+    }
+    const QString error = writeLooks(captionLibraryFile(), looks);
+    if (!error.isEmpty()) {
+        setMessage(error);
+        return error;
+    }
+    m_libraryStamp = -2; // read it again
+    setMessage(inLibrary ? tr("“%1” is in My looks: every project can use it").arg(name.trimmed())
+                         : tr("“%1” is no longer in My looks").arg(name.trimmed()));
+    emit styleChanged();
+    return {};
+}
+
+QString CaptionsBridge::importPresets(const QUrl& file) {
+    if (!file.isLocalFile()) {
+        return tr("Choose a file on this computer");
+    }
+    auto read = readLooks(std::filesystem::path(file.toLocalFile().toStdU16String()));
+    if (!read) {
+        setMessage(read.error());
+        return read.error();
+    }
+    std::vector<CaptionPreset> looks = library();
+    int added = 0;
+    for (CaptionPreset& p : *read) {
+        if (isOriginalBuiltinCaptionPreset(p.name)) {
+            continue; // every project has those
+        }
+        std::erase_if(looks, [&](const CaptionPreset& q) { return sameLookName(q.name, p.name); });
+        if (looks.size() >= kMaxCaptionPresets) {
+            break;
+        }
+        looks.push_back(std::move(p));
+        ++added;
+    }
+    if (added == 0) {
+        const QString none = tr("The file holds no caption presets to add");
+        setMessage(none);
+        return none;
+    }
+    const QString error = writeLooks(captionLibraryFile(), looks);
+    if (!error.isEmpty()) {
+        setMessage(error);
+        return error;
+    }
+    m_libraryStamp = -2;
+    setMessage(tr("%n look(s) added to My looks", nullptr, added));
+    emit styleChanged();
+    return {};
+}
+
+QString CaptionsBridge::exportPresets(const QUrl& file) {
+    if (!file.isLocalFile()) {
+        return tr("Choose a file on this computer");
+    }
+    std::vector<CaptionPreset> looks = library();
+    if (const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr) {
+        for (const CaptionPreset& p : snap->captionPresets) {
+            std::erase_if(looks, [&](const CaptionPreset& q) { return sameLookName(q.name, p.name); });
+            looks.push_back(p);
+        }
+    }
+    if (looks.empty()) {
+        const QString none = tr("There are no looks of your own to export: save one first");
+        setMessage(none);
+        return none;
+    }
+    QString path = file.toLocalFile();
+    if (!path.endsWith(QLatin1String(".json"), Qt::CaseInsensitive)) {
+        path += QString::fromUtf8(io::kCaptionPresetsFileSuffix.data(), static_cast<qsizetype>(io::kCaptionPresetsFileSuffix.size()));
+    }
+    const QString error = writeLooks(std::filesystem::path(path.toStdU16String()), looks);
+    if (!error.isEmpty()) {
+        setMessage(error);
+        return error;
+    }
+    setMessage(tr("%n look(s) exported", nullptr, static_cast<int>(looks.size())));
+    return {};
 }
 
 QString CaptionsBridge::setCueText(int index, const QString& text) {
@@ -1188,6 +1526,19 @@ QString CaptionsBridge::shiftCues(const QString& delta, const QString& scope) {
     // captions.shiftCues on the shown track (runCommand adds it): one undo step "Shift Captions"; a refusal (a cue
     // before 0, an overlap) changes nothing and its reason is the message.
     return runCommand("captions.shiftCues", params);
+}
+
+QString CaptionsBridge::convertToGraphics(const QString& captions) {
+    const CaptionTrack* t = shownTrack();
+    if (!m_controller || !t || t->cues.empty()) {
+        setMessage(tr("Generate captions first"));
+        return m_message;
+    }
+    const QString mode = captions == QLatin1String("keep") || captions == QLatin1String("remove") ? captions : QStringLiteral("hide");
+    const QString error = runCommand("captions.toGraphics", QVariantMap{{QStringLiteral("captions"), mode}});
+    if (error.isEmpty())
+        setMessage(tr("Captions are graphics now: style and animate them in Essential Graphics"));
+    return error;
 }
 
 QString CaptionsBridge::exportText(const QString& format) const {

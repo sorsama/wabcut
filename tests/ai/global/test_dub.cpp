@@ -12,6 +12,7 @@
 #include <wabcut/ai/dub/DubCommands.h>
 #include <wabcut/ai/dub/Pipeline.h>
 #include <wabcut/ai/dub/TimeFit.h>
+#include <wabcut/ai/ConsentLedger.h>
 #include <wabcut/ai/dub/Voices.h>
 #include <wabcut/ai/edit/TranscriptCommands.h>
 #include <wabcut/model/ProjectOps.h>
@@ -268,7 +269,8 @@ std::shared_ptr<const Transcript> conversation() {
 }
 
 struct DubStudio {
-    explicit DubStudio(bool noCloud = false, bool redactSpeakerOne = false, std::shared_ptr<const Transcript> words = conversation()) {
+    explicit DubStudio(bool noCloud = false, bool redactSpeakerOne = false, std::shared_ptr<const Transcript> words = conversation(),
+                       std::shared_ptr<const ModelRegistry> registry = nullptr, std::vector<std::string> localModels = {}) {
         Timeline tl(kPicture);
         tl.linkMatching();
         if (redactSpeakerOne) {
@@ -287,11 +289,12 @@ struct DubStudio {
         auto opener = [this](const ModelSpec& model, std::optional<MicroUsd> cap) -> std::expected<std::unique_ptr<ISpeechSynth>, AiError> {
             openedModel = model.id;
             openedCap = cap;
-            shared = std::make_shared<ScriptedSpeech>(model.id, 12.0);
+            // A model of the host's own registry (a custom provider) speaks like a shipped one.
+            shared = std::make_shared<ScriptedSpeech>(ModelRegistry::builtin().model(model.id) ? model.id : std::string("gpt-4o-mini-tts"), 12.0);
             speech = shared.get();
             return std::make_unique<SharedSpeech>(shared);
         };
-        dubs = std::make_shared<DirectDubServices>(opener, audio, scratch("studio"));
+        dubs = std::make_shared<DirectDubServices>(opener, audio, scratch("studio"), std::string(), std::move(registry), std::move(localModels));
         auto services = std::make_shared<command::ServiceBundle>(std::vector<std::shared_ptr<command::CommandServices>>{
             std::make_shared<ai::edit::TranscriptServices>(transcripts), dubs});
         h = std::make_unique<CommandHarness>(std::move(tl), command::EnginePolicy{command::CapabilitySet::all(), 1024, services},
@@ -504,6 +507,80 @@ TEST_CASE("Every voice list names its model's default", "[ai][global][dub][voice
     CHECK(isValidVoice("elevenlabs-tts", "AnyLibraryVoice123"));
     CHECK_FALSE(isValidVoice("elevenlabs-tts", "../etc"));
     CHECK_FALSE(isValidVoice("openai-speech", "Kore"));
+    // QA-02: OpenAI keeps its 13 voices; another server that speaks OpenAI's speech API names its own (any id).
+    CHECK_FALSE(isValidVoice("openai-speech", "af_heart", "openai"));
+    CHECK(isValidVoice("openai-speech", "af_heart", "custom-kokoro"));
+    CHECK(isValidVoice("openai-speech", "af_bella+af_sky", "custom-kokoro"));
+    CHECK_FALSE(isValidVoice("openai-speech", "two\nlines", "custom-kokoro"));
+    CHECK(defaultVoice("openai-speech", "openai") == defaultVoice("openai-speech"));
+    CHECK(defaultVoice("openai-speech", "custom-kokoro") == "alloy");
+    CHECK(acceptsAnyVoice("openai-speech", "custom-kokoro"));
+    CHECK_FALSE(acceptsAnyVoice("openai-speech", "openai"));
+    CHECK_FALSE(acceptsAnyVoice("gemini-tts", "gemini"));
+    CHECK(acceptsAnyVoice("elevenlabs-tts", "elevenlabs"));
+}
+
+namespace {
+
+/// The shipped registry plus a custom OpenAI-compatible voice server (Kokoro) at `baseUrl`, as AiController builds it.
+std::shared_ptr<const ModelRegistry> withCustomVoice(const std::string& baseUrl) {
+    ModelRegistry registry = ModelRegistry::builtin();
+    ProviderSpec server;
+    server.id = "custom-kokoro";
+    server.name = "Kokoro server";
+    server.api = "chat-completions";
+    server.protocol = "openai";
+    server.baseUrl = baseUrl;
+    server.local = isLoopbackUrl(baseUrl);
+    server.custom = true;
+    server.auth = AuthScheme::None;
+    server.keyRequired = false;
+    ModelSpec kokoro;
+    kokoro.id = "kokoro";
+    kokoro.provider = server.id;
+    kokoro.name = "kokoro";
+    kokoro.api = "openai-speech";
+    kokoro.endpoint = "/audio/speech";
+    kokoro.caps.capabilities = {Capability::Speak};
+    kokoro.caps.streaming = false;
+    kokoro.prices = {PriceRule{}};
+    REQUIRE(registry.addCustomProvider(server, {kokoro}));
+    return std::make_shared<const ModelRegistry>(std::move(registry));
+}
+
+} // namespace
+
+TEST_CASE("dub.create speaks with a voice model of the host's registry and its own voice names", "[ai][global][dub][voices][r07]") {
+    // QA-02: a custom provider's voice model lives in the app's registry, not the shipped file; it takes any voice id.
+    DubStudio shipped;
+    const auto shippedTrack = shipped.thaiCaptions(*shipped.h);
+    CHECK(shipped.h->errorOf("dub.create", Json{{"captionTrack", shippedTrack}, {"estimate", true}, {"model", "kokoro"}}) == "InvalidParams");
+
+    DubStudio s(false, false, conversation(), withCustomVoice("https://voice.example.test/v1"));
+    const auto track = s.thaiCaptions(*s.h);
+    const auto estimate = s.h->ok("dub.create", Json{{"captionTrack", track}, {"estimate", true}, {"model", "kokoro"}});
+    CHECK(estimate.data["model"] == "kokoro");
+    CHECK(estimate.data["provider"] == "custom-kokoro");
+    CHECK(estimate.data["voice"] == "alloy"); // a name such servers commonly map
+    s.h->ok("dub.create", Json{{"captionTrack", track}, {"maxCost", 1.0}, {"model", "kokoro"}, {"voice", "af_heart"}});
+    CHECK(s.openedModel == "kokoro");
+    REQUIRE(s.speech != nullptr);
+    REQUIRE_FALSE(s.speech->requests.empty());
+    CHECK(s.speech->requests.front().voiceId == "af_heart");
+}
+
+TEST_CASE("A no-cloud project dubs with a voice model on this computer only", "[ai][global][dub][privacy][r07]") {
+    // QA-07: the project's no-cloud lock stops cloud voices; a voice server on this computer is not the cloud.
+    DubStudio local(true, false, conversation(), withCustomVoice("http://127.0.0.1:8880/v1"), {"kokoro"});
+    const auto track = local.thaiCaptions(*local.h);
+    local.h->ok("dub.create", Json{{"captionTrack", track}, {"maxCost", 1.0}, {"model", "kokoro"}, {"voice", "af_heart"}});
+    CHECK(local.openedModel == "kokoro");
+    CHECK(local.h->errorOf("dub.create", Json{{"captionTrack", track}, {"maxCost", 1.0}, {"model", "eleven_v3"}}) == "PermissionDenied");
+
+    DubStudio cloud(true, false, conversation(), withCustomVoice("https://voice.example.test/v1"));
+    const auto cloudTrack = cloud.thaiCaptions(*cloud.h);
+    CHECK(cloud.h->errorOf("dub.create", Json{{"captionTrack", cloudTrack}, {"maxCost", 1.0}, {"model", "kokoro"}}) == "PermissionDenied");
+    CHECK(cloud.openedModel.empty());
 }
 
 // Review wave 5, A5-P1-4: captions typed by hand or imported from an SRT keep the words as typed; the model masks them

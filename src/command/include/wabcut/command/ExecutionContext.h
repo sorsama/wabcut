@@ -250,6 +250,9 @@ public:
         : m_cache(std::move(cache)), m_renderer(std::move(renderer)) {}
     PreviewCache* cache() const { return m_cache.get(); }
     PreviewRenderer* renderer() const { return m_renderer.get(); }
+    /// 0.7: what the app's background rendering (render previews while idle) is doing, as render.status shows it under
+    /// "background": { enabled, state, text, remaining, rendered }. Thread-safe; empty in hosts without it.
+    std::function<Json()> backgroundStatus;
 
 private:
     std::shared_ptr<PreviewCache> m_cache;

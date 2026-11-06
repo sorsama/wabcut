@@ -11,7 +11,10 @@ add_library(wabcut_media STATIC
     src/CameraLog.cpp
     src/Chapters.cpp # P0 round: OBS chapter markers on import
     src/ContainerTags.cpp
+    src/DataStreams.cpp # 0.7: data tracks (the gyro of GoPro / Sony files)
     src/DecoderPool.cpp
+    src/DynamicHdr.cpp # 0.7: Dolby Vision configuration and HDR10+ dynamic metadata (card "Dolby Vision 8.4 and HDR10+")
+    src/CodecSupport.cpp
     src/FfmpegInfo.cpp
     src/FfmpegUtil.cpp
     src/Fingerprint.cpp
@@ -38,3 +41,9 @@ if(WIN32)
     target_link_libraries(wabcut_media PRIVATE dxgi) # GPU vendor detection (GpuInfo.cpp)
 endif()
 wabcut_target_defaults(wabcut_media)
+
+# 0.7 (card 062): the channel names of a polyphonic WAV (iXML track list, Broadcast Wave description). pugixml reads the
+# iXML document (no entity expansion, no external references).
+find_package(pugixml CONFIG REQUIRED)
+target_sources(wabcut_media PRIVATE src/WavMetadata.cpp)
+target_link_libraries(wabcut_media PRIVATE pugixml::pugixml)

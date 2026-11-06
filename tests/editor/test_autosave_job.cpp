@@ -116,3 +116,41 @@ TEST_CASE("A failed autosave job leaves every copy as it was and the revision st
     doc.finishAutosave(*again);
     CHECK(sequenceNameIn(io::autosavePath(file)) == "B");
 }
+
+// Card 043: the io layer's "cannot create: <path>.autosave.tmp" named a file the user never made. A failed autosave names
+// the project (or "the untitled project") and keeps the system's reason after it.
+TEST_CASE("A failed autosave names the project, not the temporary file the atomic write used", "[editor][document][autosave]") {
+    const fs::path dir = workDir("named");
+    EditSession session(oneSequence());
+    ProjectDocument doc(session, {.autosaveCopies = 3});
+    const fs::path file = dir / "Film.wabcut";
+    REQUIRE(doc.saveAs(file));
+    rename(session, "A");
+    std::optional<ProjectDocument::AutosaveJob> job = doc.prepareAutosave();
+    REQUIRE(job);
+    fs::path blocked = io::autosavePath(file);
+    blocked += ".tmp";
+    fs::create_directories(blocked); // the temporary file cannot be created
+    const std::expected<void, Error> failed = job->write();
+    REQUIRE_FALSE(failed);
+    CHECK(failed.error().code == ErrorCode::IoError);
+    CHECK(failed.error().message == "cannot create the autosave of Film.wabcut");
+    CHECK(failed.error().message.find(".tmp") == std::string::npos);
+    CHECK(failed.error().message.find(dir.string()) == std::string::npos);
+    fs::remove_all(blocked);
+
+    // An untitled project has no file name to give: it says so, and the path is not shown either.
+    const fs::path folder = workDir("named-untitled") / "Autosave";
+    EditSession untitledSession(oneSequence());
+    ProjectDocument untitled(untitledSession, {.untitledAutosaveDir = folder});
+    rename(untitledSession, "A");
+    std::optional<ProjectDocument::AutosaveJob> untitledJob = untitled.prepareAutosave();
+    REQUIRE(untitledJob);
+    fs::path target = untitledJob->target;
+    target += ".tmp";
+    fs::create_directories(target);
+    const std::expected<void, Error> untitledFailed = untitledJob->write();
+    REQUIRE_FALSE(untitledFailed);
+    CHECK(untitledFailed.error().message == "cannot create the autosave of the untitled project");
+    CHECK(untitledFailed.error().message.find("Untitled-") == std::string::npos);
+}

@@ -226,6 +226,59 @@ TEST_CASE("Captions: Timed Text regions offsets ticks frames and spans (P.2)", "
     CHECK_FALSE(readCaptionData("<tt><body><p begin=\"x\"", CaptionFileFormat::Ttml).has_value());
 }
 
+// Card 163: for timeBase "media" (the default) hh:mm:ss:ff is real seconds plus ff frames at the effective frame rate
+// (frameRate x frameRateMultiplier, TTML1 Appendix N.2.2). It was counted as timecode (labelled seconds x nominal frames),
+// so every cue at 29.97 / 23.976 landed 0.1 % late: 3.6 s after an hour. Only timeBase "smpte" counts that way.
+TEST_CASE("Captions: Timed Text clock times with frames are real seconds on the media time base, timecode on smpte", "[interchange][captions]") {
+    const auto ttml = [](const std::string& attributes, const std::string& begin, const std::string& end) {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<tt xmlns=\"http://www.w3.org/ns/ttml\" "
+               "xmlns:ttp=\"http://www.w3.org/ns/ttml#parameter\" xml:lang=\"en\" " +
+               attributes + "><body><div><p begin=\"" + begin + "\" end=\"" + end + "\">Line</p></div></body></tt>";
+    };
+    // 29.97 fps, no timeBase (media): one hour is an hour.
+    const std::string ntsc = "ttp:frameRate=\"30\" ttp:frameRateMultiplier=\"1000 1001\"";
+    const auto media = readCaptionData(ttml(ntsc, "01:00:00:00", "01:00:01:00"), CaptionFileFormat::Ttml, {}, "in.ttml");
+    REQUIRE(media.has_value());
+    REQUIRE(media->cues.size() == 1);
+    CHECK(media->cues[0].start == Ticks::fromSeconds(3600));
+    CHECK(media->cues[0].end() == Ticks::fromSeconds(3601)); // 0 frames after the second: a second later, not 1.001 s
+    const auto tenMinutes = readCaptionData(ttml(ntsc, "00:10:00:15", "00:10:02:00"), CaptionFileFormat::Ttml, {}, "in.ttml");
+    REQUIRE(tenMinutes.has_value());
+    REQUIRE(tenMinutes->cues.size() == 1);
+    CHECK(tenMinutes->cues[0].start == Ticks::fromSeconds(600) + framesToTicks(15, kRate29_97));
+    CHECK(tenMinutes->cues[0].end() == Ticks::fromSeconds(602) + framesToTicks(0, kRate29_97));
+    // The same at 23.976 fps (24 x 1000/1001) and an explicit timeBase="media".
+    const auto film = readCaptionData(ttml("ttp:timeBase=\"media\" ttp:frameRate=\"24\" ttp:frameRateMultiplier=\"1000 1001\"",
+                                           "00:30:00:12", "00:30:05:00"),
+                                      CaptionFileFormat::Ttml, {}, "in.ttml");
+    REQUIRE(film.has_value());
+    REQUIRE(film->cues.size() == 1);
+    CHECK(film->cues[0].start == Ticks::fromSeconds(1800) + framesToTicks(12, kRate23_976));
+    // A whole-number rate was never wrong: 25 fps reads as before.
+    const auto pal = readCaptionData(ttml("ttp:frameRate=\"25\"", "01:00:00:10", "01:00:02:00"), CaptionFileFormat::Ttml, {}, "in.ttml");
+    REQUIRE(pal.has_value());
+    CHECK(pal->cues[0].start == Ticks::fromSeconds(3600) + framesToTicks(10, kRate25));
+
+    // timeBase="smpte" is timecode: the labelled seconds are counted in frames of the nominal rate (an hour is 108000
+    // frames, which at 29.97 fps last 3603.6 s - the labels are of the programme's timecode, not real time).
+    const auto smpte = readCaptionData(
+        ttml("ttp:timeBase=\"smpte\" ttp:frameRate=\"30\" ttp:frameRateMultiplier=\"1000 1001\" ttp:dropMode=\"nonDrop\"", "01:00:00:00",
+             "01:00:01:00"),
+        CaptionFileFormat::Ttml, {}, "in.ttml");
+    REQUIRE(smpte.has_value());
+    REQUIRE(smpte->cues.size() == 1);
+    CHECK(smpte->cues[0].start == framesToTicks(108000, kRate29_97));
+    CHECK(smpte->cues[0].end() - smpte->cues[0].start == framesToTicks(30, kRate29_97));
+    // ... and drop-frame timecode is read as drop-frame timecode.
+    const auto drop = readCaptionData(
+        ttml("ttp:timeBase=\"smpte\" ttp:frameRate=\"30\" ttp:frameRateMultiplier=\"1000 1001\" ttp:dropMode=\"dropNTSC\"", "01:00:00:00",
+             "01:00:01:00"),
+        CaptionFileFormat::Ttml, {}, "in.ttml");
+    REQUIRE(drop.has_value());
+    REQUIRE(drop->cues.size() == 1);
+    CHECK(ticksToTimecode(drop->cues[0].start, kRate29_97, true) == "01:00:00;00");
+}
+
 TEST_CASE("Captions: SCC pop-on roll-up and paint-on captions decode as other tools write them (P.2)", "[interchange][captions]") {
     // Pop-on: ENM, RCL, PAC row 15 indent 4 with a tab offset, "HELLO", a special character, EOC; erased two seconds on.
     const std::string popOn = "Scenarist_SCC V1.0\n\n"

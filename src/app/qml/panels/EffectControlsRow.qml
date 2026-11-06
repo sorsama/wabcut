@@ -9,7 +9,7 @@ import QtQuick.Shapes
 // the lane on the right), a switch, a timecode field or a choice (transition rows). Values are UI units; every
 // change goes back through EffectControls (one undo step per drag, merged until endEdit()).
 // An animated parameter's lane can open into its value graph (the graph button): the curve, the keys at their values
-// and, on Bezier keys, in/out handles (InspectorPanel's lane area drags them: Alt breaks the pair).
+// and, on Bezier keys, in/out handles (InspectorPanel's lane area drags them: Alt breaks the pair, Shift keeps one level).
 // 0.4: a click on a section header selects it (Ctrl toggles, Shift extends; Premiere's Effect Controls) for Backspace,
 // Cut / Copy / Paste and the header's right-click menu (EffectSectionMenu); a selected header has the accent outline.
 // 0.6, a graphic's or title's Text section: a group caption ("group", with an add button for strokes), the Source
@@ -78,11 +78,18 @@ Item {
     readonly property bool header: kind === "header"
     readonly property bool group: kind === "group"
     readonly property bool textArea: kind === "textarea"
+    /// 0.7 (card 044): the Dynamics Processing graph row (a whole-width picture under the effect's header).
+    readonly property bool dynamics: kind === "dynamics"
+    /// 0.7 (card #130): a line of explanation under a header (a Warp Stabilizer's gyro data and how it was synced).
+    readonly property bool note: kind === "note"
     /// A row with a stopwatch and keyframe navigation (a number, or 0.6's Source Text).
     readonly property bool keyed: kind === "param" || kind === "textarea"
     /// 0.6: sections that are not effects of the clip (a text layer's, multi mode's) are not selected.
     readonly property bool selectableSection: header && sectionKind !== "transition" && sectionKind !== "text"
-                                              && sectionKind !== "multi"
+                                              && sectionKind !== "multi" && sectionKind !== "pinned"
+    /// 0.7 (card #57): a favourite effect the clip does not have yet: a header with Add (EffectControls.addPinned).
+    readonly property bool pinned: header && sectionKind === "pinned"
+    readonly property string pinnedEffectId: pinned ? section.substring(4) : ""
     /// Choices with at most this many options are pills, more a menu (0.6: a Text section's are long words: three).
     readonly property int pillLimit: sectionKind === "text" ? 3 : 4
     /// 0.6 (2B): pills only when they fit on one line of the row; otherwise (a narrow panel, long names such as Glow's
@@ -176,6 +183,8 @@ Item {
 
     width: ListView.view ? ListView.view.width : 0
     height: header ? Theme.controlHeight + Theme.space(1)
+          : dynamics ? Math.ceil(dynamicsView.implicitHeight) + Theme.space(2)
+          : note ? Math.ceil(noteLabel.implicitHeight) + Theme.space(2)
           : showGraph ? Theme.controlHeight + Theme.space(24)
           : textArea ? Theme.controlHeight + Theme.space(18)
           : group ? Theme.controlHeight - Theme.space(1)
@@ -193,7 +202,7 @@ Item {
         // ---- Lane (right): the section band or the parameter's keys ----
         Rectangle {
             id: lane
-            visible: row.hasLane
+            visible: row.hasLane && !row.dynamics
             anchors.right: parent.right
             anchors.top: parent.top
             anchors.bottom: parent.bottom
@@ -381,6 +390,7 @@ Item {
 
                 IconButton {
                     objectName: "sectionChevron"
+                    visible: !row.pinned
                     compact: true
                     iconName: "chevron-down"
                     iconSize: Theme.iconSm
@@ -463,7 +473,11 @@ Item {
                 }
 
                 Text {
+                    id: sectionTitle
+                    objectName: "sectionTitle"
                     Layout.fillWidth: true
+                    // 0.7: the name of the effect keeps its room when a status (AI Restore's "Model needed" + Download) is beside it.
+                    Layout.minimumWidth: Math.min(sectionTitle.implicitWidth, Theme.space(28)) // room for "AI Face Retouch" in full
                     text: row.known ? row.title : qsTr("%1 (not available)").arg(row.title)
                     elide: Text.ElideRight
                     color: row.effectEnabled ? Theme.textPrimary : Theme.textTertiary
@@ -471,6 +485,34 @@ Item {
                     font.pixelSize: Theme.textMd
                     font.weight: Font.DemiBold
                     font.strikeout: !row.effectEnabled
+                }
+
+                // 0.7 (card #57): a pinned favourite: Add puts the effect on the clip; the x takes it off the Favorites.
+                Text {
+                    visible: row.pinned
+                    text: qsTr("Favourite")
+                    color: Theme.textTertiary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textSm
+                }
+                PillButton {
+                    objectName: "pinnedAdd"
+                    visible: row.pinned
+                    compact: true
+                    variant: "secondary"
+                    text: qsTr("Add")
+                    tooltip: qsTr("Put %1 on this clip, ready to use").arg(row.title)
+                    Accessible.name: qsTr("Add %1").arg(row.title)
+                    onClicked: row.controls.addPinned(row.section)
+                }
+                IconButton {
+                    objectName: "pinnedUnpin"
+                    visible: row.pinned
+                    compact: true
+                    iconName: "x"
+                    iconSize: Theme.iconSm
+                    tooltip: qsTr("Unpin %1 (remove it from Favorites)").arg(row.title)
+                    onClicked: EffectPresets.setFavorite("effect:" + row.pinnedEffectId, false)
                 }
 
                 // P.2: Warp Stabilizer / Rolling Shutter Repair: analysis state and Analyze.
@@ -482,6 +524,22 @@ Item {
                     sourceComponent: StabilizerStatus { section: row.section }
                 }
 
+                // 0.7: AI Restore / AI Denoise: models, Process and the state of the clip's processed pictures.
+                Loader {
+                    id: aiVideoLoader
+                    active: row.header && row.sectionKind === "effect"
+                    visible: status === Loader.Ready && (aiVideoLoader.item as AiEffectStatus).info.ai === true
+                    sourceComponent: AiEffectStatus { section: row.section }
+                }
+
+                // 0.7: Morph Cut's face detector (Face Aware): ready, or Download.
+                Loader {
+                    id: morphFacesLoader
+                    active: row.header && row.sectionKind === "transition"
+                    visible: status === Loader.Ready && (morphFacesLoader.item as MorphFacesStatus).info.morphCut === true
+                    sourceComponent: MorphFacesStatus {}
+                }
+
                 PluginBadge {
                     kind: row.pluginInfo.kind ?? ""
                     detail: row.pluginInfo.text ?? ""
@@ -490,7 +548,7 @@ Item {
 
                 IconButton {
                     objectName: "editPluginButton"
-                    visible: row.isPlugin && row.pluginInfo.kind !== "missing"
+                    visible: row.isPlugin && row.pluginInfo.kind !== "missing" && row.pluginInfo.openfx !== true // an OpenFX plug-in has no window
                     enabled: row.pluginInfo.hasEditor === true
                     compact: true
                     iconName: "external-link"
@@ -645,10 +703,49 @@ Item {
             }
         }
 
+        // ---- 0.7 (card #130): a note under a header, wrapped to the row ----
+        Text {
+            id: noteLabel
+            objectName: row.note ? "effectNote_" + row.section : "effectNoteIdle"
+            visible: row.note
+            anchors.left: parent.left
+            anchors.leftMargin: Theme.space(3)
+            anchors.right: row.hasLane ? lane.left : parent.right
+            anchors.rightMargin: Theme.space(2)
+            y: Theme.space(1)
+            text: row.text
+            wrapMode: Text.Wrap
+            color: Theme.textSecondary
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.textSm
+            opacity: row.effectEnabled ? 1 : Theme.disabledOpacity
+            Accessible.role: Accessible.StaticText
+            Accessible.name: row.text
+        }
+
         // ---- Parameter / switch / timecode / choice ----
+        // ---- 0.7 (card 044): the Dynamics Processing graph (bands, transfer curve, meters, fields) ----
+        DynamicsGraph {
+            id: dynamicsView
+            objectName: row.dynamics ? "dynamicsGraph_" + row.section : "dynamicsGraphIdle"
+            visible: row.dynamics
+            x: Theme.space(1)
+            y: Theme.space(0.5)
+            width: row.width - Theme.space(2)
+            fx: row.dynamics && row.graph ? row.graph : ({})
+            effectEnabled: row.effectEnabled
+            presets: row.dynamics ? row.controls.dynamicsPresets() : []
+            meterProvider: () => row.controls.dynamicsMeters(row.section)
+            curveProvider: (mode, threshold, ratio, range, knee, makeup, fromDb, toDb, points) =>
+                           row.controls.dynamicsCurve(mode, threshold, ratio, range, knee, makeup, fromDb, toDb, points)
+            onValueEdited: (key, value) => row.controls.setValue(row.section + ":" + key, value)
+            onEditFinished: row.controls.endEdit()
+            onPresetRequested: name => row.controls.applyDynamicsPreset(row.section, name)
+        }
+
         RowLayout {
             id: paramRow
-            visible: !row.header && !row.group
+            visible: !row.header && !row.group && !row.dynamics && !row.note
             anchors.left: parent.left
             anchors.right: row.hasLane ? lane.left : parent.right
             anchors.rightMargin: row.hasLane ? Theme.space(2) : 0
@@ -679,12 +776,19 @@ Item {
             }
 
             Text {
+                id: paramLabel
+                objectName: "paramLabel"
+                // 0.7 (QA): a row without a slider (a switch, a menu) has room to spare: its label takes it, so a long name
+                // such as "Nearest Neighbor Scaling" is shown whole instead of cut to "Nearest N...".
+                readonly property bool growing: row.kind === "toggle" || (row.kind !== "param" && !row.hasLane)
                 Layout.preferredWidth: Theme.propLabelWidth
+                Layout.fillWidth: paramLabel.growing
                 text: row.title
                 elide: Text.ElideRight
                 color: Theme.textSecondary
                 font.family: Theme.fontSans
                 font.pixelSize: Theme.textMd
+                Accessible.name: row.title
             }
 
             ValueSlider {
@@ -704,7 +808,7 @@ Item {
                 Accessible.name: row.title
             }
             Item {
-                visible: row.kind !== "param" || row.hasLane
+                visible: (row.kind !== "param" || row.hasLane) && !paramLabel.growing
                 Layout.fillWidth: true
                 Layout.preferredHeight: 1
             }

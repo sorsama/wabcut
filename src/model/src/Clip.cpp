@@ -9,12 +9,13 @@ namespace wabcut {
 
 bool ClipContent::operator==(const ClipContent& o) const {
     const bool sameGraphic = graphic == o.graphic || (graphic && o.graphic && *graphic == *o.graphic);
-    return name == o.name && properties == o.properties && effects == o.effects && timeRemap == o.timeRemap &&
+    return name == o.name && note == o.note && properties == o.properties && effects == o.effects && timeRemap == o.timeRemap &&
            unknownSource == o.unknownSource && channels == o.channels && sameGraphic && blendMode == o.blendMode &&
-           scaleToFrame == o.scaleToFrame && holdFilters == o.holdFilters &&
+           scaleToFrame == o.scaleToFrame && nearestNeighbor == o.nearestNeighbor && holdFilters == o.holdFilters &&
            timeInterpolation == o.timeInterpolation && inputColorSpace == o.inputColorSpace &&
            fieldOptions == o.fieldOptions && masterEffectsOff == o.masterEffectsOff &&
-           (audition == o.audition || (audition && o.audition && *audition == *o.audition));
+           (audition == o.audition || (audition && o.audition && *audition == *o.audition)) &&
+           renderedNest == o.renderedNest;
 }
 
 // Direction-aware source bookkeeping. A forward clip shows [sourceIn, sourceOut) from its head to its tail;

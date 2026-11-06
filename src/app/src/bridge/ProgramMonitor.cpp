@@ -176,6 +176,12 @@ protected:
                 monitor->m_controller->setRenderBackend(monitor->m_renderBackend.toStdString());
             }
         }
+        m_vr = {};
+        m_vr.enabled = monitor->m_vrView && monitor->m_vrFormat.isVr(); // 0.7: the VR viewer
+        m_vr.format = monitor->m_vrFormat;
+        m_vr.yaw = static_cast<float>(monitor->m_vrYaw);
+        m_vr.pitch = static_cast<float>(monitor->m_vrPitch);
+        m_vr.fov = static_cast<float>(monitor->m_vrFov);
         m_scopesSource = monitor->m_scopes;
         // A renderer made again (another window, a device reset) keeps the item's picture state.
         m_hasFrame = m_hasFrame || monitor->m_hasFrame;
@@ -215,6 +221,7 @@ protected:
         render::CompositeOutput out;
         out.target = renderTarget();
         out.role = render::OutputRole::Display;
+        out.vr = m_vr;
         const std::uint64_t importsBefore = m_compositor->importer().stats().imports;
         if (!m_hasFrame) {
             // Nothing presented yet: stay transparent so the placeholder underneath shows.
@@ -309,6 +316,7 @@ private:
     int m_releaseFrames = 0;
     bool m_shareDevice = true;
     bool m_transparent = false;
+    render::VrView m_vr;
 };
 
 // ---- Item (GUI thread) ----
@@ -362,6 +370,91 @@ void ProgramMonitor::setTransparencyGrid(bool on) {
     m_transparencyGrid = on;
     emit transparencyGridChanged();
     update();
+}
+
+void ProgramMonitor::setVrView(bool on) {
+    if (on == m_vrView)
+        return;
+    m_vrView = on;
+    emit vrViewChanged();
+    update();
+}
+
+QString ProgramMonitor::vrProjection() const {
+    return QString::fromLatin1(toString(m_vrFormat.projection));
+}
+
+void ProgramMonitor::setVrProjection(const QString& projection) {
+    const auto parsed = vrProjectionFromString(projection.toStdString());
+    if (!parsed || *parsed == m_vrFormat.projection)
+        return;
+    m_vrFormat.projection = *parsed;
+    if (!m_vrFormat.isVr())
+        m_vrFormat.stereo = StereoLayout::Mono;
+    emit vrViewChanged();
+    update();
+}
+
+QString ProgramMonitor::vrStereo() const {
+    return QString::fromLatin1(toString(m_vrFormat.stereo));
+}
+
+void ProgramMonitor::setVrStereo(const QString& stereo) {
+    const auto parsed = stereoLayoutFromString(stereo.toStdString());
+    if (!parsed || *parsed == m_vrFormat.stereo)
+        return;
+    m_vrFormat.stereo = *parsed;
+    emit vrViewChanged();
+    update();
+}
+
+void ProgramMonitor::setVrYaw(double degrees) {
+    if (!std::isfinite(degrees))
+        return;
+    degrees = std::remainder(degrees, 360.0); // -180..180
+    if (degrees == m_vrYaw)
+        return;
+    m_vrYaw = degrees;
+    emit vrAngleChanged();
+    update();
+}
+
+void ProgramMonitor::setVrPitch(double degrees) {
+    if (!std::isfinite(degrees))
+        return;
+    degrees = std::clamp(degrees, -vr::kMaxPitch, vr::kMaxPitch);
+    if (degrees == m_vrPitch)
+        return;
+    m_vrPitch = degrees;
+    emit vrAngleChanged();
+    update();
+}
+
+void ProgramMonitor::setVrFov(double degrees) {
+    if (!std::isfinite(degrees))
+        return;
+    degrees = std::clamp(degrees, vr::kMinFov, vr::kMaxFov);
+    if (degrees == m_vrFov)
+        return;
+    m_vrFov = degrees;
+    emit vrAngleChanged();
+    update();
+}
+
+void ProgramMonitor::vrLook(double deltaYaw, double deltaPitch) {
+    setVrYaw(m_vrYaw + deltaYaw);
+    setVrPitch(m_vrPitch + deltaPitch);
+}
+
+void ProgramMonitor::vrZoom(double factor) {
+    if (factor > 0.0 && std::isfinite(factor))
+        setVrFov(m_vrFov / factor);
+}
+
+void ProgramMonitor::vrReset() {
+    setVrYaw(0.0);
+    setVrPitch(0.0);
+    setVrFov(vr::kDefaultFov);
 }
 
 void ProgramMonitor::setPreviewDivisor(int divisor) {

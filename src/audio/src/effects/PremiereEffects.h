@@ -18,6 +18,19 @@ bool isAmplitudeEffect(std::string_view id) noexcept;
 std::unique_ptr<EffectProcessor> createAmplitudeProcessor(const EffectDescriptor& descriptor, int channels, int sampleRate,
                                                           std::span<const double> values);
 
+/// 0.7 (card 044): Dynamics Processing, an Amplitude and Compression effect with a file of its own
+/// (DynamicsProcessingEffect.cpp); createAmplitudeProcessor() hands it its descriptor.
+bool isDynamicsProcessing(std::string_view id) noexcept;
+std::unique_ptr<EffectProcessor> createDynamicsProcessingProcessor(const EffectDescriptor& descriptor, int channels, int sampleRate,
+                                                                   std::span<const double> values);
+
+/// 0.7 (card 047): Spectral Repair, a Noise Reduction/Restoration effect with a file of its own (SpectralRepairEffect.cpp). Its
+/// edits are the instance's data: createEffectProcessor() passes the instance, and the chain rebuilds the processor when the
+/// data changes.
+bool isSpectralRepair(std::string_view id) noexcept;
+std::unique_ptr<EffectProcessor> createSpectralRepairProcessor(const EffectDescriptor& descriptor, int channels, int sampleRate,
+                                                               std::span<const double> values, const EffectInstance* instance);
+
 /// Filter and EQ, Stereo Imagery, the channel effects (FilterEffects.cpp).
 bool isFilterEffect(std::string_view id) noexcept;
 std::unique_ptr<EffectProcessor> createFilterProcessor(const EffectDescriptor& descriptor, int channels, int sampleRate,

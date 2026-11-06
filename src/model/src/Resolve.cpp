@@ -58,16 +58,17 @@ std::vector<Active> activeAt(const Track& track, Ticks t) {
     return out;
 }
 
-/// Whether a track's output is heard / seen (Resolve.h).
+/// Whether a track's output is heard / seen (Resolve.h). 0.7 (card 106): a video track's solo works like an audio
+/// track's: while any track of the kind is soloed, only the soloed ones play.
 bool plays(const Track& track, bool anySolo) {
     if (track.kind == TrackKind::Video) {
-        return track.enabled;
+        return track.enabled && (!anySolo || track.solo);
     }
     return track.enabled && !track.muted && (!anySolo || track.solo);
 }
 
 bool anySoloed(const std::vector<TrackPtr>& tracks) {
-    return std::any_of(tracks.begin(), tracks.end(), [](const TrackPtr& t) { return t->kind == TrackKind::Audio && t->solo; });
+    return std::any_of(tracks.begin(), tracks.end(), [](const TrackPtr& t) { return t && t->solo; });
 }
 
 std::vector<RedactionId> redactionsFor(const ProjectState& state, const ResolvedLeaf& leaf) {
@@ -170,7 +171,7 @@ std::vector<std::size_t> nestedTracksRead(const Sequence& nested, const Clip& cl
         std::sort(read.begin(), read.end());
         read.erase(std::unique(read.begin(), read.end()), read.end());
     } else {
-        const bool solo = kind == TrackKind::Audio && anySoloed(tracks);
+        const bool solo = anySoloed(tracks);
         for (std::size_t i = 0; i < tracks.size(); ++i) {
             if (plays(*tracks[i], solo)) {
                 read.push_back(i);
@@ -201,7 +202,7 @@ std::vector<ResolvedLeaf> resolveSequenceLeaves(const ProjectState& state, Seque
         return out;
     }
     const std::vector<TrackPtr>& tracks = seq->tracks(kind == StreamKind::Video ? TrackKind::Video : TrackKind::Audio);
-    const bool solo = kind == StreamKind::Audio && anySoloed(tracks);
+    const bool solo = anySoloed(tracks);
     std::vector<NestLevel> path;
     std::size_t visits = 0;
     for (std::size_t i = 0; i < tracks.size(); ++i) {
@@ -213,6 +214,14 @@ std::vector<ResolvedLeaf> resolveSequenceLeaves(const ProjectState& state, Seque
         }
     }
     return out;
+}
+
+bool anyVideoSolo(const Sequence& sequence) {
+    return anySoloed(sequence.videoTracks);
+}
+
+bool videoTrackShown(const Sequence& sequence, const Track& track) {
+    return plays(track, anyVideoSolo(sequence));
 }
 
 namespace {
@@ -412,7 +421,7 @@ CompositePlan resolveComposite(const ProjectState& state, SequenceId sequence, T
     }
     std::vector<std::size_t> read;
     for (std::size_t i = 0; i < seq->videoTracks.size(); ++i) {
-        if (seq->videoTracks[i]->enabled) {
+        if (seq->videoTracks[i] && videoTrackShown(*seq, *seq->videoTracks[i])) { // the eye and the solo (card 106)
             read.push_back(i);
         }
     }

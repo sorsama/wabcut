@@ -157,7 +157,7 @@ std::vector<TimelineView*> timelineViews() {
 
 std::shared_ptr<command::CommandServices> creatorServices(QQmlEngine* engine, TranscriptBridge* transcripts,
                                                           const std::filesystem::path& projectFile,
-                                                          std::shared_ptr<ai::IChatModel> chat) {
+                                                          std::shared_ptr<ai::IChatModel> chat, bool chatLocal) {
     std::vector<std::shared_ptr<command::CommandServices>> parts{aiEditingServices(transcripts, projectFile)};
     ai::AudioEnergyServiceConfig energy;
     energy.cacheRoot = ai::AnalysisCache::defaultRoot();
@@ -181,9 +181,11 @@ std::shared_ptr<command::CommandServices> creatorServices(QQmlEngine* engine, Tr
         };
     }
     // The sheet reads script files itself (readScript), so the commands never read files here.
-    parts.push_back(std::make_shared<ai::roughcut::RoughCutServices>(
+    auto roughCut = std::make_shared<ai::roughcut::RoughCutServices>(
         std::move(opener), std::make_shared<ai::roughcut::ServiceTakeProbe>(service, projectFile), ai::roughcut::RoughCutServices::TextEmbedder{},
-        false));
+        false);
+    roughCut->chatLocal = chatLocal; // QA-07
+    parts.push_back(std::move(roughCut));
     parts.push_back(ai::autozoom::mediaAutoZoomServices(projectFile, false));
     if (auto* smart = engine ? engine->singletonInstance<SearchBridge*>("Wabcut", "SmartSearch") : nullptr) {
         parts.push_back(std::make_shared<ai::search::SearchServices>(
@@ -221,12 +223,12 @@ void CreatorBase::setEngine(QQmlEngine* engine) {
     }
 }
 
-std::shared_ptr<command::CommandServices> CreatorBase::services(std::shared_ptr<ai::IChatModel> chat) {
+std::shared_ptr<command::CommandServices> CreatorBase::services(std::shared_ptr<ai::IChatModel> chat, bool chatLocal) {
     if (m_services) {
         return m_services;
     }
     auto* transcripts = m_engine ? m_engine->singletonInstance<TranscriptBridge*>("Wabcut", "Transcript") : nullptr;
-    return creatorServices(m_engine, transcripts, projectPath(m_engine), std::move(chat));
+    return creatorServices(m_engine, transcripts, projectPath(m_engine), std::move(chat), chatLocal);
 }
 
 void CreatorBase::setJob(QString phase, double progress) {
@@ -371,11 +373,17 @@ RoughCutBridge* RoughCutBridge::create(QQmlEngine* qmlEngine, QJSEngine*) {
 RoughCutBridge::RoughCutBridge(QObject* parent) : CreatorBase(parent) {}
 
 bool RoughCutBridge::cloudAvailable() const {
-    if (!m_ai || m_ai->offlineMode() || (m_controller && m_controller->snapshot()->aiNoCloud)) {
+    if (!m_ai) {
         return false;
     }
+    // QA-07: offline mode and the no-cloud lock stop cloud models only (resolve() leaves them out); the local assistant,
+    // Ollama or a custom provider on localhost keeps working.
     auto resolved = m_ai->platform().resolve(ai::Capability::Chat);
-    return resolved && !resolved->empty();
+    if (!resolved || resolved->empty()) {
+        return false;
+    }
+    const bool blocked = m_ai->offlineMode() || m_ai->projectLock() || (m_controller && m_controller->snapshot()->aiNoCloud);
+    return !blocked || m_ai->runsLocally(resolved->front().model->id);
 }
 
 QVariantMap RoughCutBridge::consentPrompt(int characters) const {
@@ -428,6 +436,7 @@ QString RoughCutBridge::preview(const QString& text, const QVariantMap& options)
         params["name"] = name.toStdString();
     }
     std::shared_ptr<ai::IChatModel> chat;
+    bool chatLocal = false;
     const bool interpret = options.value(QStringLiteral("interpret"), false).toBool();
     if (interpret && !m_services && cloudAvailable()) {
         // Never a quiet fallback to literal matching (review wave 5, A5-P2-27): the sheet asks first (consentPrompt) and
@@ -438,6 +447,7 @@ QString RoughCutBridge::preview(const QString& text, const QVariantMap& options)
         }
         auto resolved = m_ai->platform().resolve(ai::Capability::Chat);
         if (resolved && !resolved->empty()) {
+            chatLocal = m_ai->runsLocally(resolved->front().model->id);
             if (auto model = m_ai->platform().chat(resolved->front().model->id, ai::CallOptions{allowOnce, {}})) {
                 chat = std::shared_ptr<ai::IChatModel>(std::move(*model));
             }
@@ -467,7 +477,7 @@ QString RoughCutBridge::preview(const QString& text, const QVariantMap& options)
                                     }
                                     emit self->resultChanged();
                                 },
-                                services(chat));
+                                services(chat, chatLocal));
     return started ? QString() : tr("Busy");
 }
 

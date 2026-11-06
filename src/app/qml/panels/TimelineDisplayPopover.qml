@@ -171,6 +171,37 @@ Popover {
                     checked: Preferences.timelineShowFxBadges
                     onToggled: Preferences.timelineShowFxBadges = checked
                 }
+                // 0.7 (cards 126, 142): the clip's length after its name, and an audio clip's track name from the file.
+                Toggle {
+                    objectName: "clipDurationToggle"
+                    text: qsTr("Clip duration")
+                    tooltip: qsTr("The length of each clip after its name, in the sequence's time format")
+                    checked: Preferences.timelineShowClipDuration
+                    onToggled: Preferences.timelineShowClipDuration = checked
+                }
+                // 0.7 (card 180): where viewers may get bored, graded from the cuts, the motion, the silences and the speech.
+                Toggle {
+                    objectName: "pacingStripToggle"
+                    text: qsTr("Pacing strip")
+                    tooltip: qsTr("A strip under the ruler that colours the stretches where a viewer may get bored: long shots, still pictures, silences, slow speech. Measured on this computer.")
+                    checked: Preferences.timelineShowPacing
+                    onToggled: Preferences.timelineShowPacing = checked
+                }
+                // 0.7 (card 125): a clip's note (Clip > Clip Note…) printed on the clip.
+                Toggle {
+                    objectName: "clipNotesToggle"
+                    text: qsTr("Clip notes")
+                    tooltip: qsTr("Print each clip's note on the clip (right click a clip > Clip Note…)")
+                    checked: Preferences.timelineShowClipNotes
+                    onToggled: Preferences.timelineShowClipNotes = checked
+                }
+                Toggle {
+                    objectName: "streamNamesToggle"
+                    text: qsTr("Audio track names")
+                    tooltip: qsTr("The track name a multi-track recording carries (OBS, ShadowPlay, field recorders) after the audio clip's name")
+                    checked: Preferences.timelineShowStreamNames
+                    onToggled: Preferences.timelineShowStreamNames = checked
+                }
                 Toggle {
                     objectName: "clipTooltipsToggle"
                     text: qsTr("Clip tooltips")
@@ -220,6 +251,28 @@ Popover {
                     tooltip: qsTr("Count time in audio samples: the playhead and audio clips move between frames")
                     checked: Monitors.audioTimeUnits
                     onToggled: Monitors.audioTimeUnits = checked
+                }
+
+                // 0.7 (card 113): what a snapping drag, drop or scrub sticks to (also in Settings > Timeline & editing).
+                GroupLabel { text: qsTr("Snap to") }
+                Repeater {
+                    model: [
+                        { bit: 1, key: "ClipEdges", name: qsTr("Clip edges"), tip: qsTr("The start and end of every clip (cuts, transitions and gaps)") },
+                        { bit: 2, key: "Playhead", name: qsTr("Playhead"), tip: qsTr("The playhead's position") },
+                        { bit: 4, key: "Marks", name: qsTr("In and Out marks"), tip: qsTr("The sequence's In and Out marks") },
+                        { bit: 8, key: "Markers", name: qsTr("Markers"), tip: qsTr("The start and end of sequence markers") },
+                        { bit: 16, key: "Beats", name: qsTr("Beats"), tip: qsTr("The beats of the sequence's beat grid") }
+                    ]
+                    delegate: Toggle {
+                        id: snapTarget
+                        required property var modelData
+                        objectName: "snapTarget" + snapTarget.modelData.key + "Toggle"
+                        text: snapTarget.modelData.name
+                        tooltip: snapTarget.modelData.tip
+                        checked: (Preferences.snapTargetMask & snapTarget.modelData.bit) !== 0
+                        onToggled: Preferences.snapTargetMask = checked ? (Preferences.snapTargetMask | snapTarget.modelData.bit)
+                                                                        : (Preferences.snapTargetMask & ~snapTarget.modelData.bit)
+                    }
                 }
 
                 // 0.4: Premiere's Timeline Playback Auto-Scrolling (also in Settings > Timeline & editing > Editing).

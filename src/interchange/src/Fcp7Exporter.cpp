@@ -43,6 +43,41 @@ namespace {
 constexpr const char* kTrue = "TRUE";
 constexpr const char* kFalse = "FALSE";
 
+/// 145: what <pixelaspectratio> and <anamorphic> say of a frame of `width` pixels with pixel aspect ratio `ratio`. The
+/// element is a closed list in Apple's xmeml: NTSC-601, PAL-601, square, HD-(960x720), HD-(1280x1080), HD-(1440x1080)
+/// (developer.apple.com, Final Cut Pro XML Interchange Format, "pixelaspectratio"); a shape it has no name for is
+/// written square (the frame size still travels).
+struct FcpPixelShape {
+    const char* name = "square";
+    bool anamorphic = false;
+};
+
+FcpPixelShape fcpPixelShape(Rate ratio, std::int32_t width) {
+    const double r = ratio.isValid() ? ratio.toDouble() : 1.0;
+    const auto close = [&](double v) { return std::abs(r - v) < 0.01 * v; };
+    if (close(10.0 / 11.0)) {
+        return {"NTSC-601", false}; // D1 / DV NTSC 4:3
+    }
+    if (close(40.0 / 33.0)) {
+        return {"NTSC-601", true}; // DV widescreen
+    }
+    if (close(59.0 / 54.0)) {
+        return {"PAL-601", false};
+    }
+    if (close(118.0 / 81.0)) {
+        return {"PAL-601", true};
+    }
+    if (close(4.0 / 3.0)) {
+        return width >= 1400 ? FcpPixelShape{"HD-(1440x1080)", false}
+               : width <= 1000 ? FcpPixelShape{"HD-(960x720)", false}
+                               : FcpPixelShape{};
+    }
+    if (close(1.5) && width >= 1200 && width <= 1360) {
+        return {"HD-(1280x1080)", false};
+    }
+    return {};
+}
+
 std::string number(double v) {
     if (std::isfinite(v) && v == std::floor(v) && std::abs(v) < 1e15) {
         return std::to_string(static_cast<std::int64_t>(v));
@@ -140,6 +175,12 @@ private:
         const IrSequence& seq = m_doc.sequences[index];
         pugi::xml_node node = parent.append_child("sequence");
         node.append_attribute("id") = seq.key.c_str();
+        // 0.7 (card 046): Premiere's work area, in the attributes Premiere itself writes on a sequence (its ticks are
+        // Wabcut's: 254016000000 a second).
+        if (seq.workIn && seq.workOut) {
+            node.append_attribute("MZ.WorkInPoint") = std::to_string(seq.workIn->value).c_str();
+            node.append_attribute("MZ.WorkOutPoint") = std::to_string(seq.workOut->value).c_str();
+        }
         m_defined.insert(index);
         bool exact = true;
         const Ticks duration = seq.duration.value_or(Ticks{});
@@ -153,8 +194,9 @@ private:
             rate(sc, seq.frameRate, seq, seq.location);
             integer(sc, "width", seq.width);
             integer(sc, "height", seq.height);
-            boolean(sc, "anamorphic", false);
-            text(sc, "pixelaspectratio", "square");
+            const FcpPixelShape shape = fcpPixelShape(seq.pixelAspect, seq.width);
+            boolean(sc, "anamorphic", shape.anamorphic);
+            text(sc, "pixelaspectratio", shape.name);
             text(sc, "fielddominance", "none");
         }
         for (std::size_t i = 0; i < seq.videoTracks.size(); ++i) {
@@ -181,6 +223,11 @@ private:
         }
         for (const IrMarker& m : seq.markers) {
             writeMarker(node, m, seq);
+        }
+        if (seq.workIn && seq.workOut) {
+            report(ReportOutcome::Carried, ReportCategory::SequenceSetting,
+                   "work area (Premiere's MZ.WorkInPoint / MZ.WorkOutPoint: Premiere reads it; other editors ignore it)",
+                   seq.location, seq);
         }
         report(exact ? ReportOutcome::Carried : ReportOutcome::Approximated, ReportCategory::SequenceSetting,
                rateLabel(seq.frameRate) + " fps" + (seq.dropFrame ? " drop-frame" : "") + ", " + std::to_string(seq.width) +
@@ -909,11 +956,19 @@ private:
                                 !(props[ParamId::PositionX] == defaults[ParamId::PositionX]) ||
                                 !(props[ParamId::PositionY] == defaults[ParamId::PositionY]) ||
                                 !(props[ParamId::AnchorX] == defaults[ParamId::AnchorX]) ||
-                                !(props[ParamId::AnchorY] == defaults[ParamId::AnchorY]);
+                                !(props[ParamId::AnchorY] == defaults[ParamId::AnchorY]) || !props.uniformScale();
             if (motion) {
                 pugi::xml_node effect = filterEffect(clip, "Basic Motion", "basic", "motion", "motion", "video");
                 parameterValue(param(effect, "scale", "Scale"), props[ParamId::Scale], 100.0, 0.0, r, exact);
                 note(props[ParamId::Scale]);
+                if (!props.uniformScale()) {
+                    // 0.7 (card #12): the scale above is the height; Wabcut's reader takes the width and the switch from
+                    // these two parameters (Final Cut Pro 7 has one scale and ignores them).
+                    parameterValue(param(effect, "scalewidth", "Scale Width"), props[ParamId::ScaleWidth], 100.0, 0.0, r, exact);
+                    note(props[ParamId::ScaleWidth]);
+                    text(param(effect, "uniformscale", "Uniform Scale"), "value", "FALSE");
+                    notes.push_back("its Scale Width is written beside the Scale; Final Cut Pro 7 reads only the Scale");
+                }
                 parameterValue(param(effect, "rotation", "Rotation"), props[ParamId::Rotation], 1.0, 0.0, r, exact);
                 note(props[ParamId::Rotation]);
                 // The centre as a fraction of the frame from its middle; anchor likewise (Premiere's normalised points).
@@ -1071,7 +1126,7 @@ private:
                 for (const EffectData& d : e.data) { // 0.6: curves and other effect data
                     text(parameter(std::string(kWabcutDataParam) + d.key, d.key), "value", effectDataToText(d));
                 }
-                ownOnly.push_back(e.effect);
+                ownOnly.push_back(descriptor ? std::string(descriptor->displayName) : e.effect); // 0.7: by name ("Dynamics Processing")
             }
             if (!e.masks.empty() || (!e.data.empty() && nativeEffectFor(e.effect))) {
                 partial.push_back(e.effect + (e.masks.empty() ? " data" : " masks"));

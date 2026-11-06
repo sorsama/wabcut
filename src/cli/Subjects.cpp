@@ -7,6 +7,7 @@
 #include <wabcut/ai/reframe/ReframeCommands.h>
 #include <wabcut/ai/vision/MediaSubjects.h>
 #include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/Plural.h>
 
 #include <nlohmann/json.hpp>
 
@@ -171,10 +172,12 @@ int runSubjects(int argc, char** argv) {
         return 0;
     }
     const double n = std::max<double>(1.0, static_cast<double>(result->samples.size()));
-    std::printf("%s: %zu samples over %.1f s, %zu shot(s); faces in %.0f%% of samples, people in %.0f%% (%zu face tracks, %zu person "
-                "tracks)\n",
-                media.c_str(), result->samples.size(), analysed, result->shotCount(), 100.0 * static_cast<double>(withFaces) / n,
-                100.0 * static_cast<double>(withPeople) / n, faceTracks, personTracks);
+    std::printf("%s: %s over %.1f s, %s; faces in %.0f%% of samples, people in %.0f%% (%s, %s)\n", media.c_str(),
+                wabcut::counted(static_cast<std::int64_t>(result->samples.size()), "sample").c_str(), analysed,
+                wabcut::counted(static_cast<std::int64_t>(result->shotCount()), "shot").c_str(),
+                100.0 * static_cast<double>(withFaces) / n, 100.0 * static_cast<double>(withPeople) / n,
+                wabcut::counted(static_cast<std::int64_t>(faceTracks), "face track").c_str(),
+                wabcut::counted(static_cast<std::int64_t>(personTracks), "person track").c_str());
     if (stats.fromCache) {
         std::printf("  from the analysis cache\n");
     } else {

@@ -33,6 +33,10 @@ struct ChunkOptions {
     std::int64_t padSamples = 16000 / 4;          ///< kept around every speech segment (250 ms)
     std::int64_t mergeGapSamples = 2LL * 16000;   ///< speech this close counts as one stretch (2 s)
     std::int64_t maxGapSamples = 10LL * 16000;    ///< a longer silence always ends a chunk (10 s)
+    /// 0.7 (card 111, mixed languages): when > 0, a chunk that already spans this many samples is closed at the next
+    /// pause - stretches of speech are packed together only until the chunk is this long - so a recording that switches
+    /// language between sentences gets a chunk (and a language guess) per stretch instead of one per five minutes. 0 = off.
+    std::int64_t closeAfterSamples = 0;
 };
 
 /// Chunks covering every speech segment (padded, clamped to [0, totalSamples)), in order, non-overlapping, each

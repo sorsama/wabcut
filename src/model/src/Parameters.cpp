@@ -26,6 +26,10 @@ constexpr std::array<ParameterInfo, kParamCount> kParameters{{
     {ParamId::Opacity, "opacity.opacity", "Opacity", ParamUnit::Fraction, 1.0, 0.0, 1.0, PropertyRole::Opacity},
     {ParamId::VolumeDb, "volume.level", "Level", ParamUnit::Decibels, 0.0, -144.0, 24.0, PropertyRole::Audio},
     {ParamId::Pan, "panner.balance", "Balance", ParamUnit::Balance, 0.0, -1.0, 1.0, PropertyRole::Audio},
+    // 0.7 (card #12): written only when not the default, so a project that never non-uniformly scales a clip is unchanged.
+    {ParamId::ScaleWidth, "motion.scaleWidth", "Scale Width", ParamUnit::Factor, 1.0, 0.0, 100.0, PropertyRole::Motion},
+    {ParamId::UniformScale, "motion.uniformScale", "Uniform Scale", ParamUnit::Amount, 1.0, 0.0, 1.0, PropertyRole::Motion,
+     false},
 }};
 
 constexpr bool tableIsInIdOrder() {
@@ -148,6 +152,31 @@ std::optional<Interpolation> interpolationFromString(std::string_view text) {
     return std::nullopt;
 }
 
+std::string_view toString(KeyPin pin) {
+    switch (pin) {
+    case KeyPin::ClipStart:
+        return "start";
+    case KeyPin::ClipEnd:
+        return "end";
+    case KeyPin::None:
+        break;
+    }
+    return "none";
+}
+
+std::optional<KeyPin> keyPinFromString(std::string_view text) {
+    if (text == "none") {
+        return KeyPin::None;
+    }
+    if (text == "start") {
+        return KeyPin::ClipStart;
+    }
+    if (text == "end") {
+        return KeyPin::ClipEnd;
+    }
+    return std::nullopt;
+}
+
 std::size_t Curve::insertionIndex(Ticks time) const {
     return static_cast<std::size_t>(
         std::lower_bound(keys.begin(), keys.end(), time, [](const Keyframe& k, Ticks t) { return k.time < t; }) -
@@ -250,7 +279,7 @@ PropertyRoles ClipProperties::differences(const ClipProperties& other) const {
 
 std::optional<ParamId> ClipProperties::firstInvalid() const {
     for (const ParameterInfo& p : kParameters) {
-        if (!(*this)[p.id].isValid(p.minValue, p.maxValue)) {
+        if (!(*this)[p.id].isValid(p.minValue, p.maxValue) || (!p.animatable && (*this)[p.id].isCurve())) {
             return p.id;
         }
     }

@@ -230,7 +230,7 @@ TEST_CASE("Masks UI: tools, handles, values, a local correction, the pen and tra
     REQUIRE(masks.track(QStringLiteral("forward"), 5));
     CHECK_FALSE(masks.tracking());
     CHECK(masks.confidence().size() == 5);
-    CHECK(masks.trackStatus() == QStringLiteral("Tracked 5 frame(s)"));
+    CHECK(masks.trackStatus() == QStringLiteral("Tracked 5 frames"));
     CHECK(c.undoText() == QStringLiteral("Undo Track Mask"));
     CHECK(masks.masks()[0].toMap().value(QStringLiteral("tracked")).toBool());
     CHECK(c.playhead() == framesToTicks(5, kRate25));
@@ -535,6 +535,78 @@ TEST_CASE("Masks UI: thumbnails, filmstrips and search frames show the source's 
     redacted::publish(nullptr);
 }
 
+// Review fix (card 154): a mirrored stream's pictures are flipped after the turn (ThumbnailService::orientRgba), so the
+// redaction of a face on the LEFT of the stored frame must land on the RIGHT of the displayed picture.
+TEST_CASE("Masks UI: redacted pictures of mirrored footage put the blur on the mirrored side", "[app][masks][redaction][mirror]") {
+    Timeline tl("V1 |Aaaaaaaaaa|");
+    const MediaId media = tl.media('A');
+    const auto withStream = [&](int rotation, bool mirrored) {
+        ProjectState state = tl.state;
+        for (MediaPtr& item : state.media) {
+            if (item && item->id == media) {
+                auto copy = std::make_shared<MediaItem>(*item);
+                copy->info.video.front().width = 96;
+                copy->info.video.front().height = 54;
+                copy->info.video.front().rotationDegrees = rotation;
+                copy->info.video.front().mirrored = mirrored;
+                item = std::move(copy);
+            }
+        }
+        Redaction r;
+        r.media = media;
+        r.source = TimeRange::fromStartEnd(Ticks{}, Ticks::fromSeconds(1));
+        r.style = RedactionStyle::Solid;
+        r.colorR = 1.0;
+        r.region.shape = MaskShape::Rectangle;
+        r.region.set("center.x", 0.25); // the LEFT quarter of the stored frame
+        r.region.set("center.y", 0.25); // off the middle row, so a flip in the other axis shows too
+        r.region.set("size.x", 0.2);
+        r.region.set("size.y", 0.3);
+        auto added = edit::addRedaction(state, r);
+        REQUIRE(added);
+        return added->state;
+    };
+    const QColor grey(128, 128, 128);
+    const QColor red(255, 0, 0);
+
+    SECTION("mirrored, not turned: the left of the stored frame shows on the right") {
+        const ProjectState redacted = withStream(0, true);
+        QImage picture(96, 54, QImage::Format_RGBA8888); // stored (u, v) shows at (95 - u, v)
+        picture.fill(grey);
+        CHECK(redacted::apply(picture, redacted, media, Ticks{}));
+        CHECK(picture.pixelColor(95 - 24, 13) == red);  // the region's centre (stored 24, 13), mirrored
+        CHECK(picture.pixelColor(24, 13) == grey);      // before the fix this side was blurred instead
+        CHECK(picture.pixelColor(95 - 72, 13) == grey); // the right of the stored frame: clear
+    }
+    SECTION("not mirrored: the same region stays on the left") {
+        const ProjectState redacted = withStream(0, false);
+        QImage picture(96, 54, QImage::Format_RGBA8888);
+        picture.fill(grey);
+        CHECK(redacted::apply(picture, redacted, media, Ticks{}));
+        CHECK(picture.pixelColor(24, 13) == red);
+        CHECK(picture.pixelColor(95 - 24, 13) == grey);
+    }
+    SECTION("turned 90 and mirrored (a transpose): stored (u, v) shows at (v, u)") {
+        const ProjectState redacted = withStream(90, true);
+        QImage picture(54, 96, QImage::Format_RGBA8888);
+        picture.fill(grey);
+        CHECK(redacted::apply(picture, redacted, media, Ticks{}));
+        CHECK(picture.pixelColor(13, 24) == red);      // stored (24, 13)
+        CHECK(picture.pixelColor(13, 72) == grey);     // stored (72, 13): the right of the frame
+        CHECK(picture.pixelColor(53 - 13, 24) == grey); // where the turn alone would have put the region
+    }
+    SECTION("turned 270 and mirrored") {
+        const ProjectState redacted = withStream(270, true);
+        QImage picture(54, 96, QImage::Format_RGBA8888);
+        picture.fill(grey);
+        CHECK(redacted::apply(picture, redacted, media, Ticks{}));
+        // 270 turns the stored (u, v) to (v, 95 - u); the flip then maps x to 53 - x: (53 - v, 95 - u).
+        CHECK(picture.pixelColor(53 - 13, 95 - 24) == red);
+        CHECK(picture.pixelColor(13, 95 - 24) == grey); // where the turn alone would have put the region
+        CHECK(picture.pixelColor(53 - 13, 95 - 72) == grey);
+    }
+}
+
 TEST_CASE("Masks UI: Effect Controls' mask section and the monitor overlay (screenshots)", "[app][masks][screenshots]") {
     MaskShell m;
     MaskBridge& masks = *m.masks;
@@ -768,4 +840,69 @@ TEST_CASE("Masks UI: the section is one row until the clip has a mask and rememb
     const QStringList messages = takeMessages();
     INFO(join(messages));
     CHECK(messages.isEmpty());
+}
+
+// 0.7 (card #56): Shift while dragging an ellipse or rectangle on the monitor draws a perfect circle or square.
+TEST_CASE("Masks UI: Shift-drag draws a square or circle and the drag without it a free box (card 56)", "[app][masks][qml]") {
+    MaskShell m;
+    MaskBridge& masks = *m.masks;
+    const Sequence& seq = *m.controller->currentSequence();
+    REQUIRE(seq.width > 0);
+    REQUIRE(seq.height > 0);
+    const std::function<QQuickItem*(QQuickItem*, const QString&)> find = [&](QQuickItem* item, const QString& name) -> QQuickItem* {
+        if (item->objectName() == name)
+            return item;
+        for (QQuickItem* child : item->childItems()) {
+            if (QQuickItem* found = find(child, name))
+                return found;
+        }
+        return nullptr;
+    };
+    QQuickWindow* window = m.shell.window.get();
+    const auto send = [&](QEvent::Type type, QPointF scene, Qt::KeyboardModifiers modifiers) {
+        const Qt::MouseButton button = type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton;
+        const Qt::MouseButtons buttons = type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton;
+        QMouseEvent event(type, scene, scene, window->mapToGlobal(scene), button, buttons, modifiers);
+        QCoreApplication::sendEvent(window, &event);
+    };
+    // Drags from (0.2, 0.2) to (0.7, 0.5) of the monitor's picture: wider than tall.
+    const auto drag = [&](const char* tool, Qt::KeyboardModifiers modifiers) {
+        masks.setTool(QString::fromLatin1(tool));
+        REQUIRE_FALSE(m.shell.grab().isNull());
+        QQuickItem* area = find(window->contentItem(), QStringLiteral("maskDrawArea"));
+        REQUIRE(area);
+        REQUIRE(area->isVisible());
+        const QRectF r = area->mapRectToScene(QRectF(0, 0, area->width(), area->height()));
+        REQUIRE(r.width() > 100);
+        const QPointF from = r.topLeft() + QPointF(r.width() * 0.2, r.height() * 0.2);
+        const QPointF to = r.topLeft() + QPointF(r.width() * 0.7, r.height() * 0.5);
+        send(QEvent::MouseButtonPress, from, modifiers);
+        send(QEvent::MouseMove, (from + to) / 2, modifiers);
+        send(QEvent::MouseMove, to, modifiers);
+        send(QEvent::MouseButtonRelease, to, modifiers);
+        spin(50);
+    };
+    // The picture's pixels: the mask's size is in fractions of the frame, the frame fills the canvas.
+    const auto pixels = [&](const Mask& mask) {
+        return std::pair{maskValue(mask, "size.x", Ticks{}) * seq.width, maskValue(mask, "size.y", Ticks{}) * seq.height};
+    };
+
+    for (const char* tool : {"rectangle", "ellipse"}) {
+        INFO(tool);
+        const qsizetype before = masks.masks().size();
+        drag(tool, Qt::NoModifier);
+        REQUIRE(masks.masks().size() == before + 1);
+        const auto [freeW, freeH] = pixels(m.mask(static_cast<int>(before)));
+        CHECK(freeW > freeH * 1.5); // a free box follows the pointer: 0.5 of the width by 0.3 of the height
+        const auto beforeShift = masks.masks().size();
+        drag(tool, Qt::ShiftModifier);
+        REQUIRE(masks.masks().size() == beforeShift + 1);
+        const auto [w, h] = pixels(m.mask(static_cast<int>(beforeShift)));
+        CHECK(w == Approx(h).margin(1.0)); // square or circle in the picture's own pixels
+        CHECK(w == Approx(freeW).margin(1.0)); // the longer side of the drag is kept
+    }
+    // The shape is placed by its start point: the top-left corner stays where the drag began.
+    const Mask& last = m.mask(static_cast<int>(masks.masks().size()) - 1);
+    CHECK(maskValue(last, "center.x", Ticks{}) - maskValue(last, "size.x", Ticks{}) / 2 == Approx(0.2).margin(0.02));
+    CHECK(maskValue(last, "center.y", Ticks{}) - maskValue(last, "size.y", Ticks{}) / 2 == Approx(0.2).margin(0.02));
 }

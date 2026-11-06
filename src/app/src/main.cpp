@@ -1,17 +1,32 @@
 #include "AppShell.h"
+#include "BackupSettings.h"
 #include "CacheFolders.h"
 #include "CrashHandler.h"
 #include "CrashNotice.h"
+#include "EnglishPlurals.h"
+#include "FileOpenRelay.h"
 #include "GpuBridge.h"
 #include "HomeBridge.h"
 #include "LaunchSplash.h"
+#include "MediaReadinessBridge.h"
 #include "RhiPolicy.h"
+#include "SettingsBundle.h"
 #include "SingleInstance.h"
 #include "StartupProbe.h"
 #include "SystemInfo.h"
 #include "UiScale.h"
 #include "UpdateBridge.h"
 #include "WindowPlacement.h"
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h> // GetKeyState, MessageBoxW: the Shift-at-launch question
+#endif
 
 #include <wabcut/media/GpuInfo.h>
 #include <wabcut/media/VideoDecoder.h>
@@ -33,6 +48,9 @@
 
 #if defined(WABCUT_WITH_AUDIO_PLUGINS)
 #include <wabcut/plughost/PluginSystem.h>
+#if defined(WABCUT_WITH_OPENFX)
+#include <wabcut/ofxhost/OfxSystem.h>
+#endif
 #endif
 #include <wabcut/platform/DllSearch.h>
 
@@ -61,7 +79,27 @@ int main(int argc, char* argv[]) {
     QCoreApplication::setApplicationName(QStringLiteral("Wabcut"));
     QCoreApplication::setOrganizationName(QStringLiteral("Wabcut"));
     QCoreApplication::setOrganizationDomain(QStringLiteral("wabcut.org"));
+    // 0.7 (card 028): a settings import or reset that was staged and not applied (the restart that should have applied it
+    // did not happen) is applied now, before any setting is read.
+    wabcut::app::SettingsBundle().applyStaged();
+#if defined(_WIN32)
+    // 0.7 (card 028): Shift held while Wabcut starts offers the default settings (Premiere: hold Alt). Asked before the
+    // application exists, because the interface size is read right below. The current settings are backed up first and
+    // the recent projects stay. Not for the startup benchmark or the tests.
+    if (!startupProbe.active() && (GetKeyState(VK_SHIFT) & 0x8000) != 0 &&
+        MessageBoxW(nullptr,
+                    L"Start Wabcut with its default settings?\n\nYour current settings are saved to a backup file first, "
+                    L"and your recent projects stay as they are.",
+                    L"Wabcut", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TOPMOST | MB_SETFOREGROUND) == IDYES) {
+        wabcut::app::SettingsBundle bundle;
+        if (bundle.stageReset(true).value(QStringLiteral("ok")).toBool())
+            bundle.applyStaged();
+    }
+#endif
     wabcut::app::applySavedUiScale();
+    // 0.7 (card 029): a new install keeps autosaves and backups in a "Wabcut Auto-Save" folder next to each project; an
+    // install from before that stays "beside the project" until the user changes it. Decided once, before anything is saved.
+    wabcut::app::backup::chooseDefaultForNewInstall();
     // P1 #48: Settings > Media & cache > AI models and analysis folder, before any AI service asks where its cache is.
     wabcut::app::cachefolders::applyChosenAiCacheFolder();
     // Issue #10: Settings > Graphics card before anything asks which GPU to use (the decoders' order below already does).
@@ -73,6 +111,7 @@ int main(int argc, char* argv[]) {
         crashOptions.folder = wabcut::app::CrashNotice::defaultFolder();
 #ifdef WABCUT_PRODUCT_VERSION
         crashOptions.version = WABCUT_PRODUCT_VERSION;
+        wabcut::app::CrashNotice::setProductVersion(QStringLiteral(WABCUT_PRODUCT_VERSION)); // Help > Report a Bug…
 #else
         crashOptions.version = WABCUT_VERSION;
 #endif
@@ -107,6 +146,11 @@ int main(int argc, char* argv[]) {
 #endif
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationVersion(QStringLiteral(WABCUT_VERSION));
+    // Real English plurals for the "%n clip(s)" strings, before any QML loads (EnglishPlurals.h).
+    wabcut::app::EnglishPluralTranslator englishPlurals;
+    QCoreApplication::installTranslator(&englishPlurals);
+    // Background rendering while idle (MediaReadiness, editor/IdleRender.h) runs in the application only.
+    wabcut::app::MediaReadinessBridge::setBackgroundRenderAvailable(true);
     startupProbe.mark("application");
     // UX rework (stream S): one Wabcut opens the projects. A .wabcut double-clicked in File Explorer while Wabcut runs is
     // handed to that Wabcut, which opens it in its window, and this process ends here; otherwise this one listens for
@@ -116,16 +160,31 @@ int main(int argc, char* argv[]) {
     const bool takesLaunches =
         !startupProbe.active() && !wabcut::app::SingleInstance::separateInstance(QCoreApplication::arguments());
     if (takesLaunches) {
-        const QUrl project = wabcut::app::SingleInstance::projectToHandOver(QCoreApplication::arguments());
-        if (!project.isEmpty() && instance.handOver({project})) {
-            wabcut::crash::markCleanExit(); // this process only passed the file on
-            return 0;
+        // 0.7 (card 005): every file the launch names - a recording or timeline file opened with Wabcut in File Explorer
+        // as well as a project - goes to the running Wabcut, which imports it (or opens the project).
+        const QList<QUrl> files = wabcut::app::SingleInstance::filesToHandOver(QCoreApplication::arguments());
+        // Review: File Explorer starts one process per selected file (a verb without multi-select) - with Wabcut closed
+        // they must not each start a Wabcut. The first to get the launch lock starts it; the others wait for it to listen
+        // (a few seconds at most) and hand their file to it. A launch without a file claims the lock too, so a Wabcut
+        // that is starting is not raced by the files launched right after it.
+        if (!files.isEmpty()) {
+            if (instance.handOverOrWait(files)) {
+                wabcut::crash::markCleanExit(); // this process only passed the file on
+                return 0;
+            }
+        } else {
+            instance.claimLaunch();
         }
     }
 #if defined(WABCUT_WITH_AUDIO_PLUGINS)
     // A.6: the audio plugins - the catalog from its cache, new and changed plugin files scanned in the background (each
     // in its own wabcut-plughost, so a bad plugin only goes on the blocklist), plugin effects in the engine.
     wabcut::plughost::PluginSystem::start({.scanInBackground = true});
+#endif
+#if defined(WABCUT_WITH_OPENFX)
+    // 0.7: the OpenFX video plug-ins - the catalog from its cache, new and changed plug-in binaries scanned in the background
+    // (each in its own wabcut-ofxhost), and their effects in the model and the playback layer.
+    wabcut::ofxhost::OfxSystem::start({.scanInBackground = true});
 #endif
     startupProbe.mark("plugins");
     // The window and taskbar icon (design language v2: the W cut by one 12° slice).
@@ -228,15 +287,22 @@ int main(int argc, char* argv[]) {
     });
     // A later launch handed its project over (SingleInstance): this window comes to the front and Main.qml opens it
     // through the normal path, with the unsaved-changes prompt (AppShell.openRequested).
-    QObject::connect(&instance, &SingleInstance::filesRequested, &app, [&engine](const QList<QUrl>& files) {
+    const auto openInWindow = [&engine](const QList<QUrl>& files) {
         if (!engine || engine->rootObjects().isEmpty())
             return;
         bringToFront(qobject_cast<QWindow*>(engine->rootObjects().constFirst()));
         if (auto* shell = engine->singletonInstance<AppShell*>("Wabcut", "AppShell"))
             shell->requestOpen(files);
-    });
+    };
+    QObject::connect(&instance, &SingleInstance::filesRequested, &app, openInWindow);
+    // macOS (FileOpenRelay.h): Finder's double-click, Open With and Dock drops arrive as an event, also before the window
+    // exists; the files wait until `launch` has loaded it.
+    FileOpenRelay fileOpen;
+    app.installEventFilter(&fileOpen);
+    QObject::connect(&fileOpen, &FileOpenRelay::filesRequested, &app, openInWindow);
     const auto launch = [&] {
         start();
+        fileOpen.setReady(engine && !engine->rootObjects().isEmpty());
         // Later launches are taken from here on, with the window loaded: before, this process could not answer them
         // (its event loop is not running yet, or the window is not there), so they start on their own at once instead
         // of waiting for it. A hand-over is only taken while there is a window to open it in (else "no": that launch
@@ -260,6 +326,8 @@ int main(int argc, char* argv[]) {
         // P1 #47: Restart now (a new interface size or cache folder). This one stops taking launches first, so the new
         // Wabcut opens its project itself instead of handing it back here.
         instance.close();
+        // 0.7 (card 028): an imported or reset settings bundle is applied now that nothing writes settings any more.
+        wabcut::app::SettingsBundle().applyStaged();
         AppShell::launchPendingRestart();
     }
     return code;

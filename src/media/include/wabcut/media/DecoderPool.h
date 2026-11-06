@@ -145,6 +145,11 @@ public:
     /// Closes every idle session (e.g. before a relink or to release GPU memory).
     void closeIdleSessions();
 
+    /// Drops every session (video and audio) that has `path` open, so the next request opens the file again: for a file
+    /// that changed on disk under the same path (Reload Footage). An idle session closes now; one that is serving a request
+    /// closes when it is done and is given no new request.
+    void closePath(const std::string& path);
+
     DecoderPoolStats stats() const;
     const DecoderPoolConfig& config() const;
 

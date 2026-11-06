@@ -41,6 +41,7 @@ struct AssetIdTag;
 struct RedactionIdTag;
 struct SpeakerIdTag;
 struct ReviewNoteIdTag;
+struct TrackGroupIdTag;
 
 using MediaId = Id<MediaIdTag>;
 using SequenceId = Id<SequenceIdTag>;
@@ -64,6 +65,8 @@ using RedactionId = Id<RedactionIdTag>;
 using SpeakerId = Id<SpeakerIdTag>;
 /// A review note (ReviewNotes.h, C.9).
 using ReviewNoteId = Id<ReviewNoteIdTag>;
+/// 0.7 (card 124): a named group of tracks of one sequence (Sequence::trackGroups).
+using TrackGroupId = Id<TrackGroupIdTag>;
 
 /// Hands out project-unique ids. It is plain data inside the immutable ProjectState: an edit copies it,
 /// allocates from the copy and stores the advanced generator in the new state, so edits stay pure.

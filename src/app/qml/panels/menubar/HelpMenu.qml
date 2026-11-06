@@ -3,7 +3,7 @@ import QtQuick
 
 // Help (the menu bar): the User Guide on the website (Home.guideUrl / Home.links: one source with Home's Learn page),
 // the Keyboard Shortcuts editor, the onboarding again (Welcome and Setup, the tour, the Keyboard Trainer, What's new),
-// the release notes, the sample project, Report an Issue and About. Everything runs once the menu has closed, so a dialog
+// the release notes, the sample project, Report a Bug… and About. Everything runs once the menu has closed, so a dialog
 // it opens keeps the focus (window.showHelp).
 MenuBarMenu {
     id: root
@@ -95,10 +95,12 @@ MenuBarMenu {
         text: qsTr("Open the Sample Project")
         onTriggered: root.request("sample", null)
     }
-    LinkItem {
-        objectName: "helpItem_reportIssue"
-        text: qsTr("Report an Issue")
-        url: root.linkUrl("reportIssue")
+    // 0.7 (card 016): the system information to copy or put into a prefilled GitHub issue (ReportBugDialog); Home's Learn
+    // page keeps the plain link to the issue list.
+    BarMenuItem {
+        objectName: "helpItem_reportBug"
+        text: qsTr("Report a Bug…")
+        onTriggered: root.request("reportBug", null)
     }
     ContextMenuSeparator {}
     BarMenuItem {

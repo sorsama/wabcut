@@ -55,6 +55,8 @@ public:
 class MapTranscriptProvider : public TranscriptProvider {
 public:
     void add(MediaId media, int audioStream, std::shared_ptr<const Transcript> transcript);
+    /// Forgets the transcript of a stream (card 080); true when there was one.
+    bool remove(MediaId media, int audioStream);
     std::shared_ptr<const Transcript> transcript(const MediaItem& media, int audioStream) const override;
     bool empty() const { return m_transcripts.empty(); }
 

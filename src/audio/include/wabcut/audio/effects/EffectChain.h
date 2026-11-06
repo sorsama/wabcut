@@ -47,6 +47,8 @@ inline constexpr int kParamCellFrames = 32;
 /// Most parameters an effect has (p02: Premiere's Graphic Equalizer (30 Bands) and Multiband Compressor have dozens).
 inline constexpr int kMaxEffectParams = 64;
 
+struct CurveClock;
+
 /// Parameter values over one cell, in the descriptor's parameter order (a plugin's: its bound keys' order).
 struct ParamCell {
     const double* start = nullptr; ///< at the cell's first frame
@@ -55,6 +57,10 @@ struct ParamCell {
     int length = kParamCellFrames;
     int count = 0;                 ///< values in `start` and `end`
     const void* binding = nullptr; ///< a plugin's: what its bindKeys() returned for these values' keys
+    /// 0.7 (Spectral Repair): the chain frame of this call's first frame, and the clock that maps chain frames to curve time
+    /// (a clip's source time): effects anchored to the sound itself, not to the parameters, read them. Null clock: none.
+    std::int64_t frame = 0;
+    const CurveClock* clock = nullptr;
 };
 
 /// One effect instance's DSP. Built for a channel count, a sample rate and its constant (non-animatable) parameters.
@@ -77,6 +83,9 @@ public:
         (void)keys;
         return nullptr;
     }
+    /// Tells a processor which effect instance it runs (bind() calls it once, right after building a built-in one): a
+    /// processor with live levels for the interface (Dynamics Processing's meters) files them under it. Not RT-safe.
+    virtual void attachInstance(std::uint64_t instance) { (void)instance; }
     /// A plugin's processor whose instance already has the data `instance` now holds (its state was just saved from
     /// this very instance) keeps running instead of being rebuilt. Not RT-safe.
     virtual bool acceptsData(const EffectInstance& instance) { (void)instance; return false; }
@@ -159,9 +168,11 @@ bool inOfflineRender() noexcept;
 std::shared_ptr<RenderIncidents> offlineRenderIncidents() noexcept;
 
 /// A processor for an implemented audio effect, or null. `values` are the instance's parameter values (descriptor
-/// order) at the time it is built; the non-animatable ones are fixed for the processor's life.
+/// order) at the time it is built; the non-animatable ones are fixed for the processor's life. `instance` (optional) is
+/// the effect instance the processor is built for: Spectral Repair reads its edit list from the instance's data, and the
+/// chain rebuilds that processor whenever the data changes.
 std::unique_ptr<EffectProcessor> createEffectProcessor(const EffectDescriptor& descriptor, int channels, int sampleRate,
-                                                       std::span<const double> values);
+                                                       std::span<const double> values, const EffectInstance* instance = nullptr);
 
 /// Maps a chain frame (counted from the chain's origin) to the curve time its parameters are read at: timeline time
 /// for track and master stacks, Clip::curveTimeAt for a clip's stack.

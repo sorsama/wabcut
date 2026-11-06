@@ -53,7 +53,7 @@ Admission admit(const TierSpec& tier, const ModelInfo& model, const SystemProbe&
     a.context = tier.context;
     a.weightsBytes = model.size;
     a.kvBytes = kvCacheBytes(tier);
-    if (model.kind != ModelKind::Llm || (model.license != "MIT" && model.license != "Apache-2.0")) {
+    if (model.kind != ModelKind::Llm || (model.license != "MIT" && model.license != "Apache-2.0" && !model.licenseAccepted)) {
         a.reason = "only MIT or Apache-2.0 GGUF models are allowed";
         return a;
     }
@@ -121,6 +121,35 @@ Admission admit(const TierSpec& tier, const ModelInfo& model, const SystemProbe&
     a.fits = true;
     a.runtimeId = "llama-server-win-cpu-x64";
     a.reason = "on the CPU, " + std::to_string(a.threads) + " threads (" + gpuNote + ")";
+    return a;
+}
+
+TierSpec shapeFor(double paramsB, int context) {
+    // Typical shapes of grouped-query-attention models at these sizes (Qwen3, Gemma, Llama, Mistral GGUF headers): the
+    // KV cache grows with the layer count; 8 KV heads of 128 dimensions is the common choice. Mixture-of-experts
+    // models have fewer layers for their total size, so this errs on the safe (larger) side.
+    int layers = 32;
+    if (paramsB > 0.0) {
+        layers = paramsB <= 2.5 ? 28 : paramsB <= 10.0 ? 36 : paramsB <= 16.0 ? 48 : paramsB <= 40.0 ? 64 : 80;
+    }
+    TierSpec shape{"other", "Other", "", paramsB > 0.0 ? paramsB : 4.0, layers, 8, 128, 8192, false};
+    if (context > 0)
+        shape.context = context;
+    return shape;
+}
+
+Admission estimateFit(std::uint64_t weightsBytes, double paramsB, const SystemProbe& probe, int context,
+                      const AdmissionOptions& options) {
+    ModelInfo model;
+    model.id = "estimate";
+    model.kind = ModelKind::Llm;
+    model.size = weightsBytes;
+    model.licenseAccepted = true; // the licence is the library's question, not the fit's
+    AdmissionOptions fitOptions = options;
+    fitOptions.allowLargeOnCpu = true;
+    const TierSpec shape = shapeFor(paramsB, context);
+    Admission a = admit(shape, model, probe, fitOptions);
+    a.tier = nullptr; // a temporary shape: callers must not keep it
     return a;
 }
 

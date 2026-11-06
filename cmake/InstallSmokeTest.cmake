@@ -67,6 +67,19 @@ if(NOT out MATCHES "wabcut-cli ${VERSION}")
 endif()
 message(STATUS "wabcut-cli --version from the install tree:\n${out}")
 
+# The Python package (docs/python.md) ships next to the executables: its code, the generated catalog and stubs, the examples.
+if(CMAKE_HOST_APPLE AND EXPECT_APP)
+    set(python_dir "${PREFIX}/wabcut.app/Contents/Resources/python")
+else()
+    set(python_dir "${PREFIX}/bin/python")
+endif()
+foreach(file wabcut/__init__.py wabcut/_session.py wabcut/catalog.json wabcut/_commands.pyi wabcut/py.typed pyproject.toml
+        examples/apply_grade.py)
+    if(NOT EXISTS "${python_dir}/${file}")
+        message(FATAL_ERROR "the install tree lacks the Python package file ${python_dir}/${file}")
+    endif()
+endforeach()
+
 # The AI helpers start from the tree: wabcut-infer loads ggml's compute backends from its directory; wabcut-embed
 # loads ONNX Runtime and answers the protocol's hello.
 set(scratch "${PREFIX}-scratch")
@@ -188,7 +201,8 @@ elseif(EXPECT_APP)
         set(required bin/wabcut bin/qt.conf lib/libQt6Core.so.6 lib/libQt6Quick.so.6
                      plugins/platforms/libqxcb.so plugins/platforms/libqoffscreen.so qml/QtQuick/Controls
                      bin/docs/roadmap.md
-                     share/applications/wabcut.desktop share/icons/hicolor/256x256/apps/wabcut.png)
+                     share/applications/wabcut.desktop share/icons/hicolor/256x256/apps/wabcut.png
+                     share/mime/packages/io.github.sorsama.wabcut.xml)
     endif()
     foreach(path IN LISTS required)
         if(NOT EXISTS "${PREFIX}/${path}")

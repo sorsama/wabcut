@@ -21,10 +21,14 @@
 #include <QStandardPaths>
 #include <QUrl>
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <thread>
+#include <vector>
 
 using namespace wabcut;
 using namespace wabcut::app;
@@ -231,6 +235,9 @@ TEST_CASE("Autosave failure: autosaveOk turns false and every failure is signall
     CHECK_FALSE(lifecycle.autosaveOk());
     REQUIRE(reasons.size() == 1);
     CHECK_FALSE(reasons.front().isEmpty());
+    // Card 043: the reason names the project, not the temporary file of the atomic write.
+    CHECK(reasons.front() == QStringLiteral("cannot create the autosave of film.wabcut"));
+    CHECK_FALSE(reasons.front().contains(QStringLiteral(".tmp")));
     CHECK(lifecycle.autosaveText().startsWith(QStringLiteral("Autosave failed")));
     CHECK(lifecycle.autosaveText().contains(reasons.front()));
     CHECK(lifecycle.lastError().startsWith(QStringLiteral("Autosave failed: ")));
@@ -264,4 +271,58 @@ TEST_CASE("Autosave failure: autosaveOk turns false and every failure is signall
     REQUIRE(lifecycle.save());
     CHECK(lifecycle.autosaveOk());
     CHECK(lifecycle.autosaveText().startsWith(QStringLiteral("Saved")));
+}
+
+// Card 174: MediaImport opens "Show.WABCUT" as a project (it compares the lower-cased extension), but Save As compared
+// case-sensitively and wrote "Show.WABCUT.wabcut" beside it - the recent list, the title and the autosaves then carried the
+// doubled extension. File > Save As and Save a Copy keep a project extension that is there, in any case.
+TEST_CASE("Save As and Save a Copy keep an upper-case project extension instead of adding a second one",
+          "[app][project][save]") {
+    const fs::path dir = workDir("extension-case");
+    const fs::path project = dir / "Show.WABCUT";
+    REQUIRE(io::saveProject(withSequences(1), project, io::SaveOptions{0}));
+    ProjectController controller;
+    ProjectLifecycle lifecycle(&controller);
+    REQUIRE(lifecycle.open(url(project)));
+
+    // The project files of the folder (backups, autosaves and locks have other extensions).
+    const auto files = [&] {
+        std::vector<std::string> names;
+        for (const auto& entry : fs::directory_iterator(dir)) {
+            std::string extension = entry.path().extension().string();
+            std::ranges::transform(extension, extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (entry.is_regular_file() && extension == ".wabcut") {
+                names.push_back(entry.path().filename().string());
+            }
+        }
+        std::ranges::sort(names);
+        return names;
+    };
+
+    // Save As to the same name: it stays "Show.WABCUT" (no "Show.WABCUT.wabcut").
+    addSequenceTo(controller);
+    REQUIRE(lifecycle.saveAs(url(project)));
+    CHECK(files() == std::vector<std::string>{"Show.WABCUT"});
+    CHECK(sequencesIn(project) == 2);
+
+    // Another name in any case keeps its case; one without an extension gets ".wabcut".
+    addSequenceTo(controller);
+    REQUIRE(lifecycle.saveAs(url(dir / "Cut.Wabcut")));
+    CHECK(fs::exists(dir / "Cut.Wabcut"));
+    CHECK(files() == std::vector<std::string>{"Cut.Wabcut", "Show.WABCUT"});
+    addSequenceTo(controller);
+    REQUIRE(lifecycle.saveAs(url(dir / "Plain")));
+    CHECK(fs::exists(dir / "Plain.wabcut"));
+
+    // Save a Copy: the same rule.
+    REQUIRE(lifecycle.saveCopy(url(dir / "Backup.WABCUT")));
+    REQUIRE(lifecycle.saveCopy(url(dir / "Other")));
+    const std::vector<std::string> now = files();
+    CHECK(std::ranges::find(now, "Backup.WABCUT") != now.end());
+    CHECK(std::ranges::find(now, "Other.wabcut") != now.end());
+    for (const std::string& name : now) {
+        INFO(name);
+        CHECK(name.find(".WABCUT.wabcut") == std::string::npos);
+        CHECK(name.find(".Wabcut.wabcut") == std::string::npos);
+    }
 }

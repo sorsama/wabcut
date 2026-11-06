@@ -23,6 +23,8 @@ WabcutDialog {
     readonly property string fileName: dialog.file.toString() === "" ? ""
                                        : decodeURIComponent(dialog.file.toString().split("/").pop()).replace(/\.wabcut$/i, "")
 
+    /// 0.7 (card 006): the "Version History" link: the named and automatic versions in Review > Versions (Main shows it).
+    signal versionHistoryRequested()
     /// "Open as copy" of version `version` (Main opens it after the unsaved-changes prompt).
     signal openCopyRequested(url version)
     /// Recover of the unsaved work in autosave `autosave` (Main recovers it after the unsaved-changes prompt and closes
@@ -292,6 +294,19 @@ WabcutDialog {
     }
 
     footerData: [
+        // 0.7 (card 006): the named versions and checkpoints of the open project live in Review > Versions.
+        PillButton {
+            objectName: "recoveryVersionHistory"
+            visible: dialog.dashboard && dialog.file.toString() === "" && History.available
+            variant: "ghost"
+            iconName: "clock"
+            text: qsTr("Version History")
+            tooltip: qsTr("Named versions and automatic checkpoints of this project (Review > Versions)")
+            onClicked: {
+                dialog.close()
+                dialog.versionHistoryRequested()
+            }
+        },
         PillButton {
             visible: !dialog.dashboard && ProjectFile.recoveryFiles.length > 0
             text: qsTr("Discard All")

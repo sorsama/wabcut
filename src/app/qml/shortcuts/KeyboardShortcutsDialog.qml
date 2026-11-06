@@ -9,8 +9,10 @@ import QtQuick.Layouts
 //                differ from the set. Import a Premiere .kys or an overrides .json, export the overrides, reset.
 //   Keyboard     every key coloured by what it does with the modifiers shown (application / panel / both);
 //                click a modifier key or a toggle to see other combinations, click a key to see its commands.
-//   Commands     search (names, Premiere names, shortcut text) and a panel filter; + types a shortcut, × removes
-//                one, the reset arrow restores a command's keys; drag a command onto a key to give it that key.
+//   Commands     search (names, Premiere names, shortcut text) and a filter (a panel, or "Changed by me"); Copy puts the
+//                shown commands on the clipboard and Cheat sheet… saves a printable page of every key in use; + types a
+//                shortcut, × removes one, the reset arrow restores a command's keys; drag a command onto a key to give
+//                it that key.
 // A chord another command in the same panel already uses asks first (Reassign / Cancel); a chord an application
 // command and a panel command share says which one wins where. Changes apply to the keys at once and are saved.
 Popup {
@@ -107,6 +109,16 @@ Popup {
         pending = null
         const error = Shortcuts.applyPreset(id)
         say(error !== "" ? error : qsTr("Key set: %1").arg(Shortcuts.presetName), error !== "" ? "danger" : "success")
+    }
+    /// Copy: the commands shown (search and filter applied) as tab-separated text.
+    function copyShown() {
+        const text = Shortcuts.copyToClipboard()
+        if (text === "") {
+            say(qsTr("There is nothing to copy: no command is shown"), "danger")
+            return
+        }
+        //: Keyboard Shortcuts; %n = the number of commands copied
+        say(qsTr("Copied %n shortcut(s) to the clipboard", "", Shortcuts.commands.count), "success")
     }
     function importFile(url) {
         pending = null
@@ -594,10 +606,27 @@ Popup {
 
                         OptionsMenu {
                             id: scopeMenu
+                            objectName: "shortcutsScopeMenu"
                             options: Shortcuts.scopes
                             current: Shortcuts.scopeFilter
                             onChosen: id => Shortcuts.scopeFilter = id
                         }
+                    }
+                    PillButton {
+                        objectName: "shortcutsCopy"
+                        compact: true
+                        iconName: "copy"
+                        text: qsTr("Copy")
+                        tooltip: qsTr("Copy the commands shown, with their shortcuts, to the clipboard (tab-separated, for a spreadsheet)")
+                        onClicked: dialog.copyShown()
+                    }
+                    PillButton {
+                        objectName: "shortcutsCheatSheet"
+                        compact: true
+                        iconName: "file-down"
+                        text: qsTr("Cheat sheet…")
+                        tooltip: qsTr("Save a printable page of every shortcut in use (a web page: open it in a browser and print it)")
+                        onClicked: cheatSheetDialog.open()
                     }
                 }
 
@@ -783,6 +812,17 @@ Popup {
         fileMode: FileDialog.OpenFile
         nameFilters: [qsTr("Key sets (*.kys *.json)"), qsTr("Premiere Pro key sets (*.kys)"), qsTr("Wabcut shortcuts (*.json)")]
         onAccepted: dialog.importFile(selectedFile)
+    }
+    FileDialog {
+        id: cheatSheetDialog
+        objectName: "shortcutsCheatSheetDialog"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "html"
+        nameFilters: [qsTr("Web pages (*.html)")]
+        onAccepted: {
+            const error = Shortcuts.exportCheatSheet(selectedFile)
+            dialog.say(error !== "" ? error : qsTr("Saved the cheat sheet: open it in a browser to print it"), error !== "" ? "danger" : "success")
+        }
     }
     FileDialog {
         id: exportDialog

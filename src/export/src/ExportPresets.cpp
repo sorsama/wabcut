@@ -596,6 +596,10 @@ Json settingsToJson(const ExportSettings& s) {
                {"keyframeInterval", v.keyframeInterval.value},
                {"dynamicRange", dynamicRangeName(v.dynamicRange)},
                {"exportAsSequence", v.exportAsSequence}};
+    // 0.7: dynamic HDR metadata (HDR10+), only when set.
+    if (v.dynamicMetadata != DynamicMetadata::None) {
+        video["dynamicMetadata"] = std::string(dynamicMetadataName(v.dynamicMetadata));
+    }
     // 0.6 (#72): the output colour space and SDR Conform, only when set (older presets stay byte for byte).
     if (v.outputSpace != OutputColorSpace::Automatic) {
         video["outputSpace"] = std::string(toString(v.outputSpace));
@@ -697,6 +701,7 @@ std::expected<ExportSettings, Error> settingsFromJson(const Json& j) {
         WABCUT_TRY(getEnum(*v, "dnxhrProfile", vs.dnxhrProfile, dnxhrProfileFromName, p));
         WABCUT_TRY(getIntAs(*v, "keyframeInterval", vs.keyframeInterval.value, 1, Ticks::fromSeconds(3600).value, p));
         WABCUT_TRY(getEnum(*v, "dynamicRange", vs.dynamicRange, dynamicRangeFromName, p));
+        WABCUT_TRY(getEnum(*v, "dynamicMetadata", vs.dynamicMetadata, dynamicMetadataFromName, p)); // 0.7
         WABCUT_TRY(getBool(*v, "exportAsSequence", vs.exportAsSequence, p));
         // 0.6 (#72): the output colour space and SDR Conform.
         WABCUT_TRY(getEnum(*v, "outputSpace", vs.outputSpace, outputColorSpaceFromString, p));
@@ -1117,6 +1122,22 @@ std::expected<void, Error> applyOverrides(ExportSettings& s, const Json& overrid
             s.video.pixelFormat = OutputPixelFormat::Yuv420p10;
         }
     }
+    if (has("dynamicMetadata")) { // 0.7: none, hdr10plus (dolbyVision81 / dolbyVision84 where a licensed writer is registered)
+        const auto m = dynamicMetadataFromName(textOf(value("dynamicMetadata")));
+        if (!m) {
+            return std::unexpected(badOverride("dynamicMetadata", value("dynamicMetadata")));
+        }
+        s.video.dynamicMetadata = *m;
+        if (*m != DynamicMetadata::None) {
+            // The metadata describes an HDR master (PQ, or HLG for Dolby Vision 8.4) on 10-bit HEVC.
+            if (s.video.dynamicRange == DynamicRange::Auto) {
+                s.video.dynamicRange = *m == DynamicMetadata::DolbyVision84 ? DynamicRange::Hlg : DynamicRange::Pq;
+            }
+            if (s.video.pixelFormat == OutputPixelFormat::Yuv420p && s.video.codec == VideoCodec::Hevc) {
+                s.video.pixelFormat = OutputPixelFormat::Yuv420p10;
+            }
+        }
+    }
     if (has("effects")) {
         ExportEffects fx;
         if (auto ok = readEffects(value("effects"), fx, "effects"); !ok) {
@@ -1309,6 +1330,46 @@ std::optional<Preset> PresetStore::findAny(std::string_view id) const {
     return find(id);
 }
 
+std::string PresetStore::idFor(std::string_view name) const {
+    std::string trimmed(name);
+    trimmed.erase(0, trimmed.find_first_not_of(" \t\r\n"));
+    trimmed.erase(trimmed.find_last_not_of(" \t\r\n") + 1);
+    std::lock_guard lock(m_mutex);
+    return idForUnlocked(trimmed);
+}
+
+std::string PresetStore::idForUnlocked(std::string_view name) const {
+    const std::string base = userPresetId(name);
+    // The name stored in the file of `id`: nullopt when there is none; "" when it does not read (someone else's).
+    const auto storedName = [&](const std::string& id) -> std::optional<std::string> {
+        std::error_code ec;
+        const std::filesystem::path file = fileFor(id);
+        if (!std::filesystem::exists(file, ec)) {
+            return std::nullopt;
+        }
+        const auto text = readSmallFile(file);
+        if (!text) {
+            return std::string();
+        }
+        const auto stored = presetFromJson(*text);
+        return stored ? stored->name : std::string();
+    };
+    const auto owner = storedName(base);
+    if (!owner || *owner == name) {
+        return base;
+    }
+    // The ASCII fragment is shared with another preset: make the id this name's own (FNV-1a over all its bytes).
+    std::uint64_t h = 1469598103934665603ULL;
+    for (const char ch : name) {
+        h = (h ^ static_cast<unsigned char>(ch)) * 1099511628211ULL;
+    }
+    std::string slug = base.substr(5, 55);
+    while (!slug.empty() && slug.back() == '-') {
+        slug.pop_back();
+    }
+    return std::format("user-{}{}{:08x}", slug, slug.empty() ? "" : "-", h & 0xFFFFFFFFULL);
+}
+
 std::expected<Preset, Error> PresetStore::save(std::string_view name, std::string_view description, ExportSettings settings,
                                                bool overwrite) {
     std::string trimmed(name);
@@ -1323,13 +1384,13 @@ std::expected<Preset, Error> PresetStore::save(std::string_view name, std::strin
     if (auto ok = validate(settings); !ok) {
         return std::unexpected(ok.error());
     }
+    std::lock_guard lock(m_mutex);
     Preset p;
-    p.id = userPresetId(trimmed);
+    p.id = idForUnlocked(trimmed); // 147: a file of another preset is never this one's
     p.name = trimmed;
     p.description = std::string(description);
     settings.presetId = p.id;
     p.settings = std::move(settings);
-    std::lock_guard lock(m_mutex);
     std::error_code ec;
     const std::filesystem::path file = fileFor(p.id);
     if (!overwrite && std::filesystem::exists(file, ec)) {

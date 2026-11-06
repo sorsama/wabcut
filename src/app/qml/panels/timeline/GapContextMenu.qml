@@ -3,6 +3,8 @@ import QtQuick
 
 // Right-click menu of a selected gap (0.2 UX, stream T; TimelineView.gapContextMenuRequested - the right-click selected
 // the gap: ProjectController.selectedGap): Ripple Delete closes it (one undo step; Delete and Backspace do the same).
+// 0.7 (card 011): Close Gaps on <track> closes every gap of the right-clicked track in one step (Editing.closeGapsOnTrack),
+// and Close Gaps in Sequence is Sequence > Close Gap with nothing selected (every gap of the sequence, Editing.closeGap).
 // When another sync-locked track has clips in that time, or the track is locked, nothing moves and `failed` says why.
 // Its own file, importing only QtQuick, so QtQuick.Controls' ContextMenu does not shadow ours.
 ContextMenu {
@@ -45,6 +47,29 @@ ContextMenu {
         onTriggered: {
             if (!ProjectController.rippleDeleteGap())
                 menu.failed(ProjectController.lastError)
+        }
+    }
+    ContextMenuSeparator {}
+    ContextMenuItem {
+        objectName: "gapMenuCloseTrackGaps"
+        text: qsTr("Close Gaps on %1").arg(menu.gap.trackName ?? "")
+        iconName: "unfold-horizontal"
+        enabled: (menu.gap.track ?? "") !== ""
+        onTriggered: {
+            const message = Editing.closeGapsOnTrack(menu.gap.track ?? "")
+            if (message !== "")
+                menu.failed(message)
+        }
+    }
+    ContextMenuItem {
+        objectName: "gapMenuCloseAllGaps"
+        text: qsTr("Close Gaps in Sequence")
+        iconName: "unfold-horizontal"
+        command: "sequence.closeGap"
+        onTriggered: {
+            const message = Editing.closeGap()
+            if (message !== "")
+                menu.failed(message)
         }
     }
 }

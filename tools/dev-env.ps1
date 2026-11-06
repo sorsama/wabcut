@@ -3,6 +3,8 @@
 # Dot-source it before configuring/building:
 #   . .\tools\dev-env.ps1          full build (win-msvc preset): MSVC + CMake + Ninja + vcpkg + Qt
 #   . .\tools\dev-env.ps1 -Core    core-only build (core preset): MSVC + CMake + Ninja, no vcpkg or Qt
+#   . .\tools\dev-env.ps1 -Arch arm64   full build for Windows on ARM64 (win-msvc-arm64 preset): the MSVC ARM64 toolset
+#                                  and Qt's ARM64 kit (docs/building.md, "Windows on ARM64"); native on an ARM64 machine
 #
 # It enters the Visual Studio x64 developer shell when cl.exe is not already on PATH, and validates every tool it
 # needs, failing with a clear message instead of letting CMake fail later. Overrides (environment variables):
@@ -11,7 +13,7 @@
 #   WABCUT_QT_DIR                Qt kit, e.g. C:\Qt\6.11.3\msvc2022_64 (default C:\Qt\6.11.3\msvc2022_64)
 #   WABCUT_DEPS_READY_MARKER     shared-prebuild gate file          (default G:\dev\vcpkg-prebuild\READY)
 
-param([switch]$Core)
+param([switch]$Core, [ValidateSet('x64', 'arm64')][string]$Arch = 'x64')
 
 $ErrorActionPreference = 'Stop'
 $wabcutTestedQt = '6.11.3'
@@ -25,18 +27,35 @@ function Fail([string]$message) {
 $vsInstaller = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
 $vswhere = Join-Path $vsInstaller 'vswhere.exe'
 
+# The MSVC toolset of the target: x64 (host x64), or ARM64 - native on an ARM64 machine, cross-built from an x64 one.
+# The ARM64 build tools are their own Visual Studio component ("MSVC ... ARM64/ARM64EC build tools").
+$osArm64 = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq [System.Runtime.InteropServices.Architecture]::Arm64
+if ($Arch -eq 'arm64') {
+    $toolComponent = 'Microsoft.VisualStudio.Component.VC.Tools.ARM64'
+    $devCmdArguments = if ($osArm64) { '-arch=arm64 -host_arch=arm64' } else { '-arch=arm64 -host_arch=x64' }
+} else {
+    $toolComponent = 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64'
+    $devCmdArguments = '-arch=x64 -host_arch=x64'
+}
 if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
     if (-not (Test-Path $vswhere)) { Fail 'Visual Studio (2022 17.6+ or newer) with "Desktop development with C++" is not installed.' }
     $env:PATH = "$vsInstaller;$env:PATH"   # VsDevCmd.bat shells out to vswhere.exe
     # Prefer an install that bundles CMake + Ninja alongside the C++ toolset; fall back to any C++ install.
-    $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 Microsoft.VisualStudio.Component.VC.CMake.Project -property installationPath
-    if (-not $vs) { $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath }
-    if (-not $vs) { Fail 'no Visual Studio install has the MSVC x64 toolset (component "MSVC ... x64/x86 build tools").' }
+    $vs = & $vswhere -latest -products * -requires $toolComponent Microsoft.VisualStudio.Component.VC.CMake.Project -property installationPath
+    if (-not $vs) { $vs = & $vswhere -latest -products * -requires $toolComponent -property installationPath }
+    if (-not $vs) {
+        if ($Arch -eq 'arm64') { Fail 'no Visual Studio install has the MSVC ARM64 toolset (component "MSVC ... ARM64/ARM64EC build tools").' }
+        Fail 'no Visual Studio install has the MSVC x64 toolset (component "MSVC ... x64/x86 build tools").'
+    }
     $vs = @($vs)[0]
     Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
-    Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null
+    Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments $devCmdArguments | Out-Null
 }
 if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) { Fail 'cl.exe is still not on PATH after entering the VS developer shell.' }
+# A developer shell that was already open targets one architecture; building for the other needs a new PowerShell.
+if ($env:VSCMD_ARG_TGT_ARCH -and $env:VSCMD_ARG_TGT_ARCH -ne $Arch -and ($Arch -eq 'arm64' -or $env:VSCMD_ARG_TGT_ARCH -eq 'arm64')) {
+    Fail "this developer shell targets $env:VSCMD_ARG_TGT_ARCH, but -Arch $Arch was asked for: open a new PowerShell."
+}
 
 if (-not (Get-Command cmake.exe -ErrorAction SilentlyContinue) -or -not (Get-Command ninja.exe -ErrorAction SilentlyContinue)) {
     # The selected VS install has no bundled CMake/Ninja: borrow them from any install that does.
@@ -89,10 +108,12 @@ if ((Test-Path $prebuildDir) -and -not (Test-Path $env:WABCUT_DEPS_READY_MARKER)
 }
 
 # ---- Qt --------------------------------------------------------------------------------------------------------
-if (-not $env:WABCUT_QT_DIR) { $env:WABCUT_QT_DIR = "C:\Qt\$wabcutTestedQt\msvc2022_64" }
+$qtKit = if ($Arch -eq 'arm64') { 'msvc2022_arm64' } else { 'msvc2022_64' }
+if (-not $env:WABCUT_QT_DIR) { $env:WABCUT_QT_DIR = "C:\Qt\$wabcutTestedQt\$qtKit" }
 $qtpaths = Join-Path $env:WABCUT_QT_DIR 'bin\qtpaths.exe'
 if (-not (Test-Path "$env:WABCUT_QT_DIR\lib\cmake\Qt6\Qt6Config.cmake") -or -not (Test-Path $qtpaths)) {
-    Fail "WABCUT_QT_DIR ($env:WABCUT_QT_DIR) is not a Qt 6 MSVC x64 kit: install Qt $wabcutTestedQt (MSVC 2022 64-bit, with Qt Shader Tools) or set WABCUT_QT_DIR."
+    $qtName = if ($Arch -eq 'arm64') { 'MSVC 2022 ARM64' } else { 'MSVC 2022 64-bit' }
+    Fail "WABCUT_QT_DIR ($env:WABCUT_QT_DIR) is not a Qt 6 $qtName kit: install Qt $wabcutTestedQt ($qtName, with Qt Shader Tools) or set WABCUT_QT_DIR."
 }
 $qtVersion = (& $qtpaths --qt-version).Trim()
 if ([version]$qtVersion -lt [version]'6.11') { Fail "Qt $qtVersion in $env:WABCUT_QT_DIR is too old; Wabcut needs Qt 6.11 (tested with $wabcutTestedQt)." }

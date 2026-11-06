@@ -13,6 +13,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <thread>
@@ -220,6 +221,55 @@ TEST_CASE("5.1 loudness: libebur128's channel weights, the LFE ignored, surround
           Approx(10.0 * std::log10(1.41)).margin(0.01));
 }
 
+// 0.7 (card 048): the same on 7.1 - L R C LFE Lrs Rrs Ls Rs: the four surrounds weigh +1.5 dB, the LFE counts for nothing.
+TEST_CASE("7.1 loudness: libebur128's channel weights, the LFE ignored, the four surrounds +1.5 dB", "[audio][dsp][loudness][channels][surround71]") {
+    constexpr int kChannels = 8;
+    constexpr std::size_t kFrames = 480000;
+    const double levels[kChannels] = {-20.0, -23.0, -18.0, -10.0, -26.0, -29.0, -24.0, -27.0};
+    const double hz[kChannels] = {997.0, 1500.0, 440.0, 60.0, 3000.0, 2200.0, 1800.0, 700.0};
+    std::vector<float> x(kFrames * kChannels);
+    for (std::size_t f = 0; f < kFrames; ++f) {
+        for (int c = 0; c < kChannels; ++c) {
+            x[f * kChannels + static_cast<std::size_t>(c)] = static_cast<float>(
+                dbToAmp(levels[c]) * std::sin(2.0 * 3.14159265358979323846 * hz[c] * static_cast<double>(f) / 48000.0));
+        }
+    }
+    const dsp::LoudnessResult ours = measure(x, kChannels);
+    ebur128_state* direct = ebur128_init(kChannels, 48000, EBUR128_MODE_I);
+    REQUIRE(direct != nullptr);
+    const int roles[kChannels] = {EBUR128_LEFT,         EBUR128_RIGHT,          EBUR128_CENTER,        EBUR128_UNUSED,
+                                  EBUR128_LEFT_SURROUND, EBUR128_RIGHT_SURROUND, EBUR128_LEFT_SURROUND, EBUR128_RIGHT_SURROUND};
+    for (int c = 0; c < kChannels; ++c) {
+        ebur128_set_channel(direct, static_cast<unsigned>(c), roles[c]);
+    }
+    REQUIRE(ebur128_add_frames_float(direct, x.data(), kFrames) == EBUR128_SUCCESS);
+    double reference = 0.0;
+    REQUIRE(ebur128_loudness_global(direct, &reference) == EBUR128_SUCCESS);
+    ebur128_destroy(&direct);
+    CHECK(ours.integratedLufs == Approx(reference).margin(1e-9));
+    // The LFE does not count.
+    std::vector<float> noLfe = x;
+    for (std::size_t f = 0; f < kFrames; ++f) {
+        noLfe[f * kChannels + 3] = 0.0f;
+    }
+    CHECK(measure(noLfe, kChannels).integratedLufs == Approx(ours.integratedLufs).margin(1e-9));
+    // The same tone on any of the four surround channels weighs 1.41 (+1.5 dB) against L.
+    std::vector<float> front(kFrames * kChannels, 0.0f);
+    for (std::size_t f = 0; f < kFrames; ++f) {
+        front[f * kChannels + 0] = static_cast<float>(
+            dbToAmp(-20.0) * std::sin(2.0 * 3.14159265358979323846 * 997.0 * static_cast<double>(f) / 48000.0));
+    }
+    const double frontLufs = measure(front, kChannels).integratedLufs;
+    for (const int surround : {4, 5, 6, 7}) {
+        INFO("channel " << surround);
+        std::vector<float> rear(kFrames * kChannels, 0.0f);
+        for (std::size_t f = 0; f < kFrames; ++f) {
+            rear[f * kChannels + static_cast<std::size_t>(surround)] = front[f * kChannels + 0];
+        }
+        CHECK(measure(rear, kChannels).integratedLufs - frontLufs == Approx(10.0 * std::log10(1.41)).margin(0.01));
+    }
+}
+
 
 // 0.6 (P1 round, #54, loudness QC): the meter says where - the loudest 400 ms and 3 s windows, the 100 ms block of the
 // true peak - and keeps every 100 ms block whose true peak reaches the floor (-6 dBTP), so overs can be listed later.
@@ -267,4 +317,64 @@ TEST_CASE("Loudness says where the loudest windows and the true peak are, and ke
     meter.reset();
     CHECK(meter.result().peakBlocks.empty());
     CHECK(meter.result().truePeakFrame == -1);
+}
+
+// 0.7 (card 166): the hot-block list was capped at 100,000 blocks by dropping every later block, so on a very hot
+// programme (> 2.8 h above -6 dBTP) the last overs were never listed while the true peak still showed them. Now the
+// quietest blocks go and the floor rises, so the list is complete above the floor wherever the programme is hot.
+TEST_CASE("Loudness keeps the loudest hot blocks when the list is full: the floor rises, the newest are not dropped",
+          "[audio][dsp][loudness]") {
+    constexpr std::int64_t kSecond = 48000;
+    // 60 hot blocks (6 s, every 100 ms block above -6 dBTP) getting louder, against a list of 20.
+    const auto x = program({{-5.5, 1.0}, {-5.0, 1.0}, {-4.0, 1.0}, {-3.0, 1.0}, {-2.0, 1.0}, {-1.0, 1.0}});
+    const std::size_t frames = x.size() / 2;
+
+    dsp::LoudnessMeter everything(2, 48000);
+    everything.add(x.data(), frames);
+    const auto full = everything.result();
+    REQUIRE(full.peakBlocks.size() >= 58); // nothing capped: every block
+    CHECK(full.peakFloorDbtp == dsp::kPeakBlockFloorDbtp);
+    CHECK_FALSE(full.peakBlocksTruncated());
+
+    dsp::LoudnessMeter capped(2, 48000, 20);
+    for (std::size_t done = 0; done < frames; done += 777) { // uneven pieces
+        capped.add(x.data() + done * 2, std::min<std::size_t>(777, frames - done));
+    }
+    const auto r = capped.result();
+    // The list stays within its cap (the block still filling may count once more) and the floor rose.
+    CHECK(r.peakBlocks.size() <= 21);
+    REQUIRE_FALSE(r.peakBlocks.empty());
+    CHECK(r.peakBlocksTruncated());
+    CHECK(r.peakFloorDbtp > dsp::kPeakBlockFloorDbtp);
+    CHECK(r.peakFloorDbtp < r.truePeakDbtp);
+    // The newest blocks are there: the programme's last second, its loudest, is complete and the true peak's block is in.
+    std::size_t lastSecond = 0;
+    for (std::size_t i = 0; i < r.peakBlocks.size(); ++i) {
+        INFO(i);
+        CHECK(r.peakBlocks[i].truePeakDbtp >= r.peakFloorDbtp);
+        if (i > 0) {
+            CHECK(r.peakBlocks[i].frame > r.peakBlocks[i - 1].frame); // still in order
+        }
+        lastSecond += r.peakBlocks[i].frame >= 5 * kSecond - kSecond / 10 ? 1u : 0u;
+    }
+    CHECK(lastSecond >= 10);
+    CHECK(r.peakBlocks.back().frame >= 5 * kSecond);
+    CHECK(r.peakBlocks.back().truePeakDbtp == Approx(r.truePeakDbtp).margin(0.5));
+    // Complete above the floor: every block of the uncapped list that is louder than the floor is in the capped one.
+    std::size_t above = 0;
+    for (const dsp::PeakBlock& b : full.peakBlocks) {
+        if (b.truePeakDbtp <= r.peakFloorDbtp) {
+            continue;
+        }
+        ++above;
+        const bool kept = std::any_of(r.peakBlocks.begin(), r.peakBlocks.end(), [&](const dsp::PeakBlock& k) { return k.frame == b.frame; });
+        INFO("block at frame " << b.frame << " (" << b.truePeakDbtp << " dBTP)");
+        CHECK(kept);
+    }
+    CHECK(above > 0);
+
+    // reset() puts the floor back.
+    capped.reset();
+    CHECK(capped.result().peakFloorDbtp == dsp::kPeakBlockFloorDbtp);
+    CHECK_FALSE(capped.result().peakBlocksTruncated());
 }

@@ -13,7 +13,14 @@ Panel {
     property string effectivePrompt: extendClip && prompt.text.trim() === "" ? qsTr("Continue this shot naturally.") : prompt.text
     // 0.2: a sound-effect model (ElevenLabs): seconds 0 lets it pick the length, a loop where it makes one, no picture.
     property bool soundModel: !!selectedModel && !!selectedModel.sound
-    property var quote: cloudAllowed && selectedModel ? GenerateController.estimate(selectedModel.id, effectivePrompt, seconds.value, aspect.currentText, loop.checked) : ({ok: false, error: qsTr("Offline / no-cloud is enabled")})
+    // r07 (QA-06): offline mode and the no-cloud lock stop cloud models only, so the estimate decides per model (a
+    // server on this computer keeps generating); reading cloudAllowed here prices again when either switch changes.
+    property var quote: {
+        const blocked = !root.cloudAllowed
+        if (!root.selectedModel)
+            return { ok: false, error: blocked ? qsTr("Offline / no-cloud is enabled") : qsTr("Choose a generation model") }
+        return GenerateController.estimate(root.selectedModel.id, root.effectivePrompt, seconds.value, aspect.currentText, loop.checked)
+    }
     onQuoteChanged: approved.checked = false
     onExtendClipChanged: { approved.checked = false; root.prepareUpload() }
     // Extend uploads one picture: render it now (as an export would show it, redactions applied) and show it before

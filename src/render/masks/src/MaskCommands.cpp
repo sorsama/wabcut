@@ -702,17 +702,60 @@ CommandOutput trackMask(ExecutionContext& c) {
     return out;
 }
 
-/// Canvas position of a frame point of a clip (sequence pixels), as the compositor places it (render::layerToCanvas).
+/// The quarter turns the compositor gives a stream's layer: the stream's display rotation, turned the other way when the
+/// picture is also mirrored (render::transformQuarterTurns: a flip then a turn is a turn the other way then a flip).
+int orientationQuarterTurns(const VideoStreamInfo& v) {
+    const int q = ((v.rotationDegrees / 90) % 4 + 4) % 4;
+    return v.mirrored ? (4 - q) % 4 : q;
+}
+
+/// A clip's anchor (displayed pixels) in the space of a stream turned by `quarter` quarter turns (render::toTransformAnchor).
+Point2 turnedAnchor(Point2 a, int quarter) {
+    switch (quarter) {
+    case 1:
+        return {a.y, -a.x};
+    case 2:
+        return {-a.x, -a.y};
+    case 3:
+        return {-a.y, a.x};
+    default:
+        return a;
+    }
+}
+
+/// Canvas position of a frame point of a clip (sequence pixels), as the compositor places it (render::layerToCanvas with
+/// render::applyDisplayOrientation: the stored pixels are flipped when the stream is mirrored, then turned with the clip's
+/// own rotation). `q` is in stored pixels: the tracker looks at the stored picture, whatever its display rotation.
 Point2 placeOnCanvas(const Clip& clip, Ticks curveTime, const VideoStreamInfo& v, const Sequence& seq, Point2 q) {
     const ClipProperties& p = clip.properties();
+    // As render::layerToCanvas puts them: the frame's own pixel ratio before the turn, the canvas ratio after it (an HDV
+    // clip in an HDV sequence is one to one; a rotated clip stays a rigid picture).
+    const double seqPar = sequencePixelAspect(seq);
     const double par = v.sampleAspect.isValid() ? v.sampleAspect.toDouble() : 1.0;
-    const double rad = p.value(ParamId::Rotation, curveTime) * std::numbers::pi / 180.0;
-    const double s = p.value(ParamId::Scale, curveTime) * // P.2: Scale to Frame Size
-                     scaleToFrameFactor(clip, streamPictureSize(v), seq.width, seq.height);
-    const double x = s * (par * (q.x - v.width / 2.0) - p.value(ParamId::AnchorX, curveTime));
-    const double y = s * (q.y - v.height / 2.0 - p.value(ParamId::AnchorY, curveTime));
-    return {seq.width / 2.0 + p.value(ParamId::PositionX, curveTime) + std::cos(rad) * x - std::sin(rad) * y,
-            seq.height / 2.0 + p.value(ParamId::PositionY, curveTime) + std::sin(rad) * x + std::cos(rad) * y};
+    const int quarter = orientationQuarterTurns(v);
+    const double degrees = p.value(ParamId::Rotation, curveTime) + 90.0 * quarter;
+    double cs = std::cos(degrees * std::numbers::pi / 180.0);
+    double sn = std::sin(degrees * std::numbers::pi / 180.0);
+    if (const double turns = degrees / 90.0; turns == std::floor(turns)) { // exact quarter turns keep exact matrices
+        const long long k = ((static_cast<long long>(turns) % 4) + 4) % 4;
+        cs = k == 0 ? 1.0 : k == 2 ? -1.0 : 0.0;
+        sn = k == 1 ? 1.0 : k == 3 ? -1.0 : 0.0;
+    }
+    const Point2 anchor = turnedAnchor({p.value(ParamId::AnchorX, curveTime), p.value(ParamId::AnchorY, curveTime)}, quarter);
+    const double fit = scaleToFrameFactor(clip, streamPictureSize(v), seq.width, seq.height, seqPar); // P.2: Scale to Frame Size
+    // 0.7 (card #12): Scale Width / Scale Height are along the displayed axes; an odd number of quarter turns swaps them in
+    // the stored picture (render::applyDisplayOrientation does the same).
+    auto [sx, sy] = p.scaleAt(curveTime);
+    sx *= fit;
+    sy *= fit;
+    if ((quarter & 1) != 0) {
+        std::swap(sx, sy);
+    }
+    const double across = par * (q.x - v.width / 2.0);
+    const double x = sx * ((v.mirrored ? -across : across) - anchor.x);
+    const double y = sy * (q.y - v.height / 2.0 - anchor.y);
+    return {seq.width / 2.0 + p.value(ParamId::PositionX, curveTime) + (cs * x - sn * y) / seqPar,
+            seq.height / 2.0 + p.value(ParamId::PositionY, curveTime) + sn * x + cs * y};
 }
 
 /// The timeline time at which a clip shows media time `media`.
@@ -770,6 +813,11 @@ CommandOutput trackTransform(ExecutionContext& c) {
     const ClipId targetId = c.has("target") ? c.clip("target") : id;
     const Clip& target = clipOf(c, state, targetId);
     const std::string mode = c.string("mode", targetId == id ? "stabilize" : "follow");
+    // 0.7 (card #12): a similarity track rewrites the target's Scale (both axes by the tracked scale); with Uniform Scale off
+    // that would squash the picture, so the target is asked to be uniform first. Translation moves Position only.
+    if (options.model == MotionModel::Similarity && !target.properties().uniformScale()) {
+        fail(ErrorCode::EditRejected, "clip " + std::to_string(targetId.value) + " has Uniform Scale off: turn it on before a similarity track scales it (or track the translation only)");
+    }
     if (mode == "stabilize" && targetId != id) {
         fail(ErrorCode::InvalidParams, "stabilize keys the tracked clip itself: leave out \"target\"", Json{{"path", "/mode"}});
     }
@@ -806,6 +854,8 @@ CommandOutput trackTransform(ExecutionContext& c) {
         double theta = std::atan2(m.d, m.a) * 180.0 / std::numbers::pi;
         theta += 360.0 * std::round((rotationPrevious - theta) / 360.0);
         rotationPrevious = theta;
+        // The stored picture's turn as it shows: a mirrored picture turns the other way (0.7, with the display orientation).
+        const double shown = stream.mirrored ? -theta : theta;
         const double s = std::sqrt(std::max(1e-12, std::abs(m.determinant())));
         double x = 0.0, y = 0.0, sc = tp.value(ParamId::Scale, ct), rot = tp.value(ParamId::Rotation, ct);
         if (mode == "follow") {
@@ -814,7 +864,7 @@ CommandOutput trackTransform(ExecutionContext& c) {
             y = tp.value(ParamId::PositionY, targetStart) + (now.y - canvas0.y);
             if (similarity) {
                 sc = tp.value(ParamId::Scale, targetStart) * s;
-                rot = tp.value(ParamId::Rotation, targetStart) + theta;
+                rot = tp.value(ParamId::Rotation, targetStart) + shown;
             }
         } else {
             // Stabilize: the feature stays where it was at the start, upright and the same size.
@@ -822,7 +872,7 @@ CommandOutput trackTransform(ExecutionContext& c) {
             ClipProperties props = clip.properties();
             if (similarity) {
                 sc = clip.properties().value(ParamId::Scale, c0) / s;
-                rot = clip.properties().value(ParamId::Rotation, c0) - theta;
+                rot = clip.properties().value(ParamId::Rotation, c0) - shown;
             }
             props[ParamId::Scale] = ParamValue(sc);
             props[ParamId::Rotation] = ParamValue(rot);

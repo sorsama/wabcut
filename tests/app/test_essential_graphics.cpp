@@ -785,6 +785,71 @@ TEST_CASE("Essential Graphics panel: Edit shows a lower third's fields, layers a
     const QImage styleImage = shell.grab();
     REQUIRE_FALSE(styleImage.isNull());
     saveCrop(styleImage, panel.get(), QStringLiteral("essential-graphics-text-style.png"));
+
+    // 0.7 (card #138): Optical Kerning and the OpenType feature pills with the features field, under the same text layer.
+    {
+        QQuickItem* features = findNamed(properties, QStringLiteral("graphicTextFeatures"));
+        REQUIRE(features);
+        CHECK(features->isVisible());
+        QQuickItem* field = findNamed(properties, QStringLiteral("graphicTextFeaturesField"));
+        REQUIRE(field);
+        QQuickItem* ligatures = findNamed(properties, QStringLiteral("graphicTextFeature_liga"));
+        QQuickItem* alternates = findNamed(properties, QStringLiteral("graphicTextFeature_calt"));
+        QQuickItem* discretionary = findNamed(properties, QStringLiteral("graphicTextFeature_dlig"));
+        QQuickItem* optical = findNamed(properties, QStringLiteral("graphicTextStyle_opticalKerning"));
+        REQUIRE(ligatures);
+        REQUIRE(alternates);
+        REQUIRE(discretionary);
+        REQUIRE(optical);
+        // Ligatures and contextual alternates are on until turned off; the rest are off.
+        CHECK(ligatures->property("variant").toString() == QStringLiteral("primary"));
+        CHECK(alternates->property("variant").toString() == QStringLiteral("primary"));
+        CHECK(discretionary->property("variant").toString() == QStringLiteral("ghost"));
+        CHECK(optical->property("variant").toString() == QStringLiteral("ghost"));
+        const auto run = [&] { return graphics->layer().value(QStringLiteral("text")).toMap().value(QStringLiteral("runs")).toList().at(0).toMap(); };
+        const std::size_t steps = controller->session().undoCount();
+        for (QQuickItem* p = features->parentItem(); p; p = p->parentItem()) {
+            if (p->inherits("QQuickFlickable")) {
+                auto* content = p->property("contentItem").value<QQuickItem*>();
+                REQUIRE(content);
+                p->setProperty("contentY", features->mapToItem(content, QPointF(0, 0)).y() - 120);
+                break;
+            }
+        }
+        spin(50);
+        click(discretionary);
+        CHECK(run().value(QStringLiteral("features")).toString() == QStringLiteral("dlig"));
+        click(optical);
+        CHECK(run().value(QStringLiteral("opticalKerning")).toBool());
+        click(ligatures);
+        CHECK(run().value(QStringLiteral("features")).toString() == QStringLiteral("dlig, -liga"));
+        CHECK(controller->session().undoCount() == steps + 3); // one undo step each
+        spin(50);
+        CHECK(discretionary->property("variant").toString() == QStringLiteral("primary"));
+        CHECK(ligatures->property("variant").toString() == QStringLiteral("ghost"));
+        // The field takes the whole list, normalised; an unreadable one is refused and changes nothing.
+        field->setProperty("text", QStringLiteral("ss01,  calt , salt=2"));
+        QMetaObject::invokeMethod(field, "editingFinished");
+        spin(30);
+        CHECK(run().value(QStringLiteral("features")).toString() == QStringLiteral("ss01, calt, salt=2"));
+        CHECK(graphics->setRun(2, 0, QStringLiteral("features"), QStringLiteral("not a feature!")).startsWith(QStringLiteral("OpenType features")));
+        CHECK(run().value(QStringLiteral("features")).toString() == QStringLiteral("ss01, calt, salt=2"));
+        for (const bool dark : {true, false}) {
+            shell.setAppearance(dark, "ultraviolet");
+            REQUIRE(shell.settle(dark, shell.themeColor("accentFill")));
+            spin(50);
+            const QImage typography = shell.grab();
+            REQUIRE_FALSE(typography.isNull());
+            saveCrop(typography, panel.get(),
+                     dark ? QStringLiteral("essential-graphics-typography-dark.png") : QStringLiteral("essential-graphics-typography-light.png"));
+        }
+        shell.setAppearance(true, "ultraviolet");
+        REQUIRE(shell.settle(true, shell.themeColor("accentFill")));
+        for (int i = 0; i < 4; ++i) // the pills and the field, back to the plain style
+            REQUIRE(controller->undo());
+        CHECK(run().value(QStringLiteral("features")).toString().isEmpty());
+        CHECK_FALSE(run().value(QStringLiteral("opticalKerning")).toBool());
+    }
     REQUIRE(controller->undo()); // the shadow
     REQUIRE(controller->undo()); // the stroke
 

@@ -17,6 +17,7 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace wabcut::ai {
 
@@ -26,7 +27,8 @@ namespace wabcut::ai {
 /// Audio: the local audio models (A.4): DeepFilterNet3 for Enhance Speech (an archive of three ONNX graphs, extracted
 /// by wabcut/ai/audio/AudioModels.h) and HTDemucs for stem separation.
 /// Segmentation (AI-14): SAM 2.1 Hiera-Tiny's video tracker, five ONNX graphs and its constants in one directory.
-enum class ModelKind { Whisper, Vad, Embedding, Detection, Llm, Runtime, Audio, Translation, Segmentation };
+/// Video (0.7): the image-to-image models of the AI video effects (upscale, deblur, denoise), one ONNX graph each.
+enum class ModelKind { Whisper, Vad, Embedding, Detection, Llm, Runtime, Audio, Translation, Segmentation, Video };
 
 struct ModelInfo {
     std::string id;          ///< "base", "large-v3-turbo-q5_0", "silero-v6.2.0", ...
@@ -38,15 +40,35 @@ struct ModelInfo {
     std::string license;     ///< SPDX id of the weights
     std::string licenseCard; ///< shown before the first download
     std::string description;
+    // r07, the model library (wabcut/ai/ModelLibrary.h): a GGUF or whisper model the user downloaded from Hugging Face.
+    /// Other ids this model needs beside it in the store: the remaining shards of a split GGUF (same directory).
+    std::vector<std::string> parts;
+    /// The id of its vision projector (mmproj), which the local assistant passes to llama-server.
+    std::string projector;
+    /// A licence outside the allow-list that the user accepted before the download (shown with the model).
+    bool licenseAccepted = false;
+    /// Billions of parameters (sizes the local assistant's launch); 0 = unknown.
+    double paramsB = 0.0;
 };
 
-/// The built-in manifest: whisper tiny, base and large-v3-turbo (q5_0), the Silero VAD model, SigLIP 2 base
+/// The built-in manifest: whisper tiny, base and large-v3-turbo (q5_0) and, for the model library's transcription
+/// picker (r07), small, small.en, base.en, medium (q5_0), large-v3 (q5_0) and large-v3-turbo at 8 and 16 bits, the Silero VAD model, SigLIP 2 base
 /// (vision encoder, text encoder, tokenizer) for smart search, the subject detectors, DeepFilterNet3 and HTDemucs, and the
 /// OPUS-MT caption translation models (AI-12; four files each, in a directory of their own: "opus-mt-<pair>/...").
 std::span<const ModelInfo> builtinModels();
 
-/// Looks up a model by id or alias ("large-v3-turbo" -> "large-v3-turbo-q5_0", "silero" -> current VAD model).
+/// Looks up a model by id or alias ("large-v3-turbo" -> "large-v3-turbo-q5_0", "silero" -> current VAD model), then
+/// among the registered library models.
 const ModelInfo* findModel(std::string_view idOrAlias);
+
+/// The model library's downloaded models (r07): registered at start from the library index and after each download,
+/// so findModel() - and with it the local assistant and local transcription - knows them. False for an id of the
+/// built-in manifest or an invalid entry (empty id or file, a file name that leaves the store). Thread-safe; entries
+/// live as long as the process (a pointer from findModel() stays valid), unregistering only hides the id.
+bool registerModel(ModelInfo model);
+void unregisterModel(std::string_view id);
+/// The registered library models that are not hidden, in registration order.
+std::vector<ModelInfo> registeredModels();
 
 /// The licence allow-list for downloadable weights and runtimes (docs/ai.md: no NC, no AGPL, no community licences):
 /// MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, and CC-BY-4.0 (attribution only: the model's card, shown
@@ -81,9 +103,12 @@ struct DownloadProgress {
 
 class ModelStore {
 public:
-    /// `root` is created on demand. defaultRoot(): <user cache>/models.
+    /// `root` is created on demand. defaultRoot(): <user cache>/models, or the folder set with setDefaultRoot().
     explicit ModelStore(std::filesystem::path root);
     static std::filesystem::path defaultRoot();
+    /// Settings > AI > Local models > Storage folder (r07): where defaultRoot() keeps models from now on; empty restores
+    /// <user cache>/models. Process-wide and thread-safe.
+    static void setDefaultRoot(std::filesystem::path root);
 
     const std::filesystem::path& root() const { return m_root; }
     std::filesystem::path pathFor(const ModelInfo& model) const;
@@ -98,6 +123,9 @@ public:
     std::expected<std::filesystem::path, Error> ensure(const ModelInfo& model, IDownloadTransport* transport,
                                                        const std::function<void(const DownloadProgress&)>& progress = {},
                                                        std::stop_token stop = {});
+
+    /// Bytes of an interrupted download of `model` waiting to be resumed (its ".part" file); 0 when there is none.
+    std::uint64_t partialBytes(const ModelInfo& model) const;
 
     /// Re-hashes an installed file (slow for large models). InvalidArgument on mismatch.
     std::expected<void, Error> verify(const ModelInfo& model) const;

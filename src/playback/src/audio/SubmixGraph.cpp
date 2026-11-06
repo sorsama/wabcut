@@ -536,6 +536,9 @@ void SubmixGraph::finishBlock(audio::Mixer& mixer, std::span<float> mixBlock) no
                 float sum = 0.0f;
                 if (ch == 6) {
                     sum = 0.5f * (x[0] + x[1]) + 0.70710678f * x[2] + 0.35355339f * (x[4] + x[5]);
+                } else if (ch == 8) { // 7.1: the rear pair (4, 5) folded into the side pair (6, 7) at -3 dB first
+                    sum = 0.5f * (x[0] + x[1]) + 0.70710678f * x[2] +
+                          0.35355339f * (x[6] + x[7] + 0.70710678f * (x[4] + x[5]));
                 } else if (ch >= 2) {
                     sum = 0.5f * (x[0] + x[1]);
                 } else {

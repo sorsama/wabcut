@@ -62,6 +62,8 @@ struct PlaybackStats {
     int activeSessions = 0;
     /// Stack effects bypassed in the latest composite (unknown or newer effects): a warning badge.
     int bypassedEffects = 0;
+    /// 0.7: layers showing an unprocessed picture of their AI effects (SchedulerStats::aiUnprocessedLayers).
+    int aiUnprocessedLayers = 0;
     /// What the latest composite was decoded from (SchedulerStats): the monitor's quality badge.
     int proxyLayers = 0;
     int originalLayers = 0;

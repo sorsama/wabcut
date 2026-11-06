@@ -1,5 +1,6 @@
 #include "ShellFixture.h"
 
+#include "EnglishPlurals.h"
 #include "RhiPolicy.h"
 
 #include <catch2/catch_test_case_info.hpp>
@@ -64,6 +65,7 @@ int g_argc = 1;
 char g_argv0[] = "wabcut_app_tests";
 char* g_argv[] = {g_argv0, nullptr};
 QGuiApplication* g_app = nullptr;
+std::unique_ptr<wabcut::app::EnglishPluralTranslator> g_plurals; // as main() installs it, so tests and screenshots read like the app
 std::unique_ptr<QTemporaryDir> g_settingsDir;
 std::unique_ptr<QTemporaryDir> g_cacheDir;
 QStringList g_testDataPaths;
@@ -112,6 +114,8 @@ void createApplication(double scaleFactor) {
 
     g_previousHandler = qInstallMessageHandler(captureMessage);
     g_app = new QGuiApplication(g_argc, g_argv);
+    g_plurals = std::make_unique<wabcut::app::EnglishPluralTranslator>();
+    QCoreApplication::installTranslator(g_plurals.get());
     // Capture and validate exact owned directories while the application identity is alive.
     for (const auto location : {QStandardPaths::AppLocalDataLocation, QStandardPaths::AppDataLocation,
                                 QStandardPaths::AppConfigLocation, QStandardPaths::CacheLocation}) {
@@ -138,6 +142,7 @@ public:
     }
 
     void testRunEnded(const Catch::TestRunStats&) override {
+        g_plurals.reset();
         delete g_app;
         g_app = nullptr;
         qInstallMessageHandler(g_previousHandler);

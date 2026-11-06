@@ -16,6 +16,7 @@
 
 #include <wabcut/interchange/Lottie.h>
 
+#include <wabcut/model/Plural.h>
 #include <wabcut/model/ProjectIO.h>
 
 #include <nlohmann/json.hpp>
@@ -228,10 +229,29 @@ public:
         out.graphic.layers = convertComp(*layers, TimeMap{}, 1, stack, "/layers");
         if (const Json* markers = array(m_root, "markers"); markers && !markers->empty()) {
             note(ReportOutcome::Dropped, ReportCategory::Marker,
-                 std::to_string(markers->size()) + " composition marker(s) are not imported", "/markers");
+                 counted(static_cast<std::int64_t>(markers->size()), "composition marker") + " not imported", "/markers");
         }
         if (flag(m_root, "ddd")) {
             note(ReportOutcome::Approximated, ReportCategory::Graphic, "a 3D composition is imported flat", "/ddd");
+        }
+        // 0.7 (card 178): the texts and the solid colours that stay the same become the template's fields (text first).
+        // The layers were converted bottom to top; the fields read top to bottom, as the layers do in After Effects.
+        std::reverse(m_textFields.begin(), m_textFields.end());
+        std::reverse(m_colorFields.begin(), m_colorFields.end());
+        for (std::size_t i = 0; i < m_textFields.size(); ++i) {
+            m_textFields[i].id = fieldId("text", i);
+        }
+        for (std::size_t i = 0; i < m_colorFields.size(); ++i) {
+            m_colorFields[i].id = fieldId(m_colorFields[i].property == "stroke" ? "stroke" : "color", i);
+        }
+        out.fields = m_textFields;
+        for (TemplateField& f : m_colorFields) {
+            if (out.fields.size() >= kMaxTemplateFields) {
+                note(ReportOutcome::Approximated, ReportCategory::Graphic,
+                     "only the first " + std::to_string(kMaxTemplateFields) + " texts and colors are template fields", "/layers");
+                break;
+            }
+            out.fields.push_back(std::move(f));
         }
         if (m_suppressed > 0) {
             m_report.add(ReportOutcome::Dropped, ReportCategory::Graphic,
@@ -721,6 +741,7 @@ private:
     // ---- Paints -----------------------------------------------------------------------------------------------------
 
     GraphicColor colorOf(const RawProp& c, const RawProp& opacity, const std::string& where) {
+        m_colorAnimated = c.animated || opacity.animated;
         const std::vector<double> rgba = firstValue(c, where + "/c", "colour");
         const std::vector<double> o = firstValue(opacity, where + "/o", "opacity");
         GraphicColor color;
@@ -1064,13 +1085,25 @@ private:
                 }
             }
         }
+        m_colorAnimated = false;
+        bool fillConstant = false;
+        bool strokeConstant = false;
         if (fill) {
             shape.fill = fillOf(*fill, ox, oy, time);
+            fillConstant = fill->type == "fl" && !m_colorAnimated;
         } else {
             shape.fill.kind = PaintKind::None;
         }
+        m_colorAnimated = false;
         if (stroke) {
             shape.stroke = strokeOf(*stroke, time);
+            strokeConstant = stroke->type == "st" && !m_colorAnimated;
+        }
+        if (fillConstant && shape.fill.kind == PaintKind::Solid) {
+            noteColorField(layer, "fill", shape.fill.color);
+        }
+        if (strokeConstant && shape.stroke.enabled && shape.stroke.color.rgba[3] > 0.0) {
+            noteColorField(layer, "stroke", shape.stroke.color);
         }
         if (trim) {
             const Json& t = *trim->item;
@@ -1082,6 +1115,50 @@ private:
             }
         }
         return layer;
+    }
+
+    // ---- Template fields (0.7, card 178) ----------------------------------------------------------------------------
+
+    /// A field id from a prefix and the number of the fields of its kind so far.
+    static std::string fieldId(const char* prefix, std::size_t n) { return prefix + std::to_string(n + 1); }
+
+    void noteTextField(const GraphicLayer& layer) {
+        if (!layer.visible || layer.text.runs.empty() || layer.text.runs.front().text.empty()) {
+            return;
+        }
+        TemplateField f;
+        f.id = fieldId("text", m_textFields.size());
+        const std::string& text = layer.text.runs.front().text;
+        f.label = bounded(!layer.name.empty() ? layer.name : bounded(text, 40), 96); // cut between characters: Thai or CJK text must stay valid UTF-8
+        f.kind = FieldKind::Text;
+        f.layer = layer.id;
+        f.property = "text";
+        f.value.text = text;
+        m_textFields.push_back(std::move(f));
+        // The text's colour is a field too, whatever the layer is called.
+        noteColorField(layer, "fill", layer.text.runs.front().style.fill);
+    }
+
+    /// A colour that does not change over the animation: a field named after its layer.
+    void noteColorField(const GraphicLayer& layer, const char* property, const GraphicColor& color) {
+        if (!layer.visible || color.rgba[3] <= 0.0) {
+            return;
+        }
+        TemplateField f;
+        f.id = fieldId(std::string_view(property) == "stroke" ? "stroke" : "color", m_colorFields.size());
+        std::string base = layer.name;
+        if (!m_currentLayerName.empty() && base != m_currentLayerName) {
+            base = base.empty() ? m_currentLayerName : m_currentLayerName + " " + base;
+        }
+        if (base.empty()) {
+            base = layer.kind == LayerKind::Text ? "Text" : "Shape";
+        }
+        f.label = bounded(base + (std::string_view(property) == "stroke" ? " outline color" : " color"), 96);
+        f.kind = FieldKind::Color;
+        f.layer = layer.id;
+        f.property = property;
+        f.value.color = color;
+        m_colorFields.push_back(std::move(f));
     }
 
     // ---- Text -------------------------------------------------------------------------------------------------------
@@ -1500,6 +1577,13 @@ private:
         GraphicLayer layer;
         layer.id = nextId();
         layer.name = name;
+        // 0.7 (card 178): the template fields of this layer's shapes are named after it.
+        struct NameScope {
+            std::string& slot;
+            std::string saved;
+            ~NameScope() { slot = std::move(saved); }
+        } nameScope{m_currentLayerName, m_currentLayerName};
+        m_currentLayerName = name;
         layer.visible = !flag(l, "hd");
         layer.in = std::max(*inAt, Ticks{});
         if (*outAt < m_duration) {
@@ -1563,6 +1647,7 @@ private:
             const auto color = hexColor(stringOf(l, "sc"));
             layer.shape.fill.color.rgba = color.value_or(std::array<double, 4>{0.0, 0.0, 0.0, 1.0});
             content = {sw / 2.0, sh / 2.0};
+            noteColorField(layer, "fill", layer.shape.fill.color);
             break;
         }
         case 4: { // shape: a group of its shapes
@@ -1586,6 +1671,7 @@ private:
                 --m_layerCount;
                 return std::nullopt;
             }
+            noteTextField(layer);
             break;
         }
         default:
@@ -1651,6 +1737,11 @@ private:
     std::size_t m_totalKeys = 0;
     std::size_t m_totalVertices = 0;
     std::size_t m_work = 0;
+    // 0.7 (card 178): the template fields: text first, then solid colours that do not change.
+    std::vector<TemplateField> m_textFields;
+    std::vector<TemplateField> m_colorFields;
+    bool m_colorAnimated = false; ///< the last colorOf() read keys (not a constant)
+    std::string m_currentLayerName; ///< the Lottie layer being converted
 };
 
 } // namespace

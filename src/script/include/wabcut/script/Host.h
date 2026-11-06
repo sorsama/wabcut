@@ -51,6 +51,9 @@ struct HostLimits {
     std::chrono::milliseconds grace{2000};
     /// Until the helper has evaluated the scripts.
     std::chrono::milliseconds startTime{15000};
+    /// stop(): how long the helper gets to exit on its own after the shutdown message (then, for one that did, to finish
+    /// its last storage writes). A helper that does not exit in that time is killed at once.
+    std::chrono::milliseconds stopGrace{500};
     /// The helper process's memory cap (Windows job object): an allocation past it fails and ends the process.
     std::size_t memoryBytes = std::size_t{512} * 1024 * 1024;
     int notificationsPerMinute = 30;

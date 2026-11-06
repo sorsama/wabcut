@@ -6,6 +6,7 @@
 // (monitor-transport-overflow.png, monitor-transport-overflow-menu.png).
 
 #include "BridgeIds.h"
+#include "CommandPalette.h"
 #include "MonitorBridge.h"
 #include "MonitorGuides.h"
 #include "MotionBridge.h"
@@ -24,12 +25,16 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <string_view>
 
+#include <QClipboard>
 #include <QGuiApplication>
 #include <QDir>
+#include <QKeyEvent>
+#include <QMouseEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
@@ -867,6 +872,18 @@ struct MonitorShell {
         REQUIRE(controller->frameWidth() == width);
         spin(20);
     }
+    /// The current sequence's pixel aspect ratio num:den (Sequence Settings, one undo step).
+    void setPixelAspect(int num, int den) const {
+        command::CommandEngine engine(controller->session());
+        command::CommandRequest request;
+        request.command = "sequence.setSettings";
+        request.params = command::Json{{"sequence", controller->currentSequenceId().value},
+                                       {"pixelAspect", command::Json{{"num", num}, {"den", den}}}};
+        const auto result = engine.execute(request);
+        INFO(command::toJson(result).dump());
+        REQUIRE(result.ok());
+        spin(20);
+    }
     /// A title in the Source Monitor (it renders without media files), marked 1-5 s.
     void loadTitleSource() {
         command::CommandEngine engine(controller->session());
@@ -925,6 +942,32 @@ struct MonitorShell {
 bool shown(QObject* popup) { return popup && popup->property("visible").toBool(); }
 
 } // namespace
+
+TEST_CASE("The Program Monitor frame takes the shape the sequence pixel aspect ratio gives it (156)",
+          "[app][monitor][par][qml]") {
+    resetSettings();
+    clearMessages();
+    MonitorShell s;
+    QQuickItem* frame = s.find("programFrameArea");
+    const auto shape = [&] { return frame->width() / frame->height(); };
+    s.setFrame(1440, 1080); // HDV footage's frame, square pixels: 4:3
+    CHECK(s.controller->framePixelAspect() == Approx(1.0));
+    CHECK(shape() == Approx(4.0 / 3.0).margin(0.01));
+    // Sequence Settings > Pixel Aspect Ratio 4:3: the same pixels are seen 16:9, and the frame follows at once.
+    s.setPixelAspect(4, 3);
+    CHECK(s.controller->framePixelAspect() == Approx(4.0 / 3.0));
+    REQUIRE(waitFor([&] { return std::abs(shape() - 16.0 / 9.0) < 0.01; }));
+    // DV widescreen: 720x480 with 40:33 pixels.
+    s.setFrame(720, 480);
+    s.setPixelAspect(40, 33);
+    REQUIRE(waitFor([&] { return std::abs(shape() - 720.0 * 40.0 / 33.0 / 480.0) < 0.01; }));
+    // Back to square pixels: the stored shape again.
+    s.setPixelAspect(1, 1);
+    REQUIRE(waitFor([&] { return std::abs(shape() - 1.5) < 0.01; }));
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
 
 TEST_CASE("Platform safe zones show on vertical sequences only", "[app][monitor][safezones][qml]") {
     resetSettings();
@@ -1031,6 +1074,43 @@ TEST_CASE("Platform safe zones menu switches between Shorts TikTok and Reels", "
     const QStringList messages = takeMessages();
     INFO(join(messages));
     CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Screenshots: the Program Monitor of an HDV sequence with 4:3 pixels, dark and light (156)",
+          "[app][monitor][par][qml][screenshot]") {
+    struct Shot {
+        const char* file;
+        bool dark;
+        int pixelNum;
+        int pixelDen;
+    };
+    for (const Shot shot : {Shot{"program-monitor-par-square.png", true, 1, 1}, Shot{"program-monitor-par-hdv.png", true, 4, 3},
+                            Shot{"program-monitor-par-hdv-light.png", false, 4, 3}}) {
+        INFO(shot.file);
+        resetSettings();
+        clearMessages();
+        MonitorShell s(1600, 900);
+        s.setFrame(1440, 1080);
+        s.setPixelAspect(shot.pixelNum, shot.pixelDen);
+        if (!shot.dark) {
+            s.shell.setAppearance(false, "ultraviolet");
+            REQUIRE(s.shell.settle(false, s.shell.themeColor("accentFill")));
+        }
+        QQuickItem* frame = s.find("programFrameArea");
+        const double wanted = 1440.0 * shot.pixelNum / shot.pixelDen / 1080.0;
+        REQUIRE(waitFor([&] { return std::abs(frame->width() / frame->height() - wanted) < 0.01; }));
+        const QImage image = s.shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        QQuickItem* panel = s.shell.item("monitorPanel");
+        REQUIRE(panel != nullptr);
+        const double dpr = s.shell.window->effectiveDevicePixelRatio();
+        const QRectF r = panel->mapRectToScene(QRectF(0, 0, panel->width(), panel->height()));
+        CHECK(image.copy(QRectF(r.topLeft() * dpr, r.size() * dpr).toRect())
+                  .save(QDir(outputDir()).filePath(QString::fromLatin1(shot.file))));
+        const QStringList messages = takeMessages();
+        INFO(join(messages));
+        CHECK(messages.isEmpty());
+    }
 }
 
 TEST_CASE("Screenshots: platform safe zones on a vertical sequence", "[app][monitor][safezones][qml][screenshot]") {
@@ -1297,6 +1377,470 @@ TEST_CASE("Monitor transports show every button at 2560x1440", "[app][monitor][t
     REQUIRE(QMetaObject::invokeMethod(popover, "close"));
     REQUIRE(waitFor([&] { return !shown(popover); }));
 
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+// ---- 0.7 (batch A3): Copy Frame (001), Play In to Out with pre/post-roll (042), composition guides (099), Source mute (140) --
+
+TEST_CASE("Copy Frame puts the Program and Source frames on the clipboard as pictures (card 001)",
+          "[app][monitor][exportframe][gpu]") {
+    resetSettings();
+    Timeline tl(R"(
+        V1 tgt |............|
+        A1 tgt |............|
+    )");
+    ProjectController controller;
+    controller.resetProject(tl.state, tl.seq);
+    {
+        command::CommandEngine engine(controller.session());
+        command::CommandRequest title;
+        title.command = "title.add";
+        title.params = command::Json{{"text", "Copy Frame"}, {"at", 0}, {"duration", f(12).value}, {"track", "V1"},
+                                     {"sequence", tl.seq.value}};
+        REQUIRE(engine.execute(title).ok());
+    }
+    controller.setPlayhead(f(4));
+    SourceMonitorBridge source;
+    source.setController(&controller);
+    MonitorBridge monitors;
+    monitors.setController(&controller);
+    monitors.setSourceMonitor(&source);
+    QClipboard* clipboard = QGuiApplication::clipboard();
+    REQUIRE(clipboard != nullptr);
+
+    // The Program Monitor's frame at the playhead, at the sequence's size; the project is not touched.
+    clipboard->clear();
+    const std::size_t steps = controller.session().undoCount();
+    const std::size_t mediaBefore = controller.snapshot()->media.size();
+    REQUIRE(MonitorBridge::handlesCommand(QStringLiteral("monitor.copyFrame")));
+    REQUIRE(monitors.copyFrame(false));
+    INFO(monitors.message().toStdString());
+    const QImage image = clipboard->image();
+    REQUIRE_FALSE(image.isNull());
+    CHECK(image.width() == controller.currentSequence()->width);
+    CHECK(image.height() == controller.currentSequence()->height);
+    CHECK(monitors.message() == QStringLiteral("Frame copied (%1 × %2)").arg(image.width()).arg(image.height()));
+    CHECK(controller.session().undoCount() == steps);
+    CHECK(controller.snapshot()->media.size() == mediaBefore);
+
+    // It is the picture Export Frame writes: the title's text makes the frame more than one flat colour.
+    bool varied = false;
+    const QRgb first = image.pixel(0, 0);
+    for (int y = 0; y < image.height() && !varied; y += 8) {
+        for (int x = 0; x < image.width(); x += 8) {
+            if (image.pixel(x, y) != first) {
+                varied = true;
+                break;
+            }
+        }
+    }
+    CHECK(varied);
+
+    // The Source Monitor has nothing loaded: it says so, and the clipboard keeps the picture.
+    CHECK_FALSE(monitors.copyFrame(true));
+    CHECK(monitors.message().contains(QStringLiteral("Source Monitor")));
+    CHECK(clipboard->image().size() == image.size());
+
+    // The keymap command copies the focused monitor's frame (the key while the Source Monitor has the focus: its own).
+    clipboard->clear();
+    REQUIRE(monitors.runCommand(QStringLiteral("monitor.copyFrame"), false));
+    CHECK_FALSE(clipboard->image().isNull());
+    clipboard->clear();
+    REQUIRE(monitors.runCommand(QStringLiteral("monitor.copyFrame"), true)); // handled, though nothing is loaded there
+    CHECK(clipboard->image().isNull());
+
+    // A still in the Source Monitor, copied from there at its own size.
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    const QString written = monitors.exportFrame(false, QStringLiteral("Still"), QStringLiteral("bmp"), QUrl::fromLocalFile(dir.path()), true);
+    REQUIRE_FALSE(written.isEmpty());
+    const MediaItem& still = *controller.snapshot()->media.back();
+    REQUIRE(source.load(mediaKey(still.id)));
+    clipboard->clear();
+    REQUIRE(monitors.copyFrame(true));
+    CHECK(clipboard->image().size() == image.size());
+}
+
+TEST_CASE("Play In to Out with Preroll and Postroll plays the marked range plus the rolls and parks back (card 042)",
+          "[app][monitor][transport]") {
+    ProgramRig rig; // 20 frames at 25 fps
+    rig.mark(8, 11); // In at frame 8, Out after frame 11
+    rig.controller.setPlayhead(f(15));
+    rig.playback->playInToOutAround(0.2, 0.2); // 5 frames before the In, 5 after the Out
+    CHECK(rig.playback->playing());
+    CHECK(rig.controller.playhead() >= f(3)); // it begins at the In minus the pre-roll ...
+    CHECK(rig.controller.playhead() < f(8));
+    REQUIRE(waitFor([&] { return !rig.playback->playing(); }, 3000));
+    CHECK(rig.controller.playhead() == f(15)); // ... and parks back where it was
+
+    // Loop is ignored while it plays once, and comes back after.
+    rig.playback->setLoop(true);
+    const std::optional<TimeRange> loop = rig.playback->session()->loop();
+    REQUIRE(loop);
+    rig.playback->playInToOutAround(0.2, 0.2);
+    CHECK_FALSE(rig.playback->session()->loop());
+    REQUIRE(waitFor([&] { return !rig.playback->playing(); }, 3000));
+    CHECK(rig.controller.playhead() == f(15));
+    CHECK(rig.playback->session()->loop() == loop);
+    rig.playback->setLoop(false);
+
+    // The pre-roll is clamped at the start: marks at 2..4 with a half second before them play from frame 0.
+    rig.mark(2, 4);
+    rig.controller.setPlayhead(f(17));
+    rig.playback->playInToOutAround(0.5, 0.1);
+    CHECK(rig.playback->playing());
+    CHECK(rig.controller.playhead() < f(2));
+    REQUIRE(waitFor([&] { return !rig.playback->playing(); }, 3000));
+    CHECK(rig.controller.playhead() == f(17));
+
+    // Space during it stops it where it is: no park-back.
+    rig.playback->playInToOutAround(0.2, 0.4);
+    spin(60);
+    rig.playback->togglePlay();
+    CHECK_FALSE(rig.playback->playing());
+    const Ticks stopped = rig.controller.playhead();
+    spin(400);
+    CHECK(rig.controller.playhead() == stopped);
+
+    // No marks: the whole sequence is the range (as Play In to Out), the rolls beyond it clamped.
+    ProgramRig plain;
+    plain.controller.setPlayhead(f(10));
+    plain.playback->playInToOutAround(0.2, 0.2);
+    CHECK(plain.playback->playing());
+    CHECK(plain.controller.playhead() < f(3)); // from the start
+    REQUIRE(waitFor([&] { return !plain.playback->playing(); }, 3000));
+    CHECK(plain.controller.playhead() == f(10));
+}
+
+TEST_CASE("Source Monitor Play In to Out with Preroll and Postroll uses its marks and parks back (card 042)",
+          "[app][monitor][transport]") {
+    resetSettings();
+    Timeline tl(kPicture, {{'S', 50}});
+    ProjectController controller;
+    controller.resetProject(tl.state, tl.seq);
+    SourceMonitorBridge source;
+    source.setController(&controller);
+    REQUIRE(source.load(mediaKey(tl.media('S'))));
+    source.seek(f(20));
+    source.markIn();
+    source.seek(f(29));
+    source.markOut(); // Out after frame 29
+    source.seek(f(40));
+    source.playInToOutAround(0.2, 0.2);
+    CHECK(source.playing());
+    CHECK(source.positionTicks() >= f(15));
+    CHECK(source.positionTicks() < f(20));
+    REQUIRE(waitFor([&] { return !source.playing(); }, 3000));
+    CHECK(source.positionTicks() == f(40));
+
+    // With no marks it is the whole source, the rolls clamped.
+    source.clearInOut();
+    source.seek(f(25));
+    source.playInToOutAround(0.2, 0.2);
+    CHECK(source.playing());
+    CHECK(source.positionTicks() < f(5));
+    REQUIRE(waitFor([&] { return !source.playing(); }, 5000));
+    CHECK(source.positionTicks() == f(25));
+}
+
+TEST_CASE("Shift+Space plays In to Out with the Settings pre-roll and post-roll (card 042)", "[app][monitor][transport][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* playback = shell.engine.singletonInstance<PlaybackBridge*>("Wabcut", "Playback");
+    REQUIRE(controller != nullptr);
+    REQUIRE(playback != nullptr);
+    Timeline tl(kPicture);
+    controller->resetProject(tl.state, tl.seq);
+    shell.preferences->setProperty("trimPreroll", 0.2);
+    shell.preferences->setProperty("trimPostroll", 0.2);
+    controller->setPlayhead(f(8));
+    controller->markInAtPlayhead();
+    controller->setPlayhead(f(11));
+    controller->markOutAtPlayhead();
+    controller->setPlayhead(f(15));
+    QQuickItem* lanes = shell.item("timelineLanesArea");
+    REQUIRE(lanes != nullptr);
+    lanes->forceActiveFocus();
+    QKeyEvent press(QEvent::KeyPress, Qt::Key_Space, Qt::ShiftModifier);
+    QCoreApplication::sendEvent(shell.window.get(), &press);
+    QKeyEvent release(QEvent::KeyRelease, Qt::Key_Space, Qt::ShiftModifier);
+    QCoreApplication::sendEvent(shell.window.get(), &release);
+    CHECK(playback->playing());
+    CHECK(controller->playhead() < f(8));
+    REQUIRE(waitFor([&] { return !playback->playing(); }, 3000));
+    CHECK(controller->playhead() == f(15));
+    // Plain Space is still Play/Stop, and the palette lists the new command with its key.
+    auto* palette = shell.engine.singletonInstance<CommandPalette*>("Wabcut", "CommandPalette");
+    REQUIRE(palette != nullptr);
+    const QVariantMap state = palette->commandState(QStringLiteral("transport.playInToOutAround"));
+    CHECK(state.value(QStringLiteral("known")).toBool());
+    CHECK(state.value(QStringLiteral("enabled")).toBool());
+    CHECK(state.value(QStringLiteral("shortcut")).toString() == QStringLiteral("Shift+Space"));
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Composition guides: the rule of thirds, the golden ratio and the diagonals over the Program Monitor (card 099)",
+          "[app][monitor][composition][qml]") {
+    resetSettings();
+    clearMessages();
+    MonitorShell s;
+    QQuickItem* guides = s.find("compositionOverlay");
+    QQuickItem* frame = s.find("programFrameArea");
+    auto* monitors = s.shell.engine.singletonInstance<MonitorBridge*>("Wabcut", "Monitors");
+    REQUIRE(monitors != nullptr);
+    const auto kinds = [&] { return guides->property("kinds").toStringList(); };
+
+    // Off by default; no input; it fills the picture's frame.
+    CHECK(monitors->compositionGuides() == 0);
+    CHECK_FALSE(guides->isVisible());
+    CHECK_FALSE(guides->isEnabled());
+    CHECK(guides->width() == Approx(frame->width()).margin(1));
+    CHECK(guides->height() == Approx(frame->height()).margin(1));
+    QQuickItem* lines = s.find("compositionLines");
+    const auto frameImage = [&] {
+        spin(80);
+        const QImage image = s.shell.grab();
+        const double dpr = image.devicePixelRatio();
+        const QRectF r = frame->mapRectToScene(QRectF(0, 0, frame->width(), frame->height()));
+        return image.copy(QRectF(r.x() * dpr, r.y() * dpr, r.width() * dpr, r.height() * dpr).toRect());
+    };
+    const QImage plain = frameImage();
+
+    // The commands (palette, keys) switch each guide on its own; View and the wrench menu show the state.
+    REQUIRE(monitors->runCommand(QStringLiteral("programMonitor.ruleOfThirds"), false));
+    CHECK(monitors->compositionGuides() == 1);
+    CHECK(guides->isVisible());
+    CHECK(kinds() == QStringList{QStringLiteral("thirds")});
+    REQUIRE(monitors->runCommand(QStringLiteral("programMonitor.goldenRatio"), false));
+    REQUIRE(monitors->runCommand(QStringLiteral("programMonitor.diagonalGuides"), false));
+    CHECK(monitors->compositionGuides() == 7);
+    CHECK(kinds() == QStringList{QStringLiteral("thirds"), QStringLiteral("golden"), QStringLiteral("diagonals")});
+    REQUIRE(monitors->runCommand(QStringLiteral("programMonitor.ruleOfThirds"), false));
+    CHECK(kinds() == QStringList{QStringLiteral("golden"), QStringLiteral("diagonals")});
+    CHECK(monitors->compositionGuides() == 6);
+
+    // Remembered, and read back by the next Monitors bridge.
+    CHECK(QSettings().value(QStringLiteral("monitor/compositionGuides")).toInt() == 6);
+    {
+        MonitorBridge next;
+        CHECK(next.compositionGuides() == 6);
+    }
+    monitors->setCompositionGuides(0xFF); // only the three guides exist
+    CHECK(monitors->compositionGuides() == 7);
+    monitors->setCompositionGuides(0);
+    CHECK_FALSE(guides->isVisible());
+
+    // Drawing: the thirds put a line a third of the way across (and down), nothing at the middle; the picture below is
+    // untouched elsewhere. Two-tone, so the pixels differ from the plain picture along the line.
+    monitors->setCompositionGuides(MonitorBridge::kGuideThirds);
+    REQUIRE(waitFor([&] { return lines->isVisible(); }));
+    const QImage thirds = frameImage();
+    REQUIRE(thirds.size() == plain.size());
+    const int w = thirds.width();
+    const int h = thirds.height();
+    // The pixels that differ along a column, leaving out the rows the horizontal guides run along.
+    const auto columnDiffers = [&](const QImage& a, const QImage& b, int x) {
+        int diff = 0;
+        for (int y = h / 8; y < h - h / 8; ++y) {
+            bool onHorizontal = false;
+            for (const double at : {1.0 / 3.0, 2.0 / 3.0, 0.381966, 0.618034})
+                onHorizontal = onHorizontal || std::abs(y - at * h) <= 6;
+            if (onHorizontal)
+                continue;
+            for (int dx = -2; dx <= 2; ++dx)
+                diff += a.pixel(x + dx, y) != b.pixel(x + dx, y) ? 1 : 0;
+        }
+        return diff;
+    };
+    CHECK(columnDiffers(thirds, plain, w / 3) > h / 4);
+    CHECK(columnDiffers(thirds, plain, 2 * w / 3) > h / 4);
+    CHECK(columnDiffers(thirds, plain, w / 2) <= 4); // the picture itself may shimmer by a pixel between two grabs
+    CHECK(columnDiffers(thirds, plain, w / 6) <= 4);
+    // The golden ratio's lines are not the thirds' (38.2 % rather than 33.3 %).
+    monitors->setCompositionGuides(MonitorBridge::kGuideGolden);
+    const QImage golden = frameImage();
+    CHECK(columnDiffers(golden, plain, static_cast<int>(w * 0.381966)) > h / 4);
+    CHECK(columnDiffers(golden, plain, w / 3) <= 4);
+    monitors->setCompositionGuides(MonitorBridge::kGuideDiagonals);
+    const QImage diagonals = frameImage();
+    CHECK(diagonals.pixel(w / 2, h / 2) != plain.pixel(w / 2, h / 2)); // the diagonals cross at the centre
+    // The two diagonals meet w/3 on the rows of the thirds' lines (left out of the count), so a quarter of the way across.
+    CHECK(columnDiffers(diagonals, plain, w / 4) > 0);
+    CHECK(columnDiffers(diagonals, plain, w / 4) < h / 2); // a slanted line touches a few pixels of each column
+    monitors->setCompositionGuides(0);
+
+    // Multi-camera and Trim views hide them like the other overlays.
+    QObject* multicam = s.shell.engine.singletonInstance<QObject*>("Wabcut", "Multicam");
+    REQUIRE(multicam != nullptr);
+    monitors->setCompositionGuides(7);
+    CHECK(guides->isVisible());
+    multicam->setProperty("viewOn", true);
+    CHECK_FALSE(guides->isVisible());
+    multicam->setProperty("viewOn", false);
+    CHECK(guides->isVisible());
+
+    // Screenshot of all three, dark and light.
+    const QImage dark = frameImage();
+    CHECK(dark.save(QDir(outputDir()).filePath(QStringLiteral("program-composition-guides.png"))));
+    s.shell.setAppearance(false, "ultraviolet");
+    REQUIRE(s.shell.settle(false, s.shell.themeColor("accentFill")));
+    CHECK(frameImage().save(QDir(outputDir()).filePath(QStringLiteral("program-composition-guides-light.png"))));
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Composition guides have wrench and View menu rows and palette commands (card 099)", "[app][monitor][composition][qml]") {
+    resetSettings();
+    clearMessages();
+    MonitorShell s;
+    auto* monitors = s.shell.engine.singletonInstance<MonitorBridge*>("Wabcut", "Monitors");
+    auto* palette = s.shell.engine.singletonInstance<CommandPalette*>("Wabcut", "CommandPalette");
+    REQUIRE(monitors != nullptr);
+    REQUIRE(palette != nullptr);
+    QObject* settings = s.shell.object("programMonitorSettingsMenu");
+    REQUIRE(settings != nullptr);
+    QObject* submenu = s.shell.object("compositionGuidesMenu");
+    REQUIRE(submenu != nullptr);
+    CHECK(submenu->property("title").toString() == QStringLiteral("Composition Guides"));
+    const std::pair<const char*, int> rows[] = {{"compositionGuide_thirds", 1}, {"compositionGuide_golden", 2}, {"compositionGuide_diagonals", 4}};
+    for (const auto& [name, bit] : rows) {
+        INFO(name);
+        QObject* item = submenu->findChild<QObject*>(QString::fromLatin1(name));
+        REQUIRE(item != nullptr);
+        CHECK(item->property("checkable").toBool());
+        CHECK_FALSE(item->property("checked").toBool());
+        REQUIRE(QMetaObject::invokeMethod(item, "triggered"));
+        CHECK((monitors->compositionGuides() & bit) != 0);
+        CHECK(item->property("checked").toBool());
+        REQUIRE(QMetaObject::invokeMethod(item, "triggered"));
+        CHECK((monitors->compositionGuides() & bit) == 0);
+        CHECK_FALSE(item->property("checked").toBool());
+    }
+    // The palette knows the three commands, runs them, and they are not gated by a selection.
+    for (const char* id : {"programMonitor.ruleOfThirds", "programMonitor.goldenRatio", "programMonitor.diagonalGuides"}) {
+        INFO(id);
+        const QVariantMap state = palette->commandState(QString::fromLatin1(id));
+        CHECK(state.value(QStringLiteral("known")).toBool());
+        CHECK(state.value(QStringLiteral("enabled")).toBool());
+    }
+    CHECK(palette->commandState(QStringLiteral("programMonitor.ruleOfThirds")).value(QStringLiteral("title")).toString() ==
+          QStringLiteral("Rule of Thirds Guides"));
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("The Source Monitor's sound can be muted for the clips you scan, without touching the project (card 140)",
+          "[app][monitor][sourcemute][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* source = shell.engine.singletonInstance<SourceMonitorBridge*>("Wabcut", "SourceMonitor");
+    REQUIRE(controller != nullptr);
+    REQUIRE(source != nullptr);
+    Timeline tl(kPicture, {{'S', 50}, {'T', 40}});
+    controller->resetProject(tl.state, tl.seq);
+    const auto audioMuted = [&]() -> std::vector<bool> { // by value: bind it to a name before taking its begin() and end()
+        std::vector<bool> out;
+        const ProjectSnapshot snap = source->sourceProject();
+        REQUIRE(snap);
+        for (const SequencePtr& seq : snap->sequences) {
+            for (const TrackPtr& track : seq->audioTracks)
+                out.push_back(track->muted);
+        }
+        return out;
+    };
+
+    const auto allMuted = [&] {
+        const std::vector<bool> v = audioMuted();
+        return !v.empty() && std::all_of(v.begin(), v.end(), [](bool m) { return m; });
+    };
+    const auto noneMuted = [&] {
+        const std::vector<bool> v = audioMuted();
+        return !v.empty() && std::none_of(v.begin(), v.end(), [](bool m) { return m; });
+    };
+    const auto clickItem = [&](QQuickItem* item) {
+        const QPointF at = item->mapToScene(QPointF(item->width() / 2, item->height() / 2));
+        QMouseEvent press(QEvent::MouseButtonPress, at, at, Qt::LeftButton, Qt::LeftButton, {});
+        QCoreApplication::sendEvent(shell.window.get(), &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, at, at, Qt::LeftButton, Qt::NoButton, {});
+        QCoreApplication::sendEvent(shell.window.get(), &release);
+    };
+
+    // Nothing loaded: no button.
+    QQuickItem* button = shell.item("sourceMuteButton");
+    REQUIRE(button != nullptr);
+    CHECK_FALSE(button->isVisible());
+    REQUIRE(source->load(mediaKey(tl.media('S'))));
+    REQUIRE(source->hasAudio());
+    spin(100);
+    CHECK(button->isVisible());
+    CHECK_FALSE(source->muted());
+    REQUIRE_FALSE(audioMuted().empty());
+    CHECK(noneMuted());
+    const std::size_t steps = controller->session().undoCount();
+    const QString before = controller->undoText();
+
+    // One click: the source's tracks are muted; the button says so; the project and its undo history are untouched.
+    int changed = 0;
+    QObject::connect(source, &SourceMonitorBridge::mutedChanged, source, [&changed] { ++changed; });
+    clickItem(button);
+    spin(50);
+    CHECK(source->muted());
+    CHECK(changed == 1);
+    CHECK(allMuted());
+    CHECK(button->property("checked").toBool());
+    CHECK(button->property("iconName").toString() == QStringLiteral("volume-x"));
+    CHECK(controller->session().undoCount() == steps);
+    CHECK(controller->undoText() == before);
+    for (const SequencePtr& seq : controller->snapshot()->sequences) {
+        for (const TrackPtr& track : seq->audioTracks)
+            CHECK_FALSE(track->muted); // the user's tracks keep their own switches
+    }
+
+    // It stays for the clips loaded next (scanning loud footage clip after clip), and ends with Unmute.
+    REQUIRE(source->load(mediaKey(tl.media('T'))));
+    CHECK(source->muted());
+    CHECK(allMuted());
+    CHECK(shell.grab().save(outputDir() + QStringLiteral("/source-monitor-muted.png")));
+    shell.theme->setProperty("dark", false);
+    spin(120);
+    CHECK(shell.grab().save(outputDir() + QStringLiteral("/source-monitor-muted-light.png")));
+    shell.theme->setProperty("dark", true);
+    source->setMuted(false);
+    spin(50);
+    CHECK_FALSE(source->muted());
+    CHECK(noneMuted());
+    CHECK(button->property("iconName").toString() == QStringLiteral("volume-2"));
+
+    // The command (palette, a bound key in the Source Monitor's scope) toggles it, too.
+    auto* palette = shell.engine.singletonInstance<CommandPalette*>("Wabcut", "CommandPalette");
+    REQUIRE(palette != nullptr);
+    CHECK(palette->commandState(QStringLiteral("sourceMonitor.toggleMute")).value(QStringLiteral("known")).toBool());
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "runCommand", Q_ARG(QVariant, QVariant(QStringLiteral("sourceMonitor.toggleMute")))));
+    CHECK(source->muted());
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "runCommand", Q_ARG(QVariant, QVariant(QStringLiteral("sourceMonitor.toggleMute")))));
+    CHECK_FALSE(source->muted());
+
+    // Unloading the source takes the button away.
+    source->unload();
+    spin(50);
+    CHECK_FALSE(button->isVisible());
     const QStringList messages = takeMessages();
     INFO(join(messages));
     CHECK(messages.isEmpty());

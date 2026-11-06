@@ -14,8 +14,14 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <QColor>
+#include <QImage>
+#include <QString>
+
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <numbers>
 #include <set>
 #include <string>
@@ -679,4 +685,70 @@ TEST_CASE("Master Clip Effects: Posterize Time and the stabilizers on the master
     evaluateVideoLayers(s, seq, frame(60), layers);
     REQUIRE(layers.size() == 2);
     CHECK(layers[1].warp[1] == Approx(-0.005));
+}
+
+TEST_CASE("Effect library: Image Matte Key reads its picture again after the file is edited in place (card 158)",
+          "[playback][evaluate][library]") {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::path(WABCUT_TEST_OUTPUT_DIR) / "playback" / "matte";
+    fs::create_directories(dir);
+    const fs::path file = dir / "matte-edit.png";
+    const auto paint = [&](QColor color, int seconds) {
+        QImage image(16, 9, QImage::Format_RGBA8888);
+        image.fill(color);
+        REQUIRE(image.save(QString::fromStdString(file.string())));
+        // The editor saves over the same file; give every version its own modification time.
+        fs::last_write_time(file, fs::file_time_type::clock::now() + std::chrono::seconds(seconds));
+    };
+
+    ProjectState s;
+    auto video = fakeVideo(s, "game");
+    auto picture = std::make_shared<MediaItem>();
+    picture->id = s.ids.allocate<MediaId>();
+    picture->name = "matte";
+    picture->locator.path = file.generic_string();
+    VideoStreamInfo v;
+    v.index = 0;
+    v.width = 16;
+    v.height = 9;
+    v.frameRate = kRate60;
+    picture->info.video.push_back(v);
+    picture->info.isStillImage = true;
+    s.media = {video, picture};
+
+    EffectInstance key = effectOf(s, "wabcut.key.imageMatte");
+    key.setData(EffectData{"image", "media:" + std::to_string(picture->id.value)});
+    Clip clip = clipAt(s, video->id, 0, 600);
+    clip.setEffects({key});
+    const Sequence seq = sequenceOf(s, {trackWith(s, {clip})});
+
+    std::vector<LayerSpec> layers;
+    const auto matte = [&]() -> std::shared_ptr<const render::PreparedComposite> {
+        evaluateVideoLayers(s, seq, frame(10), layers);
+        REQUIRE(layers.size() == 1);
+        REQUIRE(layers[0].effects.size() == 1);
+        return layers[0].effects[0].matte;
+    };
+
+    paint(QColor(255, 0, 0, 255), 0);
+    const auto red = matte();
+    REQUIRE(red);
+    REQUIRE(red->layers.size() == 1);
+    REQUIRE(red->layers[0].view);
+    const auto* redPixels = red->layers[0].view->planes[0].data;
+    CHECK(redPixels[0] == 255); // premultiplied RGBA: red
+    CHECK(redPixels[2] == 0);
+    // The file did not change: the same raster is served again.
+    CHECK(matte()->layers[0].view->planes[0].data == redPixels);
+
+    // The same file, edited in place (same path, same canvas): the next frame has the new picture.
+    paint(QColor(0, 0, 255, 255), 30);
+    const auto blue = matte();
+    REQUIRE(blue);
+    const auto* bluePixels = blue->layers[0].view->planes[0].data;
+    CHECK(bluePixels[0] == 0);
+    CHECK(bluePixels[2] == 255);
+    CHECK(bluePixels != redPixels);
+    // The old picture's raster is still valid for a frame that holds it.
+    CHECK(redPixels[0] == 255);
 }

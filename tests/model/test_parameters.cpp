@@ -20,7 +20,8 @@ TEST_CASE("Parameter keys are stable", "[model][parameters]") {
     }
     CHECK(keys == std::vector<std::string_view>{"motion.position.x", "motion.position.y", "motion.scale",
                                                 "motion.rotation", "motion.anchor.x", "motion.anchor.y",
-                                                "opacity.opacity", "volume.level", "panner.balance"});
+                                                "opacity.opacity", "volume.level", "panner.balance",
+                                                "motion.scaleWidth", "motion.uniformScale"}); // 0.7 (card #12): appended, never reordered
 }
 
 TEST_CASE("The parameter table is consistent", "[model][parameters]") {

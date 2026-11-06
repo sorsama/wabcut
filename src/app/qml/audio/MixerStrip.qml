@@ -9,7 +9,7 @@ import QtQuick.Layouts
 // M5l: fader and pan are A.3's track Volume and Panner (a drag is one undo step; double-click resets); the values follow
 // the automation under the playhead (AudioMixer.faderValues), and the strip's automation mode records them while
 // playing (Touch / Latch / Write).
-// M5n (A.9): while the master is 5.1, a mono or stereo track's pan knob becomes its 5.1 panner (SurroundPanner: the
+// M5n (A.9): while the master is 5.1 (0.7: or 7.1), a mono or stereo track's pan knob becomes its surround panner (SurroundPanner: the
 // puck and the LFE send, track.setSurroundPan); a 5.1 or adaptive track has no panner there.
 Rectangle {
     id: root
@@ -17,7 +17,8 @@ Rectangle {
     required property var strip
     readonly property var values: AudioMixer.faderValues[strip.key] ?? ({ gainDb: strip.gainDb, pan: strip.pan })
     readonly property string trackFormat: AudioChannels.trackFormats[strip.key] ?? "stereo"
-    readonly property bool surroundMaster: AudioChannels.masterFormat === "5.1"
+    readonly property bool surroundMaster: AudioChannels.masterFormat === "5.1" || AudioChannels.masterFormat === "7.1"
+    readonly property bool master71: AudioChannels.masterFormat === "7.1"
     readonly property bool surroundShown: surroundMaster && (trackFormat === "mono" || trackFormat === "stereo")
     readonly property var surroundValues: AudioChannels.surround[strip.key] ?? ({})
 
@@ -83,6 +84,46 @@ Rectangle {
         anchors.fill: parent
         anchors.margins: Theme.space(1) + Theme.hairline
         spacing: Theme.space(1)
+
+        // 0.7 (card 124): the track group this strip belongs to - a tag with its name in its label colour; a click folds the
+        // group's strips into one group strip (the same collapsed state as the timeline's).
+        AbstractButton {
+            id: groupTag
+            objectName: "mixerGroupTag"
+            readonly property bool inGroup: (root.strip.groupId ?? "") !== ""
+            visible: groupTag.inGroup
+            Layout.fillWidth: true
+            Layout.preferredHeight: Theme.space(4)
+            hoverEnabled: true
+            focusPolicy: Qt.StrongFocus
+            Accessible.name: qsTr("Group %1: collapse its strips").arg(root.strip.groupName ?? "")
+            onClicked: ProjectController.setTrackGroupCollapsed(root.strip.groupId, true)
+            background: Rectangle {
+                radius: Theme.radiusBadge
+                color: groupTag.inGroup && (root.strip.groupColor ?? -1) >= 0
+                       ? Qt.alpha(Theme.clipColor(root.strip.groupColor), groupTag.hovered ? 0.4 : 0.26)
+                       : groupTag.hovered ? Theme.hover : Theme.sunken
+                border.width: Theme.hairline
+                border.color: groupTag.inGroup && (root.strip.groupColor ?? -1) >= 0 ? Theme.clipColor(root.strip.groupColor) : Theme.border
+            }
+            contentItem: Text {
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                text: root.strip.groupName ?? ""
+                elide: Text.ElideRight
+                color: Theme.textPrimary
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textXs
+                font.weight: Font.DemiBold
+            }
+            FocusRing {
+                targetRadius: Theme.radiusBadge
+                visible: groupTag.visualFocus
+            }
+            HoverHandler {
+                cursorShape: Qt.PointingHandCursor
+            }
+        }
 
         // Name
         RowLayout {
@@ -160,7 +201,9 @@ Rectangle {
         EffectSlots {
             Layout.fillWidth: true
             target: root.strip.key
+            stripName: root.strip.shortName
             effects: root.strip.effects
+            clipEffects: root.strip.clipEffects ?? []
         }
         // Sends (p02 audio)
         SendSlots {
@@ -177,7 +220,8 @@ Rectangle {
             enabled: AudioMixer.faderAvailable && !root.surroundMaster
             pan: root.values.pan ?? 0
             label: qsTr("Pan of %1").arg(root.strip.shortName)
-            note: root.surroundMaster ? qsTr("A %1 track plays its channels to the 5.1 master as they are").arg(root.trackFormat)
+            note: root.surroundMaster ? qsTr("A %1 track plays its channels to the %2 master as they are").arg(root.trackFormat)
+                                                                                                          .arg(root.master71 ? qsTr("7.1") : qsTr("5.1"))
                                       : AudioMixer.faderNote
             onMoved: value => AudioMixer.setPan(root.strip.key, value)
             onReleased: AudioMixer.endFaderGesture()
@@ -187,6 +231,7 @@ Rectangle {
             objectName: "surroundPanner"
             Layout.fillWidth: true
             visible: root.surroundShown
+            surround71: root.master71
             label: root.strip.shortName
             panX: root.surroundValues.x ?? 0
             panY: root.surroundValues.y ?? 1

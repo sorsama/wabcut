@@ -762,6 +762,12 @@ QString MomentsBridge::punchIn(double percent, bool hold, const QString& clipKey
     const double base =
         ProjectController::parameterValue(clip, edit::ParamRef::of(ParamId::Scale)).valueAt(clip.curveTimeAt(t0));
     const double zoomed = std::clamp(base * percent / 100.0, 0.0, 100.0);
+    // 0.7 (card #12): a clip with Uniform Scale off punches its width in too.
+    const bool stretched = !clip.properties().uniformScale();
+    const double baseWidth =
+        stretched ? ProjectController::parameterValue(clip, edit::ParamRef::of(ParamId::ScaleWidth)).valueAt(clip.curveTimeAt(t0))
+                  : base;
+    const double zoomedWidth = std::clamp(baseWidth * percent / 100.0, 0.0, 100.0);
     std::vector<Ticks> keys{t0, t0 + in};
     bool back = !hold;
     if (back) {
@@ -783,11 +789,18 @@ QString MomentsBridge::punchIn(double percent, bool hold, const QString& clipKey
             // In fast and settle (linear out of the first key, a flat arrival); back out softly at both ends.
             static constexpr std::array<const char*, 4> kShapes{"linear", "easeIn", "easeOut", "easeIn"};
             const std::array<double, 4> values{base, zoomed, zoomed, base};
-            for (std::size_t i = 0; i < keys.size(); ++i)
+            const std::array<double, 4> widths{baseWidth, zoomedWidth, zoomedWidth, baseWidth};
+            for (std::size_t i = 0; i < keys.size(); ++i) {
                 s.run("clip.addKeyframe", Json{{"param", "motion.scale"},
                                                {"time", keys[i].value},
                                                {"value", values[i]},
                                                {"interpolation", kShapes[i]}});
+                if (stretched)
+                    s.run("clip.addKeyframe", Json{{"param", "motion.scaleWidth"},
+                                                   {"time", keys[i].value},
+                                                   {"value", widths[i]},
+                                                   {"interpolation", kShapes[i]}});
+            }
         },
         &failure);
     return finish(ok, failure);

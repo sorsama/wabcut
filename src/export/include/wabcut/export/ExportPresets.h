@@ -36,7 +36,7 @@ std::expected<ExportSettings, Error> settingsFromJson(const Json& json);
 /// Applies override keys to `settings` (null values are ignored). The keys of ExportController.queueExport and the
 /// export commands: container, videoCodec, video, audio, encoder, quality, bitrateMbps, maxBitrateMbps, frameRate,
 /// width, height, scaleMode, range, customRange {start, end} (ticks), captions, audioCodec, audioChannels, sampleRate,
-/// audioBitrateKbps, dynamicRange; 0.2: pixelFormat, alpha (Include Alpha Channel), proresProfile, dnxhrProfile,
+/// audioBitrateKbps, dynamicRange, 0.7: dynamicMetadata (none, hdr10plus); 0.2: pixelFormat, alpha (Include Alpha Channel), proresProfile, dnxhrProfile,
 /// exportAsSequence, subtitles (bool), effects / metadata / render (objects in settingsToJson's format, replacing those
 /// sections); P1 (#28): targetMB (1-4000 decimal MB: RateControl::TargetSize at that size; 0 = off, the preset's own). A container or codec change also moves the fields that depend on it (pixel format, audio codec). Does not
 /// validate. Errors: InvalidArgument ("Unsupported export option <key> = <value>").
@@ -87,7 +87,13 @@ public:
     /// A built-in preset or one of this store's.
     std::optional<Preset> findAny(std::string_view id) const;
 
+    /// 147: the id Save Preset gives `name` here: userPresetId(name), or - when a preset of ANOTHER name already has that
+    /// id (names that differ only in non-ASCII text or punctuation: "YouTube 4K" / "youtube-4k", two Thai names ending in
+    /// "4K") - that id cut short with an 8-digit hash of the name's bytes appended, so every name has a file of its own.
+    std::string idFor(std::string_view name) const;
+
 private:
+    std::string idForUnlocked(std::string_view name) const;
     std::filesystem::path fileFor(std::string_view id) const;
     std::filesystem::path m_folder;
     mutable std::mutex m_mutex;

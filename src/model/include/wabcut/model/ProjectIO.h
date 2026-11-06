@@ -86,6 +86,7 @@
 #include <expected>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -122,14 +123,62 @@ std::expected<std::string, Error> toJson(const ProjectState& state);
 /// validate(…, Validation::Structure).
 std::expected<ProjectState, Error> fromJson(std::string_view json);
 
+// ---- Caption presets in a file of their own (0.7, card 115) ----
+// The user's caption styles outside any project (the library every project can use) and the files they are shared as:
+// {"format": "wabcut-caption-presets", "version": 1, "presets": [{"name", "style": {...as in a project's captionPresets}}]}.
+inline constexpr std::string_view kCaptionPresetsFileFormat = "wabcut-caption-presets";
+inline constexpr std::string_view kCaptionPresetsFileSuffix = ".wabcut-caption-presets.json";
+inline constexpr int kCaptionPresetsFileVersion = 1;
+inline constexpr std::size_t kMaxCaptionPresetsFileBytes = 4 * 1024 * 1024;
+/// The file's text for `presets` (pretty-printed). Fails only on strings that are not valid UTF-8.
+std::expected<std::string, Error> captionPresetsToJson(std::span<const CaptionPreset> presets);
+/// Reads such a file (untrusted input: size, nesting, count, names and every style are checked). A newer version is
+/// refused (VersionMismatch), not half-read. Names are not checked against a project's presets or the built-in ones.
+std::expected<std::vector<CaptionPreset>, Error> captionPresetsFromJson(std::string_view text);
+
 /// Writes `contents` to `file` atomically: a temporary file in the same directory is written, flushed to
 /// disk and renamed over `file`, so readers see either the old or the new contents, never a mix.
 std::expected<void, Error> writeFileAtomically(const std::filesystem::path& file, std::string_view contents);
+
+/// 0.7 (card 029): the most ".bakN" copies and rotated autosaves a user can ask for. Recovery looks for this many of each,
+/// whatever the current setting is, so the copies of an earlier, larger setting are still offered.
+inline constexpr int kMaxBackupCount = 10;
+inline constexpr int kMaxAutosaveCopies = 10;
+/// The folder next to a project that holds its copies in BackupLocation::Mode::Folder.
+inline constexpr std::string_view kAutoSaveFolderName = "Wabcut Auto-Save";
+
+/// 0.7 (card 029): where the ".bakN" copies and the ".autosave" files of a project are kept. The project file itself
+/// (and its temporary file while it is written) always stays where the user saved it.
+struct BackupLocation {
+    enum class Mode {
+        Beside, ///< next to the project file ("Film.wabcut.bak1"): how every version before 0.7 did it
+        Folder, ///< in "Wabcut Auto-Save" next to the project file
+        Chosen, ///< in "<root>/<project name>-<8 hex digits of its folder>/": one folder of the user's choice for all
+    };
+    Mode mode = Mode::Beside;
+    std::filesystem::path root; ///< Mode::Chosen only
+    bool operator==(const BackupLocation&) const = default;
+};
+
+/// The folder the copies of `projectFile` go in under `location`; empty = beside the file (also for a Chosen location
+/// without a root and for an empty `projectFile`).
+std::filesystem::path backupDirectory(const std::filesystem::path& projectFile, const BackupLocation& location);
+
+/// Every folder copies of `projectFile` may be in, the one `location` writes to first, then the others a recovery scan
+/// must look in as well (so changing the setting never hides existing copies): the folder beside the project (the empty
+/// path), the Auto-Save folder next to it and the chosen root's folder. No duplicates.
+std::vector<std::filesystem::path> backupDirectories(const std::filesystem::path& projectFile, const BackupLocation& location);
+
+/// `projectFile` with its folder swapped for `dir` (its name kept): the path the copy names are made from. `projectFile`
+/// itself for an empty `dir`.
+std::filesystem::path inBackupDirectory(const std::filesystem::path& projectFile, const std::filesystem::path& dir);
 
 struct SaveOptions {
     /// Recovery copies to keep (0 = none). The previous file is rotated into "<file>.bak1" only when it
     /// is a loadable project, so the copies always hold valid saves.
     int backups = kDefaultBackupCount;
+    /// 0.7 (card 029): the folder the copies are kept in (backupDirectory); empty = beside the file. Created when needed.
+    std::filesystem::path backupDir;
 };
 
 /// Saves atomically. The text is checked to load back before anything on disk is touched.
@@ -138,14 +187,18 @@ std::expected<void, Error> saveProject(const ProjectState& state, const std::fil
 /// Loads a project file. Never modifies, renames or deletes any file, also when it fails.
 std::expected<ProjectState, Error> loadProject(const std::filesystem::path& file);
 
-/// "<file>.bak<n>" (n = 1 is the newest copy).
+/// "<file>.bak<n>" (n = 1 is the newest copy); with `dir`, the copy in that folder ("<dir>/<name>.bak<n>").
 std::filesystem::path backupPath(const std::filesystem::path& projectFile, int n);
+std::filesystem::path backupPath(const std::filesystem::path& projectFile, int n, const std::filesystem::path& dir);
 
-/// "<file>.autosave" next to the project file.
+/// "<file>.autosave" next to the project file; with `dir`, in that folder.
 std::filesystem::path autosavePath(const std::filesystem::path& projectFile);
+std::filesystem::path autosavePath(const std::filesystem::path& projectFile, const std::filesystem::path& dir);
 
-/// Atomically writes the project to autosavePath(projectFile) (no rotated copies).
+/// Atomically writes the project to autosavePath(projectFile) (no rotated copies); `dir` as for autosavePath.
 std::expected<void, Error> writeAutosave(const ProjectState& state, const std::filesystem::path& projectFile);
+std::expected<void, Error> writeAutosave(const ProjectState& state, const std::filesystem::path& projectFile,
+                                         const std::filesystem::path& dir);
 
 /// A file a crashed or damaged project can be recovered from.
 struct RecoveryCandidate {
@@ -162,8 +215,9 @@ struct RecoveryCandidate {
 };
 
 /// The autosave and backups of a project, newest first. Offer them when the project fails to load or the
-/// autosave is newer than the project (an unclean exit); load the chosen one with loadProject().
-std::vector<RecoveryCandidate> recoveryCandidates(const std::filesystem::path& projectFile);
+/// autosave is newer than the project (an unclean exit); load the chosen one with loadProject(). 0.7 (card 029): the
+/// copies in every folder backupDirectories(projectFile, location) names, up to kMaxBackupCount backups each.
+std::vector<RecoveryCandidate> recoveryCandidates(const std::filesystem::path& projectFile, const BackupLocation& location = {});
 
 /// Autosave helper for a periodic timer: writes only when the session snapshot changed since the last
 /// write (or since markSaved()).

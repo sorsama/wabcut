@@ -1,0 +1,229 @@
+# EXPERIMENTAL full build on Windows on ARM64 (win-msvc-arm64 preset): the app, the CLI, the AI helper that exists for
+# ARM64 (smart search on ONNX Runtime), every test suite but the GPU, audio-device and timing ones, and the MSI and the
+# portable ZIP. A native build on GitHub's ARM64 Windows runner (Qt's native ARM64 kit, MSVC's ARM64 toolset, vcpkg's
+# arm64-windows-release triplet); x64 Windows stays the verified platform and the only one a release needs
+# (docs/release.md, "Platform status"), so this job never blocks. Runs on every push to main, weekly and on demand, and on
+# a pull request that changes what it builds with. The caches it saves on main (the vcpkg packages, the compiler cache)
+# are the ones the release workflow's Windows ARM64 job restores (tools/ci-cache.py).
+#
+# Dependency set: the Windows x64 manifest with the platform qualifiers of vcpkg.json (no NVENC, AMF or Quick Sync:
+# those exist for x64 only). Local transcription (whisper.cpp, ggml) and audio plug-in hosting (the VST3 SDK) are off:
+# their vcpkg ports do not support ARM64 Windows (WABCUT_WITH_LOCAL_AI / WABCUT_WITH_AUDIO_PLUGINS default to OFF there).
+# Smart search uses Microsoft's ARM64 ONNX Runtime with DirectML (cmake/ports/onnxruntime-prebuilt). Content
+# Credentials signing (c2pa-rs) is off: the build links the x64 library only.
+name: windows-arm64 (experimental)
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 4 * * 2"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/windows-arm64.yml"
+      - "vcpkg.json"
+      - "cmake/triplets/arm64-windows-release.cmake"
+      - "CMakePresets.json"
+      - "tools/dev-env.ps1"
+
+permissions:
+  contents: read
+
+# A push to main queues behind the running build instead of cancelling it, so every build that gets far enough saves its
+# caches; a pull request's older build is replaced by its newer one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Shared runners are slower than a developer machine: wall-clock budgets in the tests get 4x headroom.
+  WABCUT_TIMING_SLACK: 4
+  # The runner has no GPU (Microsoft Basic Render Driver): the media tests skip their hardware-decoder checks
+  # (tests/media/TestMedia.h, gpuExpected()); the tests that need a GPU are excluded by label (win-msvc-arm64).
+  WABCUT_TEST_NO_GPU: 1
+  QT_VERSION: 6.11.3
+  # aqtinstall 3.3.0, the latest release, cannot read the per-arch repository layout Qt uses since 6.11 (fixed by
+  # miurahr/aqtinstall#1000 on master only), so install aqtinstall from a pinned master commit.
+  AQT_SOURCE: git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7
+  VCPKG_DISABLE_METRICS: 1
+
+jobs:
+  build:
+    name: win-msvc-arm64 (experimental)
+    continue-on-error: true
+    runs-on: windows-11-arm
+    # The first run builds FFmpeg, x264, x265 and SVT-AV1 from source on four cores; later runs restore them from the
+    # binary cache.
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      # A run that saves caches deletes its branch's older ones (tools/ci-cache.py delete-older).
+      actions: write
+    env:
+      CCACHE_KEY: ccache-win-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: vcpkg at the manifest baseline
+        id: vcpkg
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          $root = Join-Path $env:RUNNER_TEMP vcpkg
+          $cache = Join-Path $env:RUNNER_TEMP vcpkg-cache
+          git clone --quiet https://github.com/microsoft/vcpkg $root
+          git -C $root checkout --quiet $baseline
+          & "$root\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          "VCPKG_ROOT=$root" >> $env:GITHUB_ENV
+          "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> $env:GITHUB_ENV
+          "cache=$cache" >> $env:GITHUB_OUTPUT
+          # The cache is named by the packages it holds (tools/ci-cache.py vcpkg-key) and saved from main; pull requests
+          # and releases restore main's newest. Package ABIs include the compiler, so vcpkg reuses the packages that
+          # still match and builds the rest. Nothing of the x64 caches is reusable here.
+          "prefix=vcpkg-win-arm64-" >> $env:GITHUB_OUTPUT
+
+      - name: Restore the vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.vcpkg.outputs.cache }}
+          key: ${{ steps.vcpkg.outputs.prefix }}newest
+          restore-keys: |
+            ${{ steps.vcpkg.outputs.prefix }}
+
+      # Wabcut's own objects (tools/ci-cache.py): a pull request restores its own newest cache, else main's.
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ${{ env.CCACHE_KEY }}
+          restore-keys: ccache-win-arm64-
+
+      # ccache has no ARM64 Windows build: the x64 one runs under Windows' emulation and launches the native compiler.
+      # Without ccache (a failed download) the build runs as before, only slower.
+      - name: ccache
+        id: ccache
+        continue-on-error: true
+        shell: pwsh
+        run: python tools/ci-cache.py ccache-setup --max-size 2G
+
+      # Qt's native ARM64 kit (windows_arm64 repository: compiler and tools run natively, unlike the cross-compiled kit
+      # of the x64 repository). https://doc.qt.io/qt-6.11/windows.html lists Windows on ARM (ARM64, MSVC 2022).
+      - name: Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4.4.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows_arm64
+          target: desktop
+          arch: win64_msvc2022_arm64
+          modules: qtshadertools
+          cache: true
+          aqtsource: ${{ env.AQT_SOURCE }}
+
+      # The MSI: WiX 5.0.2 as a per-user .NET tool (docs/release.md, "Why WiX, and which WiX").
+      - name: WiX Toolset
+        shell: pwsh
+        run: ./cmake/packaging/Install-WixToolset.ps1
+
+      - name: Configure and build
+        id: build
+        shell: pwsh
+        run: |
+          $env:WABCUT_QT_DIR = $env:QT_ROOT_DIR
+          . ./tools/dev-env.ps1 -Arch arm64
+          $launcher = @()
+          if ($env:CCACHE_EXE) { $launcher = "-DCMAKE_C_COMPILER_LAUNCHER=$env:CCACHE_EXE", "-DCMAKE_CXX_COMPILER_LAUNCHER=$env:CCACHE_EXE" }
+          cmake --preset win-msvc-arm64 -DWABCUT_BUILD_NUMBER=${{ github.run_number }} -DWABCUT_DEBUG_INFO=OFF @launcher
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build --preset win-msvc-arm64
+          exit $LASTEXITCODE
+
+      # A failed port build says only which port failed: its logs are in vcpkg's buildtrees.
+      - name: Configure and vcpkg logs (after a failure)
+        if: failure()
+        shell: pwsh
+        run: |
+          $log = 'build/win-msvc-arm64/CMakeFiles/CMakeConfigureLog.yaml'
+          if (Test-Path $log) { Get-Content $log -Tail 100 }
+          Get-ChildItem "$env:VCPKG_ROOT/buildtrees" -Recurse -Depth 2 -File -Include '*-err.log', 'config-*-out.log' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Length -gt 0 } | ForEach-Object {
+              "::group::$($_.FullName)"
+              Get-Content $_.FullName -Tail 80
+              '::endgroup::'
+            }
+
+      - name: Compiler cache statistics
+        id: ccache-stats
+        if: ${{ !cancelled() && steps.ccache.outcome == 'success' }}
+        shell: pwsh
+        run: python tools/ci-cache.py ccache-finish ${{ steps.build.outcome == 'success' && '--trim' || '' }}
+
+      # Saved straight after the build, not after the tests, so a release started meanwhile already finds it. Every
+      # branch and pull request saves its own, also after a failed build, which still compiled what came before the
+      # error; one that compiled nothing is not saved.
+      - name: Save the compiler cache
+        if: ${{ !cancelled() && steps.ccache-stats.outputs.compiled != '' && steps.ccache-stats.outputs.compiled != '0' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ${{ env.CCACHE_KEY }}
+
+      - name: vcpkg cache key
+        id: vcpkg-key
+        if: always() && steps.vcpkg.outcome == 'success'
+        shell: pwsh
+        run: python tools/ci-cache.py vcpkg-key --build-dir build/win-msvc-arm64 --cache "${{ steps.vcpkg.outputs.cache }}" --prefix "${{ steps.vcpkg.outputs.prefix }}"
+
+      # Saved even when a later step fails, so the next run does not rebuild FFmpeg; not when nothing new was built.
+      - name: Save the vcpkg binary cache
+        if: always() && steps.vcpkg-key.outputs.key != '' && steps.vcpkg-key.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.vcpkg.outputs.cache }}
+          key: ${{ steps.vcpkg-key.outputs.key }}
+
+      # One cache of each kind per branch or pull request: older ones only take room from the repository's 10 GB.
+      - name: Delete older caches
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VCPKG_KEY: ${{ steps.vcpkg-key.outputs.key }}
+        run: |
+          python tools/ci-cache.py delete-older --ref $env:GITHUB_REF --prefix ccache-win-arm64- --keep $env:CCACHE_KEY
+          if ($env:VCPKG_KEY) {
+            python tools/ci-cache.py delete-older --ref $env:GITHUB_REF --prefix "${{ steps.vcpkg.outputs.prefix }}" --keep $env:VCPKG_KEY
+          }
+
+      # Runs even when some targets failed to build (their tests show as Not Run), so one run reports everything. One
+      # job per processor; a test that fails runs again alone, and only a second failure fails the job.
+      - name: Test (without gpu, audio-device and perf tests)
+        if: always() && steps.build.outcome != 'skipped'
+        shell: pwsh
+        run: |
+          $env:WABCUT_QT_DIR = $env:QT_ROOT_DIR
+          . ./tools/dev-env.ps1 -Arch arm64
+          python tools/ci-test.py --build-dir build/win-msvc-arm64 -- --preset win-msvc-arm64
+          exit $LASTEXITCODE
+
+      - name: Package
+        if: always() && steps.build.outcome == 'success'
+        shell: pwsh
+        run: |
+          $env:WABCUT_QT_DIR = $env:QT_ROOT_DIR
+          . ./tools/dev-env.ps1 -Arch arm64
+          cpack --config build/win-msvc-arm64/CPackConfig.cmake
+          exit $LASTEXITCODE
+
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.build.outcome == 'success'
+        with:
+          name: wabcut-windows-arm64-unverified
+          path: |
+            build/win-msvc-arm64/package/*.msi
+            build/win-msvc-arm64/package/*-portable.zip
+          if-no-files-found: warn

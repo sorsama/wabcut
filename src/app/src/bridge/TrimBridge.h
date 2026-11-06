@@ -19,6 +19,11 @@
 //   * The Trim view (Program Monitor): the outgoing and incoming frames (each rendered with only its track visible),
 //     their source timecodes and the offsets trimmed since entering trim mode.
 //
+//   * 0.7 (card 127): Slip, Avid style: both edges of one clip selected (Shift-click the other edge of a clip whose edge is
+//     selected, Slip Trim on the selected clips, or the Trim view's Slip tab) slip the clip's content: Trim Backward /
+//     Forward, the Trim view's buttons and dynamic trimming move the source In and Out together (edit::slip) while the clip
+//     keeps its place and length. The Trim view then shows the clip's first and last frame with the frames slipped.
+//
 //   * 0.6: the edit points also take Extend Selected Edit to Playhead (E), Apply Video / Audio Transition (Ctrl+D /
 //     Ctrl+Shift+D) and an Effects-panel transition: ProjectController keeps them (setTrimEditPoints) with the
 //     alignment the trim type gives (roll: the default, centred; one side: ending or starting at the cut).
@@ -55,14 +60,15 @@ class TrimBridge : public QObject {
     Q_PROPERTY(bool active READ active NOTIFY pointsChanged FINAL)
     /// [{ clip: "c…", edge: "head"|"tail" }] for TimelineView.trimPoints.
     Q_PROPERTY(QVariantList points READ points NOTIFY pointsChanged FINAL)
-    /// "regular", "ripple" or "roll".
+    /// "regular", "ripple", "roll" or (0.7) "slip".
     Q_PROPERTY(QString type READ type WRITE setType NOTIFY pointsChanged FINAL)
     /// The Program Monitor shows the Trim view (Trim Edit opened it; closes with the edit points).
     Q_PROPERTY(bool viewOpen READ viewOpen NOTIFY pointsChanged FINAL)
     Q_PROPERTY(bool dynamic READ dynamic NOTIFY dynamicChanged FINAL)
     Q_PROPERTY(bool playingAround READ playingAround NOTIFY dynamicChanged FINAL)
     /// The first edit point: the clip names on each side ("" for a gap), the source timecodes of the outgoing clip's last
-    /// frame and the incoming clip's first frame, and the edit's sequence timecode.
+    /// frame and the incoming clip's first frame, and the edit's sequence timecode. 0.7, slip: the clip itself on both
+    /// sides (its last frame outgoing, its first frame incoming), the edit time is the clip's start.
     Q_PROPERTY(QString outgoingName READ outgoingName NOTIFY detailsChanged FINAL)
     Q_PROPERTY(QString incomingName READ incomingName NOTIFY detailsChanged FINAL)
     Q_PROPERTY(QString outgoingText READ outgoingText NOTIFY detailsChanged FINAL)
@@ -82,7 +88,7 @@ class TrimBridge : public QObject {
     Q_PROPERTY(bool linkedSelection READ linkedSelection WRITE setLinkedSelection NOTIFY settingsChanged FINAL)
 
 public:
-    enum class Type { Regular, Ripple, Roll };
+    enum class Type { Regular, Ripple, Roll, Slip };
 
     explicit TrimBridge(QObject* parent = nullptr);
     static TrimBridge* create(QQmlEngine* qmlEngine, QJSEngine* jsEngine);
@@ -121,6 +127,10 @@ public:
     Q_INVOKABLE void toggleType();
     /// A click on a clip edge (TimelineView.editPointClicked): selects that edit point; Shift adds it.
     Q_INVOKABLE void selectEditPoint(const QString& clipId, const QString& edge, const QString& type, int modifiers);
+    /// 0.7 (card 127), Slip Trim: slip mode on the selected clips (else the clip under the playhead, as Select Clip at
+    /// Playhead picks it): both edges of each become edit points, the Trim view opens on the first. False, with nothing
+    /// changed, when there is no clip to slip.
+    Q_INVOKABLE bool slipEdit();
     /// Leaves trim mode.
     Q_INVOKABLE void clear();
     Q_INVOKABLE void openView();

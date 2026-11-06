@@ -43,9 +43,20 @@ public:
     /// Encodes and writes every cue (after Muxer::open). Errors: EncoderError, IoError.
     std::expected<void, Error> write(const std::vector<SubtitleCue>& cues, Muxer& muxer);
 
+    /// Writes the cues that start at or before `uptoMs`, in order, that earlier calls have not written (cues start in
+    /// ascending order: SubtitleCue lists are sorted by startMs, as subtitleCues() returns them). The export calls it as
+    /// the video reaches each frame, so the cue packets are muxed beside the picture they belong to (card 146: written all
+    /// at the end they sat after hours of video, clustered at the file's tail in Matroska). Errors as write().
+    std::expected<void, Error> writeUntil(const std::vector<SubtitleCue>& cues, std::int64_t uptoMs, Muxer& muxer);
+    /// The cues writeUntil() has written so far (write() writes the rest).
+    std::size_t written() const noexcept { return m_next; }
+
 private:
+    std::expected<void, Error> writeOne(const SubtitleCue& cue, Muxer& muxer, AVPacket* packet);
+
     CodecContextPtr m_ctx;
     AVStream* m_stream = nullptr;
+    std::size_t m_next = 0; ///< the next cue to write
 };
 
 } // namespace wabcut::exporter::detail

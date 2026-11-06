@@ -48,6 +48,9 @@ public:
     /// roughcut.fromScript may read a script from a local text file ("file"). Hosts whose callers are local people
     /// (the CLI's cmd, the app) allow it; MCP clients and the assistant never get it.
     bool readFiles = false;
+    /// r07 (QA-07): `chat` runs on this computer (the local assistant, Ollama, a custom provider on localhost), so a
+    /// no-cloud project may use it.
+    bool chatLocal = false;
 };
 
 /// Adds roughcut.fromScript, roughcut.swapTake, takes.find and takes.use (and 0.6's transcript.correctFromScript,

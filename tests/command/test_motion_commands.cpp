@@ -43,6 +43,14 @@ TEST_CASE("clip.setTimeInterpolation previews and commits in one undo step", "[c
     h.session.undo();
     CHECK(interpolationOf(a) == TimeInterpolation::FrameSampling);
 
+    // 0.7 (card 133): AI Frame Interpolation is a method too: one undo step, and the dialog's field takes it.
+    const auto ai = h.ok("clip.setTimeInterpolation", Json{{"clips", Json::array({a.value})}, {"method", "aiInterpolation"}});
+    CHECK(ai.data["method"] == "aiInterpolation");
+    CHECK(interpolationOf(a) == TimeInterpolation::AiInterpolation);
+    CHECK(h.session.undoCount() == 1);
+    h.session.undo();
+    CHECK(interpolationOf(a) == TimeInterpolation::FrameSampling);
+
     // Unknown methods and audio-only selections are refused.
     CHECK_FALSE(h.run(Json{{"command", "clip.setTimeInterpolation"},
                            {"params", Json{{"clips", Json::array({a.value})}, {"method", "motionBlur"}}}})

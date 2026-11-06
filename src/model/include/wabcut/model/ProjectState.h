@@ -14,6 +14,7 @@
 #include <wabcut/model/MediaInfo.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ReviewNotes.h>
+#include <wabcut/model/Rights.h>
 #include <wabcut/model/Sequence.h>
 #include <wabcut/model/SharedList.h>
 #include <wabcut/model/Transcripts.h>
@@ -78,6 +79,10 @@ struct Bin {
     /// 0.2 (P.3): set for a Search Bin, which holds nothing itself (no item, bin or sequence may be in it) and lists the
     /// items matching this query. Saved only when set.
     std::optional<BinSearch> search;
+    /// 0.7 (card 112): the bin nested sequences are filed in (Nest… puts "Nested Sequence 01" here instead of beside the
+    /// sequence it was made in). At most one bin of a project has it (setNestBin), never a search bin. Saved only when
+    /// set, so older builds open the project.
+    bool nestTarget = false;
 
     bool isSearch() const { return search.has_value(); }
     bool operator==(const Bin&) const = default;
@@ -250,9 +255,12 @@ struct MediaInterpretation {
     bool ignoreAlpha = false;
     bool invertAlpha = false;
     std::optional<AlphaMode> premultiplication;
+    /// 0.7 (VR / 360 video): assume this projection and eye layout instead of what the file's spherical metadata says
+    /// (a VrFormat with no projection says "this is a flat picture" even when the file claims 360).
+    std::optional<VrFormat> vr;
 
     bool isEmpty() const {
-        return !frameRate && !pixelAspect && !fieldOrder && !ignoreAlpha && !invertAlpha && !premultiplication;
+        return !frameRate && !pixelAspect && !fieldOrder && !ignoreAlpha && !invertAlpha && !premultiplication && !vr;
     }
     bool operator==(const MediaInterpretation&) const = default;
 };
@@ -404,6 +412,10 @@ struct MediaItem {
     /// get its master item's first, then the subclip's own. Keyframe times are media time, like every clip curve, so
     /// a key holds at the same source frame in every instance. Saved only when there are any.
     EffectStack masterEffects;
+    /// 0.7 (card 179): where the item came from and what may be done with it (Rights.h): the Rights and Clearance Log,
+    /// the Media Usage Report's flags and the credits roll read it. A subclip without a record of its own has its
+    /// master's (effectiveRights). Saved only when set.
+    std::optional<MediaRights> rights;
 
     bool hasStream(StreamRef stream) const;
     /// Amount of source media available for `stream`, or nullopt when unbounded (still images) or
@@ -432,9 +444,13 @@ struct MediaItem {
                audioTakes == o.audioTakes && derived == o.derived && recording == o.recording && channels == o.channels &&
                scaling == o.scaling && interpretation == o.interpretation && timecode == o.timecode &&
                stillDuration == o.stillDuration && madeOffline == o.madeOffline && metadata == o.metadata &&
-               importSource == o.importSource && masterEffects == o.masterEffects;
+               importSource == o.importSource && masterEffects == o.masterEffects && rights == o.rights;
     }
 };
+
+/// 0.7 (VR / 360 video): what the item's picture is - Interpret Footage's setting when it has one, else what the file's
+/// spherical metadata says (a flat picture when neither names a projection).
+VrFormat mediaVr(const MediaItem& item);
 
 /// A file the project uses besides media. For now that is a colour look-up table (.cube) a grade applies. Effects
 /// refer to it through EffectData text ("asset:<id>", assetReference()). It is located like media (absolute and
@@ -445,12 +461,24 @@ struct ProjectAsset {
     std::string kind;     ///< kAssetKindLut; unknown kinds are kept as they are
     std::string name;     ///< shown in the UI, e.g. the file's base name
     MediaLocator locator;
+    /// 0.7 (card #85): the group the asset is listed under in the LUT menu - '/'-separated names ("Film Emulation/Kodak"),
+    /// empty = listed with the built-ins. Set by lut.importFolder from the sub-folders of the folder imported; it says
+    /// nothing about where the file lives. Saved only when set. See assetFolderProblem for what is allowed.
+    std::string folder;
 
     bool operator==(const ProjectAsset&) const = default;
 };
 
+/// Longest ProjectAsset::folder, in bytes.
+inline constexpr std::size_t kMaxAssetFolderLength = 200;
+/// Why `folder` cannot be a ProjectAsset::folder (empty names, a leading or trailing '/', control characters, more than
+/// kMaxAssetFolderLength bytes), or nullopt. The empty folder is valid.
+std::optional<std::string> assetFolderProblem(std::string_view folder);
+
 /// ProjectAsset::kind of colour look-up tables.
 inline constexpr std::string_view kAssetKindLut = "lut";
+/// 0.7 (card 102): ProjectAsset::kind of a sound file a redaction plays instead of the bleep tone (Redaction::sound).
+inline constexpr std::string_view kAssetKindSound = "sound";
 
 /// The EffectData text that refers to an asset ("asset:<id>"), and the id such a text refers to (invalid otherwise).
 std::string assetReference(AssetId asset);
@@ -458,6 +486,10 @@ AssetId assetOfReference(std::string_view text);
 
 using MediaPtr = std::shared_ptr<const MediaItem>;
 using SequencePtr = std::shared_ptr<const Sequence>;
+
+/// Bounds of ProjectState::customWords.
+inline constexpr std::size_t kMaxCustomWords = 200;
+inline constexpr std::size_t kMaxCustomWordBytes = 80;
 
 struct ProjectState {
     /// Next id to hand out; every id in the project is below `ids.next`.
@@ -484,6 +516,11 @@ struct ProjectState {
     SharedList<TranscriptEdits> transcriptEdits;
     /// The project's named caption styles (CaptionStyle.h, C.7). Saved only when not empty. Shared until changed.
     SharedList<CaptionPreset> captionPresets;
+    /// 0.7: words the transcriber should know - names, game titles, jargon, invented terms -, in the order the user
+    /// wrote them, one line each, no duplicates (case-insensitive), at most kMaxCustomWords of kMaxCustomWordBytes.
+    /// They go to the local recogniser as its vocabulary prompt and to the cloud providers as key terms, for the next
+    /// transcription (setCustomWords, TranscribeJobOptions::vocabulary). Saved only when not empty.
+    std::vector<std::string> customWords;
     /// Review notes on the project's sequences (ReviewNotes.h, C.9), sorted by id. Saved only when not empty. Shared
     /// between snapshots until changed: a thousand notes would otherwise be copied by every edit and undo step.
     SharedList<ReviewNote> reviewNotes;
@@ -526,6 +563,10 @@ struct ProjectState {
     /// Deep value equality.
     bool operator==(const ProjectState& other) const;
 };
+
+/// 0.7 (card 179): the rights record that stands for `item`: its own when it has one, else (a subclip) its master's,
+/// down the chain of subclips. Null when none is set.
+const MediaRights* effectiveRights(const ProjectState& state, const MediaItem& item);
 
 /// True when `a` and `b` are the same revision: equal generators and every bin, media item, sequence
 /// and track node is shared (pointer-identical). O(nodes), never compares clip contents. EditSession

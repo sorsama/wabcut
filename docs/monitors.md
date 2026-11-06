@@ -60,6 +60,10 @@ the drop area in `src/app/qml/panels/SourceMonitorPanel.qml` (`SourceMonitor.loa
 (`src/app/qml/monitor/EditOverlay.qml`, `MonitorPanel.programDrop`, `Monitors.overlayTrack` / `replaceTarget` /
 `sequenceEndText`) and caption picking (`GraphicCanvas` pick objects of kind `caption`, `MonitorPanel`'s pick area).
 
+## AI effects on the monitor (0.7)
+
+A layer with AI Restore, AI Denoise, AI Refocus or AI Frame Interpolation shows the pictures **Process** made for its clip ([ai.md](ai.md#ai-video-effects-restore-and-denoise-07)). Where a frame has none yet it shows the original picture and the monitor's header says **AI: N layers not processed** (hover for what to do); the badge goes away as the pictures are made - the frame under the playhead updates as each one is stored.
+
 ## Move, scale and rotate in the Program Monitor
 
 Premiere's direct manipulation of the Motion effect
@@ -71,8 +75,10 @@ Premiere's direct manipulation of the Motion effect
   is over the clip.
 - **Gestures**:
   - drag inside the box: **Position**. Shift keeps the move horizontal or vertical.
-  - drag a corner or an edge handle: **Scale**, around the anchor point. Wabcut's Motion has one Scale, so every handle
-    scales uniformly; Premiere's Scale Width with Uniform Scale off has no counterpart yet.
+  - drag a corner or an edge handle: **Scale**, around the anchor point **(0.7)**. A corner scales both ways while Uniform Scale
+    is on; a side handle changes one axis and turns Uniform Scale off for the clip (the width, or the height for the top and
+    bottom edges) - Shift keeps the shape instead. With Uniform Scale off a corner follows the pointer on both axes, and
+    Shift keeps the box's shape. All of it is one undo step per drag, named Scale.
   - drag just outside a corner: **Rotation** around the anchor point. Shift rounds to 45-degree steps.
   - drag the anchor crosshair: **Anchor Point**, with Position following so the picture stays where it is. Alt moves
     the anchor point alone (the picture moves), as in Premiere.
@@ -84,13 +90,27 @@ Premiere's direct manipulation of the Motion effect
   parameter changes everywhere, as in Effect Controls. Each gesture is one undo step.
 - **Snapping**: with **Snap in Program Monitor** on (Ctrl+Shift+;) the box's edges and centre snap to the frame's edges
   and centre and to the visible guides, showing a line where they snap. Ctrl turns snapping off during a drag.
-- **Commands**: `clip.setMotion` sets Position, Scale, Rotation and Anchor Point together at a time (one undo step,
-  keyed where animated): what agents, scripts and `wabcut-cli` use.
+- **Mirrored footage** (0.7): a clip whose file flags it as mirrored (a horizontal flip in the container's display
+  matrix: some phone front cameras and screen recordings) now shows flipped in the Program Monitor and the exports, the
+  way the Library thumbnails and every player show it; the Motion box, the mask handles and the anchor point follow the
+  flip. Imported files read the flag; a project made before 0.7 keeps what it probed until the file is relinked.
+- **Scale Width and Uniform Scale** (0.7): Effect Controls > Transform has Premiere's **Uniform Scale** switch (on by default,
+  no stopwatch). Switch it off and Scale becomes **Scale Height**, with a **Scale Width** row (keyframable) beside it; the
+  width starts at the height, so the picture does not jump, and switching Uniform Scale on puts the width back to 100 %
+  (one undo step either way). A stretched clip plays, exports, tracks, masks and round-trips through Final Cut Pro XML and
+  FCP7 XML as it is drawn; Set to Frame Size, Reframe, Layouts and the Multicam grid make it uniform again or scale both
+  axes, the AI zoom and the tracker ask you to switch Uniform Scale on first. Old projects load as they were.
+- **Commands**: `clip.setMotion` sets Position, Scale, Scale Width, Uniform Scale, Rotation and Anchor Point together at a
+  time (one undo step, keyed where animated; a `scaleWidth` turns Uniform Scale off first): what agents, scripts and
+  `wabcut-cli` use.
 
 **Crop** (Premiere 26's crop direct manipulation): the crop button on a Crop effect in Effect Controls, or **Toggle Crop
 Direct Manipulation** (`monitor.toggleCropDirectManipulation`, no default key), shows the cropped picture's box; its
 edge and corner handles set the effect's Left, Top, Right and Bottom (keyed like Motion, one undo step per drag). The
-clip needs a Crop effect (Effects > Transform > Crop).
+clip needs a Crop effect (Effects > Transform > Crop). **Text clips (0.7)**: a title is a picture on a canvas of the
+sequence's size, so a selected title with a Crop effect gets the same handles (the box is the whole canvas; what you
+crop is the title as it is drawn), and the evaluator puts the same Crop on its layer in playback and exports. Without a
+Crop effect the monitor says to apply one.
 
 ## Loop and Play In to Out
 
@@ -100,6 +120,11 @@ clip needs a Crop effect (Effects > Transform > Crop).
   Playing from outside the range starts at its In. It is remembered per monitor.
 - **Play In to Out** (Ctrl+Shift+Space, now in the Program Monitor too) plays once from In and stops on the last marked
   frame, or loops with Loop on.
+- **Play In to Out with Preroll and Postroll** (Shift+Space, 0.7; the palette's `transport.playInToOutAround`) plays once
+  from the In minus the pre-roll to the Out plus the post-roll (Settings > Timeline & editing > "Play around the edit",
+  the same times as Play Around), clamped to the sequence or clip, then puts the playhead back where it was. A missing
+  mark is the start or the end. Loop is ignored; Space, K, J, L or a seek stop it where it is. With the Source Monitor
+  focused it does the same on the source's marks.
 - **Play Around** (Shift+K, 0.4) plays from the playhead minus the pre-roll to the playhead plus the post-roll once,
   then puts the playhead back where it was (Settings > Timeline & editing > "Play around the edit", 2 s each by
   default). With an edit point selected it is Trim's play-around, as in Premiere's trim mode; with the Source Monitor
@@ -126,6 +151,29 @@ clip needs a Crop effect (Effects > Transform > Crop).
   loop, captions and colour views, decoded on its own in CPU frames (the window's GPU device is not the one the
   decoders share), so the main Program Monitor keeps playing too. It costs a second decode of the visible layers while
   it is open. Video cards (AJA, Blackmagic) are not supported.
+- **Video Output Settings…** (0.7; Program Monitor gear, Monitors `requestVideoOutputSettings`) gathers the output's settings:
+  - **Display.** The display is remembered by its make, model and serial number (the system's name when it has none), not by
+    its place in the list: plug another display in and the output stays on the one you chose. While that display is
+    disconnected the output is off (the dialog says so, and **Enable Transmit** stays checked); it comes back when the display
+    does. The settings from before 0.7 name a display by its number, which is taken over once.
+  - **Picture.** **Fit** shows the whole frame, letterboxed or pillarboxed on black, in the shape the sequence has (frame size
+    and pixel aspect ratio); **Fill** scales it to cover the display and crops what runs over; **1:1** shows the frame's own
+    pixels in the middle of the display. Toggle Full Screen (Ctrl+`) always fits.
+  - **Safe margins.** The title and action safe lines over the output only (separate from the monitors' Safe Margins).
+  - **Sync offset** (-500 to 500 ms). A TV or projector shows a picture some milliseconds after it is sent. A positive offset
+    makes the output choose its frames that much ahead, so the picture meets the sound (the mirror's scheduler gets the
+    display latency; changing it restarts the mirror for a moment). Full screen uses no offset.
+  - **Match Refresh Rate** (Windows). While the output shows, the display is set to the lowest refresh rate of its current size
+    that the sequence's frame rate divides evenly (24 fps: 48, 72 or 120 Hz; 25: 50 or 75; 29.97: 59.94), and is put back when
+    the output stops, the display goes, the setting is turned off or Wabcut quits (the mode is set for the life of the process,
+    so a crash does not leave it changed). Where the display has no such mode, or on macOS and Linux, nothing is switched.
+  - **How the frame rate sits.** A line under the settings says whether the display's refresh rate is a whole multiple of the
+    sequence's frame rate (every frame lasts the same), nearly one (23.976 on 24 Hz: a frame repeats now and then), a 3:2
+    pulldown (24 on 60 Hz: frames alternate between two lengths) or uneven (25 on 60 Hz: judder).
+  - The output follows the Program Monitor (the same transport, edits and loop); it does not show the Source Monitor.
+  - **Not here:** video cards that send SDI or HDMI themselves (Blackmagic DeckLink, AJA, NDI) need their makers' SDKs, which
+    Wabcut does not bundle. Send the picture to a display, or to an SDI / HDMI converter that is one; an output of its own
+    resolution and frame rate, independent of the display's, is that later step.
 
 ## Rulers and guides
 
@@ -150,6 +198,26 @@ in the Program Monitor's settings menu (the gear):
 Each monitor's settings menu has **Transparency Grid**: a white and grey checkerboard where the picture is transparent
 (no clip, transparent video, a graphic's empty areas). The monitor then keeps the frame's alpha instead of compositing it
 over black. Off by default, remembered per monitor.
+
+## VR video view (0.7)
+
+A VR / 360 sequence (or a 360 item in the Source Monitor) can be looked around in: the wrench menu's **VR Video View** turns
+the monitor into a viewer drawn on the GPU - drag to look around, scroll to zoom the field of view, Home or a double-click to
+go straight ahead. See [VR / 360 video](vr.md). The menu item is off for a flat picture; guides, rulers and the Motion box are
+covered while the viewer is on.
+
+## Pixel aspect ratio
+
+The Program Monitor shows the sequence in the shape its **Pixel Aspect Ratio** (Sequence Settings) gives it: HDV
+footage (1440x1080, 4:3 pixels), DV widescreen and anamorphic sequences are widened to the 16:9 they play as, instead of
+being squeezed into the stored frame size. Changing the ratio in Sequence Settings changes the monitor at once; zoom
+levels count the widened width. Square pixels (the default) look as before. Review frames and the exports carry the same
+shape ([Export, settings and presets](export.md)).
+
+Footage keeps its own shape inside it: a clip is placed by its own pixel aspect ratio over the sequence's, so an HDV clip
+(4:3 pixels) fills an HDV sequence exactly and a square-pixel picture is seen at its true shape (Scale to Frame Size, Set
+to Frame Size / Fill Frame and the monitor's handles and masks count the same widened frame). Titles, graphics and
+captions are drawn in sequence pixels, so in an anamorphic sequence their letters are as wide as its pixels are.
 
 ## View settings
 
@@ -207,6 +275,35 @@ such overlay.
 Code: `src/app/qml/panels/PlatformSafeZoneOverlay.qml` (the bands table), `src/app/qml/monitor/MonitorSettingsMenu.qml`,
 `Preferences.platformSafeZone` (`monitor/platformSafeZone`).
 
+## Mute the Source Monitor's sound (0.7)
+
+A loudspeaker button on a pill at the top right of the Source Monitor's picture (it shows while the clip has sound) silences
+the source's playback with one click, without touching any volume: scan loud footage, then click again to hear it. The
+button turns amber with a crossed speaker while the source is muted. Only the Source Monitor's own playback is silenced
+(the monitor plays the clip in a private one-clip project, whose audio tracks are muted); your project, its tracks, the
+Program Monitor and exports are untouched, and nothing is added to the undo history. The mute stays for the clips you load
+next and ends when Wabcut closes (it is not remembered, so a new session never starts silent). **Mute Source Sound**
+(`sourceMonitor.toggleMute`, the palette and Keyboard Shortcuts; no default key) does the same from the keyboard.
+
+Code: `SourceMonitorBridge::muted` (`applyMute`), the `sourceMuteButton` in `SourceMonitorPanel.qml`.
+
+## Composition guides (0.7)
+
+**View > Rule of Thirds Guides / Golden Ratio Guides / Diagonal Guides**, the Program Monitor's wrench menu (**Composition
+Guides**) and the command palette switch three guides over the picture, each on its own:
+
+- **Rule of thirds**: lines a third of the way across and down.
+- **Golden ratio**: lines at 38.2 % and 61.8 % across and down.
+- **Diagonals**: the frame's two diagonals.
+
+Every line is two-tone (a dark stroke under a light one) so it reads on bright and dark pictures. They are in the monitor
+only (never in exports or Export Frame), take no clicks, and hide while the Trim view or the multi-camera view shows. The
+choice is remembered (`monitor/compositionGuides`). They sit beside Safe Margins and the platform safe zones above,
+which already cover the vertical-video zones. Commands `programMonitor.ruleOfThirds`, `programMonitor.goldenRatio`,
+`programMonitor.diagonalGuides` (no default keys). Premiere has no such overlay.
+
+Code: `src/app/qml/panels/CompositionOverlay.qml`, `MonitorBridge::compositionGuides`.
+
 ## Transport buttons
 
 Both monitors' button rows always fit their panel (0.4). When a monitor is too narrow, the least-used buttons hide first
@@ -239,6 +336,11 @@ The camera button in both monitors, or Ctrl+Shift+E (Shift+E on macOS), opens **
   whole frame fits with black bars. **Quality** (JPEG): Best, High, Medium or Small. **Keep under 2 MB** (JPEG; on with
   the thumbnail size, which also picks JPEG): the quality goes down until the file is under YouTube's 2 MB thumbnail
   limit (the message says when even the lowest quality is over). All of it is remembered with the folder and format.
+- **Copy to Clipboard (0.7).** The dialog's **Copy to Clipboard** button, a right-click on either camera button (**Copy
+  Frame**) and **Ctrl+Alt+Shift+E** (Opt+Shift+Cmd+E on macOS; `monitor.copyFrame`, also in the palette) put the frame
+  on the clipboard as a picture, at the sequence's size (the clip's own in the Source Monitor, which also answers the key
+  while it has the focus), without a dialog or a file: paste it into Discord, a thumbnail editor or a bug report. The
+  message says "Frame copied (1920 × 1080)". Nothing in the project changes. A Wabcut extra: Premiere has none.
 - **Export Frames at Markers… (0.6)** (the Markers menu, `marker.exportFrames`; the Highlights panel's **Thumbnails…**):
   the same dialog writes one still per sequence marker - **All**, **Chapters** or **Highlights** (a highlight marker's
   still is taken at its peak) - named after the marker ("Marker 3" without a name; " (2)" for a name used twice) into

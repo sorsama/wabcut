@@ -406,6 +406,28 @@ TEST_CASE("Dead time reads through multicam and nested clips and cuts them in pl
 
 // ---- Zoom punch and shake -------------------------------------------------------------------------------------------------
 
+TEST_CASE("Zoom punch zooms both axes of a stretched clip, keeping its shape (card 12)", "[model][gaming][punch][scalewidth]") {
+    Timeline tl("    V1 |A" + std::string(49, 'a') + "|\n");
+    const ClipId clip = tl.clip("V1@0");
+    ProjectState s = ok(edit::setParameter(tl.state, tl.seq, clip, edit::ParamRef::of(ParamId::Scale), ParamValue(0.5))).state;
+    s = ok(edit::setParameter(s, tl.seq, clip, edit::ParamRef::of(ParamId::UniformScale), ParamValue(0.0))).state;
+    s = ok(edit::setParameter(s, tl.seq, clip, edit::ParamRef::of(ParamId::ScaleWidth), ParamValue(1.0))).state; // 2 : 1
+    ZoomPunchOptions o;
+    o.scale = 1.5;
+    o.duration = f(10);
+    const edit::EditResult punched = ok(edit::zoomPunch(s, tl.seq, clip, f(20), o));
+    const Clip& c = clipOf(punched.state, tl.seq, clip);
+    for (const int frame : {10, 20, 22, 26, 28, 40}) {
+        INFO("frame " << frame);
+        const auto [width, height] = c.properties().scaleAt(c.curveTimeAt(f(frame)));
+        CHECK(width == Approx(2.0 * height)); // the shape is kept at every frame of the punch
+    }
+    CHECK(c.parameterAt(ParamId::Scale, f(20)) == Approx(0.75));      // the height: 0.5 x 1.5
+    CHECK(c.parameterAt(ParamId::ScaleWidth, f(20)) == Approx(1.5));  // the width: 1.0 x 1.5
+    CHECK(c.parameterAt(ParamId::ScaleWidth, f(5)) == Approx(1.0));   // outside the punch: as it was
+    CHECK_FALSE(c.properties().uniformScale());                       // and the switch stays off
+}
+
 TEST_CASE("Zoom punch keys Scale to ease in - hold and ease out around its hit (C.16)", "[model][gaming][punch]") {
     Timeline tl("    V1 |A" + std::string(49, 'a') + "|\n");
     const ClipId clip = tl.clip("V1@0");

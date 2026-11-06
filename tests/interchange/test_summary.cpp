@@ -17,7 +17,7 @@ TEST_CASE("interchange: summary: timeline and report as text", "[interchange][su
     const ImportResult r = importFixture("fcp7_23976_mac.xml");
     const std::string text = formatSummary(r);
     CHECK(
-        text.find("Imported Final Cut Pro 7 XML into bin 'fcp7_23976_mac': 1 sequence(s), 4 media item(s)") !=
+        text.find("Imported Final Cut Pro 7 XML into bin 'fcp7_23976_mac': 1 sequence, 4 media items") !=
         std::string::npos);
     CHECK(text.find("Sequence 'Reel 2 Assembly': 23.976 fps, 1920x1080, 48000 Hz, duration 00:00:10:00") !=
           std::string::npos);

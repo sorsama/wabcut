@@ -3,6 +3,9 @@
 
 #include "Catalog.h"
 
+#include <wabcut/model/ClipLock.h>
+#include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/RenderReplace.h>
 #include <wabcut/model/Parameters.h>
 
 #include <algorithm>
@@ -456,6 +459,11 @@ CommandOutput setParam(ExecutionContext& c) {
     }
     ProjectState state = c.state();
     for (const ClipId clip : c.clips("clips")) {
+        if (*id == ParamId::UniformScale) {
+            // 0.7 (card #12): the switch carries Scale Width along (setParameter), so the picture does not jump.
+            state = c.take(edit::setParameter(state, seq.id, clip, edit::ParamRef::of(*id), ParamValue(value >= 0.5 ? 1.0 : 0.0))).state;
+            continue;
+        }
         ClipProperties props = state.findSequence(seq.id)->findClip(clip)->clip().properties();
         props.set(*id, value);
         edit::ClipAttributeChange change;
@@ -730,6 +738,36 @@ void registerEditCommands(CommandRegistry& registry) {
                     return setAttributes(c, change);
                 }});
     addBuiltin(registry,
+               {"clip.lock", 1, "Lock Clip",
+                "Locks or unlocks clips (0.7), without locking their whole track. A locked clip cannot be moved, trimmed, "
+                "split, retimed, deleted, overwritten, pushed by a ripple or changed in any other way (an edit that would "
+                "is refused, naming the clip) until it is unlocked; it can still be selected, copied and played. Exactly "
+                "the given clips change: pass their linked partners too. Works on clips of locked tracks. Copies of a "
+                "locked clip are not locked.",
+                Capability::EditSequence,
+                withSequence({{"clips", clipsParam("Clips to lock or unlock.")},
+                              {"locked", schema::boolean("true to lock, false to unlock.", true)}},
+                             {"clips", "locked"}),
+                Json{{"clips", Json::array({42})}, {"locked", true}}, {},
+                [](ExecutionContext& c) {
+                    return edited(c.take(edit::setClipsLocked(c.state(), c.sequenceId(), c.clips("clips"),
+                                                              c.boolean("locked", true))));
+                }});
+    addBuiltin(registry,
+               {"clip.restoreUnrendered", 1, "Restore Unrendered",
+                "Plays the nested sequence again on clips that Render and Replace (0.7) swapped for a rendered file: the clip "
+                "keeps its place, In and Out, speed, links, keyframes and effects, and the rendered file stays in the project. "
+                "Pass the clips (their linked partners come along); clips that were not rendered and replaced are left "
+                "alone. Refused when none of them was, when the nested sequence is gone or no longer has the picture or "
+                "sound the clip plays, or when it would contain the sequence it is in. Rendering itself is a menu action "
+                "(Clip > Render and Replace...): it runs in the export queue and replaces the clips when its file is done.",
+                Capability::EditSequence,
+                withSequence({{"clips", clipsParam("Rendered clips to restore.")}}, {"clips"}),
+                Json{{"clips", Json::array({42})}}, {},
+                [](ExecutionContext& c) {
+                    return edited(c.take(edit::restoreUnrendered(c.state(), c.sequenceId(), c.clips("clips"))));
+                }});
+    addBuiltin(registry,
                {"clip.rename", 1, "Rename Clip", "Renames clips (the name shown on the timeline; the media keeps its name).",
                 Capability::EditSequence,
                 withSequence({{"clips", clipsParam("Clips to rename.")}, {"name", schema::string("The new name.")}},
@@ -738,6 +776,22 @@ void registerEditCommands(CommandRegistry& registry) {
                 [](ExecutionContext& c) {
                     edit::ClipAttributeChange change;
                     change.name = c.string("name");
+                    return setAttributes(c, change);
+                }});
+    addBuiltin(registry,
+               {"clip.setNote", 1, "Set Clip Note",
+                "Writes a free-text note on clips (0.7): up to 2,000 bytes of text kept with the clip in the project, read "
+                "on the timeline when Timeline Display's \"Clip notes\" is on and in the clip's tooltip. An empty note "
+                "clears it. A razor cut gives both pieces the note and a copy carries it; other clips of the same media do "
+                "not have it.",
+                Capability::EditSequence,
+                withSequence({{"clips", clipsParam("Clips to write the note on.")},
+                              {"note", schema::string("The note (empty clears it).")}},
+                             {"clips", "note"}),
+                Json{{"clips", Json::array({42})}, {"note", "Cut the cough here"}}, {"clip.note"},
+                [](ExecutionContext& c) {
+                    edit::ClipAttributeChange change;
+                    change.note = c.string("note");
                     return setAttributes(c, change);
                 }});
     addBuiltin(registry,
@@ -834,8 +888,8 @@ void registerEditCommands(CommandRegistry& registry) {
     addBuiltin(
         registry,
         {"track.setState", 1, "Set Track State",
-         "Changes track header toggles: lock, target, sync lock, mute, solo, output, name. Unlocking is how a locked "
-         "track becomes editable again.",
+         "Changes track header toggles: lock, target, sync lock, mute, solo, output, name, label colour. Unlocking is "
+         "how a locked track becomes editable again.",
          Capability::EditSequence,
          withSequence({{"track", trackParam("The track.")},
                        {"name", schema::string("New name (\"\" for the default).")},
@@ -843,14 +897,21 @@ void registerEditCommands(CommandRegistry& registry) {
                        {"targeted", schema::boolean("Track targeting.")},
                        {"syncLocked", schema::boolean("Sync lock.")},
                        {"muted", schema::boolean("Mute (audio).")},
-                       {"solo", schema::boolean("Solo (audio).")},
-                       {"enabled", schema::boolean("Track output on.")}},
+                       {"solo", schema::boolean("Solo: while any track of a kind is soloed, only the soloed ones are heard "
+                                                "(audio) or shown (video).")},
+                       {"enabled", schema::boolean("Track output on.")},
+                       {"colorIndex", schema::integer("The track's label colour, 0-15 (the clip label colours; shown as a "
+                                                      "stripe on the header and a wash on the lane), or -1 for none.",
+                                                      -1, 15)}},
                       {"track"}),
          Json{{"track", "A2"}, {"locked", true}}, {},
          [](ExecutionContext& c) {
              edit::TrackStateChange change;
              if (c.has("name")) {
                  change.name = c.string("name");
+             }
+             if (c.has("colorIndex")) {
+                 change.colorIndex = static_cast<std::int32_t>(c.integer("colorIndex"));
              }
              const auto flag = [&](const char* key, std::optional<bool>& field) {
                  if (c.has(key)) {

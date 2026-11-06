@@ -110,6 +110,9 @@ public:
 
     /// The voices of a model: [{id, name, description}].
     Q_INVOKABLE QVariantList voices(const QString& model) const;
+    /// r07 (QA-02): the placeholder of the dialog's free voice-id field for `model` ("" = the model takes only the
+    /// voices listed: no field). ElevenLabs, Cartesia, Fish Audio and OpenAI-compatible servers take their own ids.
+    Q_INVOKABLE QString voiceIdHint(const QString& model) const;
     /// options: kind ("dub" | "narration"), captionTrack, text, language, model, voice, style, maxStretch, duck, name,
     /// cloneVoice, speaker, rightsConfirmed, at (seconds), onBeats, maxCost (dollars), allowOnce.
     Q_INVOKABLE QString estimate(const QVariantMap& options);
@@ -143,6 +146,10 @@ private:
     bool hasCaptionTrack(qint64 id) const;
     void openPending();
     std::shared_ptr<command::CommandServices> jobServices(bool allowOnce);
+    /// QA-02: what an estimate plans with (the live registry and the routed default; it can never speak).
+    std::shared_ptr<command::CommandServices> planningServices();
+    /// QA-07: whether `model` may run now (offline mode and the no-cloud lock stop cloud models only).
+    bool modelAllowed(const std::string& model) const;
     QVariantMap m_plan;
     QVariantMap m_report;
     QVariantMap m_proposal;

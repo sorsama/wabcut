@@ -39,8 +39,15 @@ class MediaTranscriber {
 public:
     struct Options {
         std::string provider = "auto"; ///< "auto", "local", "cloud:<model id>", ... (providers() lists them)
-        std::string language = "auto"; ///< ISO 639-1 hint or "auto"
-        bool force = false;            ///< transcribe even when a transcript of the audio exists
+        std::string language = "auto"; ///< ISO 639-1 hint or "auto" (SpokenLanguages.h)
+        bool translate = false;        ///< whisper's translate task: English words from any language (card 073)
+        /// 0.7 (card 111): the recording switches between languages: each stretch of speech is transcribed in its own
+        /// language (with language "auto"; local provider only); the transcript's segments name theirs.
+        bool mixedLanguages = false;
+        bool force = false;           ///< transcribe even when a transcript of the audio exists
+        /// 0.7 (card 061): custom words (names, jargon) for the recogniser: the local vocabulary prompt, a cloud provider's
+        /// key terms. The project's (ProjectState::customWords) unless the caller gives others.
+        std::vector<std::string> vocabulary;
         /// Media times the project's audio redactions cover (ai::audioRedactionRanges): never transcribed, uploaded
         /// or returned as words (review P1-3).
         std::vector<TimeRange> redacted;
@@ -66,6 +73,11 @@ public:
                                                     const std::function<bool(double)>& progress) = 0;
     /// Whether a transcript of the stream exists already.
     virtual bool hasTranscript(const MediaItem& media, int audioStream) const = 0;
+    /// Deletes the transcripts of the stream (transcript.delete, card 080): how many entries went. The default is for a
+    /// host that keeps none.
+    virtual std::expected<std::size_t, Error> forget(const MediaItem& /*media*/, int /*audioStream*/) {
+        return std::unexpected(Error{ErrorCode::Unsupported, "this host keeps no transcripts to delete"});
+    }
     /// What Options::provider can name here, with availability.
     virtual std::vector<Provider> providers() const = 0;
     /// What `provider` runs as ("auto" resolved), or why nothing can.

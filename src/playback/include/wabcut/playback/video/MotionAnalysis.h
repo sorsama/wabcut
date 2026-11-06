@@ -17,6 +17,7 @@
 #include <wabcut/media/FrameHandle.h>
 #include <wabcut/model/Error.h>
 #include <wabcut/model/Time.h>
+#include <wabcut/motion/FaceAlign.h>
 #include <wabcut/motion/Flow.h>
 #include <wabcut/render/PreparedComposite.h>
 
@@ -26,6 +27,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace wabcut::playback {
 
@@ -45,10 +47,31 @@ struct MotionPicture {
     bool operator==(const MotionPicture&) const = default;
 };
 
+/// 0.7 (face-aware Morph Cut): finds the faces of a picture. The analysis asks it for the two sides of a Morph Cut and, where it
+/// finds the same face on both, aligns the flow inside the face by the faces' landmarks (motion/FaceAlign.h). Installed by whoever
+/// owns a detector (wabcut/ai/vision: YuNet in the AI helper); none installed, or a detector that finds nothing or fails: the
+/// plain flow (the old Morph Cut).
+class FaceFinder {
+public:
+    virtual ~FaceFinder() = default;
+    /// The faces in `grey` (the picture the flow is estimated on, 0..1), in its pixels, best first. Called on the analysis worker
+    /// threads and on an export's thread; it may take a while (a helper process). Empty: none found, or the detector failed.
+    virtual std::vector<motion::FaceFeatures> find(const motion::Plane& grey) = 0;
+    /// What the results depend on (the detector's weights and decoding): part of the motion's cache key. Never empty.
+    virtual std::string version() const = 0;
+};
+
+/// The process's face finder (none by default). Thread-safe.
+void setFaceFinder(std::shared_ptr<FaceFinder> finder);
+std::shared_ptr<FaceFinder> faceFinder();
+
 struct MotionRequest {
     MotionPicture a;
     MotionPicture b;
     render::CanvasSize canvas{}; ///< the level the mix happens on
+    /// 0.7: align the flow inside the faces both sides show (the Morph Cut's Face Aware setting). The result also depends on
+    /// whether a face finder is installed and which one (key()).
+    bool faceAware = false;
 
     bool isValid() const;
     /// A 64-bit key of everything above (the cache's).
@@ -70,6 +93,7 @@ public:
         int running = 0;
         std::uint64_t computed = 0;
         std::uint64_t failed = 0;
+        std::uint64_t facesAligned = 0; ///< analyses (0.7) in which at least one face was aligned
         std::size_t cachedEntries = 0;
         std::size_t cachedBytes = 0;
         double lastMilliseconds = 0.0; ///< the last analysis, decode included

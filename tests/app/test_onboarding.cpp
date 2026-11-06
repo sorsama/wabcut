@@ -2,7 +2,8 @@
 //   * the Keyboard Trainer: every prompt is a known command with Premiere keys; scoring, streaks and hints against a
 //     custom keymap (keys resolve from the active keymap, so edited or imported keys train themselves);
 //   * the first-run welcome: after the launch Home screen, skippable (Esc) and not shown again; completed (a .kys
-//     import, the workspace and the accent), then the three-step tour (Library → Timeline → Export);
+//     import, the workspace and the accent), then the seven-step tour (Library, Timeline, the menu bar, the Program
+//     Monitor, Effects, the command palette, Export);
 //   * Help and the command palette run it all again; so do the rows of Home's Learn page (Home closes first);
 //   * the trainer in the window: keys answer the prompt and never reach the editor.
 // Screenshots: the welcome, the tour and the trainer.
@@ -14,6 +15,7 @@
 #include "KeyboardTrainerBridge.h"
 #include "KeymapDispatcher.h"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <wabcut/keymap/KeymapManager.h>
 
@@ -481,12 +483,77 @@ TEST_CASE("Onboarding: the welcome sets keys, workspace and accent, then tours L
     CHECK(text->property("text").toString().contains(dispatcher->shortcutText(QStringLiteral("sequence.addEdit"))));
     save(shell.grab(), QStringLiteral("tour-timeline.png"));
 
-    // Left goes back, Right again; step 3, Export: opening it completes the tour.
+    // Left goes back, Right again.
     tap(shell.window.get(), Qt::Key_Left);
     CHECK(tour->property("step").toInt() == 0);
     tap(shell.window.get(), Qt::Key_Right);
+    CHECK(tour->property("step").toInt() == 1);
+
+    // The 0.3 shell (card 031): seven steps, Export last.
+    const QVariantList steps = tour->property("steps").toList();
+    REQUIRE(steps.size() == 7);
+    QStringList keys;
+    for (const QVariant& s : steps)
+        keys << s.toMap().value(QStringLiteral("key")).toString();
+    CHECK(keys == QStringList{QStringLiteral("library"), QStringLiteral("timeline"), QStringLiteral("menubar"),
+                              QStringLiteral("program"), QStringLiteral("effects"), QStringLiteral("palette"),
+                              QStringLiteral("export")});
+    const auto holeHolds = [&](QQuickItem* target) {
+        return waitUntil([&] { return tour->property("hole").toRectF().contains(sceneRect(target).adjusted(1, 1, -1, -1)); });
+    };
+
+    // Step 3, the menu bar in the title bar (Window opens panels in the last-clicked group).
     tap(shell.window.get(), Qt::Key_Right);
     CHECK(tour->property("step").toInt() == 2);
+    auto* menuBar = onboarding->property("menuBarTarget").value<QQuickItem*>();
+    REQUIRE(menuBar);
+    CHECK(menuBar->objectName() == QStringLiteral("appMenuBar"));
+    CHECK(holeHolds(menuBar));
+    CHECK(title->property("text").toString() == QStringLiteral("The menu bar"));
+    CHECK(text->property("text").toString().contains(QStringLiteral("Window")));
+
+    // Step 4, the Program Monitor: its group is the target; resolution and the timecode box are named.
+    tap(shell.window.get(), Qt::Key_Right);
+    CHECK(tour->property("step").toInt() == 3);
+    auto* program = onboarding->property("programTarget").value<QQuickItem*>();
+    REQUIRE(program);
+    CHECK(holeHolds(program));
+    CHECK(title->property("text").toString() == QStringLiteral("The Program Monitor"));
+    CHECK(text->property("text").toString().contains(QStringLiteral("resolution")));
+    CHECK(text->property("text").toString().contains(QStringLiteral("timecode")));
+
+    // Step 5, Effects: the Color workspace has no Effects panel, so the step opens it (and the tour keeps the focus, so
+    // Esc still ends it).
+    tap(shell.window.get(), Qt::Key_Right);
+    CHECK(tour->property("step").toInt() == 4);
+    QQuickItem* effects = nullptr;
+    REQUIRE(waitUntil([&] {
+        effects = named(shell, "effectsPanel");
+        return effects && effects->isVisible();
+    }));
+    auto* effectsTarget = onboarding->property("effectsTarget").value<QQuickItem*>();
+    REQUIRE(effectsTarget);
+    CHECK(holeHolds(effectsTarget));
+    CHECK(title->property("text").toString() == QStringLiteral("The Effects panel"));
+    CHECK(focusName(shell) == QStringLiteral("coachMarkCard"));
+    save(shell.grab(), QStringLiteral("tour-effects.png"));
+
+    // Step 6, the command palette: no target, the card in the middle, the key from the platform.
+    tap(shell.window.get(), Qt::Key_Right);
+    CHECK(tour->property("step").toInt() == 5);
+    CHECK(tour->property("hole").toRectF().width() == 0.0);
+    CHECK(title->property("text").toString() == QStringLiteral("The command palette"));
+    CHECK(text->property("text").toString().contains(QStringLiteral("Ctrl+Shift+P")));
+    {
+        const QRectF palette = sceneRect(named(shell, "coachMarkCard"));
+        CHECK(palette.center().x() == Catch::Approx(kShotWidth / 2.0).margin(kShotWidth * 0.1));
+        CHECK(palette.center().y() == Catch::Approx(kShotHeight / 2.0).margin(kShotHeight * 0.12));
+    }
+    save(shell.grab(), QStringLiteral("tour-palette.png"));
+
+    // Step 7, Export: opening it completes the tour.
+    tap(shell.window.get(), Qt::Key_Right);
+    CHECK(tour->property("step").toInt() == 6);
     auto* exportTab = onboarding->property("exportTarget").value<QQuickItem*>();
     REQUIRE(exportTab);
     // No workspace made from the Export preset yet: the Export button.

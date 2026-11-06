@@ -59,6 +59,7 @@ class QQmlEngine;
 class AiController;
 
 namespace wabcut::ai::edit {
+class CachedTranscriptProvider;
 class TranscriptServices;
 class TranscriptProviderChain;
 } // namespace wabcut::ai::edit
@@ -82,10 +83,13 @@ class TranscriptParagraphModel : public QAbstractListModel {
 
 public:
     enum Role { SpeakerRole = Qt::UserRole + 1, TimeRole, FirstRole, LastRole, WordsRole, SpeakerIndexRole, SpeakerKeyRole,
-                SpeakerColorRole };
+                SpeakerColorRole, LanguageRole, LanguageNameRole };
     struct Paragraph {
         QString speaker, timeText;
         QString speakerKey, speakerColor; // 0.6 (#36)
+        /// 0.7 (card 111): the language of the paragraph's words (code) and its name - the name only in a transcript of
+        /// mixed languages (""), where a paragraph starts at every change of language.
+        QString language, languageName;
         int speakerIndex = -1;
         int first = 0, last = -1;
         QVariantList words;
@@ -111,6 +115,10 @@ class TranscriptBridge : public QObject {
     Q_PROPERTY(wabcut::app::TranscriptParagraphModel* paragraphs READ paragraphs CONSTANT FINAL)
     Q_PROPERTY(int wordCount READ wordCount NOTIFY transcriptChanged FINAL)
     Q_PROPERTY(QString language READ language NOTIFY transcriptChanged FINAL)
+    /// 0.7 (card 111): "English 62 % · Thai 38 %" for a transcript spoken in more than one language, else "".
+    Q_PROPERTY(QString languageSummary READ languageSummary NOTIFY transcriptChanged FINAL)
+    /// The transcript's language is written right to left (Hebrew, Arabic, ...): the words read from the right.
+    Q_PROPERTY(bool rtl READ rtl NOTIFY transcriptChanged FINAL)
     /// The word under the playhead, or -1.
     Q_PROPERTY(int currentWord READ currentWord NOTIFY currentWordChanged FINAL)
     /// Bumped whenever the selection, the preview or the search marks change (bind word delegates to it).
@@ -156,6 +164,34 @@ class TranscriptBridge : public QObject {
     /// ("dialogue", "music", ... or ""), muted, chosen }]. Only chosen tracks are transcribed.
     Q_PROPERTY(QVariantList audioTracks READ audioTracks NOTIFY audioTracksChanged FINAL)
 
+    // ---- card 073: the language spoken ----
+    /// "auto" (detected) or a code of ai::spokenLanguages() ("he", "id", "uk", ...): what Transcribe, Redo and the source
+    /// clip's Transcribe tell the recogniser. Remembered between sessions; naming it helps a short or noisy clip that
+    /// detection gets wrong.
+    Q_PROPERTY(QString spokenLanguage READ spokenLanguage WRITE setSpokenLanguage NOTIFY spokenLanguageChanged FINAL)
+    /// Whisper's translate task: the transcript comes out in English, whatever the language spoken (local transcriber
+    /// only). Remembered.
+    Q_PROPERTY(bool translateToEnglish READ translateToEnglish WRITE setTranslateToEnglish NOTIFY spokenLanguageChanged FINAL)
+    /// 0.7 (card 111): the recording switches between languages: with auto-detect, each stretch of speech is transcribed in
+    /// its own language (local transcriber only). Remembered. It has no effect with a named language or translating.
+    Q_PROPERTY(bool mixedLanguages READ mixedLanguages WRITE setMixedLanguages NOTIFY spokenLanguageChanged FINAL)
+    /// [{ code, name, nativeName, label ("Hebrew · עברית"), rtl, tier ("strong" | "fair" | "limited") }] for the language
+    /// picker, in alphabetical order by English name.
+    Q_PROPERTY(QVariantList spokenLanguages READ spokenLanguages CONSTANT FINAL)
+    /// What to know about the chosen language (or translating) with the transcription model in use: "" when nothing.
+    Q_PROPERTY(QString spokenLanguageNote READ spokenLanguageNote NOTIFY spokenLanguageChanged FINAL)
+    /// The chosen language's name for the picker's button ("Auto-detect", "Hebrew · עברית").
+    Q_PROPERTY(QString spokenLanguageLabel READ spokenLanguageLabel NOTIFY spokenLanguageChanged FINAL)
+    /// Whether the chosen language is written right to left.
+    Q_PROPERTY(bool spokenLanguageRtl READ spokenLanguageRtl NOTIFY spokenLanguageChanged FINAL)
+
+    // ---- 0.7 (card 061): custom words ----
+    /// The project's custom words for transcription (names, game titles, jargon), one per line; the next transcription
+    /// listens for them. Set with setCustomWords().
+    Q_PROPERTY(QString customWords READ customWords NOTIFY customWordsChanged FINAL)
+    /// How many of them there are.
+    Q_PROPERTY(int customWordCount READ customWordCount NOTIFY customWordsChanged FINAL)
+
 public:
     /// A transcriber: media file + container stream -> transcript (worker thread; `progress` takes 0..1).
     using Transcriber = std::function<std::expected<ai::Transcript, Error>(
@@ -185,6 +221,7 @@ public:
     TranscriptParagraphModel* paragraphs() const { return m_paragraphs; }
     int wordCount() const { return static_cast<int>(m_transcript.size()); }
     QString language() const;
+    bool rtl() const;
     int currentWord() const { return m_currentWord; }
     int markRevision() const { return m_markRevision; }
     bool hasSelection() const { return !m_selection.empty(); }
@@ -212,6 +249,21 @@ public:
     double jobProgress() const { return m_jobProgress; }
     QString jobText() const { return m_jobText; }
     QVariantList audioTracks() const { return m_audioTracks; }
+    QString spokenLanguage() const { return m_spokenLanguage; }
+    QString customWords() const;
+    int customWordCount() const;
+    void setSpokenLanguage(const QString& code);
+    bool translateToEnglish() const { return m_translate; }
+    void setTranslateToEnglish(bool on);
+    bool mixedLanguages() const { return m_mixed; }
+    void setMixedLanguages(bool on);
+    QString languageSummary() const { return m_languageSummary; }
+    QVariantList spokenLanguages() const;
+    QString spokenLanguageNote() const;
+    QString spokenLanguageLabel() const;
+    bool spokenLanguageRtl() const;
+    /// Tests: called when a job starts with what it was told (language code, translate, redo).
+    void setJobObserver(std::function<void(const QString&, bool, bool)> observer) { m_jobObserver = std::move(observer); }
 
     Q_INVOKABLE bool isSelected(int word) const;
     Q_INVOKABLE bool isRemoving(int word) const;
@@ -232,6 +284,9 @@ public:
     Q_INVOKABLE void cancelPreview();
     /// The selected words' text (one range), for the Fix field.
     Q_INVOKABLE QString selectedText() const;
+    /// 0.7 (card 177): where the first selected run of words is on the timeline: { text, start, duration } in ticks; empty
+    /// without a selection. The Sources panel cites it ("Selected transcript line").
+    Q_INVOKABLE QVariantMap selectionTimeSpan() const;
     /// 0.4 Find All: the first selected run as its language writes it (Thai without spaces), the way the search
     /// matches the shown text; "" without a selection.
     Q_INVOKABLE QString selectionSearchText() const;
@@ -257,14 +312,27 @@ public:
     /// Starts a transcription of the sequence ("sequence") or the selected clips ("selection") with `provider`.
     /// Returns "" or why not. A cloud provider needs recorded consent, or `allowOnce`: true only when the user just
     /// answered the consent prompt (Allow once / Always). Without either nothing is uploaded.
-    Q_INVOKABLE QString transcribe(const QString& scope, bool allowOnce = false);
+    /// `redo` (card 080): also the audio that has a transcript, which is replaced when the new one is done (the old one
+    /// stays if the job is cancelled or fails).
+    Q_INVOKABLE QString transcribe(const QString& scope, bool allowOnce = false, bool redo = false);
+    /// 0.7 (card 061): sets the project's custom words from text (one per line, or separated by commas); one undo step
+    /// (transcript.setCustomWords). "" or why not. Audio that already has a transcript is heard again with Redo.
+    Q_INVOKABLE QString setCustomWords(const QString& text);
     Q_INVOKABLE void cancelTranscription();
     /// What a cloud provider needs before it may send audio: AiController.consentPrompt(...) for the job, or {}.
-    Q_INVOKABLE QVariantMap consentFor(const QString& scope) const;
+    Q_INVOKABLE QVariantMap consentFor(const QString& scope, bool redo = false) const;
+    /// Card 080: deletes the transcripts of the audio the sequence ("sequence") or the selected clips ("selection") play
+    /// on the chosen tracks (every model and language of those streams; not the captions made from them, not edits). The
+    /// words leave the Transcript tab at once. "" or why not (`message` says how many went).
+    Q_INVOKABLE QString deleteTranscript(const QString& scope);
+    /// How many audio streams of the scope have a transcript (the confirmation says it).
+    Q_INVOKABLE int transcriptCount(const QString& scope) const;
     /// P0 round (the source clip transcript, SourceTranscriptBridge): transcribes `media`'s audio stream `audioStream`
     /// (an index into MediaInfo::audio) alone with the chosen provider, as transcribe() does (the same job, progress,
     /// Cancel, redactions and consent rules). "" or why not (also `message`).
-    QString transcribeMedia(MediaId media, int audioStream, bool allowOnce = false);
+    QString transcribeMedia(MediaId media, int audioStream, bool allowOnce = false, bool redo = false);
+    /// Card 080 for one media file (the source clip's Delete transcript): "" or why not.
+    QString deleteMediaTranscript(MediaId media, int audioStream, bool refresh = true);
     /// consentFor() for one media file.
     QVariantMap consentForMedia() const;
 
@@ -320,6 +388,10 @@ signals:
     void providersChanged();
     void jobChanged();
     void audioTracksChanged();
+    /// The language spoken, translate, or what a note depends on changed.
+    void spokenLanguageChanged();
+    /// The project's custom words changed.
+    void customWordsChanged();
 
 private:
     struct Pending {
@@ -348,9 +420,11 @@ private:
     void search();
     void seekToWord(std::size_t word);
     ai::edit::CutOptions cutOptions() const;
-    std::vector<JobItem> jobItems(const QString& scope) const;
+    /// Which audio streams of a scope a job looks at: those without a transcript, all, or those with one.
+    enum class ItemFilter { Missing, All, Present };
+    std::vector<JobItem> jobItems(const QString& scope, ItemFilter filter = ItemFilter::Missing) const;
     /// Starts the transcription job of `items` (non-empty) with the chosen provider. "" or why not.
-    QString startJob(std::vector<JobItem> items, bool allowOnce);
+    QString startJob(std::vector<JobItem> items, bool allowOnce, bool redo = false);
     void finishJob(std::vector<std::pair<JobItem, std::expected<ai::Transcript, Error>>> results, bool cancelled);
     /// 0.4: whether audio track `index` is transcribed: the user's choice for its name, else the default (Dialogue role
     /// or a Mic / Voice / Commentary name, unmuted, not voice chat; every unmuted track when none matches).
@@ -366,6 +440,7 @@ private:
     QPointer<AiController> m_ai;
     TranscriptParagraphModel* m_paragraphs = nullptr;
     std::shared_ptr<ai::edit::MapTranscriptProvider> m_session;
+    std::shared_ptr<ai::edit::CachedTranscriptProvider> m_cached; ///< the analysis cache's transcripts (null without a cache)
     std::shared_ptr<ai::edit::TranscriptProviderChain> m_chain;
     std::shared_ptr<ai::edit::TranscriptServices> m_services;
     bool m_useCache = true;
@@ -397,6 +472,7 @@ private:
     double m_silenceSeconds = 0.8;
     int m_paddingMs = 40;
     QString m_provider = QStringLiteral("local");
+    bool m_providerPicked = false; ///< r07: until the user picks one here, m_provider follows Settings > AI (transcribe)
     std::map<QString, std::pair<QString, Transcriber>> m_fakeTranscribers;
     QString m_jobStatus = QStringLiteral("idle");
     double m_jobProgress = 0.0;
@@ -404,6 +480,12 @@ private:
     std::jthread m_job;
     std::atomic<int> m_jobGeneration{0};
     QVariantList m_audioTracks;
+    QString m_spokenLanguage = QStringLiteral("auto");
+    QString m_customWordsShown; ///< customWords() as last announced
+    bool m_translate = false;
+    bool m_mixed = false;
+    QString m_languageSummary; ///< rebuildParagraphs(): "English 62 % · Thai 38 %" when the words are in several languages
+    std::function<void(const QString&, bool, bool)> m_jobObserver;
 };
 
 /// QML registration through the factory (see ProjectControllerSingleton).

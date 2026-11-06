@@ -27,8 +27,11 @@ Item {
     readonly property var qualities: [16, 20, 26] // CRF / CQ: high, balanced, small file
     readonly property var sizes: [[0, 0], [1280, 720], [1920, 1080], [3840, 2160]]
     readonly property var ranges: ["whole", "inOut", "workArea", "custom"] // 0.2: Premiere's Range
-    readonly property var audioChannels: isMxf ? [0, 2, 4, 8] : [0, 1, 2, 6] // 0 = as the master; MXF: tracks
+    readonly property var audioChannels: isMxf ? [0, 2, 4, 8] : [0, 1, 2, 6, 8] // 0 = as the master; MXF: tracks
     readonly property var dynamicRanges: ["auto", "sdr", "pq", "hlg"] // 0.2 (I.9)
+    /// 0.7: dynamic HDR metadata on top of a PQ master (override `dynamicMetadata`); the Dolby Vision ones are listed so the
+    /// build can say why it cannot write them.
+    readonly property var dynamicMetadataKinds: ["none", "hdr10plus", "dolbyVision81", "dolbyVision84"]
     /// 0.6 (#72): the SDR output colour spaces (override `outputSpace`; Auto = the preset's, else the sequence's Color
     /// Management choice). Rec.2100 PQ / HLG are the Dynamic range row's.
     readonly property var outputSpaces: ["auto", "rec709", "rec2020", "p3-d65"]
@@ -83,6 +86,7 @@ Item {
         const display = Number(summary.captionDisplay ?? 0)
         captionDisplayTabs.currentIndex = display === 0 ? 0 : display === 4 ? 2 : 1
         dynamicRangeTabs.currentIndex = Math.max(0, dynamicRanges.indexOf(summary.dynamicRangeSetting ?? "auto"))
+        dynamicMetadataTabs.currentIndex = Math.max(0, dynamicMetadataKinds.indexOf(summary.dynamicMetadataSetting ?? "none"))
         outputSpaceTabs.currentIndex = Math.max(0, outputSpaces.indexOf(overrides.outputSpace ?? "auto"))
         credentialsTabs.currentIndex = Math.max(0, credentialModes.indexOf(ExportController.contentCredentials))
         stemsTabs.currentIndex = stemsOn ? 1 : 0
@@ -427,7 +431,56 @@ Item {
                 compact: true
                 model: [qsTr("Auto"), qsTr("SDR"), qsTr("HDR PQ"), qsTr("HDR HLG")]
                 Accessible.name: qsTr("Dynamic range")
-                onActivated: index => root.overrideChanged("dynamicRange", index === 0 ? undefined : root.dynamicRanges[index])
+                onActivated: index => {
+                    // 0.7: dynamic metadata describes an HDR master; an SDR (or the wrong HDR) master has none. Read what was chosen
+                    // before the change: the summary follows the overrides at once (and has none while they do not resolve).
+                    const kind = root.overrides.dynamicMetadata ?? "none"
+                    root.overrideChanged("dynamicRange", index === 0 ? undefined : root.dynamicRanges[index])
+                    if (kind !== "none" && (index === 1 || (index === 3 && kind !== "dolbyVision84") || (index === 2 && kind === "dolbyVision84")))
+                        root.overrideChanged("dynamicMetadata", undefined)
+                }
+            }
+
+            // 0.7: dynamic HDR metadata. HDR10+ is measured from the picture in a first pass and written shot by shot into a
+            // PQ HEVC file (MP4, MOV, MKV). Dolby Vision is licensed by Dolby: a build without a licensed writer lists it
+            // greyed out and says why under the row.
+            RowLabel { text: qsTr("HDR metadata"); visible: dynamicMetadataColumn.visible }
+            ColumnLayout {
+                id: dynamicMetadataColumn
+                objectName: "exportDynamicMetadata"
+                visible: root.hasVideo && (root.summary.hdrAvailable ?? false) && root.longGop
+                Layout.fillWidth: true
+                spacing: Theme.space(1.5)
+
+                PillTabs {
+                    id: dynamicMetadataTabs
+                    objectName: "exportDynamicMetadataTabs"
+                    Layout.fillWidth: true
+                    compact: true
+                    model: [
+                        { "label": qsTr("None") },
+                        { "label": qsTr("HDR10+"), "enabled": root.summary.hdr10PlusAvailable ?? false,
+                          "tooltip": root.summary.hdr10PlusReason ?? "" },
+                        { "label": qsTr("Dolby Vision 8.1"), "enabled": (root.summary.dolbyVisionReason ?? "") === "",
+                          "tooltip": root.summary.dolbyVisionReason ?? "" },
+                        { "label": qsTr("Dolby Vision 8.4"), "enabled": (root.summary.dolbyVisionReason ?? "") === "",
+                          "tooltip": root.summary.dolbyVisionReason ?? "" }
+                    ]
+                    Accessible.name: qsTr("Dynamic metadata")
+                    onActivated: index => root.overrideChanged("dynamicMetadata", index === 0 ? undefined : root.dynamicMetadataKinds[index])
+                }
+                Text {
+                    objectName: "exportDynamicMetadataNote"
+                    Layout.fillWidth: true
+                    text: root.summary.dynamicMetadataNote ?? ""
+                    visible: text !== ""
+                    wrapMode: Text.Wrap
+                    color: Theme.textSecondary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textSm
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: text
+                }
             }
 
             // 0.6 (#72): the output colour space of an SDR file (Premiere's Output Color Space): Rec.709, Rec.2020 (SDR)
@@ -469,7 +522,12 @@ Item {
                 objectName: "exportRangeTabs"
                 Layout.fillWidth: true
                 compact: true
-                model: [qsTr("Entire Source"), qsTr("Source In/Out"), qsTr("Work Area"), qsTr("Custom")]
+                // 0.7 (card 024): the Work Area range is there once the sequence has a work area (Alt+[ / Alt+] set it), as in
+                // Quick Export's range chips.
+                model: [qsTr("Entire Source"), qsTr("Source In/Out"),
+                        { label: qsTr("Work Area"), enabled: (root.summary.rangeAvailable ?? {}).workArea === true,
+                          tooltip: qsTr("Set a work area with Alt+[ and Alt+]") },
+                        qsTr("Custom")]
                 Accessible.name: qsTr("Range")
                 onActivated: index => {
                     if (root.ranges[index] === "custom" && root.overrides.rangeIn === undefined) {
@@ -536,7 +594,7 @@ Item {
                 Layout.fillWidth: true
                 compact: true
                 model: root.isMxf ? [qsTr("As the master"), qsTr("2 tracks"), qsTr("4 tracks"), qsTr("8 tracks")]
-                                  : [qsTr("As the master"), qsTr("Mono"), qsTr("Stereo"), qsTr("5.1")]
+                                  : [qsTr("As the master"), qsTr("Mono"), qsTr("Stereo"), qsTr("5.1"), qsTr("7.1")]
                 Accessible.name: qsTr("Audio channels")
                 onActivated: index => root.overrideChanged("audioChannels", root.audioChannels[index])
             }

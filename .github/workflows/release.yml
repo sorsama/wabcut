@@ -6,13 +6,17 @@
 #   Run workflow with no tag, or a pull request     build and check the packages without publishing anything
 #                                                   ("platforms" picks one platform's packages)
 #
-# Windows (MSI + portable ZIP) must pass for a release to be published. Linux (AppImage + tar.gz) and macOS (DMG, Apple
-# silicon) are preview builds: attached when they pass, left out with a note in the release text when they do not.
+# Windows x64 (MSI + portable ZIP) must pass for a release to be published. Windows on ARM64 (MSI + portable ZIP), Linux
+# (AppImage + tar.gz) and macOS (DMG, Apple silicon) are preview builds: attached when they pass, left out with a note in
+# the release text when they do not, and never a reason to hold the release back (the publish job waits for them to
+# finish, nothing more). The macOS DMG is signed with a Developer ID and notarized by Apple when the repository has the
+# secrets for it (docs/release.md, "macOS signing and notarization"), else it is built unsigned as before.
 # Every package is installed and run on the runner first: the CLI renders a tiny project from the installed files, and
 # on Linux and macOS the app starts and draws its first frame. Each job restores the caches the CI job of its platform
-# (windows-full, unix-full) saves on main, and saves none itself (tools/ci-cache.py): the vcpkg packages, so FFmpeg and
-# the other ports are built once, not per release, and the compiler cache, so only what changed since main's last CI
-# build is compiled. A tag pushed once that build is done (its "Save the compiler cache" step) compiles almost nothing.
+# (windows-full, windows-arm64, unix-full) saves on main, and saves none itself (tools/ci-cache.py): the vcpkg packages,
+# so FFmpeg and the other ports are built once, not per release, and the compiler cache, so only what changed since
+# main's last CI build is compiled. A tag pushed once that build is done (its "Save the compiler cache" step) compiles
+# almost nothing.
 name: release
 
 on:
@@ -25,9 +29,9 @@ on:
         required: false
         default: ""
       platforms:
-        description: "Which packages to build (a release needs Windows; Linux and macOS are attached when built)."
+        description: "Which packages to build (a release needs Windows x64; the others are attached when built)."
         type: choice
-        options: [all, windows, linux, macos]
+        options: [all, windows, windows-arm64, linux, macos]
         default: all
   pull_request:
     paths:
@@ -292,6 +296,158 @@ jobs:
             build/win-msvc/package/wabcut-${{ env.VERSION }}-windows-x64-portable.zip
           if-no-files-found: error
 
+  # Windows on ARM64: the same packages as x64, built natively on GitHub's ARM64 Windows runner (docs/release.md, "Windows
+  # on ARM64"). The windows-arm64 workflow (main, weekly) saves the vcpkg and compiler caches this job restores. Local
+  # transcription and audio plug-ins are not in this build (their vcpkg ports do not support ARM64 Windows), and the
+  # packages are signed with a certificate (PFX) when one is configured, not with Trusted Signing.
+  windows-arm64:
+    name: Windows ARM64 (preview)
+    needs: version
+    if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'windows-arm64'
+    runs-on: windows-11-arm
+    timeout-minutes: 360
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: vcpkg at the manifest baseline
+        id: vcpkg
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          $root = Join-Path $env:RUNNER_TEMP vcpkg
+          $cache = Join-Path $env:RUNNER_TEMP vcpkg-cache
+          git clone --quiet https://github.com/microsoft/vcpkg $root
+          git -C $root checkout --quiet $baseline
+          & "$root\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          "VCPKG_ROOT=$root" >> $env:GITHUB_ENV
+          "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> $env:GITHUB_ENV
+          "cache=$cache" >> $env:GITHUB_OUTPUT
+          # windows-arm64's cache on main.
+          "prefix=vcpkg-win-arm64-" >> $env:GITHUB_OUTPUT
+
+      - name: Restore the vcpkg binary cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.vcpkg.outputs.cache }}
+          key: ${{ steps.vcpkg.outputs.prefix }}newest
+          restore-keys: |
+            ${{ steps.vcpkg.outputs.prefix }}
+
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-win-arm64-newest
+          restore-keys: ccache-win-arm64-
+
+      - name: ccache
+        id: ccache
+        continue-on-error: true
+        shell: pwsh
+        run: python tools/ci-cache.py ccache-setup --max-size 2G --read-only
+
+      - name: Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4.4.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows_arm64
+          target: desktop
+          arch: win64_msvc2022_arm64
+          modules: qtshadertools
+          cache: true
+          aqtsource: ${{ env.AQT_SOURCE }}
+
+      - name: WiX Toolset
+        shell: pwsh
+        run: ./cmake/packaging/Install-WixToolset.ps1
+
+      - name: Configure and build
+        shell: pwsh
+        run: |
+          $env:WABCUT_QT_DIR = $env:QT_ROOT_DIR
+          . ./tools/dev-env.ps1 -Arch arm64
+          $launcher = @()
+          if ($env:CCACHE_EXE) { $launcher = "-DCMAKE_C_COMPILER_LAUNCHER=$env:CCACHE_EXE", "-DCMAKE_CXX_COMPILER_LAUNCHER=$env:CCACHE_EXE" }
+          cmake --preset win-msvc-arm64 -DWABCUT_BUILD_TESTS=OFF -DWABCUT_WARNINGS_AS_ERRORS=OFF -DWABCUT_DEBUG_INFO=OFF `
+            -DWABCUT_BUILD_NUMBER=${{ github.run_number }} @launcher
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build --preset win-msvc-arm64
+          exit $LASTEXITCODE
+
+      # A failed port build says only which port failed: its logs are in vcpkg's buildtrees.
+      - name: Configure and vcpkg logs (after a failure)
+        if: failure()
+        shell: pwsh
+        run: |
+          $log = 'build/win-msvc-arm64/CMakeFiles/CMakeConfigureLog.yaml'
+          if (Test-Path $log) { Get-Content $log -Tail 100 }
+          Get-ChildItem "$env:VCPKG_ROOT/buildtrees" -Recurse -Depth 2 -File -Include '*-err.log', 'config-*-out.log' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Length -gt 0 } | ForEach-Object {
+              "::group::$($_.FullName)"
+              Get-Content $_.FullName -Tail 80
+              '::endgroup::'
+            }
+
+      - name: Compiler cache statistics
+        if: ${{ !cancelled() && steps.ccache.outcome == 'success' }}
+        shell: pwsh
+        run: python tools/ci-cache.py ccache-finish
+
+      # A PFX certificate (secrets WABCUT_SIGN_PFX_BASE64, WABCUT_SIGN_PFX_PASSWORD, as for x64), imported into this
+      # runner's user store only. Azure Trusted Signing is not used here yet: its signing client has not been checked on
+      # ARM64. Neither: the packages are built unsigned and the summary says so.
+      - name: Code signing setup
+        id: signing
+        shell: pwsh
+        env:
+          PFX_BASE64: ${{ secrets.WABCUT_SIGN_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.WABCUT_SIGN_PFX_PASSWORD }}
+        run: |
+          if ($env:PFX_BASE64) {
+            $pfx = Join-Path $env:RUNNER_TEMP 'signing.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_BASE64))
+            try {
+              $password = ConvertTo-SecureString "$env:PFX_PASSWORD" -AsPlainText -Force
+              $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+            } finally {
+              Remove-Item $pfx -Force
+            }
+            "WABCUT_SIGN_CERT_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+            "WABCUT_SIGN_RELEASE=1" >> $env:GITHUB_ENV
+            "signed=true" >> $env:GITHUB_OUTPUT
+            "ARM64 packages signed with the certificate of $($cert.GetNameInfo('SimpleName', $false))" >> $env:GITHUB_STEP_SUMMARY
+          } else {
+            "signed=false" >> $env:GITHUB_OUTPUT
+            "::notice::No PFX code-signing certificate is configured: the ARM64 packages are unsigned (docs/release.md, Code signing)."
+            "ARM64 packages **unsigned** (no PFX certificate configured)" >> $env:GITHUB_STEP_SUMMARY
+          }
+
+      # cpack builds the MSI and the portable ZIP, then both are checked the way a user meets them: the ZIP unpacked
+      # and run, the MSI installed for this user, run, and uninstalled (cmake/packaging/PackageSmokeTest.ps1).
+      - name: Package, install and run
+        shell: pwsh
+        run: |
+          $env:WABCUT_QT_DIR = $env:QT_ROOT_DIR
+          . ./tools/dev-env.ps1 -Arch arm64
+          ./cmake/packaging/PackageSmokeTest.ps1 -BuildDir build/win-msvc-arm64 -CPack (Get-Command cpack).Source `
+            -Version $env:VERSION -PackageBaseName "wabcut-$env:VERSION-windows-arm64" `
+            -UpgradeCode '9D0324E6-4508-405F-B844-7C96EBEA28D6' -SmokeProject cmake/packaging/smoke/tiny.wabcut `
+            -Generators 'ZIP;WIX'
+          # 77 means the MSI part was skipped: the preview needs it.
+          exit $LASTEXITCODE
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wabcut-windows-arm64
+          path: |
+            build/win-msvc-arm64/package/wabcut-${{ env.VERSION }}-windows-arm64.msi
+            build/win-msvc-arm64/package/wabcut-${{ env.VERSION }}-windows-arm64-portable.zip
+          if-no-files-found: error
+
   linux:
     name: Linux x64 (preview)
     needs: version
@@ -316,7 +472,7 @@ jobs:
             libasound2-dev libpulse-dev libsecret-1-dev libfontconfig1-dev libvulkan-dev \
             xvfb xauth libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
             libxcb-render-util0 libxcb-shape0 libxcb-util1 libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0 \
-            mesa-vulkan-drivers desktop-file-utils
+            mesa-vulkan-drivers desktop-file-utils libxml2-utils
 
       - name: vcpkg at the manifest baseline
         id: vcpkg
@@ -447,6 +603,31 @@ jobs:
           sys.exit(f"the app did not reach {missing}" if missing else 0)
           EOF
 
+      # The tar.gz the way a user meets it: unpacked into a fresh folder and started from there, in the same stock-desktop
+      # environment as the AppImage above (still without the xcb helper packages). The CLI renders the tiny project, the
+      # app draws its first frame, and the launcher entry and the MIME type pass the freedesktop validators.
+      - name: Run the tar.gz
+        run: |
+          work="$RUNNER_TEMP/tgz"
+          rm -rf "$work"
+          mkdir -p "$work"
+          tar -xzf "dist/wabcut-$VERSION-linux-x64.tar.gz" -C "$work"
+          root=$(echo "$work"/wabcut-*)
+          test -x "$root/bin/wabcut"
+          desktop-file-validate "$root/share/applications/wabcut.desktop"
+          xmllint --noout "$root/share/mime/packages/io.github.sorsama.wabcut.xml"
+          clean=(env -u LD_LIBRARY_PATH -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QML_IMPORT_PATH)
+          "${clean[@]}" "$root/bin/wabcut-cli" --version
+          cp cmake/packaging/smoke/tiny.wabcut "$work/"
+          "${clean[@]}" "$root/bin/wabcut-cli" cmd "$work/tiny.wabcut" --save \
+            --json '{"command":"title.add","params":{"at":0,"duration":"00:00:01:00","text":"Wabcut"}}'
+          "${clean[@]}" "$root/bin/wabcut-cli" render "$work/tiny.wabcut" "$work/tiny.mp4" --encoder libx264 --test-pattern
+          test -s "$work/tiny.mp4"
+          report="$RUNNER_TEMP/startup-tgz.json"
+          "${clean[@]}" WABCUT_PERF_STARTUP="$report" WABCUT_PERF_STARTUP_QUIT=1 WABCUT_PERF_SETTINGS_DIR="$RUNNER_TEMP/profile-tgz" \
+            timeout 300 xvfb-run -a -s "-screen 0 1600x960x24" "$root/bin/wabcut"
+          grep -q firstFrame "$report"
+
       - uses: actions/upload-artifact@v7
         with:
           name: wabcut-linux-x64
@@ -459,6 +640,9 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'macos'
     runs-on: macos-15
     timeout-minutes: 360
+    outputs:
+      signed: ${{ steps.signing.outputs.signed }}
+      notarized: ${{ steps.signing.outputs.notarize }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
       PRESET: macos-clang
@@ -471,6 +655,79 @@ jobs:
         run: |
           brew install nasm autoconf automake autoconf-archive libtool pkg-config llvm
           echo "LLVM_ROOT=$(brew --prefix llvm)" >> "$GITHUB_ENV"
+
+      # Code signing and notarization, when the repository is set up for them (docs/release.md, "macOS signing and
+      # notarization"). Secrets: WABCUT_MACOS_CERT_P12_BASE64 + WABCUT_MACOS_CERT_PASSWORD (the "Developer ID Application"
+      # certificate and its private key, exported as a .p12), and for Apple's notary service either the App Store Connect
+      # API key (WABCUT_NOTARY_KEY_P8_BASE64, WABCUT_NOTARY_KEY_ID, WABCUT_NOTARY_ISSUER_ID) or an Apple ID with an
+      # app-specific password (WABCUT_NOTARY_APPLE_ID, WABCUT_NOTARY_PASSWORD; the team id is read from the certificate,
+      # or set the variable WABCUT_MACOS_TEAM_ID). The certificate goes into a keychain of its own that lasts for this
+      # job. No certificate: the bundle is signed ad hoc and the DMG is an unsigned preview, as before. A certificate
+      # without notary credentials: signed with the hardened runtime, not notarized (Gatekeeper still asks).
+      # Done first so wrong credentials stop the run before the hours of building.
+      - name: Code signing setup
+        id: signing
+        env:
+          CERT_P12_BASE64: ${{ secrets.WABCUT_MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.WABCUT_MACOS_CERT_PASSWORD }}
+          NOTARY_KEY_BASE64: ${{ secrets.WABCUT_NOTARY_KEY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.WABCUT_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.WABCUT_NOTARY_ISSUER_ID }}
+          NOTARY_APPLE_ID: ${{ secrets.WABCUT_NOTARY_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.WABCUT_NOTARY_PASSWORD }}
+          TEAM_ID: ${{ vars.WABCUT_MACOS_TEAM_ID }}
+        run: |
+          if [ -z "$CERT_P12_BASE64" ]; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "notarize=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Developer ID certificate is configured: the DMG is an unsigned preview (docs/release.md, macOS signing and notarization)."
+            echo "macOS DMG **unsigned** (no Developer ID certificate configured)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/wabcut-signing.keychain-db"
+          password=$(uuidgen)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/developer-id.p12"
+          # codesign reads the key without a prompt (a CI run has nobody to click Allow).
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          found=$(security find-identity -v -p codesigning "$keychain" | grep "Developer ID Application" | head -1 || true)
+          if [ -z "$found" ]; then
+            echo "::error::The certificate has no 'Developer ID Application' identity ('Apple Development' and 'Apple Distribution' certificates cannot be notarized). security find-identity says:"
+            security find-identity -v -p codesigning "$keychain"
+            exit 1
+          fi
+          identity=$(echo "$found" | awk '{print $2}')
+          team="${TEAM_ID:-$(echo "$found" | sed -n 's/.*(\([A-Z0-9]\{10\}\))".*/\1/p')}"
+          {
+            echo "WABCUT_MACOS_SIGN_IDENTITY=$identity"
+            echo "WABCUT_MACOS_KEYCHAIN=$keychain"
+          } >> "$GITHUB_ENV"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+          notarize=false
+          if [ -n "$NOTARY_KEY_BASE64" ] && [ -n "$NOTARY_KEY_ID" ] && [ -n "$NOTARY_ISSUER_ID" ]; then
+            echo "$NOTARY_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+            xcrun notarytool store-credentials wabcut-notary --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$NOTARY_KEY_ID" \
+              --issuer "$NOTARY_ISSUER_ID" --keychain "$keychain"
+            rm -f "$RUNNER_TEMP/AuthKey.p8"
+            notarize=true
+          elif [ -n "$NOTARY_APPLE_ID" ] && [ -n "$NOTARY_PASSWORD" ] && [ -n "$team" ]; then
+            xcrun notarytool store-credentials wabcut-notary --apple-id "$NOTARY_APPLE_ID" --team-id "$team" \
+              --password "$NOTARY_PASSWORD" --keychain "$keychain"
+            notarize=true
+          fi
+          echo "notarize=$notarize" >> "$GITHUB_OUTPUT"
+          if [ "$notarize" = true ]; then
+            echo "WABCUT_NOTARY_PROFILE=wabcut-notary" >> "$GITHUB_ENV"
+            echo "macOS DMG **signed** ($found) and will be **notarized**" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::A Developer ID certificate is configured but no notary credentials: the DMG is signed, not notarized, and Gatekeeper still asks."
+            echo "macOS DMG **signed**, **not notarized** (no notary credentials configured)" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: vcpkg at the manifest baseline
         id: vcpkg
@@ -552,15 +809,22 @@ jobs:
             -DEXPECT_HELPERS=wabcut-embed -DSMOKE_PROJECT=cmake/packaging/smoke/tiny.wabcut \
             -P cmake/InstallSmokeTest.cmake
 
-      # Wabcut.app: LLVM's libc++ into the bundle, every file signed ad hoc, nothing loaded from outside
-      # (cmake/packaging/macos/finish_bundle.py).
+      # Wabcut.app: LLVM's libc++ into the bundle, every file signed (ad hoc; with the Developer ID, the hardened runtime
+      # and the entitlements of cmake/packaging/macos/entitlements-*.plist when the signing setup found a certificate),
+      # nothing loaded from outside (cmake/packaging/macos/finish_bundle.py).
       - name: Make the app bundle self-contained
         run: |
           # --strip: without their symbol tables the executables are much smaller (finish_bundle.py signs afterwards).
           cmake --install build/$PRESET --prefix "$RUNNER_TEMP/install" --strip
           mkdir -p "$RUNNER_TEMP/dmg"
           ditto "$RUNNER_TEMP/install/wabcut.app" "$RUNNER_TEMP/dmg/Wabcut.app"
-          python3 cmake/packaging/macos/finish_bundle.py "$RUNNER_TEMP/dmg/Wabcut.app"
+          sign=()
+          if [ "${{ steps.signing.outputs.signed }}" = true ]; then
+            sign=(--identity "$WABCUT_MACOS_SIGN_IDENTITY" --keychain "$WABCUT_MACOS_KEYCHAIN"
+                  --entitlements-app cmake/packaging/macos/entitlements-app.plist
+                  --entitlements-helper cmake/packaging/macos/entitlements-helper.plist)
+          fi
+          python3 cmake/packaging/macos/finish_bundle.py "$RUNNER_TEMP/dmg/Wabcut.app" ${sign[@]+"${sign[@]}"}
 
       # Run the finished bundle with Homebrew's LLVM moved away, as on a Mac without it: the CLI's version and a
       # headless render, then the app until its first frame (best effort: the runner has no display GPU, and a
@@ -587,15 +851,33 @@ jobs:
           # macOS has no timeout(1): a watcher ends a start that hangs.
           ( sleep 300; pkill -9 -f "$app/Contents/MacOS/wabcut\$" ) > /dev/null 2>&1 &
           watcher=$!
-          if WABCUT_PERF_STARTUP="$report" WABCUT_PERF_STARTUP_QUIT=1 WABCUT_PERF_SETTINGS_DIR="$RUNNER_TEMP/profile" \
-               "$app/Contents/MacOS/wabcut" && grep -q firstFrame "$report"; then
-            cat "$report"
-          else
-            echo "::warning::Wabcut.app did not draw a first frame on the runner (no GPU display); the CLI checks passed."
-            cat "$report" 2>/dev/null || true
-          fi
+          status=0
+          WABCUT_PERF_STARTUP="$report" WABCUT_PERF_STARTUP_QUIT=1 WABCUT_PERF_SETTINGS_DIR="$RUNNER_TEMP/profile" \
+            "$app/Contents/MacOS/wabcut" || status=$?
           pkill -P "$watcher" 2>/dev/null || true
           kill "$watcher" 2>/dev/null || true
+          if [ "$status" = 0 ] && grep -q firstFrame "$report"; then
+            cat "$report"
+          else
+            cat "$report" 2>/dev/null || true
+            # With the hardened runtime a missing entitlement kills the app with SIGILL, SIGTRAP, SIGABRT, SIGBUS or SIGSEGV
+            # before its interface loads: that is the signature's fault, not the runner's, and fails the release.
+            case "$status" in
+              132|133|134|138|139)
+                if [ "${{ steps.signing.outputs.signed }}" = true ] && ! grep -q qmlLoaded "$report" 2>/dev/null; then
+                  echo "::error::The signed Wabcut.app crashed at start (signal $((status - 128))): check cmake/packaging/macos/entitlements-app.plist."
+                  exit 1
+                fi ;;
+            esac
+            echo "::warning::Wabcut.app did not draw a first frame on the runner (no GPU display); the CLI checks passed."
+          fi
+
+      # Apple's notary service checks the signed app (hardened runtime, secure timestamp, every library signed by the same
+      # Developer ID) and returns a ticket, which is stapled into the app so it opens offline and, copied out of the disk
+      # image, still passes Gatekeeper. Minutes, mostly waiting. A rejection prints Apple's log and fails the job.
+      - name: Notarize the app
+        if: steps.signing.outputs.notarize == 'true'
+        run: python3 cmake/packaging/macos/notarize.py "$RUNNER_TEMP/dmg/Wabcut.app"
 
       # hdiutil sometimes fails with "Resource busy" on GitHub's macOS runners (a disk-image helper still holds the
       # folder; it dropped the DMG from the first 0.5.3 run): up to five tries, a short wait between them.
@@ -617,6 +899,51 @@ jobs:
           done
           ls -l dist
 
+      # The disk image carries the signature and ticket too, so Gatekeeper accepts the download itself, not only the app
+      # inside it. (Signed with the Developer ID; notarized and stapled when notary credentials are configured.)
+      - name: Sign and notarize the disk image
+        if: steps.signing.outputs.signed == 'true'
+        run: |
+          dmg="dist/wabcut-$VERSION-macos-arm64.dmg"
+          codesign --force --timestamp --sign "$WABCUT_MACOS_SIGN_IDENTITY" --keychain "$WABCUT_MACOS_KEYCHAIN" "$dmg"
+          if [ "${{ steps.signing.outputs.notarize }}" = true ]; then
+            python3 cmake/packaging/macos/notarize.py "$dmg"
+          fi
+
+      # What Gatekeeper decides on a Mac that downloaded the file: the signature on the app and the disk image, the
+      # hardened runtime, and (notarized) the stapled ticket, checked on the app as it sits in the mounted image.
+      - name: Check the signatures like Gatekeeper
+        if: steps.signing.outputs.signed == 'true'
+        run: |
+          dmg="dist/wabcut-$VERSION-macos-arm64.dmg"
+          codesign --verify --strict --verbose=2 "$dmg"
+          mount="$RUNNER_TEMP/dmg-check"
+          mkdir -p "$mount"
+          hdiutil attach "$dmg" -mountpoint "$mount" -nobrowse -readonly
+          trap 'hdiutil detach "$mount" -force || true' EXIT
+          app="$mount/Wabcut.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          # Into files, then grep: grep -q ends a pipe early, and pipefail would fail the step on codesign's SIGPIPE.
+          codesign -d --verbose=2 "$app" > "$RUNNER_TEMP/codesign.txt" 2>&1
+          cat "$RUNNER_TEMP/codesign.txt"
+          grep -q "(runtime)" "$RUNNER_TEMP/codesign.txt"
+          codesign -d --entitlements - "$app/Contents/MacOS/wabcut" > "$RUNNER_TEMP/entitlements.txt" 2>&1
+          grep -q "com.apple.security.cs.allow-jit" "$RUNNER_TEMP/entitlements.txt"
+          if [ "${{ steps.signing.outputs.notarize }}" = true ]; then
+            xcrun stapler validate "$app"
+            xcrun stapler validate "$dmg"
+            spctl --assess --type execute --verbose=4 "$app"
+            spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+            echo "macOS DMG notarized and stapled; Gatekeeper accepts the app and the disk image" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "macOS DMG signed (Developer ID, hardened runtime); not notarized" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # The temporary keychain held the certificate and the notary login: it goes now (a runner is thrown away anyway).
+      - name: Remove the signing keychain
+        if: ${{ always() && steps.signing.outputs.signed == 'true' }}
+        run: security delete-keychain "$WABCUT_MACOS_KEYCHAIN" || true
+
       - uses: actions/upload-artifact@v7
         with:
           name: wabcut-macos-arm64
@@ -625,7 +952,8 @@ jobs:
 
   publish:
     name: Publish the release
-    needs: [version, windows, linux, macos]
+    # Only Windows x64 decides whether there is a release: the preview jobs are waited for, and attached when they passed.
+    needs: [version, windows, windows-arm64, linux, macos]
     if: always() && needs.version.outputs.tag != '' && needs.windows.result == 'success'
     runs-on: ubuntu-24.04
     permissions:
@@ -633,8 +961,10 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
       TAG: ${{ needs.version.outputs.tag }}
+      WINDOWS_ARM64: ${{ needs.windows-arm64.result }}
       LINUX: ${{ needs.linux.result }}
       MACOS: ${{ needs.macos.result }}
+      MACOS_NOTARIZED: ${{ needs.macos.outputs.notarized }}
       GH_TOKEN: ${{ github.token }}
       HAVE_UPDATE_KEY: ${{ secrets.WABCUT_UPDATE_SIGNING_KEY != '' }}
     steps:
@@ -651,7 +981,8 @@ jobs:
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
           cd ..
-          python3 cmake/packaging/release_notes.py "$VERSION" "$LINUX" "$MACOS" > "$RUNNER_TEMP/notes.md"
+          python3 cmake/packaging/release_notes.py "$VERSION" "$LINUX" "$MACOS" --windows-arm64 "$WINDOWS_ARM64" \
+            --macos-notarized "${MACOS_NOTARIZED:-false}" > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
 
       # The in-app update's version manifest (docs/release.md, "Updates"): wabcut-update.json with the MSI's size and

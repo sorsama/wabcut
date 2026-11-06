@@ -7,6 +7,7 @@
 #include <wabcut/model/FrameScaling.h>
 #include <wabcut/model/Merge.h>
 #include <wabcut/model/Timecode.h>
+#include <wabcut/model/TrackGroups.h>
 #include <wabcut/model/Vfr.h>
 
 #include "SequenceEditor.h"
@@ -273,6 +274,17 @@ EditOutcome setSequenceSettings(const ProjectState& state, SequenceId sequenceId
     if (change.colorIndex && (*change.colorIndex < 0 || *change.colorIndex > 15)) {
         return std::unexpected(invalidArgument("the label must be 0 to 15"));
     }
+    if (change.workArea && *change.workArea) {
+        const TimeRange& range = **change.workArea;
+        if (range.start.value < 0 || range.isEmpty() || range.end() > (*seq)->duration) {
+            return std::unexpected(invalidArgument("the work area must be non-empty and inside the sequence"));
+        }
+    }
+    if (change.vr) {
+        if (const auto problem = vrFormatProblem(*change.vr)) {
+            return std::unexpected(invalidArgument(*problem));
+        }
+    }
     SequenceEditor ed(state, **seq);
     const Rate oldRate = (*seq)->frameRate;
     if (change.frameRate && !(*change.frameRate == oldRate)) {
@@ -321,6 +333,15 @@ EditOutcome setSequenceSettings(const ProjectState& state, SequenceId sequenceId
     }
     if (change.rippleMarkers) { // 0.4: Markers > Ripple Sequence Markers
         h.rippleMarkers = *change.rippleMarkers;
+    }
+    if (change.rippleTrackKeyframes) { // 0.7 (card 120): Ripple Track Keyframes
+        h.rippleTrackKeyframes = *change.rippleTrackKeyframes;
+    }
+    if (change.workArea) { // 0.7 (card 046); after a new timebase, so the range given is the one kept
+        h.workArea = *change.workArea;
+    }
+    if (change.vr) { // 0.7: VR / 360 video
+        h.vr = *change.vr;
     }
     return ed.finish();
 }
@@ -431,6 +452,7 @@ struct MediaSequenceShape {
     Rate frameRate = kRate30;
     Rate pixelAspect{1, 1};
     std::optional<Rate> audioRate;
+    VrFormat vr; ///< 0.7: a 360 clip makes a VR sequence
 };
 
 MediaSequenceShape mediaSequenceShape(const MediaItem& item) {
@@ -458,6 +480,7 @@ MediaSequenceShape mediaSequenceShape(const MediaItem& item) {
     }
     shape.width = std::clamp(shape.width, 16, 16384);
     shape.height = std::clamp(shape.height, 16, 16384);
+    shape.vr = mediaVr(item);
     if (item.info.hasAudio() && item.info.audio.front().sampleRate.isValid() &&
         item.info.audio.front().sampleRate.isExact()) {
         shape.audioRate = item.info.audio.front().sampleRate;
@@ -520,6 +543,7 @@ std::expected<Created<SequenceId>, Error> newSequenceFromClip(const ProjectState
     {
         auto seq = std::make_shared<Sequence>(*created->state.findSequence(created->id));
         seq->pixelAspect = pixelAspect;
+        seq->vr = shape.vr; // 0.7: a 360 clip makes a VR sequence
         seq->fields = effectiveFieldOrder(*item, 0); // Interpret Footage's, else the file's (0.2 field options)
         created->state = created->state.withSequence(std::move(seq));
     }
@@ -543,6 +567,45 @@ std::expected<Created<SequenceId>, Error> newSequenceFromClip(const ProjectState
     return Created<SequenceId>{std::move(edited->state), created->id};
 }
 
+std::expected<Created<SequenceId>, Error> newSequenceFromClips(const ProjectState& state, std::span<const MediaId> media,
+                                                               std::string name) {
+    if (media.empty()) {
+        return std::unexpected(invalidArgument("choose the clips to make a sequence from"));
+    }
+    auto made = newSequenceFromClip(state, media.front(), std::move(name));
+    if (!made) {
+        return made;
+    }
+    for (std::size_t i = 1; i < media.size(); ++i) {
+        const MediaItem* item = made->state.findMedia(media[i]);
+        if (!item) {
+            return std::unexpected(notFound("media " + std::to_string(media[i].value) + " does not exist"));
+        }
+        if (!item->info.hasVideo() && !item->info.hasAudio()) {
+            return std::unexpected(invalidArgument("'" + item->name + "' has no picture or sound to make a sequence from"));
+        }
+        const Sequence& seq = *made->state.findSequence(made->id);
+        SourceClip source;
+        source.media = media[i];
+        source.patches = defaultSourcePatches(seq, *item);
+        if (source.patches.empty()) {
+            continue; // nothing of it fits the sequence's tracks
+        }
+        const Ticks at = seq.contentEnd();
+        auto placement = resolveThreePointEdit(made->state, made->id, media[i], source.patches, storedSourceMarks(*item), at);
+        if (!placement) {
+            return std::unexpected(placement.error());
+        }
+        source.sourceRange = placement->sourceRange;
+        auto edited = overwriteEdit(made->state, made->id, source, at);
+        if (!edited) {
+            return std::unexpected(edited.error());
+        }
+        made->state = std::move(edited->state);
+    }
+    return made;
+}
+
 std::expected<Created<TrackId>, Error> insertTrack(const ProjectState& state, SequenceId sequenceId, TrackKind kind,
                                                    std::size_t index, std::string name) {
     const auto seq = detail::findSequence(state, sequenceId);
@@ -558,6 +621,7 @@ std::expected<Created<TrackId>, Error> insertTrack(const ProjectState& state, Se
     out.id = track->id;
     auto& tracks = kind == TrackKind::Video ? next->videoTracks : next->audioTracks;
     tracks.insert(tracks.begin() + static_cast<std::ptrdiff_t>(std::min(index, tracks.size())), std::move(track));
+    regroupAfterMove(*next, out.id); // 0.7 (card 124): a track added between two tracks of a track group joins it
     out.state = out.state.withSequence(std::move(next));
     return out;
 }

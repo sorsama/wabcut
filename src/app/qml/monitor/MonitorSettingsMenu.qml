@@ -132,6 +132,15 @@ ContextMenu {
         command: "programMonitor.transparencyGrid"
         onTriggered: Monitors.programTransparencyGrid = !Monitors.programTransparencyGrid
     }
+    // 0.7 (VR / 360 video): look around in a VR sequence.
+    ContextMenuItem {
+        objectName: "programVrViewItem"
+        text: qsTr("VR Video View")
+        checkable: true
+        checked: Monitors.programVrView
+        enabled: ProjectController.sequenceVrProjection !== "none"
+        onTriggered: Monitors.programVrView = !Monitors.programVrView
+    }
     ContextMenuSeparator {}
     ContextMenuItem {
         objectName: "droppedFrameIndicatorItem"
@@ -201,6 +210,37 @@ ContextMenu {
             onTriggered: Preferences.platformSafeZone = "reels"
         }
     }
+    // 0.7: the rule of thirds, the golden ratio and the diagonals over the picture (CompositionOverlay); each on its own.
+    ContextMenu {
+        id: compositionGuides
+        objectName: "compositionGuidesMenu"
+        title: qsTr("Composition Guides")
+
+        ContextMenuItem {
+            objectName: "compositionGuide_thirds"
+            text: qsTr("Rule of Thirds")
+            checkable: true
+            checked: (Monitors.compositionGuides & 1) !== 0
+            command: "programMonitor.ruleOfThirds"
+            onTriggered: Monitors.compositionGuides = Monitors.compositionGuides ^ 1
+        }
+        ContextMenuItem {
+            objectName: "compositionGuide_golden"
+            text: qsTr("Golden Ratio")
+            checkable: true
+            checked: (Monitors.compositionGuides & 2) !== 0
+            command: "programMonitor.goldenRatio"
+            onTriggered: Monitors.compositionGuides = Monitors.compositionGuides ^ 2
+        }
+        ContextMenuItem {
+            objectName: "compositionGuide_diagonals"
+            text: qsTr("Diagonals")
+            checkable: true
+            checked: (Monitors.compositionGuides & 4) !== 0
+            command: "programMonitor.diagonalGuides"
+            onTriggered: Monitors.compositionGuides = Monitors.compositionGuides ^ 4
+        }
+    }
     ContextMenuItem {
         objectName: "audioTimeUnitsItem"
         text: qsTr("Show Audio Time Units")
@@ -223,9 +263,16 @@ ContextMenu {
         text: qsTr("Enable Transmit")
         checkable: true
         checked: Monitors.transmit
-        enabled: Monitors.transmitScreen >= 0
+        enabled: Monitors.transmitScreen >= 0 || Monitors.transmit // 0.7: a missing display can still be turned off
         command: "monitor.enableTransmit"
         onTriggered: Monitors.transmit = !Monitors.transmit
+    }
+    // 0.7 (card 110): the display, how the picture sits in it, safe lines, sync offset and refresh rate.
+    ContextMenuItem {
+        objectName: "videoOutputSettingsItem"
+        text: qsTr("Video Output Settings…")
+        iconName: "settings"
+        onTriggered: Monitors.requestVideoOutputSettings()
     }
     ContextMenu {
         id: displays
@@ -239,8 +286,8 @@ ContextMenu {
                 text: modelData.primary ? qsTr("Display %1: %2 × %3 (main)").arg(modelData.index + 1).arg(modelData.width).arg(modelData.height)
                                         : qsTr("Display %1: %2 × %3").arg(modelData.index + 1).arg(modelData.width).arg(modelData.height)
                 checkable: true
-                checked: Monitors.transmitScreen === modelData.index
-                onTriggered: Monitors.transmitScreen = modelData.index
+                checked: Monitors.transmitDisplayKey === modelData.key
+                onTriggered: Monitors.transmitDisplayKey = modelData.key
             }
             onObjectAdded: (index, object) => displays.insertItem(index, object as ContextMenuItem)
             onObjectRemoved: (index, object) => displays.removeItem(object as ContextMenuItem)

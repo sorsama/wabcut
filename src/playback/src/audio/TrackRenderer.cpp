@@ -352,7 +352,8 @@ struct TrackRenderer::Impl {
     /// stereo effects see the track's channels, not the puck's spread over five speakers (a reverb never feeds the
     /// LFE, a plug-in gets the channels it takes).
     bool pansLast(const Track& track) const {
-        return formatForChannels(busChannels) == ChannelFormat::Surround51 &&
+        const ChannelFormat bus = formatForChannels(busChannels);
+        return (bus == ChannelFormat::Surround51 || bus == ChannelFormat::Surround71) &&
                (track.format == ChannelFormat::Mono || track.format == ChannelFormat::Stereo);
     }
     int channelsFor(const Track& track) const { return pansLast(track) ? channelCount(track.format) : busChannels; }
@@ -964,11 +965,11 @@ struct TrackRenderer::Impl {
         const SurroundPan& pan = track.surround;
         const auto ic = static_cast<std::size_t>(channels);
         const auto oc = static_cast<std::size_t>(busChannels);
-        using Gains = std::array<float, 6 * 2>; // row-major, oc rows of ic gains
+        using Gains = std::array<float, 8 * 2>; // row-major, oc rows of ic gains (5.1: 6 rows, 7.1: 8)
         const auto gainsAt = [&](std::int64_t frame, Gains& g) {
             const Ticks t{frame * tpf};
-            surroundPanGains(channels, pan.x.valueAt(t), pan.y.valueAt(t), detail::faderGain(pan.lfeDb.valueAt(t)),
-                             g.data());
+            surroundPanGains(busChannels, channels, pan.x.valueAt(t), pan.y.valueAt(t),
+                             detail::faderGain(pan.lfeDb.valueAt(t)), g.data());
         };
         const auto place = [&](const float* g, const float* src, float* dst) {
             for (std::size_t r = 0; r < oc; ++r) {

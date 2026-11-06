@@ -33,6 +33,7 @@ const std::set<std::string> kRunsModel{
     "workflow.podcast",                            // transcribe, enhance, switch, shorts when run
     "autopilot.broll",                             // the smart search's visual model, when it is installed
     "autopilot.publishKit",                        // "cloud": the user's chat model writes the copy
+    "effect.processAi",                            // AI Restore / AI Denoise: DRUNet, NAFNet, Real-ESRGAN (wabcut-embed, 0.7)
 };
 
 /// Commands the AI modules add that run no model: they read caches, edit, or measure.
@@ -40,9 +41,10 @@ const std::set<std::string> kNoModel{
     // Cached transcripts.
     "transcript.text", "transcript.words", "transcript.review", "transcript.speakers", "transcript.corrections",
     "transcript.mediaWords", // P0 round: the source clip transcript (cached words)
+    "transcript.delete",     // card 080: removes cached transcripts
     "transcript.deleteRanges", "transcript.keepRanges", "transcript.moveRange", "transcript.cleanup",
     "transcript.correctWord", "transcript.correctRange", "captions.generate", "captions.generateFromTranscript",
-    "captions.updateFromTranscript", "captions.hideProfanity", "audio.bleepProfanity",
+    "captions.updateFromTranscript", "captions.hideProfanity", "audio.bleepProfanity", "audio.replaceProfanity",
     // Masks, tracking (Lucas-Kanade) and redactions.
     "mask.add", "mask.update", "mask.remove", "mask.list", "track.mask", "track.transform", "redaction.add",
     "redaction.update", "redaction.remove", "redaction.override", "redaction.list",
@@ -53,7 +55,7 @@ const std::set<std::string> kNoModel{
     // Audio: effects, levels, loudness (libebur128), ducking, sync (GCC-PHAT), remix (DSP), plugins.
     "track.setRole", "track.setVolume", "track.setPan", "sequence.setMasterGain", "audio.effects", "audio.addEffect",
     "audio.setEffect", "audio.removeEffect", "audio.moveEffect", "audio.addKeyframe", "audio.removeKeyframe",
-    "audio.moveKeyframe", "audio.loudness", "audio.normalize", "audio.masterLimiter", "audio.autoDuck",
+    "audio.moveKeyframe", "audio.loudness", "audio.normalize", "audio.masterLimiter", "audio.autoDuck", "audio.autoMix",
     "audio.syncClips", "audio.remix", "audio.remixRender", "plugins.list", "plugins.scan",
     // Voice-over (A.8): record arming and recorded takes.
     "track.setRecordArm", "record.takes", "record.useTake",
@@ -64,10 +66,19 @@ const std::set<std::string> kNoModel{
     "sequence.addSubmixTrack", "track.setOutput", "track.addSend", "track.setSend", "track.removeSend", "audio.routing",
     // Essential Sound auto-tagging (p02 audio): a DSP classifier, no model.
     "audio.autoTag",
+    // Spectral Repair (0.7): edits of a clip's spectrogram - DSP, no model.
+    "audio.spectralAttenuate", "audio.spectralHeal", "audio.spectralNoiseFloor", "audio.spectralRemoveTone",
+    "audio.spectralRepairEdits", "audio.spectralRepairOptions", "audio.spectralRepairRemove",
+    // EQ Match and Level Match (0.7): measurements of two renders (spectrum, EBU R128) and gain / equalizer edits, no model.
+    "audio.eqMatch", "audio.eqMatchReset", "audio.levelMatch",
+    // Audio description (0.7): the gaps in the dialogue and the caption track of the lines; the pictures are read by the app.
+    "audioDescription.findGaps", "audioDescription.createTrack",
     // Colour: parameters, files and statistics.
-    "color.grade.set", "color.grade.get", "lut.import", "lut.list", "cdl.export", "cdl.import", "scopes.read",
+    "color.grade.set", "color.grade.get", "lut.import", "lut.importFolder", "lut.list", "cdl.export", "cdl.import", "scopes.read",
     "color.auto", "color.match", "color.matchScene", "color.management.get", "color.management.set",
     "color.inputSpace.set", "color.inputSpace.get", "lut.export", "color.grade.copy",
+    // 0.7: colour-chart matching (a lattice search and a least-squares fit on the frame's pixels, no model).
+    "color.chartMatch",
     // 0.2: transcript files and Find and Replace.
     "transcript.export", "transcript.findReplace", "transcript.find",
     // Edits from cached results; frame differencing.
@@ -75,7 +86,9 @@ const std::set<std::string> kNoModel{
     // Gameplay highlights (G.2): DSP measurements, chat logs, markers and edits.
     "highlights.find", "highlights.importChat", "highlights.toReel", "highlights.toShort",
     // Stabilization (P.2): Lucas-Kanade tracking, RANSAC fits and path smoothing.
-    "effect.analyzeStabilization", "effect.analyzeRollingShutter",
+    "effect.analyzeStabilization", "effect.analyzeRollingShutter", "effect.analyzeAll",
+    // AI Restore / AI Denoise (0.7): a read of the cache and the model store.
+    "effect.aiStatus",
     // Creator autopilot (P1 #62): shot cuts, the beat grid and the sequence's own words - measured, not predicted.
     "autopilot.pacing",
     // Script correction (P1 #37): fuzzy matching of the transcript's words against the script.
@@ -121,8 +134,9 @@ TEST_CASE("Every command the AI modules add is classified as running a model or 
 
 TEST_CASE("Every command that names files in its parameters is flagged; so extensions never reach a file", "[script][touchesFiles]") {
     const std::set<std::string> kTouchesFiles{"history.export", "review.exportPackage", "review.importPackage",
-                                              "project.merge", "cdl.export", "cdl.import", "lut.import",
-                                              "plugins.scan", "lottie.import", "interchange.export", "highlights.importChat",
+                                              "project.merge", "cdl.export", "cdl.import", "lut.import", "lut.importFolder", "marker.import",
+                                              "source.importMarkers", "template.importFolder",
+                                              "plugins.scan", "lottie.import", "ograf.import", "ograf.inspect", "interchange.export", "highlights.importChat",
                                               "media.replaceFootage", "captions.export", "captions.import",
                                               // 0.2: exports, user presets and watch folders
                                               "export.quick", "export.queue", "export.preset.import", "export.preset.export",
@@ -137,6 +151,11 @@ TEST_CASE("Every command that names files in its parameters is flagged; so exten
                                               "media.layeredFileInfo", "media.importLayeredFile", "media.browse",
                                               "media.importCameraClips",
                                               "project.importItems", // 0.2 P.3: another project
+                                              "captions.exportPresets", "captions.importPresets", // 0.7 (card 115): a presets file
+                                              "audio.replaceProfanity", // 0.7 (card 102): a sound file
+                                              "review.importComments",  // 0.7 (card 035): a reviewers' comments file
+                                              // (marker.import / source.importMarkers: a markers file, template.importFolder: a folder of
+                                              // templates; 0.7, listed with the imports above)
                                               "autopilot.publishKit"}; // P1 #62: writes the kit's files into "folder"
     // Parameters that look like files but are not, or that only the host can open.
     const std::set<std::string> kExempt{
@@ -144,9 +163,10 @@ TEST_CASE("Every command that names files in its parameters is flagged; so exten
         "autozoom.apply", "roughcut.fromScript", // "sidecar" / "file": read only where the host's services allow
                                                 // (a local caller); extensions get the services of a remote client
         "export.describe",                      // "output": says what an export would write, writes nothing
+        "template.setFolder",                   // "folder": the template browser's folder name, not a path
     };
     const std::set<std::string> fileish{"path", "file", "files", "folder", "folders", "addFolders", "removeFolders",
-                                        "sidecar", "base", "theirs", "directory", "output"};
+                                        "sidecar", "base", "theirs", "directory", "output", "sound"};
     for (const command::CommandSpec& spec : ai::edit::editingCommands().all()) {
         INFO(spec.name);
         CHECK(spec.touchesFiles == kTouchesFiles.contains(spec.name));

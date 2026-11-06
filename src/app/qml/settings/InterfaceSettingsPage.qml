@@ -12,7 +12,7 @@ SettingsPage {
 
     SettingsSection {
         title: qsTr("Title bar")
-        description: qsTr("The Save button shows a dot while there are unsaved changes; these add the full status.")
+        description: qsTr("The Save button shows a dot while there are unsaved changes; the first two add the full status.")
 
         SettingsRow {
             rowKey: "gpuStatus" // the Settings search (stream L)
@@ -34,6 +34,20 @@ SettingsPage {
                 tooltip: qsTr("Show the save status in the title bar")
                 checked: Preferences.showSaveStatus
                 onToggled: Preferences.showSaveStatus = checked
+            }
+        }
+        // 0.7: the workspace tabs can go to give the menus and the title the room.
+        SettingsRow {
+            rowKey: "workspaceTabs" // the Settings search
+            label: qsTr("Workspace tabs")
+            description: Preferences.showWorkspaceTabs
+                         ? qsTr("On: the workspaces are tabs in the middle of the title bar.")
+                         : qsTr("Off: the tabs are hidden. Switch workspaces from Window > Workspaces, with Alt+Shift+1 to 9 or from the command palette.")
+            Toggle {
+                objectName: "showWorkspaceTabsToggle"
+                tooltip: qsTr("Show the workspace tabs in the title bar")
+                checked: Preferences.showWorkspaceTabs
+                onToggled: Preferences.showWorkspaceTabs = checked
             }
         }
     }

@@ -5,6 +5,7 @@
 // export.
 
 #include <wabcut/color/Grade.h>
+#include <wabcut/model/AiEffects.h>
 #include <wabcut/model/Ids.h>
 #include <wabcut/model/PreviewCache.h>
 #include <wabcut/model/ProjectState.h>
@@ -12,6 +13,7 @@
 #include <wabcut/model/Time.h>
 #include <wabcut/model/TimeInterpolation.h>
 #include <wabcut/playback/video/CaptionRedaction.h>
+#include <wabcut/playback/video/ExternalEffects.h>
 #include <wabcut/playback/video/MotionAnalysis.h>
 #include <wabcut/render/GraphicRaster.h>
 #include <wabcut/render/Caption.h>
@@ -48,6 +50,10 @@ struct LayerSpec {
     BlendMode blend = BlendMode::Normal;
     /// The clip's stack effects evaluated at the frame's curve time (disabled and bypassed ones left out).
     std::vector<render::LayerEffect> effects;
+    /// 0.7: the clip's OpenFX video effects at the frame's curve time, in stack order (ExternalEffects.h): the decoded frame is
+    /// processed by them before anything else happens to the layer. Set on layers that show a decoded frame; Time
+    /// Interpolation's and the stabilizers' groups hand them to the frames inside.
+    std::vector<ExternalEffect> external;
     /// Source-anchored redactions of the clip's media covering its source time (I.6), unless excepted for this clip.
     std::vector<render::LayerRedaction> redactions;
     /// The project's redactions covering the clip's media (model/RedactionMedia.h: its subclip master's and stem
@@ -65,6 +71,12 @@ struct LayerSpec {
     /// both fields at the field rate) or blended (Flicker Removal). Set on the layers that draw a frame or a nested
     /// canvas; the groups Time Interpolation and the stabilizers make hand it to the frames inside them.
     FieldRendering fields;
+    /// 0.7 (card #98): the clip's Nearest Neighbor Scaling (ClipContent::nearestNeighbor): the layer is placed without
+    /// smoothing (render::CompositeLayer::nearest).
+    bool nearest = false;
+    /// 0.7 Motion Blur (model/MotionBlur.h): the clip's Motion at each instant of its camera shutter (render::CompositeLayer::
+    /// blur, same units as `transform`); empty when the clip has no Motion Blur, its angle is 0 or it hardly moves.
+    std::vector<render::LayerTransform> blur;
     /// Set on the first layer of a transition group (see render::LayerTransition).
     std::optional<render::LayerTransition> transition;
     /// A title clip (C.4 generator media): what render::TitleRenderer draws, at the frame's curve time. Nothing
@@ -79,6 +91,9 @@ struct LayerSpec {
     render::CanvasSize graphicSize{};
     std::shared_ptr<const render::GraphicImageSource> graphicImages;
     std::uint64_t graphicKey = 0;
+    /// 0.7 (card #86): the raster is drawn `graphicOversample` times `graphicSize` across (>= 1) and the layer's transform
+    /// shrinks to match, so vector artwork (SVG, Illustrator, EPS stills) stays sharp when the clip is scaled up.
+    double graphicOversample = 1.0;
     /// A synthetic colour matte, black or transparent video (C.15, model/Synthetic.h): one fill of `fillSize`,
     /// premultiplied sRGB-encoded RGBA8. Nothing is decoded for it.
     std::optional<std::array<std::uint8_t, 4>> fill;
@@ -93,6 +108,10 @@ struct LayerSpec {
     bool nested = false;
     int nestedCount = 0;
     render::CanvasSize nestedCanvas{};
+    /// 0.7 (AI video effects, model/AiEffects.h): the clip's AI chain at the frame (Auto resolved against the media and the
+    /// canvas, Amount at the curve time); empty = none. buildCompositeLayers hands the decoded picture to the installed
+    /// SourceFrameProcessor (SourceStage.h) before anything else touches it.
+    AiChain ai;
     /// A nested group that is the Track Matte of the next layer of its level (0.1.2): the matte track's clip at this
     /// time. Not drawn; buildCompositeLayers() hands its composite to that layer's TrackMatte effect.
     bool matte = false;
@@ -114,6 +133,13 @@ struct LayerSpec {
     /// PTS - a cross dissolve, or a flow mix along the motion between them - and places the group with the clip's
     /// Motion, Opacity, effects, redactions and transition.
     std::optional<TimeInterpolation> interpolation;
+    /// 0.7 (AI Refocus): the layer has an enabled Depth Blur effect; buildCompositeLayers hands it the frame's depth map (the
+    /// installed SourceFrameProcessor's depth()) as its second picture.
+    bool refocus = false;
+    /// 0.7 (AI Face Retouch): the layer has an enabled Face Retouch effect; buildCompositeLayers hands it the frame's face map (the
+    /// installed SourceFrameProcessor's faces()) as its second picture.
+    bool faceRetouch = false;
+    bool eyeContact = false; ///< 0.7 AI Eye Contact: buildCompositeLayers bakes the frame's eye measurements into the effect
     /// P.2: the second frame of an interpolation group. Its sourceTime is a first guess (one nominal frame on): the
     /// scheduler and export decode the frame that follows the first child's.
     bool interpolationSecond = false;
@@ -197,6 +223,14 @@ render::CaptionStyle captionStyleOf(const CaptionStyle& style, Ticks time);
 /// evaluateVideoLayers passes it, so the program monitor and export burn in the same text.
 std::optional<render::CaptionFrame> evaluateCaption(const Sequence& sequence, Ticks time, const CaptionSettings& settings,
                                                     const ProjectState* project = nullptr);
+/// Card 116 (bilingual captions): the caption tracks drawn together, in track order: the one captionTrackFor() picks
+/// and every other enabled track marked CaptionTrack::showTogether. Empty when no track is enabled.
+std::vector<const CaptionTrack*> captionTracksFor(const Sequence& sequence, const CaptionSettings& settings);
+/// Card 116: the captions shown at `time`, one frame per track on screen that has a cue then, in track order. Frames
+/// sharing a placement stack: the first track topmost (bottom placement: the last at the edge; top: the first), by
+/// CaptionFrame::closer. The settings' explicit style (a live preview) applies to the main track only.
+std::vector<render::CaptionFrame> evaluateCaptions(const Sequence& sequence, Ticks time, const CaptionSettings& settings,
+                                                   const ProjectState* project = nullptr);
 
 /// One proxy the preview may decode instead of a media item's original.
 struct ProxyEntry {
@@ -228,6 +262,9 @@ struct PreviewSettings {
     /// (burned-in captions are still drawn on top). Set it again (Scheduler::setPreview) after a render finishes so the
     /// held picture and the lookahead pick the file up.
     std::shared_ptr<PreviewCache> previews;
+    /// 0.7 (AI video effects): bumped by the host whenever processed pictures were made or deleted, so the held picture and the
+    /// lookahead are evaluated again and show them.
+    std::uint64_t aiRevision = 0;
 
     bool operator==(const PreviewSettings&) const = default;
 };
@@ -328,6 +365,9 @@ struct EffectContext {
     std::string fileName;
     /// The project the clip is in: Image Matte Key reads its still image item (null: no image).
     const ProjectState* project = nullptr;
+    /// 0.7: where the stack's OpenFX effects go (LayerSpec::external) instead of being counted as bypassed; null for the
+    /// layers that do not show a decoded frame (titles, graphics, generated media, groups), whose OpenFX effects stay bypassed.
+    std::vector<ExternalEffect>* external = nullptr;
 };
 
 /// The stack effects of `clip` the compositor implements, evaluated at `curveTime`; `bypassed` counts the
@@ -341,6 +381,12 @@ struct EffectContext {
 void evaluateEffects(const Clip& clip, Ticks curveTime, std::vector<render::LayerEffect>& out, int& bypassed,
                      const color::LutResolver* luts = nullptr, double frameAspect = 16.0 / 9.0,
                      std::optional<Ticks> mediaTime = std::nullopt, const EffectContext* context = nullptr);
+
+/// 0.7 (AI video effects, model/AiEffects.h): the AI chain of `clip` (its own stack, or the media's Master Clip Effects it
+/// plays) with Amount at `curveTime`, Auto resolved for a `mediaHeight`-pixel-high (displayed) picture on a
+/// `sequenceHeight`-pixel-high canvas; aiProcessingChainOfClip() is the same without Amount (what Process makes).
+AiChain aiChainOfClip(const ProjectState& project, const Clip& clip, Ticks curveTime, int mediaHeight, int sequenceHeight);
+AiChain aiProcessingChainOfClip(const ProjectState& project, const Clip& clip, int mediaHeight, int sequenceHeight);
 
 /// The redactions of `clip`'s media covering media time `sourceTime` and not excepted for the clip, evaluated there.
 /// With the stream's `frameRate`, also those marking any moment of the frame on screen at `sourceTime` (the frame

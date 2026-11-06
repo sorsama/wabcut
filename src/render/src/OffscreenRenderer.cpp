@@ -165,6 +165,7 @@ struct OffscreenRenderer::Impl {
         out.viewport = QRect(QPoint(0, 0), size);
         out.role = options.role;
         out.alpha = options.alpha;
+        out.vr = options.vr;
         auto stats = compositor->render(cb, out, composite);
         if (stats && readBack) {
             readback.completed = nullptr;

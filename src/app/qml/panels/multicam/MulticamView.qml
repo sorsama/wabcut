@@ -11,6 +11,9 @@ import QtQuick.Layouts
 //   * Click an angle (or press 1-9): Select Camera. Ctrl/⌘+click (or Ctrl+1-9): Cut to Camera. While playing both
 //     record a switch at the playhead; the switches become one undo step when playback stops.
 //   * Picture and sound / Picture / Sound (the pill's menu): what a switch changes.
+//   * 0.7 (card 009): right-click an angle (or the Menu key / Shift+F10 on a focused one): Sync 1 / 10 Frames Earlier or
+//     Later, Reset to Measured Sync and Open Multi-Camera Source (MulticamAngleMenu). An angle that is off the offset its
+//     sync measured carries a "+2 f" badge.
 //   * The footer shows the grid's GPU cost per frame (the request-to-readback time of one composite).
 Item {
     id: root
@@ -116,10 +119,31 @@ Item {
                                 Multicam.selectAngle(index + 1)
                         }
 
+                        /// The angle's sync menu (right-click, Menu key, Shift+F10), anchored at `point` of the tile.
+                        function openMenu(point: point) {
+                            angleMenu.openFor(cell, index + 1, angle.syncFrames ?? 0, point)
+                        }
+
                         Accessible.role: Accessible.Button
-                        Accessible.name: qsTr("Angle %1, %2").arg(index + 1).arg(angle.name ?? "")
+                        Accessible.name: (angle.syncText ?? "") !== ""
+                                         //: A tile of the multi-camera view: %1 = angle number, %2 = its name, %3 = how far its sync was nudged ("+2 f")
+                                         ? qsTr("Angle %1, %2, sync %3").arg(index + 1).arg(angle.name ?? "").arg(angle.syncText)
+                                         : qsTr("Angle %1, %2").arg(index + 1).arg(angle.name ?? "")
                         Accessible.checked: active
                         Accessible.onPressAction: activate(false)
+                        activeFocusOnTab: true
+                        /// The tile took the focus from a click: no focus ring then (Tab and the keys show it).
+                        property bool pointerFocus: false
+                        onActiveFocusChanged: if (!activeFocus) pointerFocus = false
+                        Keys.onPressed: event => {
+                            if (event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier) !== 0)) {
+                                event.accepted = true
+                                cell.openMenu(Qt.point(cell.width / 2, cell.height / 2))
+                            } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                                event.accepted = true
+                                cell.activate((event.modifiers & (Qt.ControlModifier | Qt.MetaModifier)) !== 0)
+                            }
+                        }
 
                         // Hover and the active border (yellow paused, red while recording).
                         Rectangle {
@@ -166,16 +190,54 @@ Item {
                                 }
                             }
                         }
+                        // 0.7 (card 009): how far the angle's sync was nudged from what its sync method measured.
+                        Rectangle {
+                            objectName: "multicamSyncBadge_" + (cell.index + 1)
+                            visible: (cell.angle.syncText ?? "") !== ""
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: Theme.space(1)
+                            width: badgeText.implicitWidth + Theme.space(2)
+                            height: badgeText.implicitHeight + Theme.space(1)
+                            radius: Theme.radiusBadge
+                            color: Theme.scrim
+                            Text {
+                                id: badgeText
+                                anchors.centerIn: parent
+                                text: cell.angle.syncText ?? ""
+                                color: Theme.warning
+                                font.family: Theme.fontMono
+                                font.pixelSize: Theme.textXs
+                                font.weight: Font.DemiBold
+                            }
+                        }
+                        FocusRing {
+                            anchors.fill: parent
+                            anchors.margins: Theme.focusRingGap + Theme.focusRingWidth
+                            visible: cell.activeFocus && !cell.pointerFocus
+                        }
                         HoverHandler {
                             id: cellHover
                             cursorShape: Qt.PointingHandCursor
                         }
                         TapHandler {
                             id: cellTap
-                            onTapped: cell.activate((cellTap.point.modifiers & (Qt.ControlModifier | Qt.MetaModifier)) !== 0)
+                            onTapped: {
+                                cell.pointerFocus = true
+                                cell.forceActiveFocus(Qt.MouseFocusReason)
+                                cell.activate((cellTap.point.modifiers & (Qt.ControlModifier | Qt.MetaModifier)) !== 0)
+                            }
+                        }
+                        TapHandler {
+                            acceptedButtons: Qt.RightButton
+                            onTapped: eventPoint => cell.openMenu(eventPoint.position)
                         }
                     }
                 }
+            }
+
+            MulticamAngleMenu {
+                id: angleMenu
             }
 
             EmptyState {

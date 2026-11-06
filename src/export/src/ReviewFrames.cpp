@@ -1,6 +1,7 @@
 #include <wabcut/export/ReviewFrames.h>
 
 #include <wabcut/media/VideoDecoder.h>
+#include <wabcut/model/FrameScaling.h>
 #include <wabcut/model/Resolve.h>
 #include <wabcut/playback/video/Evaluate.h>
 
@@ -95,14 +96,17 @@ std::expected<QImage, Error> RenderedReviewFrames::picture(const ProjectState& s
     }
     auto composite = std::make_shared<render::PreparedComposite>();
     composite->targetTime = time;
-    composite->canvas = {sequence->width, sequence->height};
+    composite->canvas = {sequence->width, sequence->height, sequencePixelAspect(*sequence)};
     composite->color = m_options.color;
     composite->color.management = state.colorManagement; // as the monitor shows it (I.9; an HDR project tone-mapped)
     playback::buildCompositeLayers(specs, frames, composite->layers, &playback::computedMotion(), composite->canvas);
 
     // At most `width` pixels wide, at the sequence's aspect (and never larger than the sequence).
     const int w = std::clamp(width, 16, std::max(16, sequence->width));
-    const int h = std::max(1, static_cast<int>(std::lround(static_cast<double>(w) * sequence->height / sequence->width)));
+    // 156: in the shape it is seen in - an anamorphic sequence (pixel aspect ratio) is widened, as the monitor shows it.
+    const double par = sequencePixelAspect(*sequence);
+    const int h = std::max(
+        1, static_cast<int>(std::lround(static_cast<double>(w) * sequence->height / (sequence->width * par))));
     auto image = m_renderer->render(composite, QSize(w, h));
     if (!image) {
         return std::unexpected(image.error());

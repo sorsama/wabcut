@@ -264,6 +264,8 @@ Item {
         root.openMenu = menu
         if (previous && previous !== menu && previous.visible)
             previous.close()
+        // A long menu (File) scrolls in the room below its title instead of reaching back over the bar.
+        menu.roomBelow = root.Window.window ? root.Window.window.height - title.mapToItem(null, 0, title.height).y - Theme.space(3) : 0
         menu.popup(title, 0, title.height + Theme.space(1))
         if (keyboard)
             root.highlightFirst(menu)

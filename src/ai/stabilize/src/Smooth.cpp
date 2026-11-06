@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <numbers>
 
 namespace wabcut::ai::stabilize {
@@ -94,6 +95,57 @@ std::vector<double> gaussianSmooth(const std::vector<double>& x, const std::vect
         kernel[k] = std::exp(-0.5 * u * u);
     }
     for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t lo = i > radius ? i - radius : 0;
+        const std::size_t hi = std::min(n - 1, i + radius);
+        double s0 = 0.0, s1 = 0.0, s2 = 0.0, t0 = 0.0, t1 = 0.0;
+        for (std::size_t j = lo; j <= hi; ++j) {
+            const double w = kernel[j > i ? j - i : i - j] * weight[j];
+            if (w <= 0.0) {
+                continue;
+            }
+            const double d = static_cast<double>(j) - static_cast<double>(i);
+            s0 += w;
+            s1 += w * d;
+            s2 += w * d * d;
+            t0 += w * x[j];
+            t1 += w * d * x[j];
+        }
+        if (!(s0 > 0.0)) {
+            continue; // nothing measured nearby: keep the path
+        }
+        const double det = s0 * s2 - s1 * s1;
+        out[i] = det > 1e-9 * s0 * std::max(s2, 1.0) ? (s2 * t0 - s1 * t1) / det : t0 / s0;
+    }
+    return out;
+}
+
+/// 0.7 (card #129): gaussianSmooth() with a width of its own for each sample (in samples; a Smoothness that is keyframed).
+/// A width of 0 keeps the path as it is. The kernels are shared between samples whose widths are within a sixteenth of an
+/// octave (4 %), so a ramp of smoothness does not cost a kernel per frame.
+std::vector<double> gaussianSmoothVarying(const std::vector<double>& x, const std::vector<double>& weight,
+                                          const std::vector<double>& sigma) {
+    const std::size_t n = x.size();
+    std::vector<double> out(x);
+    if (n < 2 || sigma.size() != n) {
+        return out;
+    }
+    std::map<int, std::vector<double>> kernels; // by the width's log2 in sixteenths
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!(sigma[i] > 0.0)) {
+            continue; // not smoothed at this frame
+        }
+        const int step = static_cast<int>(std::lround(std::log2(sigma[i]) * 16.0));
+        std::vector<double>& kernel = kernels[step];
+        if (kernel.empty()) {
+            const double width = std::exp2(static_cast<double>(step) / 16.0);
+            const auto radius = static_cast<std::size_t>(std::min(std::ceil(3.0 * width), static_cast<double>(n)));
+            kernel.resize(radius + 1);
+            for (std::size_t k = 0; k <= radius; ++k) {
+                const double u = static_cast<double>(k) / width;
+                kernel[k] = std::exp(-0.5 * u * u);
+            }
+        }
+        const std::size_t radius = kernel.size() - 1;
         const std::size_t lo = i > radius ? i - radius : 0;
         const std::size_t hi = std::min(n - 1, i + radius);
         double s0 = 0.0, s1 = 0.0, s2 = 0.0, t0 = 0.0, t1 = 0.0;
@@ -244,6 +296,8 @@ std::vector<Homography> cameraPath(const MotionAnalysis& analysis, std::vector<d
 
 } // namespace
 
+Homography rollingShutterSkew(double share, double vx, double vy, int height) { return skewOf(share, vx, vy, height); }
+
 std::vector<double> rollingShutterShares(const MotionAnalysis& analysis, RippleReduction mode, double frameRate) {
     const std::size_t n = analysis.frames.size();
     const int w = analysis.width;
@@ -339,10 +393,30 @@ Compensation stabilize(const MotionAnalysis& analysis, const SmoothOptions& opti
     // P.2 Crop Less <-> Smooth More: when the framing crops or scales, it trades smoothing for border size.
     const bool cropping = options.framing == Framing::Crop || options.framing == Framing::CropAutoScale;
     const double tradeOff = cropping ? 0.5 + clampFinite(options.cropLessSmoothMore, 0.0, 1.0, 0.5) : 1.0;
-    const double smoothness = clampFinite(options.smoothness, 0.0, kMaxSmoothness, 0.5) * tradeOff;
+    double smoothness = clampFinite(options.smoothness, 0.0, kMaxSmoothness, 0.5) * tradeOff;
     const double frameRate = options.frameRate > 0.0 ? clampFinite(options.frameRate, 1e-3, 1000.0, 30.0) : 30.0;
+    // 0.7 (card #129): a keyframed Smoothness - the Gaussian's width per frame (0 = left as shot), the mean for the L1 path.
+    std::vector<double> sigmaAt;
+    if (options.smoothnessAt.size() == n) {
+        const auto each = [&](std::size_t i) { return clampFinite(options.smoothnessAt[i], 0.0, kMaxSmoothness, 0.5) * tradeOff; };
+        bool constant = true;
+        for (std::size_t i = 1; i < n && constant; ++i) {
+            constant = each(i) == each(0);
+        }
+        if (constant) {
+            smoothness = each(0);
+        } else {
+            sigmaAt.resize(n);
+            double sum = 0.0;
+            for (std::size_t i = 0; i < n; ++i) {
+                const double s = each(i);
+                sum += s;
+                sigmaAt[i] = s > 0.0 ? std::max(s * frameRate, 0.5) : 0.0;
+            }
+            smoothness = sum / static_cast<double>(n);
+        }
+    }
     const double maxScale = clampFinite(options.maxScale, 1.0, 100.0, 1.5);
-    const double additional = options.additionalScale > 0.0 ? clampFinite(options.additionalScale, 0.01, 100.0, 1.0) : 1.0;
     const Method method = analysis.method;
 
     // 1. The camera path: analysis picture 0 -> picture i. Lost (or unusable) steps hold the camera and weigh nothing.
@@ -436,6 +510,8 @@ Compensation stabilize(const MotionAnalysis& analysis, const SmoothOptions& opti
             smooth[d].assign(n, dims[d][0]);
         } else if (options.smoothing == Smoothing::L1) {
             smooth[d] = l1Smooth(dims[d], weight, bounds[d], 1.0 / frameRate, smoothness);
+        } else if (!sigmaAt.empty()) {
+            smooth[d] = gaussianSmoothVarying(dims[d], weight, sigmaAt);
         } else {
             smooth[d] = gaussianSmooth(dims[d], weight, std::max(smoothness * frameRate, 0.5));
         }
@@ -476,6 +552,21 @@ Compensation stabilize(const MotionAnalysis& analysis, const SmoothOptions& opti
 
 
     // 5. Framing: the scale that hides every border, the edges ever uncovered; then the transforms.
+    Compensation framed = frameCompensations(out.times, compensation, options, sourceWidth, sourceHeight, method == Method::Perspective,
+                                             method != Method::Position);
+    framed.rollingShutterShare = out.rollingShutterShare;
+    return framed;
+}
+
+Compensation frameCompensations(std::span<const Ticks> times, std::span<const Homography> compensation, const SmoothOptions& options,
+                                int sourceWidth, int sourceHeight, bool corners, bool keepRotation) {
+    Compensation out;
+    if (compensation.empty() || sourceWidth < 1 || sourceHeight < 1) {
+        return out;
+    }
+    out.times.assign(times.begin(), times.end());
+    const double maxScale = clampFinite(options.maxScale, 1.0, 100.0, 1.5);
+    const double additional = options.additionalScale > 0.0 ? clampFinite(options.additionalScale, 0.01, 100.0, 1.0) : 1.0;
     const Point2 sourceCentre = centreOf(sourceWidth, sourceHeight);
     const double inner = 1.0 - 2.0 * clampFinite(options.actionSafeMargin, 0.0, 0.49, 0.0); // P.2 action-safe margin
     double needed = 1.0;
@@ -497,18 +588,18 @@ Compensation stabilize(const MotionAnalysis& analysis, const SmoothOptions& opti
     out.cropBottom = crop.bottom;
     const double finalScale = (options.framing == Framing::CropAutoScale ? out.autoScale : 1.0) * additional;
     const Homography framing = scaleAbout(sourceCentre, finalScale);
-    if (method == Method::Perspective) {
-        out.corners.reserve(n);
+    if (corners) {
+        out.corners.reserve(compensation.size());
     } else {
-        out.x.reserve(n);
-        out.y.reserve(n);
-        out.rotation.reserve(n);
-        out.scale.reserve(n);
+        out.x.reserve(compensation.size());
+        out.y.reserve(compensation.size());
+        out.rotation.reserve(compensation.size());
+        out.scale.reserve(compensation.size());
     }
     const auto sourceCorners = cornersOf(sourceWidth, sourceHeight);
     for (const Homography& k : compensation) {
         const Homography result = framing.after(k);
-        if (method == Method::Perspective) {
+        if (corners) {
             std::array<double, 8> offsets{};
             for (std::size_t c = 0; c < 4; ++c) {
                 Point2 q;
@@ -523,7 +614,7 @@ Compensation stabilize(const MotionAnalysis& analysis, const SmoothOptions& opti
             const SimilarityParts s = similarityOf(result, sourceCentre);
             out.x.push_back(s.x);
             out.y.push_back(s.y);
-            out.rotation.push_back(method == Method::Position ? 0.0 : s.radians * 180.0 / std::numbers::pi);
+            out.rotation.push_back(keepRotation ? s.radians * 180.0 / std::numbers::pi : 0.0);
             out.scale.push_back(s.scale);
         }
     }

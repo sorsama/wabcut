@@ -13,6 +13,12 @@
 //     opens it next to the others (ProjectFile.openAlongside): several projects stay open, one in the panels.
 //   * Production Settings > Scratch Disks (settings / setSettings): the folders for its projects' previews and media
 //     cache, shared by every project of the production.
+//   * 0.7 (card 094) Search across the production: search() reads every project of the production on a worker thread
+//     (a project open in this session as it is in memory, the others from their files, a file that did not change since
+//     the last search not at all) and lists the sequences and footage that match, best first, with the project each is
+//     in (editor/ProductionSearch.h); a newer search replaces an older one, cancelSearch() stops it. A result is
+//     browsed (browseResult: the project read-only, the item pointed at; the project being edited shows it in the
+//     Library) or imported as a copy (importResult), or its project opened (resultProject).
 //   * Copies remember where they came from (MediaItem / Sequence importSource): Reveal in Source Project switches to
 //     that project when it is open (else opens it next to this one, the item pointed at), and when the source project
 //     relinked a media item to another file, the copies are offered the same relink (relinkOffers). Copies stay copies:
@@ -20,6 +26,7 @@
 //
 // Principle 9: QML sees file URLs, the browsed project's item keys ("b4", "s3", "m7" of that project) and display text.
 
+#include <wabcut/editor/ProductionSearch.h>
 #include <wabcut/model/ProjectState.h>
 
 #include <QObject>
@@ -33,8 +40,12 @@
 
 #include <expected>
 #include <filesystem>
+#include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
+#include <thread>
+#include <vector>
 
 class QJSEngine;
 class QQmlEngine;
@@ -69,6 +80,19 @@ class ProductionBridge : public QObject {
     Q_PROPERTY(QVariantMap settings READ settings NOTIFY productionChanged FINAL)
     /// The browsed item Reveal in Source Project points at ("m7", "s3" of the browsed project; "" = none).
     Q_PROPERTY(QString revealedKey READ revealedKey NOTIFY browsingChanged FINAL)
+    /// 0.7 (card 094): a search is reading the production's projects; how far (0..1, -1 unknown) and what it reads.
+    Q_PROPERTY(bool searching READ searching NOTIFY searchChanged FINAL)
+    Q_PROPERTY(double searchProgress READ searchProgress NOTIFY searchChanged FINAL)
+    Q_PROPERTY(QString searchStatus READ searchStatus NOTIFY searchChanged FINAL)
+    /// The last search's results, best first: [{ key ("m7" / "s3" in its project), kind ("sequence", "video", "audio",
+    /// "still", "title", "subclip"), name, location (its bins), meta (size and length), matched (the fields the words were
+    /// found in, as words), project (url), projectName, projectRelative, projectOpen (open in this session), current (the
+    /// project being edited), offline }].
+    Q_PROPERTY(QVariantList searchResults READ searchResults NOTIFY searchChanged FINAL)
+    /// "12 results in 3 projects" / "No results"; empty before the first search.
+    Q_PROPERTY(QString searchSummary READ searchSummary NOTIFY searchChanged FINAL)
+    /// Whether a search has been run and its results (maybe none) are shown.
+    Q_PROPERTY(bool searched READ searched NOTIFY searchChanged FINAL)
 
 public:
     explicit ProductionBridge(ProjectLifecycle* lifecycle, QObject* parent = nullptr);
@@ -86,6 +110,35 @@ public:
     QString message() const { return m_message; }
     QVariantMap settings() const { return m_settings; }
     QString revealedKey() const { return m_revealedKey; }
+    bool searching() const { return m_searching; }
+    double searchProgress() const { return m_searchProgress; }
+    QString searchStatus() const { return m_searchStatus; }
+    QVariantList searchResults() const { return m_searchResults; }
+    QString searchSummary() const { return m_searchSummary; }
+    bool searched() const { return m_searched; }
+
+    // ---- Search across the production (0.7, card 094) ----
+    /// Finds sequences and footage in any project of the open production: `text` (words; "quoted words" are a phrase),
+    /// narrowed to one `field` ("" = every field; "name", "comment", "description", "path", "tapeName", "logNote", ...),
+    /// one `type` ("sequence", "video", "audio", "still", "title", "subclip") and one `project` (its relative path). No
+    /// text with a type lists everything of that type; no text and no type clears the results. Returns at once: the
+    /// projects are read on a worker thread (searching, searchProgress), the results arrive in searchResults. False with
+    /// a message when there is no production or the query is not valid.
+    Q_INVOKABLE bool search(const QString& text, const QString& field = {}, const QString& type = {}, const QString& project = {});
+    /// Stops the search that is running; the earlier results stay.
+    Q_INVOKABLE void cancelSearch();
+    /// Forgets the results (the next search starts from the projects' files, not from what was read).
+    Q_INVOKABLE void clearSearch();
+    /// Opens the project of result `index` read-only next to the one being edited and points at the item (revealedKey);
+    /// a result in the project being edited is shown in the Library. False when the result or project is gone.
+    Q_INVOKABLE bool browseResult(int index);
+    /// Imports the item of result `index` into the project being edited, as a copy that still plays the same files, in one
+    /// undo step (importItems' result; { ok: false } when it could not).
+    Q_INVOKABLE QVariantMap importResult(int index);
+    /// The project of result `index` (for Open Project); an empty URL when there is no such result.
+    Q_INVOKABLE QUrl resultProject(int index) const;
+    /// Tests: run the search on the calling thread.
+    void setSynchronous(bool synchronous) { m_synchronous = synchronous; }
 
     // ---- Productions ----
     /// File > New > Production: makes `folder` a production named `name` and opens it.
@@ -143,8 +196,16 @@ signals:
     void entriesChanged();
     void browsingChanged();
     void messageChanged();
+    void searchChanged();
 
 private:
+    void startPendingSearch();
+    void onSearchProgress(std::uint64_t generation, int done, int total, const QString& current);
+    void onSearchDone(std::uint64_t generation, std::shared_ptr<const editor::ProductionIndex> index, editor::SearchResult result,
+                      bool stopped);
+    void resetSearch();
+    QVariantMap resultRow(const editor::SearchHit& hit) const;
+
     void setMessage(const QString& text);
     /// Opens the production of the project being edited, when it lies in one.
     void followDocument();
@@ -168,6 +229,21 @@ private:
     std::function<void(const QString&)> m_showItem;
     QVariantMap m_settings;
     QString m_revealedKey;
+
+    // Search across the production (card 094).
+    bool m_synchronous = false;
+    bool m_searching = false;
+    bool m_searched = false;
+    double m_searchProgress = -1;
+    QString m_searchStatus;
+    QString m_searchSummary;
+    QVariantList m_searchResults;
+    std::vector<editor::SearchHit> m_hits;                    ///< m_searchResults' rows, for the actions
+    std::shared_ptr<const editor::ProductionIndex> m_searchIndex; ///< what the last scan read (reused while files stand)
+    std::uint64_t m_searchGeneration = 0;
+    bool m_scanRunning = false;       ///< a worker is reading (it posts onSearchDone exactly once)
+    std::optional<editor::SearchQuery> m_pendingSearch; ///< the newest query, started when the worker ended
+    std::jthread m_searchThread;
 };
 
 } // namespace wabcut::app

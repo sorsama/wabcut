@@ -1,5 +1,7 @@
 #include "AgentController.h"
 
+#include <wabcut/ai/video/SourceProcessor.h>
+
 #include "AiController.h"
 #include "ExportController.h"
 #include "EffectPresetsBridge.h"
@@ -748,6 +750,8 @@ std::shared_ptr<command::CommandServices> AgentController::services() {
     parts.push_back(sharedEffectLibrary());
     // 0.2 graphics: captions.checkSpelling / graphic.checkSpelling / spelling.check with the user's dictionary.
     parts.push_back(std::make_shared<command::SpellingServices>(sharedSpelling()));
+    // 0.7: effect.aiStatus / effect.processAi over the process-wide processed-picture cache and the AI helper.
+    parts.push_back(ai::video::makeVideoServices());
     // 0.1.1: render.previewInOut / deletePreviewFiles / status on the project's preview cache (the one playback uses).
     if (auto* readiness = m_engine ? m_engine->singletonInstance<MediaReadinessBridge*>("Wabcut", "MediaReadiness") : nullptr)
         parts.push_back(readiness->previewServices());
@@ -872,12 +876,15 @@ void AgentController::updateDataFlow() {
         flow[QStringLiteral("destination")] = QString();
         flow[QStringLiteral("consent")] = QStringLiteral("none");
     } else {
+        // QA-11: the address the user set (Ollama or vLLM moved to a server elsewhere is the cloud), not the catalogue's.
+        const std::string baseUrl = !m_factory && m_ai ? m_ai->platform().providers().baseUrl(*provider) : provider->baseUrl;
+        const bool local = !ai::isCloud(*provider, baseUrl);
         flow[QStringLiteral("provider")] = qs(provider->name);
         flow[QStringLiteral("model")] = qs(model->name.empty() ? model->id : model->name);
-        flow[QStringLiteral("local")] = provider->local;
-        flow[QStringLiteral("destination")] = provider->local ? tr("this computer") : hostOf(provider->baseUrl);
-        QString consent = provider->local ? QStringLiteral("local") : QStringLiteral("granted");
-        if (!provider->local && !m_factory && m_ai) {
+        flow[QStringLiteral("local")] = local;
+        flow[QStringLiteral("destination")] = local ? tr("this computer") : hostOf(baseUrl);
+        QString consent = local ? QStringLiteral("local") : QStringLiteral("granted");
+        if (!local && !m_factory && m_ai) {
             const QVariantMap prompt = m_ai->consentPrompt(qs(model->id), QStringLiteral("chat"), sends);
             consent = prompt.value(QStringLiteral("needed")).toBool() ? QStringLiteral("needed") : QStringLiteral("granted");
         }

@@ -30,7 +30,9 @@ wabcut_add_test_suite(media
         test_camera_log.cpp # 0.2: camera log auto-detection
         test_chapters.cpp # P0 round: OBS chapter markers on import
         test_container_tags.cpp # 0.2 P.3: the Metadata panel File section
+        test_data_streams.cpp # 0.7 (card #130): data tracks (the camera gyro) of an MP4, the Sony camera model
         test_decoder_pool.cpp
+        test_dynamic_hdr.cpp # 0.7: Dolby Vision configuration and HDR10+ in media (card "Dolby Vision 8.4 and HDR10+")
         test_ffmpeg_info.cpp
         test_fingerprint.cpp
         test_frame_cache.cpp
@@ -43,8 +45,9 @@ wabcut_add_test_suite(media
         test_stream_time.cpp
         test_thumbnails.cpp
         test_video_decoder.cpp
+        test_wav_metadata.cpp # 0.7 (card 062): poly WAV channel names
         test_waveform.cpp
-    LIBS wabcut_media ZLIB::ZLIB
+    LIBS wabcut_media wabcut_gyro ZLIB::ZLIB
     PROPERTIES FIXTURES_REQUIRED wabcut_test_media LABELS media)
 if(WIN32)
     # test_leaks reads the process's GPU memory through DXGI (GpuMemory.cpp).

@@ -42,6 +42,7 @@ std::filesystem::path scratch(const std::string& name) {
 TEST_CASE("Golden files: text round trip", "[render_reference][golden]") {
     const Image image = sample();
     const std::string text = goldenText(image);
+    INFO(text);
     CHECK(text.rfind("WRI1 3 2\n0 0.5 1 1\n0.123457 1e-07 0 0.75\n", 0) == 0); // %.6g, -0 as 0
     const auto back = parseGolden(text);
     REQUIRE(back.has_value());

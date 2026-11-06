@@ -22,8 +22,11 @@ add_library(wabcut_export STATIC
     src/Extras.h
     src/FrameEffects.cpp
     src/FrameEffects.h
+    src/LongGop.cpp
+    src/LongGop.h
     src/MetadataWriter.cpp
     src/MetadataWriter.h
+    src/PreExportCheck.cpp
     src/SmartRender.cpp
     src/SmartRender.h
     src/SubtitleStream.cpp
@@ -56,3 +59,9 @@ target_sources(wabcut_export PRIVATE src/ClosedCaptions.cpp src/Delivery.cpp src
                                      src/MxfDelivery.h)
 # 0.6 (#52): dialogue / music / effects stems with the master, by track role (Stems.h).
 target_sources(wabcut_export PRIVATE src/Stems.cpp)
+# 0.7 (card "Capture video from tape, capture card or camera"): the file side of a live capture (CaptureWriter.h): the export's
+# encoders fed picture by picture, into a file that survives the program stopping.
+target_sources(wabcut_export PRIVATE src/CaptureWriter.cpp)
+# 0.7 (card "Dolby Vision 8.4 and HDR10+ dynamic metadata"): HDR10+ measured from the rendered frames and written as T.35 SEI
+# into PQ HEVC output, and the licence gate for Dolby Vision (DynamicMetadata.h).
+target_sources(wabcut_export PRIVATE src/DynamicMetadata.cpp src/HdrDynamic.cpp src/HdrDynamic.h)

@@ -137,7 +137,7 @@ std::string endpointUrl(const ProviderContext& context) { return joinUrl(context
 
 HttpHeaders providerHeaders(const ProviderContext& context) {
     HttpHeaders headers;
-    applyAuth(headers, context.provider.auth, context.key.reveal());
+    applyAuth(headers, context.provider, context.key.reveal());
     for (const auto& h : context.provider.extraHeaders) {
         headers.push_back(h);
     }

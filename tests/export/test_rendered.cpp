@@ -797,6 +797,61 @@ TEST_CASE("Rendered export == preview with a full colour grade (I.5): every stag
     CHECK(c.minPsnr >= 45.0);
 }
 
+TEST_CASE("Rendered export stops and names the file when a LUT cannot be read, never writing frames without the look (review-1 m3)",
+          "[export][render][media][gpu][color]") {
+    if (!haveMotionTimelineMedia()) {
+        SKIP("test clips were not generated (tools/gen_test_media.py)");
+    }
+    TestProject p(kWidth, kHeight, kRate, Ticks::fromSeconds(1));
+    const MediaId h264 = p.addMedia("h264_1080p60_aac.mp4");
+    const auto dir = freshOutputDir("rendered-lut-unreadable");
+    const auto lutFile = dir / "Half.cube";
+    {
+        std::ofstream broken(lutFile, std::ios::binary | std::ios::trunc); // a LUT being rewritten reads as damaged
+        broken << "TITLE \"half\"\nLUT_3D_SIZE 9\n0 0 0\n";
+    }
+    ProjectAsset asset;
+    asset.kind = std::string(kAssetKindLut);
+    asset.name = "Half.cube";
+    asset.locator.path = pathToUtf8(std::filesystem::absolute(lutFile));
+    auto added = edit::addAsset(p.state, asset);
+    REQUIRE(added);
+    p.state = std::move(added->state);
+    EffectInstance grade;
+    grade.id = p.state.ids.allocate<EffectInstanceId>();
+    grade.effect = "wabcut.color.grade";
+    grade.set("creative.lookIntensity", ParamValue(100.0));
+    grade.setData(EffectData{"creative.look", assetReference(added->id)});
+    Clip a = p.clip(h264, StreamKind::Video, Ticks{}, ms(200), Ticks{});
+    {
+        ClipContent content = a.content();
+        content.effects = {grade};
+        a.setContent(std::move(content));
+    }
+    p.addTrack(TrackKind::Video, {a});
+
+    ExportSettings settings = presetSettings("match-source");
+    settings.audio.enabled = false;
+    const auto failed = ExportJob(renderedRequest(p, settings, dir / "unreadable.mp4")).run();
+    REQUIRE_FALSE(failed.has_value());
+    CHECK(failed.error().code == ErrorCode::IoError);
+    CHECK(failed.error().message.find("Half.cube") != std::string::npos);
+    CHECK(failed.error().message.find("look-up table") != std::string::npos);
+    CHECK_FALSE(std::filesystem::exists(dir / "unreadable.mp4"));
+    CHECK(partialFiles(dir).empty());
+
+    // The program that was saving the file has finished: the next export waits for nothing and grades every frame.
+    {
+        std::ofstream whole(lutFile, std::ios::binary | std::ios::trunc);
+        whole << "TITLE \"whole\"\nLUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+    }
+    const auto fixed = ExportJob(renderedRequest(p, settings, dir / "fixed.mp4")).run();
+    INFO((fixed ? std::string() : fixed.error().message));
+    REQUIRE(fixed.has_value());
+    CHECK(fixed->frames > 0);
+    CHECK(std::filesystem::exists(dir / "fixed.mp4"));
+}
+
 TEST_CASE("Rendered export redacts every use of the marked source: picture under burned-in captions, and the bleep (I.6)",
           "[export][render][media][gpu][redaction]") {
     if (!haveMotionTimelineMedia()) {

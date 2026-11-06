@@ -49,8 +49,12 @@ struct OutputUniforms {
     float conformIn[16];
     float conform0[4];
     float conform1[4];
+    /// 0.7 (VR / 360 video): the viewer. vr0 = yaw, pitch, roll (degrees), tan(fov / 2); vr1 = the view's aspect
+    /// (width / height), the canvas' projection (0 = no viewer, 1 = 360, 2 = 180), its stereo layout, the eye.
+    float vr0[4];
+    float vr1[4];
 };
-static_assert(sizeof(OutputUniforms) == 272);
+static_assert(sizeof(OutputUniforms) == 304);
 
 // shaders/fx.vert + fx.frag
 struct FxUniforms {
@@ -274,7 +278,8 @@ double srgbToLinear(double v) {
 
 constexpr quint32 kLayerBlockSize = sizeof(LayerUniforms);
 constexpr quint32 kOutputBlockSize = sizeof(OutputUniforms);
-static_assert(kOutputBlockSize <= kLayerBlockSize, "one uniform slot size serves both");
+// 0.7: the output block (with the VR viewer's parameters) outgrew the layer block, so a slot holds the larger of the two.
+constexpr quint32 kSlotBlockSize = kOutputBlockSize > kLayerBlockSize ? kOutputBlockSize : kLayerBlockSize;
 constexpr int kInitialUniformSlots = 16;
 
 /// The colour of an imported frame as ColorInfo (for the Auto input colour space of a managed pipeline).
@@ -462,6 +467,10 @@ QRhiGraphicsPipeline::TargetBlend targetBlendOf(int variant) {
     case 1: // Linear Dodge (Add): cs + cb, exact
         blend.dstColor = QRhiGraphicsPipeline::One;
         break;
+    case 2: // 0.7 Motion Blur: the draws of a blurred layer, each already weighted, summed - colour AND alpha
+        blend.dstColor = QRhiGraphicsPipeline::One;
+        blend.dstAlpha = QRhiGraphicsPipeline::One;
+        break;
     default:
         break;
     }
@@ -611,7 +620,7 @@ std::expected<void, Error> Compositor::ensureUniformCapacity(int slotCount) {
         return {};
     }
     const int capacity = std::max({slotCount, kInitialUniformSlots, m_uniformSlots * 2});
-    const quint32 slotSize = alignUp(kLayerBlockSize, static_cast<quint32>(m_rhi->ubufAlignment()));
+    const quint32 slotSize = alignUp(kSlotBlockSize, static_cast<quint32>(m_rhi->ubufAlignment()));
     m_uniforms.reset(m_rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer,
                                       slotSize * static_cast<quint32>(capacity)));
     if (!m_uniforms->create()) {
@@ -1550,8 +1559,9 @@ std::expected<ImportedFrame, Error> Compositor::renderNested(QRhiCommandBuffer* 
     f.color.range = ColorRange::Full;
     f.alpha = AlphaMode::Premultiplied;
     // Canvas pixels are rounded up at a preview divisor: the pixel aspect keeps the nested canvas' exact shape.
+    // 156: and the nested canvas' own pixel aspect ratio (its shape when seen); layerToCanvas() puts it over the parent's.
     f.pixelAspect = (static_cast<double>(nested.canvas.width) / nested.canvas.height) /
-                    (static_cast<double>(f.width) / f.height);
+                    (static_cast<double>(f.width) / f.height) * (nested.canvas.pixelAspect > 0.0 ? nested.canvas.pixelAspect : 1.0);
     return f;
 }
 
@@ -1588,6 +1598,7 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
     };
     for (const CompositeLayer& layer : composite.layers) {
         slotsNeeded += 2 + (layer.transition ? 1 : 0);
+        slotsNeeded += layer.blur.size() > 1 ? static_cast<int>(layer.blur.size()) : 0; // 0.7 Motion Blur: a draw per instant
         for (const LayerEffect& effect : layer.effects) {
             slotsNeeded += fxPassCount(effect);
             gradeSlotsNeeded += effect.type == EffectType::Grade && effect.grade ? kGradeSlotsPerEffect : 0;
@@ -1625,7 +1636,7 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
 
     CompositeStats stats;
     stats.canvasPixels = canvasPixels;
-    const quint32 slotSize = alignUp(kLayerBlockSize, static_cast<quint32>(m_rhi->ubufAlignment()));
+    const quint32 slotSize = alignUp(kSlotBlockSize, static_cast<quint32>(m_rhi->ubufAlignment()));
     const QMatrix4x4 corr = m_rhi->clipSpaceCorrMatrix();
     QRhiResourceUpdateBatch* updates = m_rhi->nextResourceUpdateBatch();
     if (!m_staticUploaded) {
@@ -1711,11 +1722,17 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
     // Track Matte Keys (0.1.2): each matte's composite on a canvas like this one, by (layer, effect index).
     std::map<std::pair<int, std::size_t>, QRhiTexture*> matteTextures;
     const Affine2D toNdc{2.0 / composite.canvas.width, 0.0, 0.0, -2.0 / composite.canvas.height, -1.0, 1.0};
+    struct PendingBlur { // 0.7 Motion Blur: one draw of a blurred layer, its slot assigned after the placements
+        std::size_t placement;
+        LayerUniforms uniforms;
+    };
+    std::vector<PendingBlur> pendingBlur;
     for (int i = 0; i < layerCount; ++i) {
         const CompositeLayer& layer = composite.layers[static_cast<std::size_t>(i)];
         stats.bypassedEffects += layer.bypassedEffects;
         const double opacity = std::clamp(layer.opacity, 0.0, 1.0);
-        if (opacity <= 0.0 || layer.transform.scale == 0.0 || !std::isfinite(layer.transform.scale)) {
+        if (opacity <= 0.0 || !layer.transform.hasArea() || !std::isfinite(layer.transform.scale) ||
+            !std::isfinite(layer.transform.aspectX)) {
             continue; // invisible (a transition side mixes with transparent instead)
         }
         for (std::size_t e = 0; e < layer.effects.size(); ++e) {
@@ -1732,6 +1749,7 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         std::expected<ImportedFrame, Error> imported;
         QRhiShaderResourceBindings* srb = nullptr;
         LayerTransform transform = layer.transform;
+        double nestedK = 1.0; // 0.7 Motion Blur: the nested canvas' scale to its (preview-sized) texture, applied to each instant
         if (layer.nested) {
             // A nested or multicam clip (C.8): its composite, rendered now by a child compositor. When it cannot be
             // rendered the layer is left out (never a picture without the redactions inside it).
@@ -1748,7 +1766,8 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
                 t.scale *= k;
                 t.anchor = {t.anchor.x / k, t.anchor.y / k};
                 const double pixelAspect = (static_cast<double>(layer.nested->canvas.width) / layer.nested->canvas.height) /
-                                           (static_cast<double>(pixels.width()) / pixels.height());
+                                           (static_cast<double>(pixels.width()) / pixels.height()) *
+                                           (layer.nested->canvas.pixelAspect > 0.0 ? layer.nested->canvas.pixelAspect : 1.0);
                 const Affine2D place = layerToCanvas(t, pixels.width(), pixels.height(), pixelAspect, composite.canvas);
                 inner = view.inside(place, pixels, composite.canvas, layer.clipId);
             }
@@ -1757,11 +1776,19 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
                 srb = nestedSrb(imported->planes[0]);
                 // Motion is defined in the nested canvas' pixels; the canvas texture is smaller at a preview divisor.
                 const double k = static_cast<double>(layer.nested->canvas.height) / imported->height;
+                nestedK = k;
                 transform.scale *= k;
                 transform.anchor = {transform.anchor.x / k, transform.anchor.y / k};
             }
         } else if (layer.view) {
             FrameView frameView = *layer.view;
+            // Titles, graphics, captions and mattes are drawn in canvas pixels: one to one, whatever the canvas' ratio. A
+            // processed media frame (0.7) keeps its own pixel aspect.
+            if (layer.viewIsMedia) {
+                frameView.pixelAspect = frameView.pixelAspect > 0.0 ? frameView.pixelAspect : 1.0;
+            } else {
+                frameView.pixelAspect = composite.canvas.pixelAspect > 0.0 ? composite.canvas.pixelAspect : 1.0;
+            }
             if (keepAlive) {
                 frameView.keepAlive = keepAlive;
             }
@@ -1790,22 +1817,30 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         LayerUniforms u{};
         const double w = f.width;
         const double h = f.height;
-        const Affine2D toCanvas = layerToCanvas(transform, w, h, f.pixelAspect, composite.canvas);
-        // One canvas-texture pixel of fringe, expressed in source pixels.
-        const double sx = std::hypot(toCanvas.a, toCanvas.b);
-        const double sy = std::hypot(toCanvas.c, toCanvas.d);
-        const double fringeX = sx > 0.0 ? std::min(div / sx, w) : 0.0;
-        const double fringeY = sy > 0.0 ? std::min(div / sy, h) : 0.0;
-        const Affine2D cornerToSrc{w + 2.0 * fringeX, 0.0, 0.0, h + 2.0 * fringeY, -fringeX, -fringeY};
-        if (isIdentityWarp(layer.warp)) {
-            storeClip(u.cornerToClip, corr, toNdc * toCanvas * cornerToSrc);
-        } else {
-            // P.2: the stabilizers' warp, given in fractions of the frame: in this frame's pixels it is S warp S^-1.
-            const std::array<double, 9>& g = layer.warp;
-            const std::array<double, 9> pixels{g[0], g[1] * w / h, g[2] * w, g[3] * h / w, g[4], g[5] * h,
-                                               g[6] / w, g[7] / h, g[8]};
-            storeProjectiveClip(u.cornerToClip, corr, toNdc * toCanvas, pixels, cornerToSrc);
-        }
+        // The layer's corners into clip space for one placement `t`, and the fringe (0.7: a blurred layer calls it once per
+        // instant of its shutter); returns the placement in canvas pixels.
+        const auto placeAs = [&](const LayerTransform& t, LayerUniforms& dst) {
+            const Affine2D toCanvasAt = layerToCanvas(t, w, h, f.pixelAspect, composite.canvas);
+            // One canvas-texture pixel of fringe, expressed in source pixels.
+            const double sx = std::hypot(toCanvasAt.a, toCanvasAt.b);
+            const double sy = std::hypot(toCanvasAt.c, toCanvasAt.d);
+            const double fringeX = sx > 0.0 ? std::min(div / sx, w) : 0.0;
+            const double fringeY = sy > 0.0 ? std::min(div / sy, h) : 0.0;
+            const Affine2D cornerToSrc{w + 2.0 * fringeX, 0.0, 0.0, h + 2.0 * fringeY, -fringeX, -fringeY};
+            if (isIdentityWarp(layer.warp)) {
+                storeClip(dst.cornerToClip, corr, toNdc * toCanvasAt * cornerToSrc);
+            } else {
+                // P.2: the stabilizers' warp, given in fractions of the frame: in this frame's pixels it is S warp S^-1.
+                const std::array<double, 9>& g = layer.warp;
+                const std::array<double, 9> pixels{g[0], g[1] * w / h, g[2] * w, g[3] * h / w, g[4], g[5] * h,
+                                                   g[6] / w, g[7] / h, g[8]};
+                storeProjectiveClip(dst.cornerToClip, corr, toNdc * toCanvasAt, pixels, cornerToSrc);
+            }
+            dst.srcRect[2] = static_cast<float>(fringeX);
+            dst.srcRect[3] = static_cast<float>(fringeY);
+            return toCanvasAt;
+        };
+        const Affine2D toCanvas = placeAs(transform, u);
 
         const SampleToRgb s2r = sampleToRgb(color.matrix, color.range, f.encoding, isRgb);
         storeMat3(u.sampleToRgb, s2r.matrix, s2r.offset);
@@ -1826,8 +1861,6 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         u.chromaXform[3] = static_cast<float>(offY / (subY * f.chromaHeight));
         u.srcRect[0] = static_cast<float>(w);
         u.srcRect[1] = static_cast<float>(h);
-        u.srcRect[2] = static_cast<float>(fringeX);
-        u.srcRect[3] = static_cast<float>(fringeY);
         u.params[0] = static_cast<float>(opacity);
         u.params[1] = f.encoding == SampleEncoding::Bits10Low    ? 65535.0f / 1023.0f
                       : f.encoding == SampleEncoding::Bits10High ? 65535.0f / (64.0f * 1023.0f)
@@ -1841,6 +1874,9 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
             u.mode[2] |= 4; // P.2: Interpret Footage > Invert Alpha Channel (layer.frag's ALPHA_INVERT)
         }
         u.mode[2] |= (layer.fieldMode & 3) << 3; // 0.2 field options: deinterlacing or Flicker Removal (layer.frag)
+        if (layer.nearest) {
+            u.mode[2] |= 32; // 0.7 (card #98): Nearest Neighbor Scaling (layer.frag's SCALE_NEAREST)
+        }
         u.mode[3] = layer.nested ? 1 : 0; // a nested canvas is float: keep what is above 1 (I.9)
         // 0.6 (#72): with gamut compression the canvas keeps working values below 0 (a grade can bring them back).
         u.post[2] = colorPipeline.management.compressesGamut() ? 1.0f : 0.0f;
@@ -1920,6 +1956,34 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         updates->updateDynamicBuffer(m_uniforms.get(), static_cast<quint32>(slot) * slotSize, sizeof(u), &u);
         placementOf[static_cast<std::size_t>(i)] = slot;
         m_placements.push_back({f, slot, toCanvas, layer.clipId, placedSrb});
+        // 0.7 Motion Blur: one draw per instant of the shutter, each at 1/n of the layer's opacity (their sum is the average).
+        // The draws share the layer's picture and colour handling (`u`); only the placement differs. Their uniform slots
+        // follow the placements' once all of them are known (below).
+        if (layer.blur.size() > 1) {
+            const double share = opacity / static_cast<double>(layer.blur.size());
+            for (const LayerTransform& sample : layer.blur) {
+                LayerTransform at = sample;
+                at.scale *= nestedK;
+                at.anchor = {at.anchor.x / nestedK, at.anchor.y / nestedK};
+                LayerUniforms su = u;
+                if (std::isfinite(at.scale) && at.scale > 0.0 && at.hasArea()) { // the same test as the layer's own (Scale Width 0 draws nothing)
+                    placeAs(at, su);
+                } else {
+                    std::fill(std::begin(su.cornerToClip), std::end(su.cornerToClip), 0.0f); // nothing to draw: no area
+                }
+                su.params[0] = static_cast<float>(share);
+                pendingBlur.push_back({m_placements.size() - 1, su});
+            }
+        }
+    }
+    {
+        // The blurred layers' draws get the slots right after the placements'.
+        int next = static_cast<int>(m_placements.size());
+        for (const PendingBlur& blur : pendingBlur) {
+            updates->updateDynamicBuffer(m_uniforms.get(), static_cast<quint32>(next) * slotSize, sizeof(blur.uniforms),
+                                         &blur.uniforms);
+            m_placements[blur.placement].blurSlots.push_back(next++);
+        }
     }
     stats.layersDrawn += static_cast<int>(m_placements.size()); // plus those inside nested composites
     stats.bytesUploaded += m_importer.stats().bytesUploaded - bytesBefore;
@@ -1960,7 +2024,7 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
     };
     std::vector<Pass> passes;
     std::vector<Draw> draws;
-    int nextSlot = static_cast<int>(m_placements.size());
+    int nextSlot = static_cast<int>(m_placements.size() + pendingBlur.size());
     const bool yUp = m_rhi->isYUpInFramebuffer();
     for (const auto& intermediate : m_intermediates) {
         intermediate->inUse = false;
@@ -3073,7 +3137,8 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
                 }
                 release(source);
                 release(backdrop);
-            } else if (layer.effects.empty() && layer.redactions.empty()) {
+            } else if (layer.effects.empty() && layer.redactions.empty() &&
+                       m_placements[static_cast<std::size_t>(placementIndex)].blurSlots.empty()) {
                 draws.push_back({placementIndex, nullptr, 0, blend});
             } else if (Intermediate* result = renderLayer(i)) {
                 draws.push_back({-1, result, blitSlot(), blend});
@@ -3094,9 +3159,12 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
 
     // ---- Output uniforms ----
     const QSize targetPixels = canvasOnly ? canvasPixels : output.target->pixelSize();
-    const QRect viewport = canvasOnly                 ? QRect(QPoint(0, 0), canvasPixels)
-                           : output.viewport.isEmpty() ? letterboxRect(targetPixels, composite.canvas)
-                                                       : output.viewport;
+    const bool vrView = output.vr.enabled && output.vr.format.isVr() && !canvasOnly;
+    const QRect viewport = canvasOnly ? QRect(QPoint(0, 0), canvasPixels)
+                           : output.viewport.isEmpty()
+                               ? (vrView ? QRect(QPoint(0, 0), targetPixels) // 0.7: the viewer fills the target
+                                         : letterboxRect(targetPixels, composite.canvas, composite.canvas.pixelAspect))
+                               : output.viewport;
     const int outputSlot = nextSlot++;
     QRhiShaderResourceBindings* outputSrb = m_outputSrb.get();
     if (!canvasOnly) {
@@ -3108,6 +3176,17 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         u.uvXform[3] = yUp ? 1.0f : 0.0f;
         u.mode[0] = outputCode(outputTransformFor(colorPipeline, output.role));
         u.mode[1] = output.alpha == OutputAlpha::Opaque ? 0 : output.alpha == OutputAlpha::Straight ? 1 : 2;
+        if (vrView) { // 0.7: the VR viewer (shaders/output.frag vrUv)
+            const VrView& v = output.vr;
+            u.vr0[0] = v.yaw;
+            u.vr0[1] = std::clamp(v.pitch, -static_cast<float>(vr::kMaxPitch), static_cast<float>(vr::kMaxPitch));
+            u.vr0[2] = v.roll;
+            u.vr0[3] = static_cast<float>(std::tan(std::clamp<double>(v.fov, 1.0, 170.0) * vr::kPi / 360.0));
+            u.vr1[0] = viewport.height() > 0 ? static_cast<float>(viewport.width()) / static_cast<float>(viewport.height()) : 1.0f;
+            u.vr1[1] = v.format.projection == VrProjection::Equirectangular180 ? 2.0f : 1.0f;
+            u.vr1[2] = static_cast<float>(static_cast<int>(v.format.stereo));
+            u.vr1[3] = v.eye != 0 ? 1.0f : 0.0f;
+        }
         // 0.6 (#72): the output's target (the Rec.2020 / P3-D65 SDR exports plan a Direct Rec.709 project's output too),
         // and SDR Conform: an export of a setup that conforms SDR, or the monitor's before / after preview.
         const ColorManagement& management = colorPipeline.management;
@@ -3201,7 +3280,7 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
     const QRhiCommandBuffer::VertexInput quad(m_quad.get(), 0);
     const QRhiViewport canvasViewport(0, 0, static_cast<float>(canvasPixels.width()),
                                       static_cast<float>(canvasPixels.height()));
-    const auto drawLayer = [&](const Placement& p, QRhiGraphicsPipeline*& bound, int blend) {
+    const auto drawLayer = [&](const Placement& p, QRhiGraphicsPipeline*& bound, int blend, int slotOverride = -1) {
         QRhiGraphicsPipeline* pipeline =
             p.frame.arrayTextures ? blendPipeline(m_layerArrayPipeline.get(), m_layerArrayBlendPipelines, blend)
                                   : blendPipeline(m_layerPipeline.get(), m_layerBlendPipelines, blend);
@@ -3210,7 +3289,7 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
             cb->setViewport(canvasViewport);
             bound = pipeline;
         }
-        const QRhiCommandBuffer::DynamicOffset offset(0, static_cast<quint32>(p.uniformSlot) * slotSize);
+        const QRhiCommandBuffer::DynamicOffset offset(0, static_cast<quint32>(slotOverride >= 0 ? slotOverride : p.uniformSlot) * slotSize);
         QRhiShaderResourceBindings* srb = p.srb                  ? p.srb
                                           : p.frame.arrayTextures ? m_nativeSrbs[p.frame.setSerial].srb.get()
                                                                   : m_layerSrbs[static_cast<std::size_t>(p.frame.slot)]->srb.get();
@@ -3256,6 +3335,15 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
     prepareBlends(draws);
     for (const Pass& pass : passes) {
         prepareBlends(pass.draws);
+        if (pass.placement >= 0 && !m_placements[static_cast<std::size_t>(pass.placement)].blurSlots.empty()) {
+            // 0.7 Motion Blur: the accumulation pipeline of the layer's draws, made before the passes.
+            const bool array = m_placements[static_cast<std::size_t>(pass.placement)].frame.arrayTextures;
+            if (array) {
+                blendPipeline(m_layerArrayPipeline.get(), m_layerArrayBlendPipelines, kBlendAccumulate);
+            } else {
+                blendPipeline(m_layerPipeline.get(), m_layerBlendPipelines, kBlendAccumulate);
+            }
+        }
         if (pass.family != kFamilyCore && !fxFamilyPipeline(pass.family)) {
             updates->release();
             return std::unexpected(Error{ErrorCode::DeviceError,
@@ -3305,7 +3393,15 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         } else if (pass.canvasDraws) {
             drawCanvas(pass.draws);
         } else if (pass.placement >= 0) {
-            drawLayer(m_placements[static_cast<std::size_t>(pass.placement)], bound, 0);
+            const Placement& placed = m_placements[static_cast<std::size_t>(pass.placement)];
+            if (placed.blurSlots.empty()) {
+                drawLayer(placed, bound, 0);
+            } else {
+                // 0.7 Motion Blur: the layer at each instant of the shutter, summed (each draw carries 1/n of the opacity).
+                for (const int blurSlot : placed.blurSlots) {
+                    drawLayer(placed, bound, kBlendAccumulate, blurSlot);
+                }
+            }
         } else if (pass.grade) {
             GradeTextures& t = *pass.grade;
             QRhiShaderResourceBindings* srb =

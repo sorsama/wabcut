@@ -89,6 +89,10 @@ const QHash<QString, Recipe>& recipes() {
         // 0.4, Ctrl+Alt's rearrange: the swap arrows (the clips trade places). Alt's copy is the system copy cursor
         // (cursor() below; not a recipe).
         t.insert(QStringLiteral("rearrange"), {QPoint(16, 16), {whole("bxf-swap-horizontal", 16, 16, 24)}});
+        // 0.7 (card 040), Alt-drag then Ctrl: the insert cursor with a second, smaller plus (a copy that is inserted).
+        t.insert(QStringLiteral("insertCopy"),
+                 {QPoint(13, 13),
+                  {whole("bxf-move", 13, 13, 22), whole("bxf-plus-big", 25, 25, 13.2), whole("bxf-plus-big", 26, 8, 9.6)}});
         // The hand tool, open over the lanes and holding while it drags.
         t.insert(QStringLiteral("hand"), {QPoint(16, 16), {whole("bx-hand", 16, 16, 24)}});
         t.insert(QStringLiteral("grab"), {QPoint(16, 16), {whole("bxf-hand", 16, 16, 24)}});
@@ -230,7 +234,7 @@ QStringList keys() {
             QStringLiteral("rippleHead"), QStringLiteral("rippleTail"),   QStringLiteral("roll"),
             QStringLiteral("rateHead"),   QStringLiteral("rateTail"),     QStringLiteral("slip"),
             QStringLiteral("slide"),      QStringLiteral("remix"),        QStringLiteral("resizeH"),
-            QStringLiteral("resizeV"),    QStringLiteral("rearrange")};
+            QStringLiteral("resizeV"),    QStringLiteral("rearrange"),    QStringLiteral("insertCopy")};
 }
 
 bool known(const QString& key) {

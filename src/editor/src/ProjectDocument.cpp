@@ -18,6 +18,7 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace wabcut::editor {
 
@@ -70,6 +71,42 @@ std::filesystem::path rotatedAutosave(const std::filesystem::path& projectFile, 
         p += std::to_string(n);
     }
     return p;
+}
+
+/// Card 043: the io layer names the file it could not write - for an autosave "<project>.autosave.tmp" (the atomic write's
+/// temporary file), "<project>.autosave" or a rotated copy -, files the user never made. The message names the project
+/// instead ("cannot create the autosave of Film.wabcut") and keeps the system's reason after it. `message` is io's
+/// "<what failed>: <path>" or "<what failed> (<reason>): <path>"; anything else only has the path replaced.
+std::string namingTheProject(std::string message, const std::filesystem::path& projectFile, int copies, const std::string& projectName) {
+    const std::string what = "the autosave of " + (projectName.empty() ? std::string("the untitled project") : projectName);
+    std::vector<std::string> paths;
+    for (int n = std::max(copies, 1) + 1; n >= 1; --n) {
+        const std::string file = pathToUtf8(rotatedAutosave(projectFile, n));
+        paths.push_back(file + ".tmp");
+        paths.push_back(file);
+    }
+    // The longest first: "...autosave2.tmp" must go before "...autosave".
+    std::ranges::stable_sort(paths, [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
+    for (const std::string& path : paths) {
+        const std::string tail = ": " + path;
+        if (message.size() >= tail.size() && message.ends_with(tail)) {
+            std::string head = message.substr(0, message.size() - tail.size());
+            std::string reason;
+            if (head.ends_with(')')) {
+                if (const std::size_t open = head.rfind(" ("); open != std::string::npos) {
+                    reason = head.substr(open + 2, head.size() - open - 3);
+                    head.resize(open);
+                }
+            }
+            return head + " " + what + (reason.empty() ? std::string() : ": " + reason);
+        }
+    }
+    for (const std::string& path : paths) {
+        for (std::size_t at = message.find(path); at != std::string::npos; at = message.find(path, at + what.size())) {
+            message.replace(at, path.size(), what);
+        }
+    }
+    return message;
 }
 
 /// "Untitled-<id>.wabcut.autosave" (n = 1) or "...autosave<n>": the session's name ("Untitled-<id>.wabcut") and n.
@@ -244,15 +281,31 @@ bool ProjectDocument::isDirty(const Identity& identity, const ProjectSnapshot& s
 }
 
 void ProjectDocument::removeAutosavesOf(const Identity& identity) const {
-    const std::filesystem::path newest = autosaveFileFor(identity.file, identity.untitledId);
-    if (newest.empty()) {
-        return;
+    removeAutosaveFiles(identity.file, identity.untitledId);
+}
+
+void ProjectDocument::removeAutosaveFiles(const std::filesystem::path& file, const std::string& untitledId) const {
+    // 0.7 (card 029): a saved project's copies may be in any of the folders (the setting may have changed meanwhile),
+    // and a larger earlier setting may have left more rotated copies than the current one keeps.
+    std::vector<std::filesystem::path> bases;
+    if (file.empty()) {
+        const std::filesystem::path newest = autosaveFileFor(file, untitledId);
+        if (!newest.empty()) {
+            bases.push_back(newest);
+            bases.back().replace_extension();
+        }
+    } else {
+        for (const std::filesystem::path& dir : io::backupDirectories(file, m_options.backupLocation)) {
+            bases.push_back(io::inBackupDirectory(file, dir));
+        }
     }
-    std::filesystem::path projectFile = newest;
-    projectFile.replace_extension();
     std::error_code ec;
-    for (int n = 1; n <= std::max(1, m_options.autosaveCopies); ++n) {
-        std::filesystem::remove(rotatedAutosave(projectFile, n), ec);
+    const int copies = file.empty() ? std::max(1, m_options.autosaveCopies)
+                                    : std::max(std::max(1, m_options.autosaveCopies), io::kMaxAutosaveCopies);
+    for (const std::filesystem::path& projectFile : bases) {
+        for (int n = 1; n <= copies; ++n) {
+            std::filesystem::remove(rotatedAutosave(projectFile, n), ec);
+        }
     }
 }
 
@@ -289,7 +342,8 @@ std::expected<void, Error> ProjectDocument::saveAs(const std::filesystem::path& 
     if (m_saveFilter) {
         m_saveFilter(state);
     }
-    if (auto written = io::saveProject(state, absolute, io::SaveOptions{m_options.saveBackups}); !written) {
+    if (auto written = io::saveProject(state, absolute, io::SaveOptions{m_options.saveBackups, backupDirectory(absolute)});
+        !written) {
         return std::unexpected(std::move(written.error()));
     }
     m_file = absolute;
@@ -308,6 +362,28 @@ std::expected<void, Error> ProjectDocument::saveCopy(const std::filesystem::path
     return io::saveProject(state, absolute, io::SaveOptions{0});
 }
 
+std::expected<io::DowngradeResult, Error> ProjectDocument::saveForRelease(const std::filesystem::path& file,
+                                                                          std::string_view release) const {
+    const std::filesystem::path absolute = absolutePath(file);
+    ProjectState state = rebased(m_session.stateForSave(), absolute);
+    if (m_saveFilter) {
+        m_saveFilter(state);
+    }
+    return io::saveProjectForRelease(state, absolute, release);
+}
+
+std::expected<std::vector<io::DowngradeLoss>, Error> ProjectDocument::olderReleaseLosses(std::string_view release) const {
+    ProjectState state = m_session.stateForSave();
+    if (m_saveFilter) {
+        m_saveFilter(state);
+    }
+    auto result = io::toJsonForRelease(state, release);
+    if (!result) {
+        return std::unexpected(std::move(result.error()));
+    }
+    return std::move(result->losses);
+}
+
 // ---- Autosave -----------------------------------------------------------------------------------------
 
 std::filesystem::path ProjectDocument::autosaveFile() const {
@@ -316,7 +392,7 @@ std::filesystem::path ProjectDocument::autosaveFile() const {
 
 std::filesystem::path ProjectDocument::autosaveFileFor(const std::filesystem::path& file, const std::string& untitledId) const {
     if (!file.empty()) {
-        return io::autosavePath(file);
+        return io::autosavePath(file, backupDirectory(file));
     }
     if (m_options.untitledAutosaveDir.empty() || untitledId.empty()) {
         return {};
@@ -347,6 +423,7 @@ std::optional<ProjectDocument::AutosaveJob> ProjectDocument::prepareAutosave() c
         return std::nullopt;
     }
     job.createFolder = !m_file.empty() || !m_options.untitledAutosaveDir.empty();
+    job.projectName = m_file.empty() ? std::string() : pathToUtf8(m_file.filename());
     job.state = m_file.empty() ? m_session.stateForSave() : rebased(m_session.stateForSave(), m_file);
     if (m_saveFilter) {
         m_saveFilter(job.state);
@@ -376,7 +453,10 @@ std::expected<void, Error> ProjectDocument::AutosaveJob::write() const {
     const std::optional<std::string> previous = copies > 1 && isFile(target) ? readAll(target) : std::nullopt;
     const auto previousTime = previous ? std::filesystem::last_write_time(target, ec) : std::filesystem::file_time_type{};
     if (auto written = io::writeAutosave(state, projectFile); !written) {
-        return std::unexpected(std::move(written.error()));
+        // Card 043: the failure names the project, not the temporary file the atomic write used.
+        Error error = std::move(written.error());
+        error.message = namingTheProject(std::move(error.message), projectFile, copies, projectName);
+        return std::unexpected(std::move(error));
     }
     if (previous) {
         // autosave<N-1> -> autosave<N>, ..., autosave2 -> autosave3; the replaced copy becomes autosave2.
@@ -406,7 +486,7 @@ std::expected<void, Error> ProjectDocument::AutosaveJob::write() const {
 
 std::vector<RecoveryFile> ProjectDocument::recoveryFiles(const std::filesystem::path& projectFile) const {
     std::vector<RecoveryFile> out;
-    for (const io::RecoveryCandidate& c : io::recoveryCandidates(projectFile)) {
+    for (const io::RecoveryCandidate& c : io::recoveryCandidates(projectFile, m_options.backupLocation)) {
         out.push_back({c.file,
                        c.kind == io::RecoveryCandidate::Kind::Autosave ? RecoveryFile::Kind::Autosave
                                                                        : RecoveryFile::Kind::Backup,
@@ -416,25 +496,29 @@ std::vector<RecoveryFile> ProjectDocument::recoveryFiles(const std::filesystem::
     const bool projectExists = isFile(projectFile);
     const auto projectTime = projectExists ? std::filesystem::last_write_time(projectFile, ec)
                                            : std::filesystem::file_time_type::min();
-    for (int n = 2; n <= std::max(1, m_options.autosaveCopies); ++n) {
-        const std::filesystem::path file = rotatedAutosave(projectFile, n);
-        if (!isFile(file)) {
-            continue;
+    for (const std::filesystem::path& dir : io::backupDirectories(projectFile, m_options.backupLocation)) {
+        const std::filesystem::path base = io::inBackupDirectory(projectFile, dir);
+        for (int n = 2; n <= std::max(std::max(1, m_options.autosaveCopies), io::kMaxAutosaveCopies); ++n) {
+            const std::filesystem::path file = rotatedAutosave(base, n);
+            if (!isFile(file)) {
+                continue;
+            }
+            RecoveryFile r;
+            r.file = file;
+            r.kind = RecoveryFile::Kind::Autosave;
+            r.modified = std::filesystem::last_write_time(file, ec);
+            r.newerThanProject = !projectExists || r.modified > projectTime;
+            r.loadable = io::loadProject(file).has_value();
+            out.push_back(std::move(r));
         }
-        RecoveryFile r;
-        r.file = file;
-        r.kind = RecoveryFile::Kind::Autosave;
-        r.modified = std::filesystem::last_write_time(file, ec);
-        r.newerThanProject = !projectExists || r.modified > projectTime;
-        r.loadable = io::loadProject(file).has_value();
-        out.push_back(std::move(r));
     }
     std::ranges::sort(out, [](const RecoveryFile& a, const RecoveryFile& b) { return a.modified > b.modified; });
     return out;
 }
 
 std::expected<void, Error> ProjectDocument::recover(const std::filesystem::path& recoveryFile,
-                                                    const std::filesystem::path& projectFile) {
+                                                    const std::filesystem::path& projectFile,
+                                                    const std::filesystem::path& mediaBase) {
     auto loaded = io::loadProject(recoveryFile);
     if (!loaded) {
         return std::unexpected(std::move(loaded.error()));
@@ -448,7 +532,9 @@ std::expected<void, Error> ProjectDocument::recover(const std::filesystem::path&
         }
     }
     // Relative media resolve against the project the revision belongs to, also when it opens as an untitled copy.
-    const std::filesystem::path base = !absolute.empty() ? absolute : projectOfRecoveryFile(absolutePath(recoveryFile));
+    const std::filesystem::path base = !absolute.empty()   ? absolute
+                                       : !mediaBase.empty() ? absolutePath(mediaBase)
+                                                            : projectOfRecoveryFile(absolutePath(recoveryFile));
     m_session.reset(withMediaChecked(*loaded, base));
     m_file = absolute;
     m_clean.reset();    // recovered work is not on disk as the project yet
@@ -470,31 +556,40 @@ std::filesystem::path ProjectDocument::projectOfRecoveryFile(const std::filesyst
             if (name.starts_with("Untitled-") && std::string_view(suffix) == ".autosave") {
                 return {}; // an untitled session's autosave: no project
             }
-            return recoveryFile.parent_path() / pathFromUtf8(name.substr(0, at + extension.size()));
+            // 0.7 (card 029): a copy in "Wabcut Auto-Save" belongs to the project next to that folder. (A copy in a chosen
+            // root has no way back to its project's folder: the app passes the project it scanned, recover()'s mediaBase.)
+            std::filesystem::path folder = recoveryFile.parent_path();
+            if (folder.filename() == std::string(io::kAutoSaveFolderName)) {
+                folder = folder.parent_path();
+            }
+            return folder / pathFromUtf8(name.substr(0, at + extension.size()));
         }
     }
     return name.ends_with(extension) ? recoveryFile : std::filesystem::path{};
 }
 
 std::optional<RecoveryFile> ProjectDocument::newestUnsavedAutosave(const std::filesystem::path& projectFile,
-                                                                   int autosaveCopies) {
+                                                                   int autosaveCopies, const io::BackupLocation& location) {
     std::error_code ec;
     const bool projectExists = isFile(projectFile);
     const auto projectTime = projectExists ? std::filesystem::last_write_time(projectFile, ec)
                                            : std::filesystem::file_time_type::min();
     std::vector<RecoveryFile> candidates;
-    for (int n = 1; n <= std::max(1, autosaveCopies); ++n) {
-        const std::filesystem::path file = rotatedAutosave(projectFile, n);
-        if (!isFile(file)) {
-            continue;
-        }
-        RecoveryFile r;
-        r.file = file;
-        r.kind = RecoveryFile::Kind::Autosave;
-        r.modified = std::filesystem::last_write_time(file, ec);
-        r.newerThanProject = !projectExists || r.modified > projectTime;
-        if (r.newerThanProject) { // an older autosave is never offered: no need to read it
-            candidates.push_back(std::move(r));
+    for (const std::filesystem::path& dir : io::backupDirectories(projectFile, location)) {
+        const std::filesystem::path base = io::inBackupDirectory(projectFile, dir);
+        for (int n = 1; n <= std::max(std::max(1, autosaveCopies), io::kMaxAutosaveCopies); ++n) {
+            const std::filesystem::path file = rotatedAutosave(base, n);
+            if (!isFile(file)) {
+                continue;
+            }
+            RecoveryFile r;
+            r.file = file;
+            r.kind = RecoveryFile::Kind::Autosave;
+            r.modified = std::filesystem::last_write_time(file, ec);
+            r.newerThanProject = !projectExists || r.modified > projectTime;
+            if (r.newerThanProject) { // an older autosave is never offered: no need to read it
+                candidates.push_back(std::move(r));
+            }
         }
     }
     std::ranges::stable_sort(candidates, [](const RecoveryFile& a, const RecoveryFile& b) { return a.modified > b.modified; });
@@ -508,17 +603,17 @@ std::optional<RecoveryFile> ProjectDocument::newestUnsavedAutosave(const std::fi
 }
 
 void ProjectDocument::removeAutosaves() {
-    const std::filesystem::path newest = autosaveFile();
-    if (newest.empty()) {
+    if (autosaveFile().empty()) {
         return;
     }
-    std::filesystem::path projectFile = newest;
-    projectFile.replace_extension();
-    std::error_code ec;
-    for (int n = 1; n <= std::max(1, m_options.autosaveCopies); ++n) {
-        std::filesystem::remove(rotatedAutosave(projectFile, n), ec);
-    }
+    removeAutosaveFiles(m_file, m_untitledId);
     m_autosaved.reset();
+}
+
+void ProjectDocument::setBackupPolicy(int saveBackups, int autosaveCopies, const io::BackupLocation& location) {
+    m_options.saveBackups = std::clamp(saveBackups, 0, io::kMaxBackupCount);
+    m_options.autosaveCopies = std::clamp(autosaveCopies, 1, io::kMaxAutosaveCopies);
+    m_options.backupLocation = location;
 }
 
 std::vector<RecoveryFile> ProjectDocument::untitledRecoveryFiles(const std::filesystem::path& untitledAutosaveDir) {

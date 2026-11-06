@@ -5,6 +5,7 @@
 
 #include <wabcut/model/ChangeSet.h>
 #include <wabcut/model/GraphicOps.h>
+#include <wabcut/model/KeyPins.h>
 #include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/TitleOps.h>
 
@@ -72,7 +73,7 @@ std::expected<ParamSlot, Error> slotOf(const ClipContent& content, TrackKind kin
                 std::string(info.key) + " is a " + (isVideoParam(*ref.intrinsic) ? "video" : "audio") +
                 " parameter; the clip is a " + (kind == TrackKind::Video ? "video" : "audio") + " clip"));
         }
-        return ParamSlot{info.minValue, info.maxValue, true, content.properties[*ref.intrinsic]};
+        return ParamSlot{info.minValue, info.maxValue, info.animatable, content.properties[*ref.intrinsic]};
     }
     return effectSlotOf(content.effects, ref, "the clip");
 }
@@ -589,6 +590,33 @@ ValueEdit changeKey(ParamRef param, std::size_t index, KeyframeChange change) {
     };
 }
 
+/// 0.7 (card 120): pins key `index` to a clip end whose curve time is `boundary` (the key moves there, replacing a key
+/// already on it), or unpins it where it is.
+ValueEdit pinKey(ParamRef param, std::size_t index, KeyPin pin, Ticks boundary) {
+    return [param = std::move(param), index, pin, boundary](const ParamValue& current) -> std::expected<ParamValue, Error> {
+        auto curve = curveOf(current, param);
+        if (!curve) {
+            return std::unexpected(curve.error());
+        }
+        if (auto ok = checkIndex(*curve, index); !ok) {
+            return std::unexpected(ok.error());
+        }
+        Keyframe key = curve->keys[index];
+        key.pin = pin;
+        if (pin == KeyPin::None || key.time == boundary) {
+            curve->keys[index] = key;
+            return ParamValue(std::move(*curve));
+        }
+        curve->keys.erase(curve->keys.begin() + static_cast<std::ptrdiff_t>(index));
+        if (const auto there = curve->keyAt(boundary)) {
+            curve->keys.erase(curve->keys.begin() + static_cast<std::ptrdiff_t>(*there)); // the pinned key replaces it
+        }
+        key.time = boundary;
+        curve->keys.insert(curve->keys.begin() + static_cast<std::ptrdiff_t>(curve->insertionIndex(boundary)), key);
+        return ParamValue(std::move(*curve));
+    };
+}
+
 ValueEdit animate(bool animated, Ticks curveTime) {
     return [animated, curveTime](const ParamValue& current) -> std::expected<ParamValue, Error> {
         if (animated == current.isCurve()) {
@@ -702,8 +730,45 @@ EditOutcome editTargetStack(const ProjectState& state, SequenceId sequence, cons
 
 // --- Parameters and keyframes ----------------------------------------------------------------------------
 
+namespace {
+
+/// 0.7 (card #12): switching Uniform Scale carries Scale Width along in the same step, so the picture does not jump: off
+/// copies the Scale (keys too) to Scale Width; on puts Scale Width back to its default (the width follows the Scale again).
+EditOutcome setUniformScaleParam(const ProjectState& state, SequenceId sequence, ClipId clip, ParamValue value) {
+    const ParamRef uniform = ParamRef::of(ParamId::UniformScale);
+    auto plain = editParam(state, sequence, clip, uniform, replaceWith(value)); // checks the clip, its track and the range
+    if (!plain) {
+        return plain;
+    }
+    const auto seq = detail::findSequence(state, sequence);
+    const auto located = seq ? (*seq)->findClip(clip) : std::nullopt;
+    if (!located) {
+        return plain;
+    }
+    const ClipProperties& before = located->clip().properties();
+    if (before[ParamId::UniformScale] == value) {
+        return plain; // unchanged
+    }
+    const bool turningOff = value.constant() < 0.5;
+    const ParamValue width = turningOff ? before[ParamId::Scale] : ParamValue(parameterInfo(ParamId::ScaleWidth).defaultValue);
+    if (before[ParamId::ScaleWidth] == width) {
+        return plain;
+    }
+    auto both = editParam(plain->state, sequence, clip, ParamRef::of(ParamId::ScaleWidth), replaceWith(width));
+    if (!both) {
+        return both;
+    }
+    both->changes = diff(state, both->state);
+    return both;
+}
+
+} // namespace
+
 EditOutcome setParameter(const ProjectState& state, SequenceId sequence, ClipId clip, const ParamRef& param,
                          ParamValue value) {
+    if (param.intrinsic == ParamId::UniformScale && param.layer == 0 && value.isConstant()) {
+        return setUniformScaleParam(state, sequence, clip, std::move(value));
+    }
     return editParam(state, sequence, clip, param, replaceWith(std::move(value)));
 }
 
@@ -800,6 +865,21 @@ EditOutcome setKeyframe(const ProjectState& state, SequenceId sequence, ClipId c
 EditOutcome setAnimated(const ProjectState& state, SequenceId sequence, ClipId clip, const ParamRef& param,
                         bool animated, Ticks curveTime) {
     return editParam(state, sequence, clip, param, animate(animated, curveTime));
+}
+
+EditOutcome setKeyframePin(const ProjectState& state, SequenceId sequenceId, ClipId clipId, const ParamRef& param,
+                           std::size_t index, KeyPin pin) {
+    const auto seq = detail::findSequence(state, sequenceId);
+    if (!seq) {
+        return std::unexpected(seq.error());
+    }
+    const auto site = editableClip(**seq, clipId);
+    if (!site) {
+        return std::unexpected(site.error());
+    }
+    const Clip& clip = (*seq)->findTrack(site->track)->clips[site->index];
+    const Ticks boundary = pin == KeyPin::ClipEnd ? clip.endCurveTime() : clip.startCurveTime();
+    return editParam(state, sequenceId, clipId, param, pinKey(param, index, pin, boundary));
 }
 
 // --- Effect stacks --------------------------------------------------------------------------------------
@@ -903,6 +983,27 @@ EditOutcome addEffect(const ProjectState& state, SequenceId sequence, const Effe
         instance.params = params;
         const std::size_t at = std::min(index.value_or(site.stack.size()), site.stack.size());
         site.stack.insert(site.stack.begin() + static_cast<std::ptrdiff_t>(at), std::move(instance));
+        return {};
+    });
+}
+
+EditOutcome appendEffectInstances(const ProjectState& state, SequenceId sequence, const EffectTarget& target,
+                                  std::vector<EffectInstance> instances) {
+    if (target.kind == EffectTarget::Kind::Clip || target.kind == EffectTarget::Kind::Media) {
+        return std::unexpected(detail::invalidArgument("not a track or master target"));
+    }
+    return editSite(state, sequence, target, [&](StackSite& site, const NewEffectId& newId) -> std::expected<void, Error> {
+        for (EffectInstance& e : instances) {
+            const EffectDescriptor* d = EffectRegistry::builtin().find(e.effect);
+            const TrackKind wanted = d != nullptr && d->kind == EffectKind::Video ? TrackKind::Video : TrackKind::Audio;
+            if (site.kind != wanted) {
+                return std::unexpected(detail::invalidArgument(e.effect + " is a " + (wanted == TrackKind::Video ? "video" : "audio") +
+                                                               " effect; " + site.owner + " takes " +
+                                                               (site.kind == TrackKind::Video ? "video" : "audio") + " effects"));
+            }
+            e.id = newId();
+            site.stack.push_back(std::move(e));
+        }
         return {};
     });
 }

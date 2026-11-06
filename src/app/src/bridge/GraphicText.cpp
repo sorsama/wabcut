@@ -1,5 +1,7 @@
 #include "GraphicText.h"
 
+#include <wabcut/render/TextTypography.h>
+
 #include <QFont>
 #include <QGlyphRun>
 #include <QPainter>
@@ -80,7 +82,8 @@ QFont fontOf(const TextBlockRun& run) {
     font.setUnderline(run.underline);
     if (run.tracking != 0.0)
         font.setLetterSpacing(QFont::AbsoluteSpacing, run.tracking / 1000.0 * run.fontSize);
-    font.setKerning(run.kerning); // 0.6: as the renderer lays it out
+    font.setKerning(run.kerning && !run.optical); // 0.6: as the renderer lays it out
+    render::applyFontFeatures(font, run.features); // 0.7 (card #138)
     if (run.caps != TextCaps::Normal)
         font.setCapitalization(run.caps == TextCaps::AllCaps ? QFont::AllUppercase : QFont::SmallCaps);
     return font;
@@ -126,7 +129,9 @@ void TextBlock::layout() {
             continue;
         range.format.setFont(fontOf(run));
         range.format.setForeground(run.color);
-        formats.append(range);
+        // 0.7 (card #138): Optical kerning spaces each pair of the run on its own.
+        render::appendTextRanges(formats, m_text, range.start, range.start + range.length, range.format, run.optical,
+                                 run.tracking / 1000.0 * run.fontSize);
     }
     m_layout->setFormats(formats);
     const bool paragraph = m_boxWidth > 0.0;
@@ -259,6 +264,8 @@ std::array<double, 2> QtTextMeasurer::measure(const TextContent& text, const std
         run.leading = r.style.leading;
         run.kerning = r.style.kerning;
         run.caps = r.style.caps;
+        run.optical = r.style.opticalKerning && r.style.kerning; // 0.7 (card #138)
+        run.features = r.style.features;
         runs.push_back(std::move(run));
         byte += r.text.size();
     }
@@ -284,6 +291,8 @@ std::vector<TextBlockRun> blockRuns(const DrawText& text) {
         run.leading = r.leading;
         run.kerning = r.kerning;
         run.caps = r.caps;
+        run.optical = r.opticalKerning && r.kerning; // 0.7 (card #138)
+        run.features = r.features;
         runs.push_back(std::move(run));
     }
     return runs;

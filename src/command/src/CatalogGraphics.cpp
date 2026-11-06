@@ -7,16 +7,19 @@
 #include <wabcut/command/SpellingServices.h>
 #include <wabcut/interchange/Lottie.h>
 #include <wabcut/interchange/Mogrt.h>
+#include <wabcut/interchange/OGraf.h>
 #include <wabcut/model/BuiltinTemplates.h>
 #include <wabcut/model/GraphicJson.h>
 #include <wabcut/model/GraphicOps.h>
 #include <wabcut/model/GraphicResolve.h>
 #include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/Plural.h>
 #include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/Spelling.h>
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -262,6 +265,126 @@ FoundTemplate findTemplate(ExecutionContext& c, const std::string& id, const std
 
 namespace {
 
+// ---- Template folders (0.7, card #87) -------------------------------------------------------------------------------
+
+/// One part of a folder label from a directory name: no separators or control characters, cut to `limit` bytes on a code
+/// point boundary, "" for "." and "..".
+std::string folderPart(std::string name, std::size_t limit = 32) {
+    std::string out;
+    for (const char ch : name) {
+        out += (ch == '/' || ch == '\\' || static_cast<unsigned char>(ch) < 0x20) ? ' ' : ch;
+    }
+    if (out.size() > limit) {
+        out.resize(limit);
+        while (!out.empty() && (static_cast<unsigned char>(out.back()) & 0xC0U) == 0x80U) {
+            out.pop_back();
+        }
+        if (!out.empty() && static_cast<unsigned char>(out.back()) >= 0xC0U) {
+            out.pop_back(); // a cut lead byte
+        }
+    }
+    const std::size_t first = out.find_first_not_of(' ');
+    const std::size_t last = out.find_last_not_of(' ');
+    out = first == std::string::npos ? std::string() : out.substr(first, last - first + 1);
+    return out == "." || out == ".." ? std::string() : out;
+}
+
+/// The template folder label for a file found under `root`: the folder's own name, then its subfolders (at most
+/// kMaxTemplateFolderDepth parts, the deeper ones folded into the last allowed).
+std::string folderLabelOf(const std::filesystem::path& root, const std::filesystem::path& directory) {
+    std::vector<std::string> parts;
+    const std::filesystem::path rootName = root.filename().empty() ? root.parent_path().filename() : root.filename();
+    if (const std::string name = folderPart(pathToUtf8(rootName)); !name.empty()) {
+        parts.push_back(name);
+    }
+    std::error_code ec;
+    const std::filesystem::path relative = std::filesystem::relative(directory, root, ec);
+    if (!ec && relative != ".") {
+        for (const std::filesystem::path& part : relative) {
+            if (const std::string name = folderPart(pathToUtf8(part)); !name.empty()) {
+                parts.push_back(name);
+            }
+        }
+    }
+    while (parts.size() > kMaxTemplateFolderDepth) {
+        parts[kMaxTemplateFolderDepth - 1] += " " + parts[kMaxTemplateFolderDepth]; // deeper levels share the last label
+        parts.erase(parts.begin() + static_cast<std::ptrdiff_t>(kMaxTemplateFolderDepth));
+    }
+    std::string label;
+    for (const std::string& p : parts) {
+        label += (label.empty() ? "" : "/") + p;
+    }
+    return templateFolderProblem(label) ? std::string() : label;
+}
+
+/// A template file (a ".mogrt" or a ".wabcut-template.json") read for an import; the error as text when it does not read.
+std::expected<GraphicTemplate, std::string> readTemplateFile(const std::filesystem::path& file) {
+    std::error_code ec;
+    const std::uintmax_t size = std::filesystem::file_size(file, ec);
+    if (ec) {
+        return std::unexpected(std::string("cannot read the file"));
+    }
+    if (size > interchange::kMaxMogrtBytes) {
+        return std::unexpected(std::string("the file is larger than 64 MiB"));
+    }
+    std::ifstream in(file, std::ios::binary);
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    bytes.resize(static_cast<std::size_t>(in.gcount()));
+    std::string name = pathToUtf8(file.filename());
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (name.ends_with(".mogrt")) {
+        auto imported = interchange::importMogrt(bytes, pathToUtf8(file.filename()));
+        if (!imported) {
+            return std::unexpected(imported.error().message);
+        }
+        if (const auto problem = templateProblem(imported->tmpl)) {
+            return std::unexpected(*problem);
+        }
+        return std::move(imported->tmpl);
+    }
+    auto read = io::templateFileFromJson(bytes);
+    if (!read) {
+        return std::unexpected(read.error().message);
+    }
+    return std::move(*read);
+}
+
+/// Template files under `root` (a ".mogrt" or a ".wabcut-template.json"), sorted by path: regular files only (no symbolic
+/// links), at most 8 levels down, at most kMaxFolderImportFiles of them. `truncated` says the limit cut the list.
+std::vector<std::filesystem::path> templateFilesUnder(const std::filesystem::path& root, bool recursive, bool& truncated) {
+    constexpr std::size_t kMaxFolderImportFiles = 500;
+    constexpr int kMaxFolderImportDepth = 8;
+    std::vector<std::filesystem::path> files;
+    truncated = false;
+    std::error_code ec;
+    std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec);
+    const std::filesystem::recursive_directory_iterator end;
+    for (; !ec && it != end; it.increment(ec)) {
+        std::error_code entry;
+        if (it.depth() >= kMaxFolderImportDepth || !recursive) {
+            it.disable_recursion_pending();
+        }
+        const std::filesystem::file_status link = it->symlink_status(entry);
+        if (entry || link.type() != std::filesystem::file_type::regular) {
+            continue;
+        }
+        std::string name = pathToUtf8(it->path().filename());
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (!name.ends_with(".mogrt") && !name.ends_with(".wabcut-template.json")) {
+            continue;
+        }
+        if (files.size() >= kMaxFolderImportFiles) {
+            truncated = true;
+            break;
+        }
+        files.push_back(it->path());
+    }
+    std::sort(files.begin(), files.end(), [](const std::filesystem::path& a, const std::filesystem::path& b) { return a.generic_u8string() < b.generic_u8string(); });
+    return files;
+}
+
+
 Json templateSummary(const GraphicTemplate& t) {
     Json fields = Json::array();
     for (const TemplateField& f : t.fields) {
@@ -272,15 +395,19 @@ Json templateSummary(const GraphicTemplate& t) {
         }
         fields.push_back(std::move(field));
     }
-    return Json{{"id", t.id},
-                {"name", t.name},
-                {"description", t.description},
-                {"version", t.version},
-                {"duration", t.duration.value},
-                {"width", t.graphic.width},
-                {"height", t.graphic.height},
-                {"layers", t.graphic.layerCount()},
-                {"fields", std::move(fields)}};
+    Json summary{{"id", t.id},
+                 {"name", t.name},
+                 {"description", t.description},
+                 {"version", t.version},
+                 {"duration", t.duration.value},
+                 {"width", t.graphic.width},
+                 {"height", t.graphic.height},
+                 {"layers", t.graphic.layerCount()},
+                 {"fields", std::move(fields)}};
+    if (!t.folder.empty()) {
+        summary["folder"] = t.folder; // 0.7 (card #87)
+    }
+    return summary;
 }
 
 const TemplateField* fieldNamed(const std::vector<TemplateField>& fields, const std::string& id) {
@@ -359,24 +486,35 @@ Json fieldListSchema() {
 
 // ---- Lottie -----------------------------------------------------------------------------------------------------------
 
-std::string readLottieFile(const std::string& utf8Path) {
+/// A file's bytes, at most `limit`; the same errors as every file-reading command.
+std::string readBoundedFile(const std::string& utf8Path, std::uintmax_t limit, const char* what, const char* param = "/path") {
     const std::filesystem::path path = pathFromUtf8(utf8Path);
     std::error_code ec;
     const std::uintmax_t size = std::filesystem::file_size(path, ec);
     if (ec) {
-        fail(ErrorCode::NotFound, "cannot read \"" + utf8Path + "\"", Json{{"path", "/path"}});
+        fail(ErrorCode::NotFound, "cannot read \"" + utf8Path + "\"", Json{{"path", param}});
     }
-    if (size > interchange::kMaxLottieBytes) {
-        fail(ErrorCode::InvalidParams, "the Lottie file is larger than 16 MiB", Json{{"path", "/path"}});
+    if (size > limit) {
+        fail(ErrorCode::InvalidParams, std::string("the ") + what + " file is larger than " + std::to_string(limit / (1024 * 1024)) + " MiB",
+             Json{{"path", param}});
     }
     std::ifstream in(path, std::ios::binary);
     std::string text(static_cast<std::size_t>(size), '\0');
     in.read(text.data(), static_cast<std::streamsize>(text.size()));
     if (!in && !in.eof()) {
-        fail(ErrorCode::NotFound, "cannot read \"" + utf8Path + "\"", Json{{"path", "/path"}});
+        fail(ErrorCode::NotFound, "cannot read \"" + utf8Path + "\"", Json{{"path", param}});
     }
     text.resize(static_cast<std::size_t>(in.gcount()));
     return text;
+}
+
+/// A Lottie file: JSON up to 16 MiB, or a dotLottie archive up to 64 MiB.
+std::string readLottieFile(const std::string& utf8Path) {
+    const std::string bytes = readBoundedFile(utf8Path, interchange::kMaxDotLottieBytes, "Lottie");
+    if (!interchange::looksLikeZip(bytes) && bytes.size() > interchange::kMaxLottieBytes) {
+        fail(ErrorCode::InvalidParams, "the Lottie file is larger than 16 MiB", Json{{"path", "/path"}});
+    }
+    return bytes;
 }
 
 Json reportJson(const interchange::ImportReport& report) {
@@ -393,6 +531,121 @@ Json reportJson(const interchange::ImportReport& report) {
                 {"approximated", report.count(ReportOutcome::Approximated)},
                 {"dropped", report.count(ReportOutcome::Dropped)},
                 {"entries", std::move(entries)}};
+}
+
+/// 0.7 (card 178): a motion graphic imported from Lottie, dotLottie or an OGraf package, ready to be placed and / or saved.
+struct MotionImport {
+    Graphic graphic;
+    std::vector<TemplateField> fields; ///< the template fields (Lottie.h LottieImport::fields)
+    Ticks duration{};
+    Rate frameRate;
+    interchange::ImportReport report;
+    std::optional<GraphicTemplate> tmpl; ///< OGraf: the template as the manifest names it
+    std::string source;                  ///< "lottie" or "ograf"
+    std::string fileStem;                ///< the file's name without its extension: the default template id and name
+};
+
+/// "lottie.my-title" from a file name: [A-Za-z0-9][A-Za-z0-9_.-]*.
+std::string templateIdFromStem(const std::string& stem, const char* prefix) {
+    std::string id;
+    for (const char ch : stem) {
+        const unsigned char u = static_cast<unsigned char>(ch);
+        if ((std::isalnum(u) != 0 && u < 128) || (!id.empty() && (ch == '-' || ch == '_' || ch == '.'))) {
+            id += ch;
+        }
+    }
+    if (id.empty()) {
+        id = "template";
+    }
+    return (std::string(prefix) + id).substr(0, 128);
+}
+
+/// The result of lottie.import / ograf.import: the report, the fields, the template saved ("saveAs") and the clip placed
+/// ("at"). An animation with template fields is placed as an instance of its template (Essential Graphics > Edit shows the
+/// fields, which can be keyed); one without becomes a plain graphic clip.
+CommandOutput placeMotionImport(ExecutionContext& c, MotionImport imported) {
+    Json fieldList = Json::array();
+    for (const TemplateField& f : imported.fields) {
+        fieldList.push_back(Json{{"id", f.id}, {"label", f.label}, {"kind", std::string(toString(f.kind))}});
+    }
+    Json data{{"report", reportJson(imported.report)},
+              {"duration", imported.duration.value},
+              {"frameRate", std::to_string(imported.frameRate.num) + "/" + std::to_string(imported.frameRate.den)},
+              {"width", imported.graphic.width},
+              {"height", imported.graphic.height},
+              {"source", imported.source},
+              {"fields", std::move(fieldList)}};
+    ProjectState state = c.state();
+    std::vector<std::uint64_t> created;
+    std::optional<GraphicTemplate> tmpl;
+    const bool fieldsToEdit = imported.tmpl ? !imported.tmpl->fields.empty() : !imported.fields.empty();
+    if (c.has("saveAs") || (c.has("at") && fieldsToEdit)) {
+        std::string id;
+        std::string name;
+        std::string description;
+        if (c.has("saveAs")) {
+            const Json& as = c.params()["saveAs"];
+            id = as.value("id", std::string());
+            name = as.value("name", std::string());
+            description = as.value("description", std::string());
+        }
+        if (imported.tmpl) {
+            tmpl = *imported.tmpl;
+            if (!id.empty()) {
+                tmpl->id = id;
+            }
+            if (!name.empty()) {
+                tmpl->name = name;
+            }
+            if (!description.empty()) {
+                tmpl->description = description;
+            }
+            if (const auto problem = templateProblem(*tmpl)) {
+                fail(ErrorCode::InvalidParams, *problem, Json{{"path", "/saveAs"}});
+            }
+        } else {
+            if (id.empty()) {
+                id = templateIdFromStem(imported.fileStem, "lottie.");
+            }
+            if (name.empty()) {
+                name = imported.graphic.name.empty() ? imported.fileStem : imported.graphic.name;
+            }
+            tmpl = parsed(edit::makeTemplate(imported.graphic, id, name, imported.fields, imported.duration, description), "/saveAs");
+        }
+    }
+    if (c.has("saveAs")) {
+        state = c.take(edit::saveProjectTemplate(state, *tmpl)).state;
+        data["template"] = tmpl->id;
+    }
+    if (c.has("at")) {
+        const Sequence& seq = c.sequence();
+        const Ticks at = c.time("at");
+        // A whole number of the sequence's frames, at least one.
+        const std::int64_t frames = std::max<std::int64_t>(1, ticksToFrames(imported.duration, seq.frameRate, Rounding::Ceil).value_or(1));
+        const Ticks length = c.optionalTime("duration").value_or(framesToTicks(frames, seq.frameRate, Rounding::Nearest).value_or(imported.duration));
+        const TrackId track = videoPlacementTrack(c, state, at, length);
+        edit::EditResult r = tmpl && !tmpl->fields.empty()
+                                 ? c.take(edit::instantiateTemplate(state, c.sequenceId(), track, at, length, *tmpl))
+                                 : c.take(edit::addGraphic(state, c.sequenceId(), track, at, length, imported.graphic));
+        const ClipId clip = r.placed.front();
+        data.update(graphicResult(c, r.state, clip));
+        state = std::move(r.state);
+        created.push_back(clip.value);
+        if (r.createdMedia.isValid()) {
+            created.push_back(r.createdMedia.value);
+            data["media"] = r.createdMedia.value;
+        }
+    }
+    CommandOutput out;
+    out.state = std::move(state);
+    out.data = std::move(data);
+    out.createdIds = std::move(created);
+    if (imported.report.count(interchange::ReportOutcome::Dropped) > 0) {
+        out.warnings.push_back(counted(static_cast<std::int64_t>(imported.report.count(interchange::ReportOutcome::Dropped)),
+                                       imported.source == "ograf" ? "OGraf feature" : "Lottie feature") +
+                               " not imported (see report)");
+    }
+    return out;
 }
 
 } // namespace
@@ -939,6 +1192,44 @@ void registerGraphicsCommands(CommandRegistry& registry) {
                                   Json{{"textStyle", c.string("to")}});
                 }});
     addBuiltin(registry,
+               {"textStyle.applyRange", 1, "Apply Text Style to Part of a Text",
+                "Styles part of a text layer with a project text style: the characters [from, to) of the layer's text (Unicode "
+                "characters, a line break counts one) take the style's look (font, weight, size, fill, italic, underline, "
+                "tracking, leading, baseline shift), the rest of the text, the layer's alignment, background and shadow stay, "
+                "and the layer does not follow the style. With Source Text keys it styles the text shown at \"time\". One "
+                "undo step.",
+                Capability::EditSequence,
+                graphicClipParams({{"layer", layerIdParam("The text layer.")},
+                                   {"from", schema::integer("First character of the range (0 = the first character).", 0)},
+                                   {"to", schema::integer("The character after the last one of the range.", 0)},
+                                   {"name", schema::string("The text style.")},
+                                   {"time", timeParam("With Source Text keys: the moment whose text is styled. Default the clip's start.")}},
+                                  {"layer", "from", "to", "name"}),
+                Json{{"clip", 42}, {"layer", 2}, {"from", 6}, {"to", 11}, {"name", "Highlight"}}, {},
+                [](ExecutionContext& c) {
+                    const ClipId clip = c.clip("clip");
+                    const Graphic& g = graphicOf(c, clip);
+                    const Clip& placed = c.sequence().findClip(clip)->clip();
+                    const Ticks at = c.optionalTime("time").value_or(placed.start());
+                    if (at < placed.start() || at >= placed.end()) {
+                        fail(ErrorCode::InvalidParams, "the time lies outside the clip", Json{{"path", "/time"}});
+                    }
+                    return graphicEdited(c, c.take(edit::applyTextStyleToRange(c.state(), c.sequenceId(), clip, static_cast<std::uint32_t>(c.integer("layer")),
+                                                                              static_cast<std::size_t>(c.integer("from")), static_cast<std::size_t>(c.integer("to")),
+                                                                              c.string("name"), graphicTimeAt(placed, g, at))),
+                                         clip);
+                }});
+    addBuiltin(registry,
+               {"textStyle.move", 1, "Reorder Text Styles",
+                "Moves a project text style to another place in the list (0 = first), the order the Library lists them in.",
+                Capability::EditProject,
+                withSequence({{"name", schema::string("The text style.")}, {"index", schema::integer("New position (0 = first).", 0)}},
+                             {"name", "index"}),
+                Json{{"name", "Name"}, {"index", 0}}, {},
+                [](ExecutionContext& c) {
+                    return edited(c.take(edit::moveTextStyle(c.state(), c.string("name"), static_cast<std::size_t>(c.integer("index")))));
+                }});
+    addBuiltin(registry,
                {"textStyle.remove", 1, "Delete Text Style",
                 "Deletes a project text style: the layers that followed it keep their look and follow nothing.",
                 Capability::EditProject, withSequence({{"name", schema::string("The text style.")}}, {"name"}),
@@ -1170,6 +1461,79 @@ void registerGraphicsCommands(CommandRegistry& registry) {
                     return graphicEdited(c, c.take(edit::setTemplateFields(c.state(), c.sequenceId(), clip, values)), clip);
                 }});
 
+    // ---- Keys on template fields (0.7, card #71): colour, text, font, picture and checkbox over the clip -----------------
+    // The time of a key is a timeline time inside the clip; the model keeps it in graphic time (the clip's curve time; design
+    // time with responsive time), like every key of a graphic.
+    addBuiltin(registry,
+               {"template.setFieldKey", 1, "Key a Template Field",
+                "Animates a field of a template instance clip (template.list shows the fields): from \"time\" (a timeline time "
+                "inside the clip) the field shows \"value\" (as template.instantiate takes it). A colour field blends "
+                "linearly towards its next key (\"interpolation\": \"hold\" steps instead); text, font, picture and checkbox "
+                "fields switch at their keys. A key at the same time is replaced. Length fields cannot be keyed. One undo step.",
+                Capability::EditSequence,
+                graphicClipParams({{"field", schema::string("A field id.")},
+                                   {"time", timeParam("Where the key goes (inside the clip).")},
+                                   {"value", Json{{"description", "The field's value at that time."}}},
+                                   {"interpolation", schema::enumeration({"linear", "hold"}, "A colour field's way to the next key. Default linear.")}},
+                                  {"field", "time", "value"}),
+                Json{{"clip", 42}, {"field", "accent"}, {"time", "00:00:02:00"}, {"value", "#FF3366"}}, {},
+                [](ExecutionContext& c) {
+                    const ClipId clip = c.clip("clip");
+                    const Graphic& g = graphicOf(c, clip);
+                    if (!g.instance) {
+                        fail(ErrorCode::InvalidParams, "the graphic is not made from a template", Json{{"path", "/clip"}});
+                    }
+                    const std::string id = c.string("field");
+                    const TemplateField* f = fieldNamed(g.instance->fields, id);
+                    if (!f) {
+                        fail(ErrorCode::InvalidParams, "the template has no field \"" + id + "\"", Json{{"path", "/field"}});
+                    }
+                    const Clip& placed = c.sequence().findClip(clip)->clip();
+                    const Ticks at = c.time("time");
+                    if (at < placed.start() || at >= placed.end()) {
+                        fail(ErrorCode::InvalidParams, "the time lies outside the clip", Json{{"path", "/time"}});
+                    }
+                    const FieldValue value = fieldValue(c, *f, c.params()["value"], "/value");
+                    const Interpolation interpolation = c.string("interpolation", "linear") == "hold" ? Interpolation::Hold : Interpolation::Linear;
+                    return graphicEdited(c, c.take(edit::setTemplateFieldKey(c.state(), c.sequenceId(), clip, id, graphicTimeAt(placed, g, at), value, interpolation)),
+                                         clip);
+                }});
+    addBuiltin(registry,
+               {"template.removeFieldKey", 1, "Remove a Template Field Key",
+                "Removes key `index` of a template field (graphic.get lists the keys in order). One undo step.",
+                Capability::EditSequence,
+                graphicClipParams({{"field", schema::string("A field id.")},
+                                   {"index", schema::integer("Key index (0 = first).", 0)}},
+                                  {"field", "index"}),
+                Json{{"clip", 42}, {"field", "accent"}, {"index", 0}}, {},
+                [](ExecutionContext& c) {
+                    const ClipId clip = c.clip("clip");
+                    return graphicEdited(c, c.take(edit::removeTemplateFieldKey(c.state(), c.sequenceId(), clip, c.string("field"),
+                                                                              static_cast<std::size_t>(c.integer("index")))),
+                                         clip);
+                }});
+    addBuiltin(registry,
+               {"template.clearFieldKeys", 1, "Stop Animating a Template Field",
+                "Removes every key of a template field and keeps the value it shows at \"time\" (a timeline time inside the clip; "
+                "default the clip's start) as its value. One undo step.",
+                Capability::EditSequence,
+                graphicClipParams({{"field", schema::string("A field id.")},
+                                   {"time", timeParam("The moment whose value stays. Default the clip's start.")}},
+                                  {"field"}),
+                Json{{"clip", 42}, {"field", "accent"}}, {},
+                [](ExecutionContext& c) {
+                    const ClipId clip = c.clip("clip");
+                    const Graphic& g = graphicOf(c, clip);
+                    const Clip& placed = c.sequence().findClip(clip)->clip();
+                    const Ticks at = c.optionalTime("time").value_or(placed.start());
+                    if (at < placed.start() || at >= placed.end()) {
+                        fail(ErrorCode::InvalidParams, "the time lies outside the clip", Json{{"path", "/time"}});
+                    }
+                    return graphicEdited(c, c.take(edit::clearTemplateFieldKeys(c.state(), c.sequenceId(), clip, c.string("field"),
+                                                                              graphicTimeAt(placed, g, at))),
+                                         clip);
+                }});
+
     // ---- Template files (0.2): import (.mogrt made in Premiere Pro, Wabcut template files) and export -----------------
     addBuiltin(
         registry,
@@ -1272,6 +1636,106 @@ void registerGraphicsCommands(CommandRegistry& registry) {
                         return readData(c, Json{{"template", found.tmpl.id}, {"library", found.library}, {"path", pathToUtf8(file)}});
                     }},
                    {"path"}));
+    // ---- Template folders (0.7, card #87) --------------------------------------------------------------------------------
+    addBuiltin(registry,
+               {"template.setFolder", 1, "File a Template in a Folder",
+                "Files a template under a folder of the template browser (\"Titles\" or \"Titles/Lower thirds\": up to three "
+                "levels separated by \"/\"); an empty \"folder\" takes it out of its folder. A project template changes in one "
+                "undo step (its version stays); a template of the user's library is rewritten in the library folder. "
+                "Built-in templates cannot be filed.",
+                Capability::EditProject,
+                withSequence({{"template", schema::string("The template's id.")},
+                              {"library", schema::enumeration({"project", "user"}, "Where it is. Default \"project\".")},
+                              {"folder", schema::string("The folder label, or \"\" for none.")}},
+                             {"template", "folder"}),
+                Json{{"template", "lower-third"}, {"folder", "Titles/Lower thirds"}}, {},
+                [](ExecutionContext& c) {
+                    const std::string id = c.string("template");
+                    const std::string folder = c.string("folder");
+                    if (const auto problem = templateFolderProblem(folder)) {
+                        fail(ErrorCode::InvalidParams, *problem, Json{{"path", "/folder"}});
+                    }
+                    if (c.string("library", "project") == "user") {
+                        FoundTemplate found = findTemplate(c, id, "user");
+                        found.tmpl.folder = folder;
+                        const std::filesystem::path library = userLibrary(c, true);
+                        if (!c.dryRun()) {
+                            c.take(io::writeTemplateToLibrary(library, found.tmpl));
+                        }
+                        return readData(c, Json{{"template", id}, {"library", "user"}, {"folder", folder}});
+                    }
+                    return edited(c.take(edit::setProjectTemplateFolder(c.state(), id, folder)),
+                                  Json{{"template", id}, {"library", "project"}, {"folder", folder}});
+                }});
+    addBuiltin(registry,
+               command::touchesFiles(
+                   {"template.importFolder", 1, "Import a Folder of Templates",
+                    "Adds every Motion Graphics template (.mogrt) and Wabcut template file (.wabcut-template.json) found in a "
+                    "folder and its subfolders (at most 500 files, 8 levels deep, no symbolic links) to the project's library "
+                    "(default) or the user's. Each is filed under a template-browser folder named after where it was found: the "
+                    "chosen folder's own name, then its subfolders (\"Lower thirds/Dark\"; deeper levels share the third). A "
+                    "file that does not read is skipped and listed with the reason; a template with the id of one already "
+                    "there replaces it. The project's library changes in one undo step.",
+                    Capability::EditProject,
+                    withSequence({{"path", schema::string("The folder.")},
+                                  {"library", schema::enumeration({"project", "user"}, "Where they go. Default \"project\".")},
+                                  {"recursive", schema::boolean("Include subfolders. Default true.")}},
+                                 {"path"}),
+                    Json{{"path", "D:/Templates/Lower thirds"}}, {},
+                    [](ExecutionContext& c) {
+                        const std::filesystem::path root = pathFromUtf8(c.string("path"));
+                        std::error_code ec;
+                        if (!std::filesystem::is_directory(root, ec)) {
+                            fail(ErrorCode::NotFound, "\"" + c.string("path") + "\" is not a folder", Json{{"path", "/path"}});
+                        }
+                        const bool user = c.string("library", "project") == "user";
+                        const std::filesystem::path library = user ? userLibrary(c, true) : std::filesystem::path();
+                        bool truncated = false;
+                        const std::vector<std::filesystem::path> files = templateFilesUnder(root, c.boolean("recursive", true), truncated);
+                        ProjectState state = c.state();
+                        Json imported = Json::array();
+                        Json skipped = Json::array();
+                        for (const std::filesystem::path& file : files) {
+                            const std::string shown = pathToUtf8(std::filesystem::relative(file, root, ec));
+                            auto read = readTemplateFile(file);
+                            if (!read) {
+                                skipped.push_back(Json{{"file", shown}, {"reason", read.error()}});
+                                continue;
+                            }
+                            read->folder = folderLabelOf(root, file.parent_path());
+                            try {
+                                if (user) {
+                                    if (!c.dryRun()) {
+                                        c.take(io::writeTemplateToLibrary(library, *read));
+                                    }
+                                } else {
+                                    state = c.take(edit::saveProjectTemplate(state, *read)).state;
+                                }
+                            } catch (const command::CommandFailure& failure) {
+                                skipped.push_back(Json{{"file", shown}, {"reason", failure.error.message}});
+                                continue;
+                            }
+                            imported.push_back(Json{{"template", read->id}, {"name", read->name}, {"folder", read->folder}, {"file", shown}});
+                        }
+                        CommandOutput out;
+                        out.state = std::move(state);
+                        out.data = Json{{"library", user ? "user" : "project"},
+                                        {"imported", imported.size()},
+                                        {"templates", std::move(imported)},
+                                        {"skipped", std::move(skipped)},
+                                        {"truncated", truncated}};
+                        if (!out.data["skipped"].empty()) {
+                            const auto skippedCount = static_cast<std::int64_t>(out.data["skipped"].size());
+                            out.warnings.push_back(counted(skippedCount, "file") + (skippedCount == 1 ? " was" : " were") + " not imported: " +
+                                                   out.data["skipped"][0].value("file", std::string()) + " - " +
+                                                   out.data["skipped"][0].value("reason", std::string()));
+                        }
+                        if (truncated) {
+                            out.warnings.push_back("the folder has more than 500 template files: the rest were left out");
+                        }
+                        return out;
+                    }},
+                   {"path"}));
     // ---- Brand kit ----------------------------------------------------------------------------------------------------
     addBuiltin(registry,
                {"brand.set", 1, "Set Brand Kit",
@@ -1313,19 +1777,23 @@ void registerGraphicsCommands(CommandRegistry& registry) {
                     return readData(c, Json{{"kit", kit ? asJson(io::brandKitToJson(*kit)) : Json(nullptr)}});
                 }});
 
-    // ---- Lottie -------------------------------------------------------------------------------------------------------
+    // ---- Lottie and OGraf --------------------------------------------------------------------------------------------
     addBuiltin(
         registry,
         command::touchesFiles(
             {"lottie.import", 1, "Import Lottie",
-             "Imports a Lottie animation (Bodymovin JSON from After Effects, LottieFiles) as a motion graphic: from a file "
-             "(\"path\") or the JSON itself (\"data\"). With \"at\" it becomes a clip there; with \"saveAs\" a template in "
-             "the project's library (both are allowed). Shapes, fills, strokes, gradients, trims, transforms with their "
-             "easing, text, masks and precomps come in; the report lists what was approximated or dropped (images, "
-             "effects, mattes, expressions...).",
+             "Imports a Lottie animation (Bodymovin JSON from After Effects, LottieFiles; or a dotLottie .lottie archive) as a "
+             "motion graphic: from a file (\"path\") or the JSON itself (\"data\"). With \"at\" it becomes a clip there; with "
+             "\"saveAs\" a template in the project's library (both are allowed). Its texts and the colors that stay the same are "
+             "template fields (named after their layers): a clip placed with \"at\" is an instance of the template, so Essential "
+             "Graphics edits and keys them (template.setField, template.setFieldKey). Shapes, fills, strokes, gradients, trims, "
+             "transforms with their easing, text, masks and precomps come in; the report lists what was approximated or dropped "
+             "(images, effects, mattes, expressions, dotLottie themes and state machines...). A dotLottie archive holding several "
+             "animations imports its initial one, or the one named by \"animation\".",
              Capability::EditProject,
-             withSequence({{"path", schema::string("The .json file (UTF-8 path).")},
+             withSequence({{"path", schema::string("The .json or .lottie file (UTF-8 path).")},
                            {"data", schema::string("The Lottie JSON itself.")},
+                           {"animation", schema::string("A dotLottie archive's animation id (default: its initial one).")},
                            {"at", timeParam("Place it as a clip starting here.")},
                            {"duration", timeParam("The clip's length (default the animation's).")},
                            {"track", trackParam("A video track. Default: the first targeted unlocked video track.")},
@@ -1344,56 +1812,151 @@ void registerGraphicsCommands(CommandRegistry& registry) {
                  }
                  const std::string text = c.has("path") ? readLottieFile(c.string("path")) : c.string("data");
                  const std::string name = c.has("path") ? pathToUtf8(pathFromUtf8(c.string("path")).filename()) : "data";
-                 interchange::LottieImport imported =
-                     parsed(interchange::importLottie(text, name), c.has("path") ? "/path" : "/data");
+                 const std::string stem = c.has("path") ? pathToUtf8(pathFromUtf8(c.string("path")).stem()) : "Lottie";
+                 interchange::LottieImport imported = parsed(
+                     interchange::looksLikeZip(text)
+                         ? interchange::importDotLottie(text, name, c.has("animation") ? c.string("animation") : std::string())
+                         : interchange::importLottie(text, name),
+                     c.has("path") ? "/path" : "/data");
                  if (imported.graphic.name.empty()) {
-                     imported.graphic.name = c.has("path") ? pathToUtf8(pathFromUtf8(c.string("path")).stem()) : "Lottie";
+                     imported.graphic.name = stem;
                  }
-                 Json data{{"report", reportJson(imported.report)},
-                           {"duration", imported.duration.value},
-                           {"frameRate", std::to_string(imported.frameRate.num) + "/" + std::to_string(imported.frameRate.den)},
-                           {"width", imported.graphic.width},
-                           {"height", imported.graphic.height}};
-                 ProjectState state = c.state();
-                 std::vector<std::uint64_t> created;
-                 if (c.has("saveAs")) {
-                     const Json& as = c.params()["saveAs"];
-                     GraphicTemplate tmpl = parsed(edit::makeTemplate(imported.graphic, as.value("id", std::string()),
-                                                                      as.value("name", std::string()), {}, imported.duration,
-                                                                      as.value("description", std::string())),
-                                                   "/saveAs");
-                     state = c.take(edit::saveProjectTemplate(state, tmpl)).state;
-                     data["template"] = tmpl.id;
+                 MotionImport motion;
+                 motion.graphic = std::move(imported.graphic);
+                 motion.fields = std::move(imported.fields);
+                 motion.duration = imported.duration;
+                 motion.frameRate = imported.frameRate;
+                 motion.report = std::move(imported.report);
+                 motion.source = "lottie";
+                 motion.fileStem = stem;
+                 return placeMotionImport(c, std::move(motion));
+             }},
+            {"path"}));
+
+    // OGraf (the EBU's HTML graphics; Wabcut has no web engine): a package that ships a Lottie version of the graphic imports
+    // as a template; ograf.inspect tells what any package declares and whether it can be drawn.
+    const auto openPackage = [](ExecutionContext& c, std::string& manifestFile) {
+        const std::string utf8 = c.string("path");
+        const std::filesystem::path path = pathFromUtf8(utf8);
+        manifestFile = c.has("manifest") ? c.string("manifest") : std::string();
+        std::error_code ec;
+        std::string lower = utf8;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](char ch) { return static_cast<char>(std::tolower(static_cast<unsigned char>(ch))); });
+        const auto open = [&]() -> std::expected<interchange::OGrafPackage, wabcut::Error> {
+            if (std::filesystem::is_directory(path, ec)) {
+                return interchange::openOGrafFolder(utf8);
+            }
+            if (lower.size() > 11 && lower.compare(lower.size() - 11, 11, ".ograf.json") == 0) {
+                // A manifest: its folder is the package.
+                if (manifestFile.empty()) {
+                    manifestFile = pathToUtf8(path.filename());
+                }
+                return interchange::openOGrafFolder(pathToUtf8(path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path()));
+            }
+            return interchange::openOGrafZip(readBoundedFile(utf8, interchange::kMaxOGrafPackageBytes, "OGraf package"));
+        };
+        return parsed(open(), "/path");
+    };
+    addBuiltin(
+        registry,
+        command::touchesFiles(
+            {"ograf.import", 1, "Import OGraf",
+             "Imports an OGraf graphic (the EBU's open HTML graphics format) as a motion graphic template. OGraf graphics are drawn "
+             "by web pages with scripts; Wabcut has no web engine and runs no scripts, so it imports a package that also ships a "
+             "Lottie version of the graphic (one .json or .lottie animation in the package, or the one the manifest names in "
+             "\"v_wabcut_lottie\"). The manifest's fields (title, name) name the template fields whose Lottie layers are called "
+             "alike. \"path\" is the manifest (*.ograf.json: its folder is the package), a package folder or a .zip package. A "
+             "package without a Lottie version fails with a message that says so (ograf.inspect lists its fields). With \"at\" "
+             "it becomes a clip there (an instance of the template: Essential Graphics edits and keys its fields); with "
+             "\"saveAs\" a template in the project's library.",
+             Capability::EditProject,
+             withSequence({{"path", schema::string("The manifest (*.ograf.json), a package folder or a .zip package (UTF-8 path).")},
+                           {"manifest", schema::string("Which graphic of a package that holds several: its manifest's path inside the package.")},
+                           {"at", timeParam("Place it as a clip starting here.")},
+                           {"duration", timeParam("The clip's length (default the animation's).")},
+                           {"track", trackParam("A video track. Default: the first targeted unlocked video track.")},
+                           {"placement", placementParam()},
+                           {"saveAs", schema::object({{"id", schema::string("Template id (default: from the graphic's id).")},
+                                                      {"name", schema::string("Template name (default: the graphic's).")},
+                                                      {"description", schema::string("Description.")}})}},
+                          {"path"}),
+             Json{{"path", "D:/Graphics/lower-third.ograf.json"}, {"at", "00:00:03:00"}}, {},
+             [openPackage](ExecutionContext& c) {
+                 if (!c.has("at") && !c.has("saveAs")) {
+                     fail(ErrorCode::InvalidParams, "give \"at\" to place the graphic or \"saveAs\" to keep it as a template");
                  }
-                 if (c.has("at")) {
-                     const Sequence& seq = c.sequence();
-                     const Ticks at = c.time("at");
-                     // A whole number of the sequence's frames, at least one.
-                     const std::int64_t frames =
-                         std::max<std::int64_t>(1, ticksToFrames(imported.duration, seq.frameRate, Rounding::Ceil).value_or(1));
-                     const Ticks length = c.optionalTime("duration").value_or(
-                         framesToTicks(frames, seq.frameRate, Rounding::Nearest).value_or(imported.duration));
-                     const TrackId track = videoPlacementTrack(c, state, at, length);
-                     edit::EditResult r = c.take(edit::addGraphic(state, c.sequenceId(), track, at, length, imported.graphic));
-                     const ClipId clip = r.placed.front();
-                     data.update(graphicResult(c, r.state, clip));
-                     state = std::move(r.state);
-                     created.push_back(clip.value);
-                     if (r.createdMedia.isValid()) {
-                         created.push_back(r.createdMedia.value);
-                         data["media"] = r.createdMedia.value;
+                 std::string manifestFile;
+                 const interchange::OGrafPackage package = openPackage(c, manifestFile);
+                 interchange::OGrafImport imported = parsed(interchange::importOGraf(package, manifestFile), "/path");
+                 MotionImport motion;
+                 motion.graphic = imported.tmpl.graphic;
+                 motion.fields = imported.tmpl.fields;
+                 motion.duration = imported.duration;
+                 motion.frameRate = imported.frameRate;
+                 motion.report = std::move(imported.report);
+                 motion.tmpl = std::move(imported.tmpl);
+                 motion.source = "ograf";
+                 motion.fileStem = pathToUtf8(pathFromUtf8(c.string("path")).stem());
+                 return placeMotionImport(c, std::move(motion));
+             }},
+            {"path"}));
+    addBuiltin(
+        registry,
+        command::touchesFiles(
+            {"ograf.inspect", 1, "Inspect OGraf",
+             "Reads an OGraf package's manifest without importing it: its name, id, author, the fields (title, type, default) and "
+             "the custom actions it declares, the script that draws it (never run) and whether Wabcut can draw it - only a "
+             "package with a Lottie version can be (ograf.import); \"why\" says what is missing otherwise.",
+             Capability::Read,
+             withSequence({{"path", schema::string("The manifest (*.ograf.json), a package folder or a .zip package (UTF-8 path).")},
+                           {"manifest", schema::string("Which graphic of a package that holds several: its manifest's path.")}},
+                          {"path"}),
+             Json{{"path", "D:/Graphics/lower-third.ograf.json"}}, {},
+             [openPackage](ExecutionContext& c) {
+                 std::string manifestFile;
+                 const interchange::OGrafPackage package = openPackage(c, manifestFile);
+                 std::string chosen;
+                 const interchange::OGrafManifest manifest =
+                     parsed(interchange::readOGrafManifest(package, manifestFile, &chosen), "/path");
+                 Json fields = Json::array();
+                 for (const interchange::OGrafProperty& p : manifest.properties) {
+                     Json f{{"key", p.key}, {"title", p.title}, {"gddType", p.gddType}, {"hidden", p.hidden}};
+                     switch (p.kind) {
+                     case interchange::OGrafValueKind::Text: f["kind"] = "text"; break;
+                     case interchange::OGrafValueKind::Color: f["kind"] = "color"; break;
+                     case interchange::OGrafValueKind::Number: f["kind"] = "number"; break;
+                     case interchange::OGrafValueKind::Boolean: f["kind"] = "boolean"; break;
+                     case interchange::OGrafValueKind::Choice: f["kind"] = "choice"; break;
+                     case interchange::OGrafValueKind::Image: f["kind"] = "image"; break;
+                     case interchange::OGrafValueKind::Other: f["kind"] = "other"; break;
                      }
+                     if (p.hasDefault) {
+                         f["default"] = p.kind == interchange::OGrafValueKind::Boolean  ? Json(p.defaultBool)
+                                        : p.kind == interchange::OGrafValueKind::Number ? Json(p.defaultNumber)
+                                                                                        : Json(p.defaultText);
+                     }
+                     fields.push_back(std::move(f));
                  }
+                 const auto drawn = interchange::importOGraf(package, chosen);
                  CommandOutput out;
-                 out.state = std::move(state);
-                 out.data = std::move(data);
-                 out.createdIds = std::move(created);
-                 if (imported.report.count(interchange::ReportOutcome::Dropped) > 0) {
-                     out.warnings.push_back(std::to_string(imported.report.count(interchange::ReportOutcome::Dropped)) +
-                                            " Lottie feature(s) were not imported (see report)");
-                 }
+                 out.state = c.state();
+                 out.data = Json{{"manifest", chosen},
+                                 {"id", manifest.id},
+                                 {"name", manifest.name},
+                                 {"version", manifest.version},
+                                 {"description", manifest.description},
+                                 {"author", manifest.author},
+                                 {"main", manifest.main},
+                                 {"supportsRealTime", manifest.supportsRealTime},
+                                 {"supportsNonRealTime", manifest.supportsNonRealTime},
+                                 {"customActions", manifest.customActions},
+                                 {"fields", std::move(fields)},
+                                 {"renderable", drawn.has_value()},
+                                 {"lottie", drawn ? Json(drawn->lottieFile) : Json(nullptr)},
+                                 {"why", drawn ? Json(nullptr) : Json(drawn.error().message)}};
                  return out;
-             }}, {"path"}));
+             }},
+            {"path"}));
 }
 
 } // namespace wabcut::command::detail

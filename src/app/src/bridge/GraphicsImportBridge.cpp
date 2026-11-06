@@ -49,7 +49,7 @@ GraphicsImportBridge* GraphicsImportBridge::create(QQmlEngine* qmlEngine, QJSEng
 void GraphicsImportBridge::setController(ProjectController* controller) { m_controller = controller; }
 
 QStringList GraphicsImportBridge::nameFilters() const {
-    return {tr("Lottie animations (*.json *.lottie)"), tr("All files (*)")};
+    return {tr("Lottie and OGraf templates (*.json *.lottie *.ograf.json *.zip)"), tr("All files (*)")};
 }
 
 void GraphicsImportBridge::setMessage(const QString& message) {
@@ -63,9 +63,11 @@ bool GraphicsImportBridge::isLottie(const QUrl& url) const {
     const QString path = url.isLocalFile() ? url.toLocalFile() : url.toString();
     const QString suffix = QFileInfo(path).suffix().toLower();
     if (suffix == QLatin1String("lottie"))
-        return true; // a dotLottie archive: claimed so that it is refused with a reason, not imported as media
+        return true; // a dotLottie archive (0.7: imported like Lottie JSON)
     if (suffix != QLatin1String("json"))
         return false;
+    if (path.endsWith(QLatin1String(".ograf.json"), Qt::CaseInsensitive))
+        return true; // an OGraf manifest (0.7)
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
         return false;
@@ -89,13 +91,9 @@ QString GraphicsImportBridge::importLottie(const QUrl& url, const QVariantMap& o
 QString GraphicsImportBridge::start(const QUrl& url, const QVariantMap& options, Ticks at) {
     const QString path = url.isLocalFile() ? url.toLocalFile() : url.toString();
     const QFileInfo info(path);
-    if (info.suffix().compare(QLatin1String("lottie"), Qt::CaseInsensitive) == 0) {
-        //: dotLottie is a zip format of LottieFiles; Bodymovin is After Effects' Lottie exporter
-        const QString error = tr("%1 is a dotLottie archive: export the animation as Lottie JSON (Bodymovin) to import it")
-                                  .arg(info.fileName());
-        setMessage(error);
-        return error;
-    }
+    // 0.7: an OGraf manifest or package (a .zip) goes through ograf.import, everything else through lottie.import.
+    const bool ograf = path.endsWith(QLatin1String(".ograf.json"), Qt::CaseInsensitive) ||
+                       info.suffix().compare(QLatin1String("zip"), Qt::CaseInsensitive) == 0;
     Json params{{"path", path.toStdString()}, {"at", at.value}};
     if (options.value(QStringLiteral("saveAsTemplate")).toBool()) {
         // A template id from the file name: [A-Za-z0-9][A-Za-z0-9_.-]*.
@@ -108,14 +106,19 @@ QString GraphicsImportBridge::start(const QUrl& url, const QVariantMap& options,
         }
         if (id.isEmpty())
             id = QStringLiteral("lottie");
-        params["saveAs"] = Json{{"id", ("lottie." + id).toStdString()},
-                                {"name", options.value(QStringLiteral("name"), info.completeBaseName()).toString().toStdString()}};
+        if (ograf)
+            params["saveAs"] = Json{{"id", ("ograf." + id).toStdString()},
+                                    {"name", options.value(QStringLiteral("name"), info.completeBaseName()).toString().toStdString()}};
+        else
+            params["saveAs"] = Json{{"id", ("lottie." + id).toStdString()},
+                                    {"name", options.value(QStringLiteral("name"), info.completeBaseName()).toString().toStdString()}};
     }
     setMessage({});
     const QString fileName = info.fileName();
     QPointer<GraphicsImportBridge> self(this);
     const bool started = m_job.start(
-        this, m_controller, nullptr, {"lottie.import", std::move(params), tr("Import Lottie").toStdString()},
+        this, m_controller, nullptr,
+        {ograf ? "ograf.import" : "lottie.import", std::move(params), (ograf ? tr("Import OGraf") : tr("Import Lottie")).toStdString()},
         [](const QString&, double) {},
         [self, fileName, at](const command::CommandResult& result) {
             if (!self)
@@ -181,10 +184,18 @@ QVariantMap GraphicsImportBridge::reportMap(const Json& data, const QString& fil
         summary << tr("a graphic clip at %1").arg(start);
     if (const QString tmpl = text(data, "template"); !tmpl.isEmpty())
         summary << tr("saved as a template");
+    // 0.7: the fields Essential Graphics can edit.
+    const int fieldCount = data.contains("fields") && data["fields"].is_array() ? static_cast<int>(data["fields"].size()) : 0;
+    if (fieldCount > 0)
+        //: The number of text, color and show/hide fields of an imported template, edited in Essential Graphics
+        summary << tr("%n editable field(s)", "", fieldCount);
+    const bool ograf = text(data, "source") == QLatin1String("ograf");
     return {{QStringLiteral("file"), fileName},
             //: The file format of an imported animation
-            {QStringLiteral("format"), tr("Lottie")},
-            {QStringLiteral("summary"), tr("Lottie animation · %1").arg(summary.join(QStringLiteral(" · ")))},
+            {QStringLiteral("format"), ograf ? tr("OGraf") : tr("Lottie")},
+            {QStringLiteral("summary"),
+             (ograf ? tr("OGraf graphic (drawn from its Lottie version) · %1") : tr("Lottie animation · %1"))
+                 .arg(summary.join(QStringLiteral(" · ")))},
             {QStringLiteral("carried"), report.value("carried", 0)},
             {QStringLiteral("approximated"), report.value("approximated", 0)},
             {QStringLiteral("dropped"), report.value("dropped", 0)},

@@ -34,6 +34,33 @@ MenuBarMenu {
         text: qsTr("Delete Render Files In to Out")
         command: "sequence.deleteRenderFilesInToOut"
     }
+    // 0.7: renders the red and yellow stretches by itself while nothing else happens (Settings > Media & cache).
+    BarMenuItem {
+        id: backgroundRender
+        objectName: "sequenceMenuBackgroundRender"
+        text: qsTr("Background Rendering")
+        command: "sequence.backgroundRender"
+        checkable: true
+        checked: MediaReadiness.backgroundRender
+        onTriggered: backgroundRender.checked = Qt.binding(() => MediaReadiness.backgroundRender)
+        }
+    // 0.7 (card 024): the work area bar on the ruler (the range Export's "Work Area" range and playback use). Alt+[ and Alt+]
+    // set its ends at the playhead; Clear Work Area makes it the whole sequence again.
+    BarMenuItem {
+        objectName: "sequenceMenuSetWorkAreaIn"
+        text: qsTr("Set Work Area In")
+        command: "timeline.setWorkAreaIn"
+    }
+    BarMenuItem {
+        objectName: "sequenceMenuSetWorkAreaOut"
+        text: qsTr("Set Work Area Out")
+        command: "timeline.setWorkAreaOut"
+    }
+    BarMenuItem {
+        objectName: "sequenceMenuClearWorkArea"
+        text: qsTr("Clear Work Area")
+        command: "timeline.clearWorkArea"
+    }
     ContextMenuSeparator {}
     BarMenuItem {
         text: qsTr("Match Frame")
@@ -55,6 +82,12 @@ MenuBarMenu {
     BarMenuItem {
         text: qsTr("Trim Edit")
         command: "sequence.trimEdit"
+    }
+    // 0.7 (card 127): Avid's slip trim: the selected clip's content slipped from trim mode (Trim view, Slip).
+    BarMenuItem {
+        objectName: "sequenceMenuSlipTrim"
+        text: qsTr("Slip Trim")
+        command: "sequence.slipTrim"
     }
     BarMenuItem {
         text: qsTr("Extend Selected Edit to Playhead")
@@ -98,6 +131,15 @@ MenuBarMenu {
         text: qsTr("Apply Default Transitions to Selection")
         command: "sequence.applyDefaultTransitions"
     }
+    // 0.7 (card 123): strip transitions for a clean version of the edit.
+    BarMenuItem {
+        text: qsTr("Remove Transitions from Selection")
+        command: "sequence.removeTransitions"
+    }
+    BarMenuItem {
+        text: qsTr("Remove All Transitions")
+        command: "sequence.removeAllTransitions"
+    }
     ContextMenuSeparator {}
     BarMenuItem {
         text: qsTr("Lift")
@@ -110,6 +152,11 @@ MenuBarMenu {
     BarMenuItem {
         text: qsTr("Close Gap")
         command: "sequence.closeGap"
+    }
+    // 0.7 (card 122): Edit > Select All Disabled Clips finds them; this deletes them all, leaving gaps.
+    BarMenuItem {
+        text: qsTr("Remove Disabled Clips")
+        command: "sequence.removeDisabledClips"
     }
     BarMenuItem {
         text: qsTr("Join Through Edits")
@@ -150,6 +197,19 @@ MenuBarMenu {
         text: qsTr("Make a Short from In to Out")
         command: "sequence.makeShortFromInOut"
     }
+    // 0.7 (card 007): Premiere's Sequence > Auto Reframe Sequence… (the reframe dialog); Sequence > Gaming lists it too.
+    BarMenuItem {
+        objectName: "sequenceMenuAutoReframeRow"
+        text: qsTr("Auto Reframe Sequence…")
+        command: "sequence.autoReframe"
+    }
+    // 0.7 (card 128): every Warp Stabilizer and Rolling Shutter Repair of the sequence that is not analysed or out of
+    // date, in one job and one undo step (Effect Controls' header has the same button; Morph Cut analyses itself).
+    BarMenuItem {
+        objectName: "sequenceMenuAnalyzeStabilizers"
+        text: qsTr("Analyze All Stabilizers")
+        command: "sequence.analyzeStabilizers"
+    }
     ContextMenuSeparator {}
     BarMenuItem {
         text: qsTr("Zoom In")
@@ -176,6 +236,19 @@ MenuBarMenu {
         BarMenuItem {
             text: qsTr("Previous in Sequence")
             command: "sequence.previousInSequence"
+        }
+        // 0.7 (card 007): the gaps of the targeted tracks (every track when none is targeted); the playhead goes there
+        // and the gap is selected, so Delete closes it.
+        ContextMenuSeparator {}
+        BarMenuItem {
+            objectName: "sequenceMenuNextInTrack"
+            text: qsTr("Next in Track")
+            command: "sequence.nextInTrack"
+        }
+        BarMenuItem {
+            objectName: "sequenceMenuPreviousInTrack"
+            text: qsTr("Previous in Track")
+            command: "sequence.previousInTrack"
         }
     }
     BarMenuItem {
@@ -237,6 +310,43 @@ MenuBarMenu {
         checkable: true
         checked: ProjectController.selectionFollowsPlayhead
         onTriggered: followPlayhead.checked = Qt.binding(() => ProjectController.selectionFollowsPlayhead)
+    }
+    // 0.7 (card 120): the keyframes of the tracks (faders, panners, track effects, sends) and of the master bus follow insert,
+    // extract, ripple delete and ripple trims, as the markers do with Ripple Sequence Markers. Off by default; saved per sequence.
+    BarMenuItem {
+        id: rippleTrackKeys
+        objectName: "sequenceMenuRippleTrackKeyframes"
+        text: qsTr("Ripple Track Keyframes")
+        runsCommand: false
+        checkable: true
+        checked: ProjectController.rippleTrackKeyframes
+        onTriggered: {
+            ProjectController.setRippleTrackKeyframes(!ProjectController.rippleTrackKeyframes)
+            rippleTrackKeys.checked = Qt.binding(() => ProjectController.rippleTrackKeyframes)
+        }
+    }
+    // 0.7 (cards 106, 117): a track's output (eye), mute and solo on keys, for the tracks of the selected clips (else the
+    // targeted tracks); Solo Selected Clip's Track solos it alone, again ends the solo. Greyed out with the reason.
+    ContextMenuSeparator {}
+    BarMenuItem {
+        objectName: "sequenceMenuToggleTrackOutput"
+        text: qsTr("Toggle Track Output")
+        command: "timeline.toggleTrackOutput"
+    }
+    BarMenuItem {
+        objectName: "sequenceMenuToggleTrackMute"
+        text: qsTr("Toggle Track Mute")
+        command: "timeline.toggleTrackMute"
+    }
+    BarMenuItem {
+        objectName: "sequenceMenuToggleTrackSolo"
+        text: qsTr("Toggle Track Solo")
+        command: "timeline.toggleTrackSolo"
+    }
+    BarMenuItem {
+        objectName: "sequenceMenuSoloClipTrack"
+        text: qsTr("Solo Selected Clip's Track")
+        command: "timeline.soloSelectedClipTrack"
     }
     // 0.6 (P1 round, stream 2E #35, #37): Premiere's caption commands on the shown caption track (Captions), and Correct
     // Transcript from Script… (the sheet). Greyed out with the reason while they cannot run.
@@ -321,5 +431,13 @@ MenuBarMenu {
         visible: Preferences.aiEnabled
         text: qsTr("Creator Autopilot…")
         command: "sequence.creatorAutopilot"
+    }
+    // 0.7 (card 175): audio description - the gaps in the dialogue, lines written by a model that can see the picture,
+    // reviewed by you, then voiced. Hidden while AI is turned off in Settings.
+    BarMenuItem {
+        objectName: "sequenceMenuAudioDescription"
+        visible: Preferences.aiEnabled
+        text: qsTr("Generate Audio Description…")
+        command: "sequence.generateAudioDescription"
     }
 }

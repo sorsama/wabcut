@@ -1,10 +1,13 @@
 #include <wabcut/playback/video/Evaluate.h>
 
+#include <wabcut/playback/video/SourceStage.h>
+
 #include <wabcut/color/Looks.h>
 #include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/Animations.h>
 #include <wabcut/model/Effects.h>
 #include <wabcut/model/FrameScaling.h>
+#include <wabcut/model/MotionBlur.h>
 #include <wabcut/model/MotionOps.h>
 #include <wabcut/model/RedactionMedia.h>
 #include <wabcut/model/Resolve.h>
@@ -15,7 +18,9 @@
 #include <wabcut/motion/Geometry.h>
 #include <wabcut/render/Caption.h>
 #include <wabcut/render/EffectLibrary.h>
+#include <wabcut/render/FaceMap.h>
 #include <wabcut/render/SyntheticPicture.h>
+#include <wabcut/render/VectorImage.h>
 
 #include <QDateTime>
 #include <QFileInfo>
@@ -26,6 +31,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -248,6 +254,7 @@ std::optional<render::LayerTransition> transitionMixAt(const Transition& tr, dou
     mix.antiAliasing = std::clamp(static_cast<int>(std::lround(param("antiAliasing"))), 0, 3);
     mix.center = {std::clamp(param("center.x", 0.5), 0.0, 1.0), std::clamp(param("center.y", 0.5), 0.0, 1.0)};
     mix.direction = std::max(0, static_cast<int>(std::lround(param("direction"))));
+    mix.faceAware = d->param("faceAware") != nullptr && param("faceAware") > 0.5; // 0.7: Morph Cut's Face Aware
     // Per kind (render/reference/Transitions.h): bands, cells, wedges, the gradient, amounts.
     if (d->param("bands")) {
         mix.custom[0] = param("bands");
@@ -439,9 +446,16 @@ class FilePictures final : public render::GraphicImageSource {
 public:
     explicit FilePictures(std::vector<std::pair<MediaId, std::string>> files) : m_files(std::move(files)) {}
 
-    QImage picture(MediaId media) const override {
+    QImage picture(MediaId media) const override { return picture(media, QSizeF()); }
+
+    /// 0.7 (card #86): a vector file (SVG, Illustrator, EPS) is drawn at the size asked for, once per size (VectorPictures).
+    QImage picture(MediaId media, QSizeF devicePixels) const override {
         for (const auto& [id, path] : m_files) {
             if (id == media) {
+                const std::filesystem::path file = pathFromUtf8(path);
+                if (render::vectorFormatOf(file)) {
+                    return render::VectorPictures::shared().picture(file, devicePixels.width(), devicePixels.height());
+                }
                 return cached(path);
             }
         }
@@ -560,6 +574,13 @@ EffectContext effectContextOf(const ProjectState& project, const Sequence* seque
     return c;
 }
 
+/// 0.7 (card #12): the clip's Motion scale at `curveTime` on `t`: Scale Width and Scale (the height) with Uniform Scale off,
+/// Scale for both with it on, times `factor` (P.2 Scale to Frame Size).
+void setMotionScale(render::LayerTransform& t, const ClipProperties& p, Ticks curveTime, double factor) {
+    const auto [width, height] = p.scaleAt(curveTime);
+    t.setScaleXY(width * factor, height * factor);
+}
+
 /// The context of a track's or a sequence's own effects (I.9) at `time`: the sequence's time and name.
 EffectContext stageContextOf(const ProjectState& project, const Sequence& sequence, Ticks time, render::CanvasSize canvas) {
     EffectContext c;
@@ -583,7 +604,10 @@ EffectContext stageContextOf(const ProjectState& project, const Sequence& sequen
 /// Blending or Optical Flow gets LayerSpec::interpolation (appendClip turns it into its group).
 std::optional<LayerSpec> layerOf(const ProjectState& project, const Clip& clip, Ticks time, int track,
                                  render::CanvasSize canvas, const PreviewSettings* preview, const color::LutResolver* luts,
-                                 std::span<const ClipId> path, const Sequence* sequence = nullptr, bool interpolate = false) {
+                                 std::span<const ClipId> path, const Sequence* sequence = nullptr, bool interpolate = false,
+                                 bool transformOnly = false) {
+    // `transformOnly` (0.7 Motion Blur): stops once the spec's placement (transform, opacity) is known - the clip's Motion at
+    // another instant of the shutter, without the effects, graphics and redactions of that instant.
     if (!clip.enabled || clip.stream.kind != StreamKind::Video) {
         return std::nullopt;
     }
@@ -599,15 +623,18 @@ std::optional<LayerSpec> layerOf(const ProjectState& project, const Clip& clip, 
         spec.item = item;
         spec.sourceTime = curveTime;
         spec.transform.position = {p.value(ParamId::PositionX, curveTime), p.value(ParamId::PositionY, curveTime)};
-        spec.transform.scale = p.value(ParamId::Scale, curveTime) *
-                               scaleToFrameFactor(project, clip, canvas.width, canvas.height); // P.2: Scale to Frame Size
+        setMotionScale(spec.transform, p, curveTime,
+                       scaleToFrameFactor(project, clip, canvas.width, canvas.height, canvas.pixelAspect)); // P.2: Scale to Frame Size
         spec.transform.rotationDegrees = p.value(ParamId::Rotation, curveTime);
         spec.transform.anchor = {p.value(ParamId::AnchorX, curveTime), p.value(ParamId::AnchorY, curveTime)};
         spec.opacity = std::clamp(p.value(ParamId::Opacity, curveTime), 0.0, 1.0);
         spec.blend = clip.blendMode();
         spec.track = track;
-        if (spec.transform.scale == 0.0 || item->generator->text.empty()) {
+        if (!spec.transform.hasArea() || item->generator->text.empty()) {
             return std::nullopt;
+        }
+        if (transformOnly) {
+            return spec;
         }
         evaluateEffects(clip, curveTime, spec.effects, spec.bypassedEffects, luts,
                         static_cast<double>(canvas.width) / std::max(1, canvas.height), std::nullopt, &context);
@@ -628,15 +655,18 @@ std::optional<LayerSpec> layerOf(const ProjectState& project, const Clip& clip, 
         spec.item = item;
         spec.sourceTime = curveTime;
         spec.transform.position = {p.value(ParamId::PositionX, curveTime), p.value(ParamId::PositionY, curveTime)};
-        spec.transform.scale = p.value(ParamId::Scale, curveTime) *
-                               scaleToFrameFactor(project, clip, canvas.width, canvas.height); // P.2: Scale to Frame Size
+        setMotionScale(spec.transform, p, curveTime,
+                       scaleToFrameFactor(project, clip, canvas.width, canvas.height, canvas.pixelAspect)); // P.2: Scale to Frame Size
         spec.transform.rotationDegrees = p.value(ParamId::Rotation, curveTime);
         spec.transform.anchor = {p.value(ParamId::AnchorX, curveTime), p.value(ParamId::AnchorY, curveTime)};
         spec.opacity = std::clamp(p.value(ParamId::Opacity, curveTime), 0.0, 1.0);
         spec.blend = clip.blendMode();
         spec.track = track;
-        if (spec.transform.scale == 0.0) {
+        if (!spec.transform.hasArea()) {
             return std::nullopt;
+        }
+        if (transformOnly) {
+            return spec;
         }
         ResolveOptions options;
         options.measurer = &render::graphicTextMeasurer(); // the rasteriser's layout: pins hug what is drawn
@@ -663,6 +693,71 @@ std::optional<LayerSpec> layerOf(const ProjectState& project, const Clip& clip, 
                         static_cast<double>(canvas.width) / std::max(1, canvas.height), std::nullopt, &context);
         return spec;
     }
+    if (item && !item->isGenerator() && item->info.isStillImage && !item->locator.offline && !item->info.video.empty() &&
+        render::vectorFormatOf(pathFromUtf8(item->locator.path))) {
+        // 0.7 (card #86): vector artwork (SVG, Illustrator, EPS) is drawn again at the size it is shown: a graphic of one
+        // picture at the artwork's nominal size, rasterised `graphicOversample` times larger when the clip is scaled up.
+        const std::filesystem::path file = pathFromUtf8(item->locator.path);
+        const auto vector = render::VectorPictures::shared().info(file);
+        if (!vector) {
+            return std::nullopt; // unreadable now: the clip shows nothing, as a missing picture
+        }
+        const Ticks curveTime = curveTimeAround(clip, time);
+        const ClipProperties& p = clip.properties();
+        LayerSpec spec;
+        spec.clip = clip.id;
+        spec.media = clip.media;
+        spec.item = item;
+        spec.sourceTime = Ticks{};
+        spec.transform.position = {p.value(ParamId::PositionX, curveTime), p.value(ParamId::PositionY, curveTime)};
+        setMotionScale(spec.transform, p, curveTime,
+                       scaleToFrameFactor(project, clip, canvas.width, canvas.height, canvas.pixelAspect)); // P.2: Scale to Frame Size
+        spec.transform.rotationDegrees = p.value(ParamId::Rotation, curveTime);
+        spec.transform.anchor = {p.value(ParamId::AnchorX, curveTime), p.value(ParamId::AnchorY, curveTime)};
+        spec.opacity = std::clamp(p.value(ParamId::Opacity, curveTime), 0.0, 1.0);
+        spec.blend = clip.blendMode();
+        spec.track = track;
+        if (!spec.transform.hasArea()) {
+            return std::nullopt;
+        }
+        const VideoStreamInfo& frame = item->info.video.front();
+        const int width = std::max(1, frame.width);
+        const int height = std::max(1, frame.height);
+        auto list = std::make_shared<DrawList>();
+        list->width = width;
+        list->height = height;
+        DrawItem picture;
+        picture.layer = 1;
+        picture.kind = DrawKind::Image;
+        picture.transform = Affine2D{1.0, 0.0, 0.0, 1.0, width / 2.0, height / 2.0};
+        picture.image = DrawImage{clip.media, static_cast<double>(width), static_cast<double>(height), ImageFit::Fill};
+        picture.bounds = Box{-width / 2.0, -height / 2.0, static_cast<double>(width), static_cast<double>(height)};
+        list->items.push_back(std::move(picture));
+        spec.graphic = std::move(list);
+        spec.graphicSize = {width, height};
+        spec.graphicImages = std::make_shared<const FilePictures>(std::vector<std::pair<MediaId, std::string>>{{clip.media, item->locator.path}});
+        // Sharp at the size shown: the scale the clip is drawn at (on the canvas) decides how much larger the raster is,
+        // in steps (the rasters are cached), up to 8192 pixels on the longer side.
+        const double shown = std::max(spec.transform.scale, spec.transform.scaleX());
+        double oversample = 1.0;
+        if (shown > 1.0 && std::isfinite(shown)) {
+            oversample = std::exp2(std::ceil(std::log2(shown) * 2.0) / 2.0); // half-octave steps
+        }
+        oversample = std::min(oversample, static_cast<double>(render::kMaxVectorRenderSide) / std::max(width, height));
+        spec.graphicOversample = std::max(1.0, oversample);
+        std::uint64_t key = graphicMix(0x5EC7'0A00ull, clip.id.value);
+        for (const ClipId c : path) {
+            key = graphicMix(key, c.value);
+        }
+        std::error_code ec; // a file edited on disk is a new picture
+        key = graphicMix(key, static_cast<std::uint64_t>(std::filesystem::file_size(file, ec)));
+        key = graphicMix(key, static_cast<std::uint64_t>(std::filesystem::last_write_time(file, ec).time_since_epoch().count()));
+        key = graphicMix(key, reinterpret_cast<std::uintptr_t>(item));
+        spec.graphicKey = key;
+        evaluateEffects(clip, curveTime, spec.effects, spec.bypassedEffects, luts,
+                        static_cast<double>(canvas.width) / std::max(1, canvas.height), std::nullopt, &context);
+        return spec;
+    }
     if (item && item->isGenerator()) {
         // C.15 synthetic media: a colour matte, black or transparent video is one fill of the item's frame size, placed
         // and processed like a picture. Other generators (adjustment layers: not drawn yet) are left out.
@@ -678,15 +773,18 @@ std::optional<LayerSpec> layerOf(const ProjectState& project, const Clip& clip, 
         spec.item = item;
         spec.sourceTime = curveTime;
         spec.transform.position = {p.value(ParamId::PositionX, curveTime), p.value(ParamId::PositionY, curveTime)};
-        spec.transform.scale = p.value(ParamId::Scale, curveTime) *
-                               scaleToFrameFactor(project, clip, canvas.width, canvas.height); // P.2: Scale to Frame Size
+        setMotionScale(spec.transform, p, curveTime,
+                       scaleToFrameFactor(project, clip, canvas.width, canvas.height, canvas.pixelAspect)); // P.2: Scale to Frame Size
         spec.transform.rotationDegrees = p.value(ParamId::Rotation, curveTime);
         spec.transform.anchor = {p.value(ParamId::AnchorX, curveTime), p.value(ParamId::AnchorY, curveTime)};
         spec.opacity = std::clamp(p.value(ParamId::Opacity, curveTime), 0.0, 1.0);
         spec.blend = clip.blendMode();
         spec.track = track;
-        if (spec.transform.scale == 0.0) {
+        if (!spec.transform.hasArea()) {
             return std::nullopt;
+        }
+        if (transformOnly) {
+            return spec;
         }
         const auto byteOf = [&](std::string_view key) { // the sequence's encoding, as the raster's
             return static_cast<std::uint8_t>(std::lround(std::clamp(syntheticParam(*item, key), 0.0, 1.0) * 255.0));
@@ -734,32 +832,42 @@ std::optional<LayerSpec> layerOf(const ProjectState& project, const Clip& clip, 
     // in export, "Seeking ... failed").
     spec.sourceTime = item->info.isStillImage ? Ticks{} : sourceTimeAround(clip, time);
     spec.transform.position = {p.value(ParamId::PositionX, curveTime), p.value(ParamId::PositionY, curveTime)};
-    spec.transform.scale = p.value(ParamId::Scale, curveTime) *
-                           scaleToFrameFactor(project, clip, canvas.width, canvas.height); // P.2: Scale to Frame Size
+    setMotionScale(spec.transform, p, curveTime,
+                   scaleToFrameFactor(project, clip, canvas.width, canvas.height, canvas.pixelAspect)); // P.2: Scale to Frame Size
     spec.transform.rotationDegrees = p.value(ParamId::Rotation, curveTime);
     spec.transform.anchor = {p.value(ParamId::AnchorX, curveTime), p.value(ParamId::AnchorY, curveTime)};
     spec.opacity = std::clamp(p.value(ParamId::Opacity, curveTime), 0.0, 1.0); // the one clamp the model allows
     spec.blend = clip.blendMode();
     spec.track = track;
-    if (spec.transform.scale == 0.0) {
+    if (!spec.transform.hasArea()) {
         return std::nullopt;
     }
     // Display rotation of the stream (stored pixels are not rotated): applied before the clip's own motion, so
     // the anchor (given in displayed pixels) turns back into stored pixels.
-    const int quarter = ((stream.rotationDegrees / 90) % 4 + 4) % 4;
-    if (quarter != 0) {
-        spec.transform.rotationDegrees += 90.0 * quarter;
-        const render::Vec2 a = spec.transform.anchor;
-        spec.transform.anchor = quarter == 1   ? render::Vec2{a.y, -a.x}
-                                : quarter == 2 ? render::Vec2{-a.x, -a.y}
-                                               : render::Vec2{-a.y, a.x};
+    // Card 154: a stream the container flags as mirrored is flipped too (rotate, then flip: Orientation).
+    render::applyDisplayOrientation(spec.transform, stream.rotationDegrees / 90, stream.mirrored);
+    if (transformOnly) {
+        return spec;
     }
     // Masks and redactions are isotropic in displayed pixels: the stored frame's displayed aspect.
     const double aspect = stream.height > 0 ? static_cast<double>(stream.width) *
                                                   (stream.sampleAspect.isValid() ? stream.sampleAspect.toDouble() : 1.0) /
                                                   stream.height
                                             : 16.0 / 9.0;
-    evaluateEffects(clip, curveTime, spec.effects, spec.bypassedEffects, luts, aspect, spec.sourceTime, &context);
+    EffectContext mediaContext = context; // 0.7: this layer shows a decoded frame, so its OpenFX effects can run on it
+    mediaContext.external = &spec.external;
+    evaluateEffects(clip, curveTime, spec.effects, spec.bypassedEffects, luts, aspect, spec.sourceTime, &mediaContext);
+    for (const render::LayerEffect& effect : spec.effects) {
+        if (effect.type == render::EffectType::Library && effect.op == static_cast<std::uint16_t>(render::LibraryOp::DepthBlur)) {
+            spec.refocus = true; // 0.7 AI Refocus: buildCompositeLayers attaches the depth map
+        }
+        if (effect.type == render::EffectType::Library && effect.op == static_cast<std::uint16_t>(render::LibraryOp::FaceRetouch)) {
+            spec.faceRetouch = true; // 0.7 AI Face Retouch: buildCompositeLayers attaches the face map
+        }
+        if (effect.type == render::EffectType::Library && effect.op == static_cast<std::uint16_t>(render::LibraryOp::EyeContact)) {
+            spec.eyeContact = true; // 0.7 AI Eye Contact: buildCompositeLayers bakes the frame's eye measurements into the effect
+        }
+    }
     spec.redactions = evaluateRedactions(project, clip, spec.sourceTime, aspect, stream.frameRate, path);
     spec.sourceRedactions = redactionsCovering(project, clip.media);
     spec.redactionAspect = aspect;
@@ -773,6 +881,8 @@ std::optional<LayerSpec> layerOf(const ProjectState& project, const Clip& clip, 
         spec.inputSpace = detectedLogSpace(stream); // 0.2: the camera log the media's metadata names
     }
     spec.fields = fieldRenderingOf(clip, item, clip.stream.index, sequence ? *sequence : progressiveSequence());
+    const int shownHeight = (stream.rotationDegrees / 90) % 2 != 0 ? stream.width : stream.height;
+    spec.ai = aiChainOfClip(project, clip, curveTime, shownHeight, canvas.height); // 0.7: the AI source stage
     return spec;
 }
 
@@ -859,6 +969,27 @@ void evaluateEffectStack(std::span<const EffectInstance> stack, Ticks curveTime,
                          const EffectContext* context = nullptr);
 
 } // namespace
+
+namespace {
+
+/// The stack a clip plays: its own, or (0.6, card #71) the media's Master Clip Effects.
+EffectStack aiStackOf(const ProjectState& project, const Clip& clip) {
+    if (playsMasterEffects(project, clip)) {
+        return playedEffects(project, clip, EffectKind::Video);
+    }
+    const auto& own = clip.effects();
+    return EffectStack(own.begin(), own.end());
+}
+
+} // namespace
+
+AiChain aiChainOfClip(const ProjectState& project, const Clip& clip, Ticks curveTime, int mediaHeight, int sequenceHeight) {
+    return aiChainOf(aiStackOf(project, clip), curveTime, mediaHeight, sequenceHeight);
+}
+
+AiChain aiProcessingChainOfClip(const ProjectState& project, const Clip& clip, int mediaHeight, int sequenceHeight) {
+    return aiProcessingChainOf(aiStackOf(project, clip), mediaHeight, sequenceHeight);
+}
 
 void evaluateEffects(const Clip& clip, Ticks curveTime, std::vector<render::LayerEffect>& out, int& bypassed,
                      const color::LutResolver* luts, double frameAspect, std::optional<Ticks> mediaTime,
@@ -1014,7 +1145,13 @@ std::shared_ptr<const render::PreparedComposite> matteImage(const EffectInstance
     }
     static std::mutex mutex;
     static std::list<std::pair<std::string, std::shared_ptr<const render::TitleRaster>>> recent;
-    const std::string key = item->locator.path + "|" + std::to_string(c.canvas.width) + "x" + std::to_string(c.canvas.height);
+    // The file's version is part of the key (card #158, as FilePictures keeps its pictures): a matte edited in place is
+    // read again on the next frame, and the old raster ages out of `recent`.
+    const QFileInfo info(QString::fromStdString(item->locator.path));
+    const std::int64_t fileSize = info.exists() ? info.size() : -1;
+    const std::int64_t fileTime = info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0;
+    const std::string key = item->locator.path + "|" + std::to_string(c.canvas.width) + "x" + std::to_string(c.canvas.height) +
+                            "|" + std::to_string(fileSize) + "|" + std::to_string(fileTime);
     {
         std::lock_guard lock(mutex);
         for (auto it = recent.begin(); it != recent.end(); ++it) {
@@ -1038,11 +1175,34 @@ std::shared_ptr<const render::PreparedComposite> matteImage(const EffectInstance
     auto raster = std::make_shared<const render::TitleRaster>(c.canvas.width, c.canvas.height, std::move(pixels),
                                                               render::TitleLayoutInfo{});
     std::lock_guard lock(mutex);
+    // The same file and canvas at an older version is dead weight: drop it before it pushes a live matte out.
+    const std::string stem = key.substr(0, key.rfind('|', key.rfind('|') - 1) + 1);
+    std::erase_if(recent, [&](const auto& e) { return e.first.starts_with(stem); });
     recent.emplace_front(key, raster);
     if (recent.size() > 4) {
         recent.pop_back();
     }
     return pictureComposite(raster, c.canvas);
+}
+
+/// 0.7: an OpenFX effect of the stack at `curveTime`: every parameter of its descriptor, its text settings, and the clip's
+/// time in frames of the sequence (the plug-in's time).
+ExternalEffect externalEffectOf(const EffectInstance& instance, Ticks curveTime, const EffectContext& context) {
+    ExternalEffect e;
+    e.id = instance.id;
+    e.effect = instance.effect;
+    if (const EffectDescriptor* d = EffectRegistry::builtin().find(instance.effect)) {
+        for (const EffectParamInfo& p : d->params) {
+            e.params.emplace_back(std::string(p.key), effectParameterAt(instance, p.key, curveTime, p.defaultValue));
+        }
+        for (const EffectTextInfo& t : d->texts) {
+            const EffectData* data = instance.findData(t.key);
+            e.texts.emplace_back(std::string(t.key), data && data->text() ? *data->text() : std::string(t.defaultValue));
+        }
+    }
+    e.fps = context.frameRate.isValid() ? context.frameRate.toDouble() : 24.0;
+    e.timeFrames = context.clipTime.toSeconds() * e.fps;
+    return e;
 }
 
 void evaluateEffectStack(std::span<const EffectInstance> stack, Ticks curveTime, std::vector<render::LayerEffect>& out,
@@ -1059,6 +1219,24 @@ void evaluateEffectStack(std::span<const EffectInstance> stack, Ticks curveTime,
         }
         if (instance.effect == kPosterizeTimeEffect) {
             continue; // 0.2: the evaluator plays the clip at its rate (posterizedTime)
+        }
+        if (instance.effect == kMotionBlurEffect) {
+            continue; // 0.7: the evaluator draws the layer at the instants of the shutter (attachMotionBlur)
+        }
+        if (isAiVideoEffect(instance.effect)) {
+            continue; // 0.7: a source-stage effect: LayerSpec::ai, applied to the decoded picture (SourceStage.h)
+        }
+        if (instance.effect.starts_with(kPluginEffectPrefix)) {
+            // 0.7: a plug-in effect on a video layer is an OpenFX effect that runs on the layer's decoded frame
+            // (ExternalEffects.h); layers that show no decoded frame (context->external is null) bypass it.
+            if (context && context->external && isEvaluable(instance, EffectKind::Video)) {
+                if (const auto processor = externalEffectProcessor(); processor && processor->implements(instance.effect)) {
+                    context->external->push_back(externalEffectOf(instance, curveTime, *context));
+                    continue;
+                }
+            }
+            ++bypassed;
+            continue;
         }
         if (instance.effect == edit::kTitleStyleEffect) {
             // A title's style: the text itself is the layer (evaluateTitle); its shadow is a drop shadow here.
@@ -1194,6 +1372,21 @@ double pixelAspectOf(const MediaItem& item, const VideoStreamInfo& stream) {
     return stream.sampleAspect.isValid() ? stream.sampleAspect.toDouble() : 1.0;
 }
 
+/// 0.7 (AI video effects): the processed picture of the layer's AI chain in place of the decoded one, from the installed
+/// SourceFrameProcessor (SourceStage.h); the decoded picture stays (and the layer says so) where there is none yet.
+void applySourceStage(const LayerSpec& spec, render::CompositeLayer& layer) {
+    const std::shared_ptr<SourceFrameProcessor> processor = sourceFrameProcessor();
+    if (!processor || spec.item == nullptr) {
+        layer.aiUnprocessed = true;
+        return;
+    }
+    SourceStageResult result = processor->process({spec.clip, spec.item, spec.streamIndex, &spec.ai, &layer.frame, spec.sourceTime});
+    layer.aiUnprocessed = result.missing;
+    if (result.frame.isValid()) {
+        layer.frame = std::move(result.frame);
+    }
+}
+
 /// P.2: Interpret Footage on a media layer's decoded frame - the pixel aspect and the alpha channel as the user
 /// conformed them. Every layer that shows an item's frame takes it: the plain layer, and the frames inside Time
 /// Interpolation's and the stabilizers' groups.
@@ -1286,12 +1479,171 @@ render::CanvasSize layerFrameOf(const LayerSpec& spec, render::CanvasSize canvas
     return canvas;
 }
 
+/// 0.7 (AI Frame Interpolation): the installed processor's picture at the group's source time between frames `a` and `b` (weight
+/// `w` of the way), or an empty result. In an export a missing picture is made here (ScopedSourceStageMode).
+InterpolationResult aiInterpolated(const LayerSpec& head, const media::VideoFrame& a, const media::VideoFrame& b, double w) {
+    const std::shared_ptr<SourceFrameProcessor> processor = sourceFrameProcessor();
+    if (!processor || head.item == nullptr) {
+        return InterpolationResult{{}, true};
+    }
+    return processor->interpolate({head.clip, head.item, head.streamIndex, &a, &b, head.sourceTime, w});
+}
+
+/// 0.7 (AI Refocus): the depth map of the layer's frame as the second picture of its Depth Blur effects. The map is stretched over
+/// the frame like the frame itself: a raster whose alpha is the distance (0 nearest .. 255 farthest), drawn with the layer's own
+/// transform on a canvas of this level. Where there is no depth map yet the effects leave the picture as it is, and the layer says
+/// it is not processed.
+void applyRefocus(const LayerSpec& spec, render::CompositeLayer& layer, render::CanvasSize canvas) {
+    const std::shared_ptr<SourceFrameProcessor> processor = sourceFrameProcessor();
+    DepthResult depth{nullptr, true};
+    if (processor && spec.item != nullptr && layer.frame.isValid()) {
+        depth = processor->depth({spec.clip, spec.item, spec.streamIndex, &layer.frame, spec.sourceTime});
+    }
+    const DepthMap* map = depth.map.get();
+    if (map == nullptr || map->width <= 0 || map->height <= 0 ||
+        map->distance.size() != static_cast<std::size_t>(map->width) * static_cast<std::size_t>(map->height) || !canvas.isValid() ||
+        spec.streamIndex < 0 || spec.streamIndex >= static_cast<int>(spec.item->info.video.size())) {
+        layer.aiUnprocessed = true;
+        return;
+    }
+    std::vector<std::uint8_t> pixels(map->distance.size() * 4, 0);
+    for (std::size_t i = 0; i < map->distance.size(); ++i) {
+        pixels[4 * i + 3] = map->distance[i]; // premultiplied black with the distance as its alpha
+    }
+    auto raster = std::make_shared<const render::TitleRaster>(map->width, map->height, std::move(pixels), render::TitleLayoutInfo{});
+    render::CompositeLayer placed;
+    placed.view = raster->view(raster);
+    const VideoStreamInfo& stream = spec.item->info.video[static_cast<std::size_t>(spec.streamIndex)];
+    placed.transform = transformForFrameHeight(spec.transform, displayedSize(*spec.item, stream).height, raster->height());
+    auto matte = std::make_shared<render::PreparedComposite>();
+    matte->canvas = canvas;
+    matte->layers.push_back(std::move(placed));
+    for (render::LayerEffect& effect : layer.effects) {
+        if (effect.type == render::EffectType::Library && effect.op == static_cast<std::uint16_t>(render::LibraryOp::DepthBlur)) {
+            effect.matte = matte;
+        }
+    }
+}
+
+/// 0.7 (AI Face Retouch): the face map of the layer's frame as the second picture of its Face Retouch effects. The map is stretched
+/// over the frame like the frame itself: a raster whose red, green and blue are the coverage of skin, mouth and eyes (made linear
+/// coverage by encoding the bytes with the sRGB curve the raster is read with), opaque, drawn with the layer's own transform on a
+/// canvas of this level. Where there is no map yet the effects leave the picture as it is and the layer says it is not processed;
+/// an effect with every amount at 0 asks for nothing.
+void applyFaceRetouch(const LayerSpec& spec, render::CompositeLayer& layer, render::CanvasSize canvas) {
+    bool wanted = false;
+    for (const render::LayerEffect& effect : layer.effects) {
+        if (effect.type == render::EffectType::Library && effect.op == static_cast<std::uint16_t>(render::LibraryOp::FaceRetouch)) {
+            const auto& q = effect.params; // smoothing, detail, size, blemish, blemishSize, teeth, eyes, view
+            wanted = wanted || q[0] > 0.0 || q[3] > 0.0 || q[5] > 0.0 || q[6] > 0.0 || q[7] > 0.5;
+        }
+    }
+    if (!wanted) {
+        return;
+    }
+    const std::shared_ptr<SourceFrameProcessor> processor = sourceFrameProcessor();
+    FaceResult faces{nullptr, true};
+    if (processor && spec.item != nullptr && layer.frame.isValid()) {
+        faces = processor->faces({spec.clip, spec.item, spec.streamIndex, &layer.frame, spec.sourceTime});
+    }
+    const FaceMap* map = faces.map.get();
+    if (map == nullptr || map->width <= 0 || map->height <= 0 ||
+        map->coverage.size() != static_cast<std::size_t>(map->width) * static_cast<std::size_t>(map->height) * 3 || !canvas.isValid() ||
+        spec.streamIndex < 0 || spec.streamIndex >= static_cast<int>(spec.item->info.video.size())) {
+        layer.aiUnprocessed = true;
+        return;
+    }
+    auto raster = render::makeFaceMapRaster(map->width, map->height, map->coverage);
+    render::CompositeLayer placed;
+    placed.view = raster->view(raster);
+    const VideoStreamInfo& stream = spec.item->info.video[static_cast<std::size_t>(spec.streamIndex)];
+    placed.transform = transformForFrameHeight(spec.transform, displayedSize(*spec.item, stream).height, raster->height());
+    auto matte = std::make_shared<render::PreparedComposite>();
+    matte->canvas = canvas;
+    matte->layers.push_back(std::move(placed));
+    for (render::LayerEffect& effect : layer.effects) {
+        if (effect.type == render::EffectType::Library && effect.op == static_cast<std::uint16_t>(render::LibraryOp::FaceRetouch)) {
+            effect.matte = matte;
+        }
+    }
+}
+
+/// 0.7 (AI Eye Contact): the eye measurements of the layer's frame turned into the effect's parameters. Each Eye Contact effect becomes one
+/// copy per face the frame shows (the largest first, at most kGazeMaxFaces; Faces = Largest keeps one), each with that face's eyes and the
+/// corrections the effect's settings at this time make of them (model/EyeContact.h bakeEyeContact): every face is corrected on its own. A face
+/// that needs nothing (already looking into the lens, blinking, turned away, outside the gaze ranges) adds nothing, so a picture with nothing
+/// to correct is the picture as it is. Where there are no measurements yet the effect leaves the picture as it is and the layer says it
+/// is not processed; an effect with Amount 0 asks for nothing.
+void applyEyeContact(const LayerSpec& spec, render::CompositeLayer& layer) {
+    const auto isEyeContact = [](const render::LayerEffect& e) {
+        return e.type == render::EffectType::Library && e.op == static_cast<std::uint16_t>(render::LibraryOp::EyeContact);
+    };
+    bool wanted = false;
+    for (const render::LayerEffect& effect : layer.effects) {
+        wanted = wanted || (isEyeContact(effect) && (effect.params[0] > 0.0 || effect.params[kEyeParamView] > 0.5));
+    }
+    if (!wanted) {
+        return;
+    }
+    const std::shared_ptr<SourceFrameProcessor> processor = sourceFrameProcessor();
+    GazeResult gaze{nullptr, true};
+    if (processor && spec.item != nullptr && layer.frame.isValid()) {
+        gaze = processor->gaze({spec.clip, spec.item, spec.streamIndex, &layer.frame, spec.sourceTime});
+    }
+    const GazeMap* map = gaze.map.get();
+    if (map == nullptr) {
+        layer.aiUnprocessed = true;
+        for (render::LayerEffect& effect : layer.effects) {
+            if (isEyeContact(effect)) {
+                effect.params[kEyeParamCount] = 0.0; // no eyes: the effect draws nothing
+            }
+        }
+        return;
+    }
+    std::vector<const GazeFace*> faces; // the largest first
+    for (const GazeFace& face : map->faces) {
+        if (face.score >= 0.5) {
+            faces.push_back(&face);
+        }
+    }
+    std::ranges::stable_sort(faces, [](const GazeFace* a, const GazeFace* b) { return a->size > b->size; });
+    if (faces.size() > static_cast<std::size_t>(kGazeMaxFaces)) {
+        faces.resize(static_cast<std::size_t>(kGazeMaxFaces));
+    }
+    std::vector<render::LayerEffect> out;
+    out.reserve(layer.effects.size() + faces.size());
+    for (const render::LayerEffect& effect : layer.effects) {
+        if (!isEyeContact(effect)) {
+            out.push_back(effect);
+            continue;
+        }
+        const EyeContactSettings settings = eyeContactSettingsOf(effect.params);
+        const std::size_t count = effect.params[4] > 0.5 ? std::min<std::size_t>(faces.size(), 1) : faces.size(); // Faces: All | Largest
+        bool any = false;
+        for (std::size_t i = 0; i < count; ++i) {
+            render::LayerEffect copy = effect;
+            if (bakeEyeContact(copy.params, *faces[i], settings)) {
+                out.push_back(std::move(copy));
+                any = true;
+            }
+        }
+        if (!any && effect.params[kEyeParamView] > 0.5) {
+            render::LayerEffect empty = effect;
+            empty.params[kEyeParamCount] = 0.0; // the eye map of a frame with nothing to correct is black
+            out.push_back(std::move(empty));
+        }
+    }
+    layer.effects = std::move(out);
+}
+
 /// The motion an interpolation group (specs[j], interpolation set) needs with its frames: Optical Flow between two
 /// distinct frames that the source time lies strictly between.
 std::optional<MotionRequest> interpolationRequest(const std::vector<LayerSpec>& specs,
                                                   const std::vector<media::VideoFrame>& frames, std::size_t j) {
     const LayerSpec& head = specs[j];
-    if (head.interpolation != TimeInterpolation::OpticalFlow || j + 2 >= specs.size() || j + 2 >= frames.size()) {
+    const bool flow = head.interpolation == TimeInterpolation::OpticalFlow;
+    const bool ai = head.interpolation == TimeInterpolation::AiInterpolation; // 0.7: the flow stands in where its picture is missing
+    if ((!flow && !ai) || j + 2 >= specs.size() || j + 2 >= frames.size()) {
         return std::nullopt;
     }
     const media::VideoFrame& a = frames[j + 1];
@@ -1299,6 +1651,9 @@ std::optional<MotionRequest> interpolationRequest(const std::vector<LayerSpec>& 
     const double w = interpolationWeight(head.sourceTime, a, b);
     if (w <= 0.0 || w >= 1.0) {
         return std::nullopt;
+    }
+    if (ai && aiInterpolated(head, a, b, w).frame.isValid()) {
+        return std::nullopt; // the AI picture is there: no flow to compute
     }
     auto pa = motionPictureOf(specs[j + 1], a.pts, false);
     auto pb = motionPictureOf(specs[j + 2], b.pts, false);
@@ -1312,7 +1667,7 @@ std::optional<MotionRequest> interpolationRequest(const std::vector<LayerSpec>& 
 /// The motion a Morph Cut pair (specs[ia] then specs[ib], each a plain media layer) needs on a `canvas` level: their
 /// pictures at the frozen source times, placed as they are drawn.
 std::optional<MotionRequest> morphRequest(const std::vector<LayerSpec>& specs, const std::vector<media::VideoFrame>& frames,
-                                          std::size_t ia, std::size_t ib, render::CanvasSize canvas) {
+                                          std::size_t ia, std::size_t ib, render::CanvasSize canvas, bool faceAware) {
     if (!canvas.isValid() || ia >= frames.size() || ib >= frames.size() || !frames[ia].isValid() || !frames[ib].isValid()) {
         return std::nullopt;
     }
@@ -1322,6 +1677,7 @@ std::optional<MotionRequest> morphRequest(const std::vector<LayerSpec>& specs, c
         return std::nullopt;
     }
     MotionRequest r{std::move(*pa), std::move(*pb), canvas};
+    r.faceAware = faceAware;
     return r.isValid() ? std::optional<MotionRequest>(std::move(r)) : std::nullopt;
 }
 
@@ -1352,17 +1708,53 @@ std::shared_ptr<const render::TitleRaster> fillRaster(render::CanvasSize size, c
     return recent.front().second;
 }
 
+/// 0.7: runs `spec`'s OpenFX effects on the frame of `layer` (ExternalEffects.h). The processed picture is drawn instead of
+/// the frame (render::CompositeLayer::view); an effect that cannot run (a plug-in that crashed, hung or is gone, a picture it
+/// cannot take) leaves the layer showing its frame.
+void applyExternalEffects(const LayerSpec& spec, render::CompositeLayer& layer) {
+    const auto processor = externalEffectProcessor();
+    if (!processor || !layer.frame.isValid()) {
+        return;
+    }
+    ExternalSource source;
+    source.frame = &layer.frame;
+    if (spec.item) {
+        if (const std::string* path = sourcePathOf(*spec.item, false)) {
+            source.path = *path;
+        }
+    }
+    source.stream = spec.containerStream;
+    source.time = layer.frame.pts;
+    source.pixelAspect = layer.frame.sampleAspect.isValid() ? layer.frame.sampleAspect.toDouble() : 1.0;
+    auto picture = processor->process(source, spec.external);
+    if (!picture) {
+        return;
+    }
+    picture->pixelAspect = source.pixelAspect;
+    layer.view = std::move(*picture); // the frame stays: redactions and field options read its timing
+    layer.viewIsMedia = true;
+}
+
 /// P.2: the picture of an interpolation group (specs[j]): its two frames on the group's canvas, alone where the source
 /// time falls on one of them, else mixed at the source time's place between them (a flow mix along `motion`'s motion
 /// for Optical Flow when it has it, a cross dissolve otherwise). Null when the first frame failed.
 std::shared_ptr<render::PreparedComposite> interpolationComposite(const std::vector<LayerSpec>& specs,
                                                                   std::vector<media::VideoFrame>& frames, std::size_t j,
-                                                                  MotionSource* motion) {
+                                                                  MotionSource* motion, bool* aiMissing = nullptr) {
     const LayerSpec& head = specs[j];
     if (j + 2 >= specs.size() || j + 2 >= frames.size() || !frames[j + 1].isValid()) {
         return nullptr;
     }
     const double w = interpolationWeight(head.sourceTime, frames[j + 1], frames[j + 2]);
+    // 0.7 AI Frame Interpolation: the model's picture between the two frames, alone on the group's canvas. Where it is not made yet
+    // the clip plays with Optical Flow instead (the request above was made for it) and the layer says so.
+    media::VideoFrame aiFrame;
+    if (head.interpolation == TimeInterpolation::AiInterpolation && w > 0.0 && w < 1.0 && frames[j + 2].isValid()) {
+        aiFrame = aiInterpolated(head, frames[j + 1], frames[j + 2], w).frame;
+        if (!aiFrame.isValid() && aiMissing != nullptr) {
+            *aiMissing = true;
+        }
+    }
     std::shared_ptr<const motion::FlowPair> flow;
     if (motion) {
         if (const auto request = interpolationRequest(specs, frames, j)) {
@@ -1375,18 +1767,31 @@ std::shared_ptr<render::PreparedComposite> interpolationComposite(const std::vec
     const auto frameLayer = [&](std::size_t k) {
         render::CompositeLayer l;
         l.frame = std::move(frames[k]);
+        if (!head.ai.empty()) {
+            applySourceStage(head, l); // 0.7: the AI chain's picture for each of the two frames
+        }
         applyInterpretation(head.item, l); // P.2: Interpret Footage holds for the interpolated frames too
         l.inputSpace = head.inputSpace;    // and so does the clip's input colour space (I.9)
         l.fieldMode = static_cast<std::uint8_t>( // 0.2: and its field options, at the time each frame is shown for
             fieldRenderAt(specs[k].fields, head.sourceTime, l.frame.pts, l.frame.duration));
         l.transform = transformForFrameHeight(render::LayerTransform{}, streamHeight, l.frame.height);
         l.clipId = head.clip.value;
+        if (!specs[k].external.empty()) {
+            applyExternalEffects(specs[k], l); // 0.7: each frame is processed before the two are mixed
+        }
         return l;
     };
     auto nested = std::make_shared<render::PreparedComposite>();
     nested->canvas = head.nestedCanvas;
     if (w <= 0.0 || w >= 1.0) {
         nested->layers.push_back(frameLayer(w >= 1.0 ? j + 2 : j + 1));
+        return nested;
+    }
+    if (aiFrame.isValid()) {
+        render::CompositeLayer between = frameLayer(j + 1);
+        between.frame = std::move(aiFrame);
+        between.transform = transformForFrameHeight(render::LayerTransform{}, streamHeight, between.frame.height);
+        nested->layers.push_back(std::move(between));
         return nested;
     }
     render::LayerTransition mix;
@@ -1407,12 +1812,14 @@ std::optional<render::CompositeLayer> compositeLayerOf(const std::vector<LayerSp
     const LayerSpec& spec = specs[j];
     render::CompositeLayer layer;
     if (spec.interpolation) {
-        auto nested = interpolationComposite(specs, frames, j, motion); // P.2 Time Interpolation
+        bool aiMissing = false;
+        auto nested = interpolationComposite(specs, frames, j, motion, &aiMissing); // P.2 Time Interpolation
         if (!nested) {
             return std::nullopt;
         }
         layer.nested = std::move(nested);
         layer.transform = spec.transform;
+        layer.aiUnprocessed = aiMissing; // 0.7: AI Frame Interpolation has no picture here yet
     } else if (spec.nested) {
         auto nested = std::make_shared<render::PreparedComposite>();
         nested->canvas = spec.nestedCanvas;
@@ -1426,10 +1833,15 @@ std::optional<render::CompositeLayer> compositeLayerOf(const std::vector<LayerSp
         layer.fieldMode = static_cast<std::uint8_t>(fieldRenderAt(spec.fields, spec.sourceTime, Ticks{}, Ticks{}));
     } else if (spec.graphic) {
         // A motion graphic (C.13): its raster at the canvas item's frame size; an equal draw list reuses it.
-        auto raster = render::GraphicRasterCache::shared().raster(spec.graphicKey, *spec.graphic, spec.graphicSize.width,
-                                                                  spec.graphicSize.height, spec.graphicImages.get());
+        // 0.7 (card #86): vector artwork asks for a larger raster when the clip is scaled up; the transform shrinks to match.
+        const int rasterWidth = std::max(1, static_cast<int>(std::lround(spec.graphicSize.width * spec.graphicOversample)));
+        const int rasterHeight = std::max(1, static_cast<int>(std::lround(spec.graphicSize.height * spec.graphicOversample)));
+        auto raster = render::GraphicRasterCache::shared().raster(spec.graphicKey, *spec.graphic, rasterWidth, rasterHeight,
+                                                                  spec.graphicImages.get());
         layer.view = raster->view(raster);
-        layer.transform = spec.transform;
+        layer.transform = spec.graphicOversample > 1.0
+                              ? transformForFrameHeight(spec.transform, spec.graphicSize.height, raster->height())
+                              : spec.transform;
     } else if (spec.fill) {
         auto raster = fillRaster(spec.fillSize, *spec.fill); // C.15 synthetic media
         layer.view = raster->view(raster);
@@ -1454,6 +1866,9 @@ std::optional<render::CompositeLayer> compositeLayerOf(const std::vector<LayerSp
             return std::nullopt;
         }
         layer.frame = std::move(frames[j]);
+        if (!spec.ai.empty()) {
+            applySourceStage(spec, layer); // 0.7: the AI chain's processed picture, before anything reads the frame
+        }
         applyInterpretation(spec.item, layer); // P.2: Interpret Footage
         // 0.2 field options: the field the frame shows at this time (both fields at the field rate).
         layer.fieldMode = static_cast<std::uint8_t>(
@@ -1463,8 +1878,18 @@ std::optional<render::CompositeLayer> compositeLayerOf(const std::vector<LayerSp
                 ? spec.item->info.video[static_cast<std::size_t>(spec.streamIndex)].height
                 : 0;
         layer.transform = transformForFrameHeight(spec.transform, streamHeight, layer.frame.height);
+        for (const render::LayerTransform& sample : spec.blur) { // 0.7: each instant of the shutter, scaled the same way
+            layer.blur.push_back(transformForFrameHeight(sample, streamHeight, layer.frame.height));
+        }
+        if (!spec.external.empty()) {
+            applyExternalEffects(spec, layer); // 0.7: OpenFX effects
+        }
+    }
+    if (layer.blur.empty()) {
+        layer.blur = spec.blur; // 0.7 Motion Blur: titles, graphics, fills and groups place by the spec's own transform
     }
     layer.warp = spec.warp; // P.2: the stabilizers' warp of the frame inside their group
+    layer.nearest = spec.nearest; // 0.7 (card #98): Nearest Neighbor Scaling
     layer.opacity = spec.opacity;
     layer.blend = spec.blend;
     layer.effects = spec.effects;
@@ -1505,7 +1930,7 @@ void buildLevel(const std::vector<LayerSpec>& specs, std::vector<media::VideoFra
     for (std::size_t k = 0; motion && k + 1 < siblings.size(); ++k) {
         const std::optional<render::LayerTransition>& group = specs[siblings[k]].transition;
         if (group && group->kind == render::TransitionKind::FlowMorph && group->layerCount == 2) {
-            if (const auto request = morphRequest(specs, frames, siblings[k], siblings[k + 1], canvas)) {
+            if (const auto request = morphRequest(specs, frames, siblings[k], siblings[k + 1], canvas, group->faceAware)) {
                 morphs[k] = motion->motion(*request);
             }
         }
@@ -1517,6 +1942,15 @@ void buildLevel(const std::vector<LayerSpec>& specs, std::vector<media::VideoFra
         built.push_back(compositeLayerOf(specs, frames, siblings[k], motion));
         if (!built.back()) {
             continue;
+        }
+        if (specs[siblings[k]].refocus && !specs[siblings[k]].nested) {
+            applyRefocus(specs[siblings[k]], *built.back(), canvas); // 0.7: AI Refocus's depth map
+        }
+        if (specs[siblings[k]].faceRetouch && !specs[siblings[k]].nested) {
+            applyFaceRetouch(specs[siblings[k]], *built.back(), canvas); // 0.7: AI Face Retouch's face map
+        }
+        if (specs[siblings[k]].eyeContact && !specs[siblings[k]].nested) {
+            applyEyeContact(specs[siblings[k]], *built.back()); // 0.7: AI Eye Contact's eye measurements
         }
         std::vector<render::LayerEffect>& effects = built.back()->effects;
         for (const std::size_t m : mattesOf[k]) {
@@ -1608,7 +2042,7 @@ std::vector<MotionRequest> motionRequestsOf(const std::vector<LayerSpec>& specs,
         for (std::size_t k = 0; k + 1 < siblings.size(); ++k) {
             const std::optional<render::LayerTransition>& group = specs[siblings[k]].transition;
             if (group && group->kind == render::TransitionKind::FlowMorph && group->layerCount == 2) {
-                if (auto request = morphRequest(specs, frames, siblings[k], siblings[k + 1], r.canvas)) {
+                if (auto request = morphRequest(specs, frames, siblings[k], siblings[k + 1], r.canvas, group->faceAware)) {
                     out.push_back(std::move(*request));
                 }
             }
@@ -1651,6 +2085,7 @@ render::CaptionStyle captionStyleOf(const CaptionStyle& m, Ticks time) {
     s.boxOpacity = m.boxOpacity;
     s.boxPadding = m.boxPadding;
     s.boxRadius = m.boxRadius;
+    s.features = m.features; // 0.7 (card #138)
     s.position = m.placement == CaptionPlacement::Top      ? render::CaptionPosition::Top
                  : m.placement == CaptionPlacement::Custom ? render::CaptionPosition::Custom
                                                            : render::CaptionPosition::Bottom;
@@ -1708,11 +2143,46 @@ int utf16Length(const std::string& text) {
     return n;
 }
 
+/// The curve of a word's transition at `u` (0..1): ease out, ease out back (a little past 1, then back), or linear.
+double captionEase(CaptionEase ease, double u) {
+    u = std::clamp(u, 0.0, 1.0);
+    switch (ease) {
+    case CaptionEase::Linear:
+        return u;
+    case CaptionEase::Smooth: {
+        const double v = 1.0 - u;
+        return 1.0 - v * v * v;
+    }
+    case CaptionEase::Overshoot:
+    default: {
+        constexpr double c1 = 1.70158;
+        const double p = u - 1.0;
+        return 1.0 + (c1 + 1.0) * p * p * p + c1 * p * p;
+    }
+    }
+}
+
+render::CaptionCase renderCaseOf(CaptionTextCase value) {
+    return value == CaptionTextCase::Lower   ? render::CaptionCase::Lower
+           : value == CaptionTextCase::Upper ? render::CaptionCase::Upper
+                                             : render::CaptionCase::AsWritten;
+}
+
+/// The text colour that reads on a bar of colour `bar`: near black on a light bar, white on a dark one.
+std::array<double, 3> textOnBar(const CaptionRgb& bar) {
+    const double luma = 0.2126 * bar[0] + 0.7152 * bar[1] + 0.0722 * bar[2]; // sRGB-encoded values: a rough but stable test
+    return luma > 0.55 ? std::array<double, 3>{0.06, 0.06, 0.07} : std::array<double, 3>{1.0, 1.0, 1.0};
+}
+
 } // namespace
 
-std::optional<render::CaptionFrame> evaluateCaption(const Sequence& sequence, Ticks time, const CaptionSettings& settings,
-                                                    const ProjectState* project) {
-    const CaptionTrack* track = captionTrackFor(sequence, settings);
+namespace {
+
+/// The caption `track` shows at `time` (null track or no cues: none). `styleOverride`: the settings' explicit style (a
+/// panel's live preview) replaces the track's own, which only the main track takes.
+std::optional<render::CaptionFrame> captionFrameOfTrack(const Sequence& sequence, const CaptionTrack* track, Ticks time,
+                                                        const CaptionSettings& settings, const ProjectState* project,
+                                                        bool styleOverride) {
     if (!track || track->cues.empty()) {
         return std::nullopt;
     }
@@ -1743,7 +2213,7 @@ std::optional<render::CaptionFrame> evaluateCaption(const Sequence& sequence, Ti
     render::CaptionFrame frame;
     frame.frameWidth = sequence.width;
     frame.frameHeight = sequence.height;
-    frame.style = settings.style ? *settings.style : captionStyleOf(model, time);
+    frame.style = styleOverride && settings.style ? *settings.style : captionStyleOf(model, time);
     const bool redactions = project && hasSpeechRedactions(*project);
     const bool singlePlain = shown.size() == 1 && !(model.showSpeakers && project && shown.front()->speaker.isValid());
     if (settings.karaoke && singlePlain) {
@@ -1770,18 +2240,31 @@ std::optional<render::CaptionFrame> evaluateCaption(const Sequence& sequence, Ti
             const std::vector<TimeRange> redacted = redactedSpeechRanges(*project, sequence, TimeRange{cue.start, cue.duration});
             text = redactedCueText(track->id, cue, redacted, settings.words.get(), settings.redactedWord);
         }
+        // Card 114: the style's case, punctuation and accent rules (drawn only: the cue keeps its words as written).
+        if (model.textCase != CaptionTextCase::AsWritten || model.stripPunctuation || model.stripAccents) {
+            text = render::captionDisplayText(text, renderCaseOf(model.textCase), model.stripPunctuation, model.stripAccents,
+                                              track->language);
+        }
         frame.text += text;
-        const bool byWord = model.animation == CaptionAnimation::WordByWord;
-        if (!settings.karaoke && !byWord) {
+        const CaptionAnimation animation = model.animation;
+        const bool byWord = animation == CaptionAnimation::WordByWord || animation == CaptionAnimation::WordPop;
+        const bool wordLook = animation == CaptionAnimation::WordPop || animation == CaptionAnimation::Bounce ||
+                              animation == CaptionAnimation::HighlightBar || animation == CaptionAnimation::Zoom;
+        const bool typewriter = animation == CaptionAnimation::Typewriter;
+        const bool emphasised = model.emphasis != CaptionEmphasis::None;
+        if (!settings.karaoke && !byWord && !wordLook && !typewriter && !emphasised) {
             continue;
         }
         const std::vector<std::pair<int, int>> spans = render::captionWordSpans(text);
         const std::vector<Ticks> starts = wordStarts(*track, cue, spans, settings.words.get());
+        const std::size_t words = std::min(spans.size(), starts.size());
         int spokenEnd = 0;
         std::optional<int> firstUnspoken;
-        for (std::size_t k = 0; k < spans.size() && k < starts.size(); ++k) {
+        std::optional<std::size_t> spoken; // the word being said: the last one that started
+        for (std::size_t k = 0; k < words; ++k) {
             if (starts[k] <= time) {
                 spokenEnd = spans[k].second;
+                spoken = k;
             } else if (!firstUnspoken) {
                 firstUnspoken = spans[k].first;
             }
@@ -1796,26 +2279,175 @@ std::optional<render::CaptionFrame> evaluateCaption(const Sequence& sequence, Ti
         if (byWord && firstUnspoken) {
             frame.hidden.emplace_back(base + *firstUnspoken, base + utf16Length(text)); // words appear as they are spoken
         }
+        const double speed = std::max(model.animationSpeed, 0.01);
+        const int textEnd = base + utf16Length(text);
+
+        // Typewriter: the letters of the word being said appear one by one over (at most) half a second; the words before
+        // it, and the marks after them, are all there.
+        if (typewriter) {
+            int revealed = base; // nothing yet
+            if (spoken) {
+                const std::size_t k = *spoken;
+                const Ticks next = k + 1 < words ? starts[k + 1] : cue.end();
+                const double window = std::clamp((next - starts[k]).toSeconds(), 0.05, 0.5);
+                const int length = spans[k].second - spans[k].first;
+                const double progress = std::clamp((time - starts[k]).toSeconds() / window, 0.0, 1.0);
+                const int letters = static_cast<int>(std::ceil(progress * length));
+                revealed = letters >= length ? (k + 1 < words ? base + spans[k + 1].first : textEnd)
+                                             : base + spans[k].first + letters;
+            }
+            if (revealed < textEnd) {
+                frame.hidden.emplace_back(revealed, textEnd);
+            }
+        }
+
+        // Emphasised words: the emphasis colour and a little larger, whatever else the animation does with them.
+        std::vector<char> emphasis;
+        if (emphasised) {
+            emphasis = render::captionEmphasisFlags(text, spans, model.emphasis == CaptionEmphasis::Auto, model.emphasisWords);
+        }
+        // The word being said takes the highlight colour while it is said (the bar's word takes a colour that reads on it).
+        if (spoken && (animation == CaptionAnimation::WordPop || animation == CaptionAnimation::Bounce ||
+                       animation == CaptionAnimation::Zoom)) {
+            frame.colorSpans.push_back({base + spans[*spoken].first, base + spans[*spoken].second, model.highlight});
+        } else if (spoken && animation == CaptionAnimation::HighlightBar) {
+            frame.colorSpans.push_back({base + spans[*spoken].first, base + spans[*spoken].second, textOnBar(model.highlight)});
+        }
+        for (std::size_t k = 0; k < words; ++k) {
+            const bool key = k < emphasis.size() && emphasis[k] != 0;
+            if (key) {
+                frame.colorSpans.push_back({base + spans[k].first, base + spans[k].second, model.emphasisColor});
+            }
+            render::CaptionFrame::WordFx fx;
+            fx.begin = base + spans[k].first;
+            fx.end = base + spans[k].second;
+            const double since = (time - starts[k]).toSeconds();
+            const Ticks next = k + 1 < words ? starts[k + 1] : cue.end();
+            if (since >= 0.0) {
+                switch (animation) {
+                case CaptionAnimation::WordPop:
+                    if (since < speed) { // from half size to full, fading in over its first half
+                        fx.scale = 0.5 + 0.5 * captionEase(model.animationEase, since / speed);
+                        fx.opacity = std::clamp(since / (speed * 0.5), 0.0, 1.0);
+                    }
+                    break;
+                case CaptionAnimation::Bounce:
+                    if (since < 2.0 * speed) { // up and down in two transition times; the overshoot ease dips under the line
+                        fx.lift = 0.22 * std::sin(std::numbers::pi * captionEase(model.animationEase, since / (2.0 * speed)));
+                    }
+                    break;
+                case CaptionAnimation::Zoom: {
+                    const double grow = captionEase(model.animationEase, since / speed);
+                    const double shrink = k + 1 < words ? captionEase(model.animationEase, (time - next).toSeconds() / speed) : 0.0;
+                    fx.scale = std::clamp(1.0 + 0.25 * grow * (1.0 - shrink), 0.5, 3.0);
+                    if (time >= next && (time - next).toSeconds() >= speed) {
+                        fx.scale = 1.0; // settled back
+                    }
+                    break;
+                }
+                default:
+                    break;
+                }
+            }
+            if (key) {
+                fx.scale *= model.emphasisScale;
+            }
+            if (fx.scale != 1.0 || fx.lift != 0.0 || fx.opacity != 1.0) {
+                frame.wordFx.push_back(fx);
+            }
+        }
+
+        // Highlight bar: on the word being said, sliding from the one before it (the latest cue's only).
+        if (animation == CaptionAnimation::HighlightBar && spoken && i + 1 == shown.size()) {
+            const std::size_t k = *spoken;
+            const double since = (time - starts[k]).toSeconds();
+            frame.bar.toBegin = base + spans[k].first;
+            frame.bar.toEnd = base + spans[k].second;
+            if (k > 0) {
+                frame.bar.fromBegin = base + spans[k - 1].first;
+                frame.bar.fromEnd = base + spans[k - 1].second;
+                frame.bar.t = captionEase(model.animationEase, since / speed);
+            } else {
+                frame.bar.opacity = std::clamp(since / speed, 0.0, 1.0); // the first word's bar fades in
+            }
+        }
     }
     // Pop and fade follow the cue that started last.
     const CaptionCue& latest = *shown.back();
     const double sinceStart = (time - latest.start).toSeconds();
     const double untilEnd = (latest.end() - time).toSeconds();
     if (model.animation == CaptionAnimation::Fade) {
-        constexpr double kFade = 0.2;
-        frame.opacity = std::clamp(std::min(sinceStart, untilEnd) / kFade, 0.0, 1.0);
+        const double fade = std::max(model.animationSpeed, 0.01) * 4.0 / 3.0; // 0.2 s at the default speed
+        frame.opacity = std::clamp(std::min(sinceStart, untilEnd) / fade, 0.0, 1.0);
     } else if (model.animation == CaptionAnimation::Pop) {
-        constexpr double kPop = 0.15;
-        if (sinceStart < kPop) {
-            // Ease-out with a slight overshoot (easeOutBack), from 80 % to full size; it fades in over the first half.
-            const double p = std::clamp(sinceStart / kPop, 0.0, 1.0) - 1.0;
-            constexpr double c1 = 1.70158;
-            const double eased = 1.0 + (c1 + 1.0) * p * p * p + c1 * p * p;
-            frame.scale = 0.8 + 0.2 * eased;
-            frame.opacity = std::clamp(sinceStart / (kPop / 2.0), 0.0, 1.0);
+        const double pop = std::max(model.animationSpeed, 0.01);
+        if (sinceStart < pop) {
+            // From 80 % to full size on the style's curve (ease out back by default: a slight overshoot); it fades in
+            // over the first half.
+            frame.scale = 0.8 + 0.2 * captionEase(model.animationEase, sinceStart / pop);
+            frame.opacity = std::clamp(sinceStart / (pop / 2.0), 0.0, 1.0);
         }
     }
     return frame;
+}
+
+} // namespace
+
+std::optional<render::CaptionFrame> evaluateCaption(const Sequence& sequence, Ticks time, const CaptionSettings& settings,
+                                                    const ProjectState* project) {
+    return captionFrameOfTrack(sequence, captionTrackFor(sequence, settings), time, settings, project, true);
+}
+
+std::vector<const CaptionTrack*> captionTracksFor(const Sequence& sequence, const CaptionSettings& settings) {
+    std::vector<const CaptionTrack*> out;
+    const CaptionTrack* main = captionTrackFor(sequence, settings);
+    if (!main) {
+        return out;
+    }
+    for (const CaptionTrack& t : sequence.captionTracks) {
+        if (&t == main || (t.enabled && t.showTogether)) {
+            out.push_back(&t);
+        }
+    }
+    return out;
+}
+
+std::vector<render::CaptionFrame> evaluateCaptions(const Sequence& sequence, Ticks time, const CaptionSettings& settings,
+                                                   const ProjectState* project) {
+    const CaptionTrack* main = captionTrackFor(sequence, settings);
+    std::vector<render::CaptionFrame> frames;
+    for (const CaptionTrack* track : captionTracksFor(sequence, settings)) {
+        if (auto frame = captionFrameOfTrack(sequence, track, time, settings, project, track == main)) {
+            frames.push_back(std::move(*frame));
+        }
+    }
+    // Card 116: the tracks on screen together stack in track order, the first one topmost, each group by the edge its
+    // style is placed at (bottom: the last track at the edge and the others above it; top: the first at the edge and
+    // the others below it). A custom position is where its style says, never moved.
+    for (const render::CaptionPosition position : {render::CaptionPosition::Bottom, render::CaptionPosition::Top}) {
+        std::vector<std::size_t> group;
+        for (std::size_t i = 0; i < frames.size(); ++i) {
+            if (frames[i].style.position == position) {
+                group.push_back(i);
+            }
+        }
+        if (group.size() < 2) {
+            continue;
+        }
+        // Nearest the edge first.
+        std::vector<std::size_t> fromEdge = group;
+        if (position == render::CaptionPosition::Bottom) {
+            std::reverse(fromEdge.begin(), fromEdge.end());
+        }
+        for (std::size_t rank = 1; rank < fromEdge.size(); ++rank) {
+            render::CaptionFrame& frame = frames[fromEdge[rank]];
+            for (std::size_t nearer = 0; nearer < rank; ++nearer) {
+                const render::CaptionFrame& other = frames[fromEdge[nearer]];
+                frame.closer.push_back({other.text, other.style});
+            }
+        }
+    }
+    return frames;
 }
 
 namespace {
@@ -1883,6 +2515,62 @@ std::uint64_t mixKey(std::uint64_t key, std::uint64_t value) {
 int appendClip(const Level& level, const Clip& clip, Ticks time, int track, render::CanvasSize canvas,
                std::vector<LayerSpec>& unit, bool interpolate = true);
 
+/// 0.7 Motion Blur (model/MotionBlur.h): when `clip` has an enabled Motion Blur whose shutter angle is above 0, fills
+/// `spec.blur` with the clip's placement (its Motion at curve time, so a speed ramp lengthens the smear) at each instant of
+/// the shutter; leaves it empty otherwise, and when the layer hardly moves through the shutter. How many instants: one per
+/// pixel and a half the farthest corner of the layer's frame travels, at most the effect's Samples (an export) or Preview
+/// Samples (the monitors, `level.preview`). Geometry in sequence pixels, so a preview and an export agree.
+void attachMotionBlur(const Level& level, const Clip& clip, Ticks time, int track, render::CanvasSize canvas, LayerSpec& spec) {
+    spec.blur.clear();
+    if (!level.sequence || !level.sequence->frameRate.isValid()) {
+        return;
+    }
+    EffectStack played;
+    const std::optional<ShutterSettings> shutter =
+        motionBlurOf(playedStackOf(level.project, clip, played), curveTimeAround(clip, time));
+    if (!shutter) {
+        return;
+    }
+    const Ticks frame = framesToTicks(1, level.sequence->frameRate);
+    const auto placementAt = [&](double offsetFrames) {
+        const Ticks at = time + Ticks{static_cast<std::int64_t>(std::llround(offsetFrames * static_cast<double>(frame.value)))};
+        const auto other = layerOf(level.project, clip, at, track, canvas, level.preview, level.luts, level.pathSpan(),
+                                   level.sequence, false, true);
+        if (other) {
+            return other->transform;
+        }
+        render::LayerTransform gone = spec.transform;
+        gone.scale = 0.0; // the layer shows nothing at that instant
+        return gone;
+    };
+    // The farthest-travelling corner of the layer's frame along the shutter, probed at nine instants.
+    const render::CanvasSize shown = layerFrameOf(spec, canvas);
+    const double fw = shown.width;
+    const double fh = shown.height;
+    const auto cornersAt = [&](const render::LayerTransform& t) {
+        const render::Affine2D m = render::layerToCanvas(t, fw, fh, 1.0, canvas);
+        return std::array<render::Vec2, 4>{m.map({0.0, 0.0}), m.map({fw, 0.0}), m.map({0.0, fh}), m.map({fw, fh})};
+    };
+    constexpr int kProbeSegments = 8;
+    std::array<double, 4> path{};
+    auto previous = cornersAt(placementAt(shutter->phase / 360.0));
+    for (int i = 1; i <= kProbeSegments; ++i) {
+        const auto next = cornersAt(placementAt((shutter->phase + shutter->angle * i / kProbeSegments) / 360.0));
+        for (std::size_t c = 0; c < 4; ++c) {
+            path[c] += std::hypot(next[c].x - previous[c].x, next[c].y - previous[c].y);
+        }
+        previous = next;
+    }
+    const double travel = *std::max_element(path.begin(), path.end());
+    const int count = blurSampleCount(*shutter, std::isfinite(travel) ? travel : 0.0, level.preview != nullptr);
+    if (count < 2) {
+        return;
+    }
+    for (const double offset : shutterOffsets(*shutter, count)) {
+        spec.blur.push_back(placementAt(offset));
+    }
+}
+
 /// P.2: `spec` (a media layer with LayerSpec::interpolation) as its interpolation group: the head (a group on a canvas of
 /// the stream's displayed size, with the clip's placement, effects and redactions) and its two frames.
 void appendInterpolationGroup(LayerSpec spec, std::vector<LayerSpec>& unit) {
@@ -1900,6 +2588,8 @@ void appendInterpolationGroup(LayerSpec spec, std::vector<LayerSpec>& unit) {
     first.inputSpace = spec.inputSpace;
     first.fields = spec.fields; // 0.2: the frames are deinterlaced, not the group's canvas
     spec.fields = {};
+    first.external = std::move(spec.external); // 0.7: OpenFX effects process each frame, before they are mixed
+    spec.external.clear();
     LayerSpec second = first;
     second.interpolationSecond = true;
     // A first guess at the next frame (one nominal frame on); the decoders take the frame after the first one's.
@@ -1925,6 +2615,14 @@ struct Stabilization {
 
 std::optional<Stabilization> stabilizationOf(const ProjectState& project, const Clip& clip, Ticks curveTime,
                                             const VideoStreamInfo& stream) {
+    // 0.7 (card #107): a clip that shows whole frames (Frame Sampling) at another speed or rate holds each source frame for
+    // several timeline frames; the compensation analysed for that frame belongs to all of them, not to the time between two
+    // frames (interpolating the keys there would leave half of the shake in slow motion). Frame Blending and Optical Flow
+    // show in-between pictures and interpolate; a remapped clip is keyed per frame it shows (StabilizeCommands.cpp).
+    if (!clip.isRemapped() && !clip.isFreeze() && clip.timeInterpolation() == TimeInterpolation::FrameSampling &&
+        stream.frameRate.isValid()) {
+        curveTime = snapToFrame(curveTime, stream.frameRate);
+    }
     const EffectInstance* warp = nullptr;
     const EffectInstance* shutter = nullptr;
     EffectStack played; // fix F1A: a Master Clip Effect's stabilizer plays too (its keys are media time, as the clip's)
@@ -2019,6 +2717,8 @@ void appendStabilizerGroup(LayerSpec spec, const Stabilization& s, std::vector<L
     inner.inputSpace = spec.inputSpace; // the frame is read in the clip's input colour space inside the group too
     inner.fields = spec.fields;         // and deinterlaced there (0.2), not the group's canvas
     spec.fields = {};
+    inner.external = std::move(spec.external); // 0.7: OpenFX effects process the frame before it is warped
+    spec.external.clear();
     std::vector<LayerSpec> children;
     if (s.synthesizeEdges) {
         children.push_back(inner); // the frame as it is, behind
@@ -2227,6 +2927,8 @@ int appendClip(const Level& level, const Clip& clip, Ticks time, int track, rend
         if (!spec) {
             return -1;
         }
+        spec->nearest = clip.content().nearestNeighbor; // 0.7 (card #98): the group the wrappers make places the picture
+        attachMotionBlur(level, clip, time, track, canvas, *spec); // 0.7: the group the wrappers make is placed blurred too
         if (level.path) {
             spec->nestPath = level.path;
             spec->decodeKey = mixKey(level.pathKey, clip.id.value) | kNestedDecodeKeyBit;
@@ -2261,26 +2963,35 @@ int appendClip(const Level& level, const Clip& clip, Ticks time, int track, rend
     LayerSpec head;
     head.clip = clip.id;
     head.nested = true;
-    head.nestedCanvas = {nested->width, nested->height};
+    head.nestedCanvas = {nested->width, nested->height, sequencePixelAspect(*nested)};
     head.sourceTime = nestedTime;
     head.transform.position = {p.value(ParamId::PositionX, curveTime), p.value(ParamId::PositionY, curveTime)};
-    head.transform.scale = p.value(ParamId::Scale, curveTime) * // P.2: Scale to Frame Size
-                           scaleToFrameFactor(level.project, clip, canvas.width, canvas.height);
+    setMotionScale(head.transform, p, curveTime, // P.2: Scale to Frame Size
+                   scaleToFrameFactor(level.project, clip, canvas.width, canvas.height, canvas.pixelAspect));
     head.transform.rotationDegrees = p.value(ParamId::Rotation, curveTime);
     head.transform.anchor = {p.value(ParamId::AnchorX, curveTime), p.value(ParamId::AnchorY, curveTime)};
     head.opacity = std::clamp(p.value(ParamId::Opacity, curveTime), 0.0, 1.0);
     head.blend = clip.blendMode();
+    head.nearest = clip.content().nearestNeighbor; // 0.7 (card #98)
     head.track = track;
     head.nestPath = level.path;
     // 0.2: the nested canvas is progressive; Always Deinterlace and Flicker Removal still apply to it.
     head.fields = fieldRenderingOf(clip, nullptr, 0, level.sequence ? *level.sequence : progressiveSequence());
-    if (head.transform.scale == 0.0) {
+    if (!head.transform.hasArea()) {
         return -1;
     }
-    const double aspect = static_cast<double>(nested->width) / nested->height;
+    const double aspect = static_cast<double>(nested->width) * sequencePixelAspect(*nested) / nested->height;
     EffectContext context = effectContextOf(level.project, level.sequence, clip, nullptr, time, canvas);
     context.sourceTime = nestedTime;
     evaluateEffects(clip, curveTime, head.effects, head.bypassedEffects, level.luts, aspect, std::nullopt, &context);
+    {
+        // 0.7: Motion Blur smears the movement of a picture layer; a nested or multicam clip is a group, which it does not
+        // blur, so the effect counts as bypassed (the clip's badge says so) instead of being silently inert.
+        EffectStack played;
+        if (motionBlurOf(playedStackOf(level.project, clip, played), curveTime)) {
+            ++head.bypassedEffects;
+        }
+    }
 
     auto path = std::make_shared<std::vector<ClipId>>(level.path ? *level.path : std::vector<ClipId>{});
     path->push_back(clip.id);
@@ -2326,7 +3037,7 @@ int appendClip(const Level& level, const Clip& clip, Ticks time, int track, rend
 /// The layers of `tracks` (indices into sequence.videoTracks, V1 first) of one level at `time`, bottom to top.
 void evaluateLevel(const Level& level, const Sequence& sequence, Ticks time, std::span<const std::size_t> tracks,
                    std::vector<LayerSpec>& out) {
-    const render::CanvasSize canvas{sequence.width, sequence.height};
+    const render::CanvasSize canvas{sequence.width, sequence.height, sequencePixelAspect(sequence)};
     // Topmost track first: once an opaque layer covers the canvas, nothing below can be seen. Each track's layers (a
     // clip, a nested subtree, a transition's A then B) are one unit; units are appended bottom to top at the end.
     std::vector<std::vector<LayerSpec>> units;
@@ -2488,7 +3199,7 @@ void evaluateLevel(const Level& level, const Sequence& sequence, Ticks time, std
             // A track with effects is a group: what its effects make of the layer (a crop, a blur) may not cover.
             const VideoStreamInfo& stream = spec.item->info.video[static_cast<std::size_t>(spec.streamIndex)];
             const double par = pixelAspectOf(*spec.item, stream); // P.2: Interpret Footage's when set
-            covers = spec.opacity >= 1.0 && spec.blend == BlendMode::Normal && spec.effects.empty() &&
+            covers = spec.opacity >= 1.0 && spec.blend == BlendMode::Normal && spec.effects.empty() && spec.blur.empty() &&
                      stream.alpha == AlphaMode::None &&
                      coversCanvas(spec.transform, stream.width, stream.height, par, canvas);
         }
@@ -2543,7 +3254,8 @@ void evaluateVideoLayers(const ProjectState& project, const Sequence& sequence, 
     std::vector<std::size_t> tracks;
     tracks.reserve(sequence.videoTracks.size());
     for (std::size_t i = 0; i < sequence.videoTracks.size(); ++i) {
-        if (sequence.videoTracks[i] && sequence.videoTracks[i]->enabled) {
+        // 0.7 (card 106): the eye, and the solo of a video track (only soloed tracks show while any is soloed).
+        if (sequence.videoTracks[i] && videoTrackShown(sequence, *sequence.videoTracks[i])) {
             tracks.push_back(i);
         }
     }
@@ -2554,7 +3266,7 @@ void evaluateVideoLayers(const ProjectState& project, const Sequence& sequence, 
     if (!sequence.effects.empty() && !sequence.multicam && !out.empty()) {
         std::vector<render::LayerEffect> master;
         int bypassed = 0;
-        const render::CanvasSize canvas{sequence.width, sequence.height};
+        const render::CanvasSize canvas{sequence.width, sequence.height, sequencePixelAspect(sequence)};
         const EffectContext context = stageContextOf(project, sequence, time, canvas);
         evaluateEffectStack(sequence.effects, time, master, bypassed, &luts,
                             static_cast<double>(canvas.width) / std::max(1, canvas.height), std::nullopt, &context);
@@ -2566,9 +3278,10 @@ void evaluateVideoLayers(const ProjectState& project, const Sequence& sequence, 
         }
     }
     if (captions) {
-        if (auto caption = evaluateCaption(sequence, time, *captions, &project)) {
+        // One layer per caption track on screen (card 116: bilingual captions put several together).
+        for (render::CaptionFrame& caption : evaluateCaptions(sequence, time, *captions, &project)) {
             LayerSpec spec; // no clip, no media: drawn above every video track
-            spec.caption = std::move(*caption);
+            spec.caption = std::move(caption);
             spec.track = static_cast<int>(sequence.videoTracks.size());
             out.push_back(std::move(spec));
         }
@@ -2622,10 +3335,10 @@ render::LayerTransform transformForFrameHeight(const render::LayerTransform& tra
 std::vector<MotionRequest> morphCutRequests(const ProjectState& project, const Sequence& sequence,
                                             const PreviewSettings* preview) {
     std::vector<MotionRequest> out;
-    const render::CanvasSize canvas{sequence.width, sequence.height};
+    const render::CanvasSize canvas{sequence.width, sequence.height, sequencePixelAspect(sequence)};
     for (std::size_t i = 0; i < sequence.videoTracks.size(); ++i) {
         const TrackPtr& track = sequence.videoTracks[i];
-        if (!track || !track->enabled) {
+        if (!track || !videoTrackShown(sequence, *track)) {
             continue;
         }
         for (const Transition& tr : track->transitions) {
@@ -2657,6 +3370,8 @@ std::vector<MotionRequest> morphCutRequests(const ProjectState& project, const S
                 continue;
             }
             MotionRequest r{std::move(*pa), std::move(*pb), canvas};
+            const auto faceParam = std::ranges::find_if(tr.params, [](const EffectParam& p) { return p.key == "faceAware"; });
+            r.faceAware = faceParam != tr.params.end() ? faceParam->value.valueAt(Ticks{}) > 0.5 : true; // the descriptor's default: on
             if (r.isValid()) {
                 out.push_back(std::move(r));
             }

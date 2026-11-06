@@ -12,6 +12,8 @@
 #include "TimelineEditing.h"
 #include "TimelineView.h"
 
+#include <wabcut/command/Registry.h>
+
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
@@ -371,7 +373,7 @@ TEST_CASE("Palette: menus read whether a command can run now from commandState",
     // What the shell routes is ready; the registry's title and group come along.
     const QVariantMap workspace = state("window.workspace3");
     CHECK(workspace.value(QStringLiteral("enabled")).toBool());
-    CHECK(workspace.value(QStringLiteral("title")).toString() == QStringLiteral("Workspace: Audio"));
+    CHECK(workspace.value(QStringLiteral("title")).toString() == QStringLiteral("Workspace 3")); // positional (card 026); Premiere calls it Audio
     CHECK(workspace.value(QStringLiteral("group")).toString() == QStringLiteral("Window"));
     CHECK(state("file.saveCopy").value(QStringLiteral("enabled")).toBool());
     // The key of a typed edit (Add Marker) runs: enabled, although its palette row is the edit with prompts.
@@ -482,10 +484,10 @@ TEST_CASE("CommandBridge: finishing commands ask for values, never for raw ids; 
                 CHECK(prompt.endsWith(QStringLiteral("=timecode")));
         }
     }
-    REQUIRE(byName.contains(QStringLiteral("transition.set")));
-    CHECK_FALSE(byName.value(QStringLiteral("transition.set")).value(QStringLiteral("enabled")).toBool());
-    CHECK(byName.value(QStringLiteral("transition.set")).value(QStringLiteral("reason")).toString()
-          == QStringLiteral("Needs values the palette cannot ask for yet"));
+    // 0.7 (card 013): a command that needs an id the palette cannot ask for is not listed at all (it used to be listed
+    // disabled, ranked last); the catalog keeps it for agents and the CLI.
+    CHECK_FALSE(byName.contains(QStringLiteral("transition.set")));
+    REQUIRE(command::builtinCommands().find("transition.set") != nullptr);
     CHECK(prompts(QStringLiteral("clip.addEffect")).contains(QStringLiteral("effect=choice")));
     CHECK(prompts(QStringLiteral("clip.setParam")).contains(QStringLiteral("param=choice")));
     CHECK_FALSE(prompts(QStringLiteral("clip.setParam")).contains(QStringLiteral("effect=integer")));
@@ -518,6 +520,54 @@ TEST_CASE("CommandBridge: finishing commands ask for values, never for raw ids; 
     CHECK(controller.undoText() == QStringLiteral("Undo Speed/Duration"));
     REQUIRE(controller.undo());
     CHECK(controller.currentSequence()->findClip(clip)->clip().duration() == before);
+}
+
+TEST_CASE("CommandBridge: the palette lists no edit it can never run (card 013)", "[app][palette]") {
+    ProjectController controller;
+    CommandBridge bridge;
+    bridge.setController(&controller);
+    controller.selectAdjacentClip(1); // a selection, so none is disabled for want of one
+    const QVariantList rows = bridge.commands();
+    QStringList names;
+    for (const QVariant& c : rows)
+        names << c.toMap().value(QStringLiteral("name")).toString();
+
+    // (a) A required id or object parameter the palette cannot ask for: not listed, still in the catalog.
+    for (const char* name : {"transition.set", "clip.addEffect", "history.checkpoint", "history.name", "history.restore",
+                             "history.export"})
+        REQUIRE(command::builtinCommands().find(name) != nullptr);
+    CHECK_FALSE(names.contains(QStringLiteral("transition.set")));
+    // (b) A command that needs host services the bridge's engine does not pass: not listed.
+    for (const char* name : {"history.checkpoint", "history.name", "history.restore", "history.export", "history.delete",
+                             "history.clear", "review.add", "export.quick", "effects.savePreset", "effects.applyPreset"})
+        CHECK_FALSE(names.contains(QString::fromLatin1(name)));
+    // The keymap rows list what the edit list does not (offers() follows the list).
+    CHECK(CommandBridge::offers(QStringLiteral("marker.add")));
+    CHECK_FALSE(CommandBridge::offers(QStringLiteral("transition.set")));
+    CHECK_FALSE(CommandBridge::offers(QStringLiteral("history.checkpoint")));
+    // Edits it can run are still there, and nothing is listed disabled for want of values it cannot ask for.
+    CHECK(names.contains(QStringLiteral("marker.add")));
+    CHECK(names.contains(QStringLiteral("clip.setColor")));
+    for (const QVariant& c : rows) {
+        const QVariantMap row = c.toMap();
+        INFO(row.value(QStringLiteral("name")).toString().toStdString());
+        CHECK(row.value(QStringLiteral("reason")).toString() != QStringLiteral("Needs values the palette cannot ask for yet"));
+    }
+
+    // Every command the palette lists runs (a dry run with its own defaults) or fails for a reason about its values;
+    // none fails because the host passes no services. A listed command that did would show "The command failed".
+    for (const QVariant& c : rows) {
+        const QVariantMap row = c.toMap();
+        if (!row.value(QStringLiteral("enabled")).toBool())
+            continue;
+        const QString name = row.value(QStringLiteral("name")).toString();
+        const QVariantMap result = bridge.preview(name, bridge.defaults(name));
+        const QString detail = result.value(QStringLiteral("detail")).toString();
+        INFO(name.toStdString() << ": " << result.value(QStringLiteral("error")).toString().toStdString() << " / "
+                                << detail.toStdString());
+        CHECK_FALSE(detail.contains(QStringLiteral("this host")));
+        CHECK_FALSE(detail.contains(QStringLiteral("host provides")));
+    }
 }
 
 // ---- Accessible clip list -------------------------------------------------------------------------------------------

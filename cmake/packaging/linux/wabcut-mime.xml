@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The .wabcut project type for the desktop (freedesktop.org shared MIME-info): installed to share/mime/packages by
+     cmake/WabcutInstall.cmake, so a file manager shows Wabcut's icon name and offers Open With Wabcut (the launcher entry,
+     wabcut.desktop, lists the type in MimeType). A distribution package refreshes the database with
+     update-mime-database; the tar.gz and the AppImage do not install it, and Wabcut opens a project given on its
+     command line either way. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-wabcut-project">
+    <comment>Wabcut project</comment>
+    <glob pattern="*.wabcut"/>
+    <icon name="wabcut"/>
+  </mime-type>
+</mime-info>

@@ -1,6 +1,9 @@
 #include <wabcut/model/Effects.h>
 
+#include <wabcut/model/TitleOps.h>
+
 #include "EffectsLibrary.h"
+#include "EffectsAi.h"
 #include "EffectsMotion.h"
 #include "AudioEffectCatalog.h"
 
@@ -24,10 +27,12 @@ constexpr double kMaxPixels = 1e7;
 
 // --- Intrinsic effects: their parameters are ClipProperties (keys from the parameter table). ---------------
 
-constexpr std::array<EffectParamInfo, 6> kMotionParams{{
+constexpr std::array<EffectParamInfo, 8> kMotionParams{{
     {"motion.position.x", "Position X", U::Pixels, 0.0, -kMaxPixels, kMaxPixels},
     {"motion.position.y", "Position Y", U::Pixels, 0.0, -kMaxPixels, kMaxPixels},
     {"motion.scale", "Scale", U::Factor, 1.0, 0.0, 100.0},
+    {"motion.scaleWidth", "Scale Width", U::Factor, 1.0, 0.0, 100.0},         // 0.7 (card #12)
+    {"motion.uniformScale", "Uniform Scale", U::Amount, 1.0, 0.0, 1.0, false}, // 0.7: a switch, not keyframable
     {"motion.rotation", "Rotation", U::Degrees, 0.0, -1e6, 1e6},
     {"motion.anchor.x", "Anchor Point X", U::Pixels, 0.0, -kMaxPixels, kMaxPixels},
     {"motion.anchor.y", "Anchor Point Y", U::Pixels, 0.0, -kMaxPixels, kMaxPixels},
@@ -472,6 +477,9 @@ std::optional<std::string> effectDataProblem(const EffectData& entry) {
     if (entry.key.size() > kMaxEffectText) {
         return "a data key is longer than " + std::to_string(kMaxEffectText) + " bytes";
     }
+    if (!edit::isValidUtf8(entry.key)) {
+        return "a data key is not valid text";
+    }
     if (const std::vector<EffectPoint>* points = entry.points()) {
         if (points->size() > kMaxEffectPoints) {
             return "data " + entry.key + " has more than " + std::to_string(kMaxEffectPoints) + " points";
@@ -487,6 +495,8 @@ std::optional<std::string> effectDataProblem(const EffectData& entry) {
         }
     } else if (entry.text()->size() > kMaxEffectText) {
         return "data " + entry.key + " is longer than " + std::to_string(kMaxEffectText) + " bytes";
+    } else if (!edit::isValidUtf8(*entry.text())) {
+        return "data " + entry.key + " is not valid text (UTF-8)"; // a project file holds UTF-8 only
     }
     return std::nullopt;
 }
@@ -545,6 +555,7 @@ const EffectRegistry& EffectRegistry::builtin() {
     static const EffectRegistry registry([] {
         std::vector<EffectDescriptor> all = builtinDescriptors();
         detail::appendMotionDescriptors(all); // P.2: Morph Cut, Warp Stabilizer, Rolling Shutter Repair
+        detail::appendAiDescriptors(all);     // 0.7: AI Restore, AI Denoise
         return all;
     }());
     return registry;
@@ -553,9 +564,11 @@ const EffectRegistry& EffectRegistry::builtin() {
 namespace {
 
 struct ProviderSlot {
-    std::mutex mutex; // installs only (rare); find() reads the atomic
+    std::mutex mutex; // installs only (rare); find() reads the atomics
     std::vector<std::shared_ptr<const EffectDescriptorProvider>> installed;
     std::atomic<const EffectDescriptorProvider*> current{nullptr};
+    /// 0.7: the provider setSecondaryEffectDescriptorProvider installed, asked after `current`.
+    std::atomic<const EffectDescriptorProvider*> secondary{nullptr};
 };
 
 ProviderSlot& providerSlot() {
@@ -574,6 +587,15 @@ void setEffectDescriptorProvider(std::shared_ptr<const EffectDescriptorProvider>
     }
 }
 
+void setSecondaryEffectDescriptorProvider(std::shared_ptr<const EffectDescriptorProvider> provider) {
+    ProviderSlot& slot = providerSlot();
+    std::lock_guard lock(slot.mutex);
+    slot.secondary.store(provider.get(), std::memory_order_release);
+    if (provider) {
+        slot.installed.push_back(std::move(provider)); // kept: descriptors it returned stay valid
+    }
+}
+
 const EffectDescriptor* EffectRegistry::find(std::string_view id) const {
     for (const EffectDescriptor& d : m_descriptors) {
         if (d.id == id) {
@@ -581,7 +603,13 @@ const EffectDescriptor* EffectRegistry::find(std::string_view id) const {
         }
     }
     if (id.starts_with(kPluginEffectPrefix) && this == &builtin()) {
-        if (const EffectDescriptorProvider* provider = providerSlot().current.load(std::memory_order_acquire)) {
+        ProviderSlot& slot = providerSlot();
+        if (const EffectDescriptorProvider* provider = slot.current.load(std::memory_order_acquire)) {
+            if (const EffectDescriptor* d = provider->find(id)) {
+                return d;
+            }
+        }
+        if (const EffectDescriptorProvider* provider = slot.secondary.load(std::memory_order_acquire)) {
             return provider->find(id);
         }
     }

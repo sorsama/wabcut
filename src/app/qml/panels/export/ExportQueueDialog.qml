@@ -8,6 +8,8 @@ import QtQuick.Layouts
 // progress, Start Queue for the ones sent to it, pause / resume / cancel per job - its Watch Folders (media dropped into
 // a folder is exported with a preset into its Output folder, the source then moves into Source), and the CPU limit
 // preference for exports. Everything runs on ExportController's queue, one export at a time, in the background.
+// 0.7 (card 004): the History tab lists the exports that finished (the last 100, kept between sessions) with Show, Open
+// and Export Again (the same preset and settings on the project as it is now).
 WabcutDialog {
     id: dialog
     objectName: "exportQueueDialog"
@@ -20,9 +22,13 @@ WabcutDialog {
     property string watchError: ""
     property var picked: []
     property string addError: ""
+    property string historyError: ""
     readonly property var presetList: ExportController.presets.filter(p => p.category !== "hdr")
     function openOn(page) {
-        pageTabs.currentIndex = page === "watch" ? 1 : 0
+        pageTabs.currentIndex = page === "watch" ? 1 : page === "history" ? 2 : 0
+        if (page === "history")
+            ExportController.refreshHistory()
+        dialog.historyError = ""
         dialog.open()
     }
 
@@ -40,7 +46,11 @@ WabcutDialog {
         Layout.fillWidth: true
         compact: true
         tabs: true
-        model: [qsTr("Queue"), qsTr("Watch Folders")]
+        model: [qsTr("Queue"), qsTr("Watch Folders"), qsTr("History")]
+        onCurrentIndexChanged: {
+            if (currentIndex === 2)
+                ExportController.refreshHistory()
+        }
     }
 
     // ---- Queue ----
@@ -303,6 +313,163 @@ WabcutDialog {
             color: Theme.danger
             font.family: Theme.fontSans
             font.pixelSize: Theme.textSm
+        }
+    }
+
+    // ---- History (0.7, card 004) ----
+    ColumnLayout {
+        objectName: "exportHistoryPage"
+        visible: pageTabs.currentIndex === 2
+        Layout.fillWidth: true
+        spacing: Theme.space(2)
+
+        Text {
+            objectName: "exportHistoryEmpty"
+            Layout.fillWidth: true
+            visible: ExportController.history.length === 0
+            text: qsTr("No finished exports yet. Each export that finishes is listed here, so you can show it, open it, or export it again with the same settings.")
+            wrapMode: Text.Wrap
+            color: Theme.textTertiary
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.textSm
+        }
+
+        ListView {
+            id: historyList
+            objectName: "exportHistoryList"
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(contentHeight, Theme.space(90))
+            visible: count > 0
+            clip: true
+            spacing: Theme.space(2)
+            boundsBehavior: Flickable.StopAtBounds
+            model: ExportController.history
+            ScrollBar.vertical: ThinScrollBar {}
+            Accessible.role: Accessible.List
+            Accessible.name: qsTr("Export history")
+
+            delegate: Rectangle {
+                id: entry
+                required property var modelData
+                required property int index
+                objectName: "exportHistoryRow_" + entry.index
+                width: historyList.width - (historyList.ScrollBar.vertical && historyList.ScrollBar.vertical.visible ? Theme.space(2) : 0)
+                implicitHeight: entryRow.implicitHeight + Theme.space(3)
+                height: implicitHeight
+                radius: Theme.radiusField
+                color: Theme.sunken
+                border.width: Theme.hairline
+                border.color: Theme.border
+                Accessible.role: Accessible.ListItem
+                Accessible.name: entry.modelData.exists ? entry.modelData.title : qsTr("%1, the file is gone").arg(entry.modelData.title)
+
+                RowLayout {
+                    id: entryRow
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: Theme.space(3)
+                    anchors.rightMargin: Theme.space(2)
+                    spacing: Theme.space(2)
+
+                    Icon {
+                        Layout.alignment: Qt.AlignVCenter
+                        name: entry.modelData.exists ? "film" : "triangle-alert"
+                        size: Theme.iconSm
+                        color: entry.modelData.exists ? Theme.accentStroke : Theme.warning
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: Theme.space(30)
+                        spacing: 0
+                        Text {
+                            objectName: "exportHistoryTitle_" + entry.index
+                            Layout.fillWidth: true
+                            // The file name greyed when it is gone.
+                            text: entry.modelData.exists ? entry.modelData.title : qsTr("%1 (file not found)").arg(entry.modelData.title)
+                            elide: Text.ElideMiddle
+                            color: entry.modelData.exists ? Theme.textPrimary : Theme.textTertiary
+                            font.family: Theme.fontSans
+                            font.pixelSize: Theme.textSm
+                            font.weight: Font.Medium
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: [entry.modelData.presetName, entry.modelData.sequenceName, entry.modelData.whenText]
+                                      .filter(t => t !== "").join(" · ")
+                            elide: Text.ElideRight
+                            color: Theme.textTertiary
+                            font.family: Theme.fontSans
+                            font.pixelSize: Theme.textXs
+                        }
+                    }
+                    PillButton {
+                        objectName: "exportHistoryShow_" + entry.index
+                        compact: true
+                        variant: "ghost"
+                        iconName: "folder-open"
+                        text: qsTr("Show")
+                        tooltip: entry.modelData.exists ? qsTr("Show the file in %1").arg(ExportController.fileManagerName)
+                                                        : qsTr("The file is gone: show its folder in %1").arg(ExportController.fileManagerName)
+                        onClicked: dialog.historyError = ExportController.revealHistory(entry.index) ? "" : qsTr("The folder is gone too.")
+                    }
+                    PillButton {
+                        objectName: "exportHistoryOpen_" + entry.index
+                        compact: true
+                        variant: "ghost"
+                        iconName: "play"
+                        text: qsTr("Open")
+                        enabled: entry.modelData.exists
+                        tooltip: qsTr("Open the file with the system's player")
+                        onClicked: dialog.historyError = ExportController.openHistory(entry.index) ? "" : qsTr("The file was moved or deleted.")
+                    }
+                    PillButton {
+                        objectName: "exportHistoryAgain_" + entry.index
+                        compact: true
+                        variant: "secondary"
+                        iconName: "repeat"
+                        text: qsTr("Export Again")
+                        enabled: entry.modelData.canRepeat
+                        tooltip: entry.modelData.canRepeat ? qsTr("Export again with the same preset and settings")
+                                                           : qsTr("This export has no preset to repeat: export it from the Export panel")
+                        onClicked: {
+                            const job = ExportController.exportAgain(entry.index)
+                            dialog.historyError = job !== "" ? "" : ExportController.lastError
+                            if (job !== "")
+                                pageTabs.currentIndex = 0
+                        }
+                    }
+                    IconButton {
+                        objectName: "exportHistoryRemove_" + entry.index
+                        compact: true
+                        iconName: "x"
+                        tooltip: qsTr("Remove from the history")
+                        onClicked: ExportController.removeHistory(entry.index)
+                    }
+                }
+            }
+        }
+
+        Text {
+            objectName: "exportHistoryError"
+            Layout.fillWidth: true
+            visible: dialog.historyError !== ""
+            text: dialog.historyError
+            wrapMode: Text.Wrap
+            color: Theme.danger
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.textSm
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            visible: ExportController.history.length > 0
+            Item { Layout.fillWidth: true }
+            PillButton {
+                objectName: "exportHistoryClear"
+                variant: "ghost"
+                text: qsTr("Clear History")
+                onClicked: ExportController.clearHistory()
+            }
         }
     }
 

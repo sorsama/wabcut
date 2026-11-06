@@ -1,10 +1,12 @@
 #include "AudioMixerBridge.h"
 
 #include "BridgeIds.h"
+#include "EffectControls.h"
 #include "PlaybackBridge.h"
 #include "ProjectController.h"
 #include "TimelineView.h"
 #include "TranscriptBridge.h"
+#include "VoiceOverBridge.h"
 
 #include <wabcut/ai/AnalysisCache.h>
 #include <wabcut/ai/edit/TranscriptCommands.h>
@@ -27,6 +29,7 @@
 #include <QQmlEngine>
 #include <QQuickItem>
 #include <QQuickWindow>
+#include <QSet>
 #include <QTime>
 #include <QWindow>
 
@@ -37,6 +40,10 @@
 namespace wabcut::app {
 
 using command::Json;
+
+// r07 (AudioMixerEffects.cpp): a slot's hover details, and a track's clip effects (Enhance Speech).
+QString mixerEffectDetails(const EffectInstance& e, Ticks at);
+QVariantList mixerClipEffectsOf(const Track& track);
 
 namespace {
 
@@ -133,7 +140,8 @@ QVariantList effectsOf(const EffectStack& stack) {
                                {QStringLiteral("effect"), QString::fromStdString(e.effect)},
                                {QStringLiteral("name"), shortEffectName(e.effect)},
                                {QStringLiteral("enabled"), e.enabled},
-                               {QStringLiteral("summary"), effectSummary(e)}});
+                               {QStringLiteral("summary"), effectSummary(e)},
+                               {QStringLiteral("details"), mixerEffectDetails(e, Ticks{})}});
     }
     return out;
 }
@@ -217,6 +225,7 @@ AudioMixerBridge* AudioMixerBridge::create(QQmlEngine* qmlEngine, QJSEngine*) {
         mixer->setController(qmlEngine->singletonInstance<ProjectController*>("Wabcut", "ProjectController"));
         mixer->setPlayback(qmlEngine->singletonInstance<PlaybackBridge*>("Wabcut", "Playback"));
         mixer->setTranscripts(qmlEngine->singletonInstance<TranscriptBridge*>("Wabcut", "Transcript"));
+        mixer->setVoiceOver(qmlEngine->singletonInstance<VoiceOverBridge*>("Wabcut", "VoiceOver"));
     }
     return mixer;
 }
@@ -297,6 +306,7 @@ void AudioMixerBridge::rebuild() {
         std::map<QString, QVariantMap> rows; // shortName and colour by track key
         for (const QVariant& v : m_controller->audioTracks())
             rows[v.toMap().value(QStringLiteral("trackId")).toString()] = v.toMap();
+        QSet<QString> carriedGroups; // the track groups whose strip is shown by one of their members already
         for (std::size_t i = 0; i < seq->audioTracks.size(); ++i) {
             const Track& t = *seq->audioTracks[i];
             m_trackOrder.push_back(t.id);
@@ -312,14 +322,33 @@ void AudioMixerBridge::rebuild() {
                 {QStringLiteral("muted"), t.muted},
                 {QStringLiteral("solo"), t.solo},
                 {QStringLiteral("recordArmed"), t.recordArmed},
+                {QStringLiteral("hidden"), m_hiddenStrips.count(seq->id.value) != 0 && m_hiddenStrips.at(seq->id.value).count(key) != 0},
                 {QStringLiteral("gainDb"), t.volume.valueAt(m_controller->playhead())},
                 {QStringLiteral("pan"), t.pan.valueAt(m_controller->playhead())},
                 {QStringLiteral("automated"), t.volume.isCurve() || t.pan.isCurve()},
                 {QStringLiteral("automation"), automationMode(key)},
                 {QStringLiteral("meter"), static_cast<int>(i)},
                 {QStringLiteral("effects"), effectsOf(t.effects)},
+                {QStringLiteral("clipEffects"), mixerClipEffectsOf(t)}, // r07: Enhance Speech on its clips
             };
             addRouting(strip, t, *seq); // p02 audio: output and sends
+            // 0.7 (card 124): the track group the strip belongs to; the first strip of a collapsed group carries the group's
+            // own strip (MixerGroupStrip) and the others are folded away.
+            if (const TrackGroup* group = seq->trackGroupOf(t.id)) {
+                const QString groupKey = trackGroupKey(group->id);
+                strip.insert(QStringLiteral("groupId"), groupKey);
+                strip.insert(QStringLiteral("groupName"), QString::fromStdString(group->name));
+                strip.insert(QStringLiteral("groupColor"), group->colorIndex);
+                strip.insert(QStringLiteral("groupCollapsed"), group->collapsed);
+                // The group strip is shown by the first member that shows: hiding the first one (Show/Hide Tracks) must not take
+                // a folded group out of the mixer with it.
+                const bool first = !strip.value(QStringLiteral("hidden")).toBool() && !carriedGroups.contains(groupKey);
+                if (first)
+                    carriedGroups.insert(groupKey);
+                strip.insert(QStringLiteral("groupFirst"), first);
+                if (first)
+                    strip.insert(QStringLiteral("group"), m_controller->trackGroupInfo(groupKey));
+            }
             strips.append(strip);
         }
         const bool limiter = !seq->audioEffects.empty() && seq->audioEffects.back().effect == "wabcut.audio.limiter";
@@ -338,6 +367,13 @@ void AudioMixerBridge::rebuild() {
             m_submixOrder.push_back(t->id);
         submixes = buildSubmixes(*seq);
         outputs = buildOutputs(*seq);
+        const auto hiddenIn = m_hiddenStrips.find(seq->id.value);
+        for (QVariant& v : submixes) {
+            QVariantMap strip = v.toMap();
+            strip.insert(QStringLiteral("hidden"),
+                         hiddenIn != m_hiddenStrips.end() && hiddenIn->second.count(strip.value(QStringLiteral("key")).toString()) != 0);
+            v = strip;
+        }
     }
     updateFaderValues();
     if (strips == m_strips && master == m_master && submixes == m_submixes && outputs == m_outputs)
@@ -367,7 +403,9 @@ QVariantList AudioMixerBridge::effectTypes() const {
     // p02 audio: then the rest of the audio effects (Premiere's catalog), by category: "Delay and Echo › Analog Delay".
     std::vector<const EffectDescriptor*> rest;
     for (const EffectDescriptor& d : EffectRegistry::builtin().all()) {
-        if (d.kind != EffectKind::Audio || d.intrinsic
+        // r07: not the Essential Sound record either (isListedEffect): it describes a clip, and audio.addEffect refuses it
+        // on a track or the master, so picking it here added nothing.
+        if (d.kind != EffectKind::Audio || !isListedEffect(d)
             || std::ranges::any_of(kAudioEffects, [&](const char* id) { return d.id == id; }))
             continue;
         rest.push_back(&d);
@@ -841,7 +879,10 @@ void AudioMixerBridge::pollLoudness() {
                {QStringLiteral("shortTermText"), lufs(reading->shortTermLufs)},
                {QStringLiteral("integratedText"), lufs(reading->integratedLufs)},
                {QStringLiteral("truePeakText"), lufs(reading->truePeakDbtp)},
+               {QStringLiteral("range"), reading->rangeLu > 0.0 ? QVariant(reading->rangeLu) : QVariant()},
+               {QStringLiteral("rangeText"), reading->rangeLu > 0.0 ? QLocale().toString(reading->rangeLu, 'f', 1) : QStringLiteral("—")},
                {QStringLiteral("over"), std::isfinite(reading->truePeakDbtp) && reading->truePeakDbtp > targetTruePeak()}};
+        m_liveRange = reading->rangeLu;
         if (std::isfinite(reading->integratedLufs)) {
             const double delta = reading->integratedLufs - targetLufs();
             out.insert(QStringLiteral("deltaText"), std::abs(delta) < 0.05 ? tx("on the target")
@@ -849,6 +890,9 @@ void AudioMixerBridge::pollLoudness() {
                                                                 : tx("%1 LU below the target").arg(QLocale().toString(-delta, 'f', 1)));
         }
     }
+    if (!(reading && reading->frames > 0))
+        m_liveRange = 0.0;
+    updateRadar(false);
     if (out == m_liveLoudness)
         return;
     m_liveLoudness = out;
@@ -863,7 +907,10 @@ void AudioMixerBridge::resetLoudness() {
             player->resetLoudness();
     }
     m_liveLoudness = {{QStringLiteral("valid"), false}};
+    m_liveRange = 0.0;
+    m_radarSeen = 0;
     emit liveLoudnessChanged();
+    updateRadar(true);
 }
 
 QString AudioMixerBridge::addEffect(const QString& target, const QString& effectId) {
@@ -992,7 +1039,7 @@ void AudioMixerBridge::pollMeters() {
         if (!m || m->channels() <= 0)
             return std::nullopt;
         MeterReading r;
-        r.channels = std::min(kMeterChannels, m->channels()); // a 5.1 master meters six channels
+        r.channels = std::min(kMeterChannels, m->channels()); // a 5.1 master meters six channels, a 7.1 one eight
         for (int ch = 0; ch < r.channels; ++ch) {
             r.peak[static_cast<std::size_t>(ch)] = m->peak(ch);
             r.rms[static_cast<std::size_t>(ch)] = m->rms(ch);
@@ -1042,6 +1089,19 @@ void AudioMixerBridge::pollMeters() {
 }
 
 AudioMixerBridge::MeterLevels AudioMixerBridge::meter(const QString& key) const {
+    // 0.7 (card 032): Meter Input(s) Only, with the microphone open: the armed tracks show the input, the others the floor.
+    if (m_meterInputsOnly && key != QLatin1String("master")) {
+        if (const std::optional<MeterLevels> input = inputNow()) {
+            if (isArmedStrip(key))
+                return *input;
+            MeterLevels floor;
+            floor.channels = 2;
+            floor.peakDb.fill(-std::numeric_limits<double>::infinity());
+            floor.rmsDb = floor.peakDb;
+            floor.holdDb = floor.peakDb;
+            return floor;
+        }
+    }
     const auto it = m_levels.find(key);
     return it == m_levels.end() ? MeterLevels{} : it->second;
 }
@@ -1085,6 +1145,7 @@ void AudioMixerBridge::setTarget(const QString& target) {
     m_target = target;
     emit targetChanged();
     emit loudnessChanged();
+    updateRadar(true); // 0.7: the radar's target ring
 }
 
 void AudioMixerBridge::setCustomLufs(double lufs) {
@@ -1094,6 +1155,7 @@ void AudioMixerBridge::setCustomLufs(double lufs) {
     m_customLufs = lufs;
     emit targetChanged();
     emit loudnessChanged();
+    updateRadar(true);
 }
 
 double AudioMixerBridge::targetLufs() const {
@@ -1165,13 +1227,22 @@ void AudioMixerBridge::setDuckHold(double v) {
 }
 
 QString AudioMixerBridge::duckMode() const {
-    return m_duckIndex == 1 ? QStringLiteral("gameUnderVoice") : QStringLiteral("default");
+    return m_duckIndex == 2 ? QStringLiteral("autoMix") : m_duckIndex == 1 ? QStringLiteral("gameUnderVoice") : QStringLiteral("default");
+}
+
+void AudioMixerBridge::setDuckGate(bool on) {
+    if (on == m_duckGate)
+        return;
+    m_duckGate = on;
+    emit duckChanged();
 }
 
 void AudioMixerBridge::setDuckMode(const QString& mode) {
     int index = 0;
     if (mode == QLatin1String("gameUnderVoice"))
         index = 1;
+    else if (mode == QLatin1String("autoMix"))
+        index = 2;
     else if (mode != QLatin1String("default"))
         return;
     m_duckModeChosen = true; // the pick sticks until the current sequence changes
@@ -1200,6 +1271,7 @@ void AudioMixerBridge::updateDuckTracks() {
     }
     QStringList voice;
     QStringList game;
+    QStringList mix; // card 137: the dialogue-role tracks autoMix mixes
     bool gameNamed = false; // an audio track named for the game ("Game", "Desktop Audio", ...)
     if (seq) {
         const auto nameOf = [&](TrackId id) {
@@ -1216,6 +1288,10 @@ void AudioMixerBridge::updateDuckTracks() {
         for (const TrackId id : chosen.game)
             game << nameOf(id);
         for (const TrackPtr& t : seq->audioTracks) {
+            if (t->role == TrackRole::Dialogue)
+                mix << nameOf(t->id);
+        }
+        for (const TrackPtr& t : seq->audioTracks) {
             const edit::SourceTrackName named = edit::sourceTrackName(t->name);
             if (named.origin == edit::SourceTrackName::Origin::Recognised && named.name.starts_with("Game"))
                 gameNamed = true;
@@ -1229,7 +1305,7 @@ void AudioMixerBridge::updateDuckTracks() {
             emit toolSettingsChanged();
         }
     }
-    const QVariantMap tracks{{QStringLiteral("voice"), voice}, {QStringLiteral("game"), game}};
+    const QVariantMap tracks{{QStringLiteral("voice"), voice}, {QStringLiteral("game"), game}, {QStringLiteral("mix"), mix}};
     if (tracks != m_gameTracks) {
         m_gameTracks = tracks;
         changed = true;
@@ -1341,6 +1417,11 @@ void AudioMixerBridge::finishJob(const QString& kind, std::vector<command::Comma
         return;
     const Json& data = results.front().data;
 
+    if (kind.startsWith(QLatin1String("match"))) { // 0.7 (card 045): AudioMixerMatch.cpp
+        matchFinish(kind, results, baseRevision);
+        return;
+    }
+
     if (kind == QLatin1String("analyze")) {
         QVariantList rows;
         for (const Json& r : data.value("results", Json::array())) {
@@ -1394,13 +1475,23 @@ void AudioMixerBridge::finishJob(const QString& kind, std::vector<command::Comma
                                   {QStringLiteral("shortTermAt"), where("maxShortTermAt")},
                                   {QStringLiteral("truePeakAt"), where("truePeakAt")},
                                   {QStringLiteral("overs"), overs},
-                                  {QStringLiteral("overCount"), static_cast<int>(r.value("overCount", std::size_t{0}))}};
+                                  {QStringLiteral("overCount"), static_cast<int>(r.value("overCount", std::size_t{0}))},
+                                  // card 166: a very hot programme was measured above a raised floor (at least this many)
+                                  {QStringLiteral("oversTruncated"), r.value("oversTruncated", false)},
+                                  {QStringLiteral("oversAbove"), r.value("oversAbove", 0.0)}};
             rows.append(row);
             if (what == QLatin1String("mix")) {
                 QVariantMap mix = row;
                 mix.insert(QStringLiteral("whenText"), QLocale().toString(QTime::currentTime(), QLocale::ShortFormat));
                 m_mixLoudness = std::make_pair(mix, baseRevision);
+                // 0.7 (Loudness Radar): the programme's short-term loudness once a second, kept beside the row.
+                m_mixSeries.clear();
+                for (const Json& v : r.value("shortTermSeries", Json::array()))
+                    m_mixSeries.push_back(v.is_number() ? v.get<float>() : -std::numeric_limits<float>::infinity());
+                m_mixRange = r.value("loudnessRangeLu", 0.0);
+                m_mixSeriesRevision = baseRevision;
                 emit loudnessChanged();
+                updateRadar(true);
             }
         }
         m_report = rows;
@@ -1442,6 +1533,26 @@ void AudioMixerBridge::finishJob(const QString& kind, std::vector<command::Comma
         for (const Json& c : clips)
             keys += c.value("keys", 0);
         const double amount = std::abs(data.value("amountDb", duckAmount()));
+        if (data.contains("voices")) {
+            // card 137: "Host, Guest · 3 lowered stretches, 18 volume keyframes on 2 clips"
+            QStringList names;
+            for (const Json& t : data.value("tracks", Json::array())) {
+                const std::string name = t.value("name", std::string());
+                names << QString::fromStdString(name.empty() ? t.value("track", std::string()) : name);
+            }
+            const int stretches = static_cast<int>(data.value("regions", Json::array()).size());
+            p.undoLabel = tx("Auto-Mix Voices").toStdString();
+            p.title = tx("Lower the quiet microphones by %1 dB").arg(QLocale().toString(amount, 'f', 1));
+            p.info = tx("%1 · %n lowered stretch(es), %2 volume keyframes on %3 clip(s)", "", stretches)
+                         .arg(names.join(QStringLiteral(", ")))
+                         .arg(keys)
+                         .arg(clips.size());
+            p.rows.append(QVariantMap{{QStringLiteral("target"), tx("Lowered stretches")}, {QStringLiteral("value"), stretches}});
+            p.rows.append(QVariantMap{{QStringLiteral("target"), tx("Volume keyframes")}, {QStringLiteral("value"), keys}});
+            showDuckPreview(*p.preview);
+            setPending(std::move(p));
+            return;
+        }
         if (data.value("preset", std::string()) == "gameUnderVoice") {
             // 0.4: "Mic → ducks Game, Music · 4 speech regions, 12 volume keyframes on 2 clips"
             const auto names = [](const Json& tracks) {
@@ -1493,7 +1604,7 @@ QString AudioMixerBridge::analyze(const QString& scope) {
     command::CommandRequest request;
     request.command = "audio.loudness";
     // 0.6 (#54): the overs above the delivery ceiling the target uses.
-    request.params = Json{{"targets", targets}, {"oversAbove", targetTruePeak()}};
+    request.params = Json{{"targets", targets}, {"oversAbove", targetTruePeak()}, {"series", true}};
     return startJob(QStringLiteral("analyze"), {request});
 }
 
@@ -1565,9 +1676,14 @@ QString AudioMixerBridge::previewNormalize(const QString& scope) {
 
 QString AudioMixerBridge::previewAutoDuck() {
     command::CommandRequest request;
-    request.command = "audio.autoDuck";
+    request.command = m_duckIndex == 2 ? "audio.autoMix" : "audio.autoDuck";
     const DuckTiming& timing = m_duckTiming[static_cast<std::size_t>(m_duckIndex)];
     request.params = Json{{"amount", timing.amount}, {"attack", timing.attack}, {"release", timing.release}, {"hold", timing.hold}};
+    if (m_duckIndex == 2) {
+        // card 137: every dialogue-role track is a voice; each one's microphone goes down while another speaks.
+        request.params["gate"] = m_duckGate;
+        return startJob(QStringLiteral("autoDuck"), {request});
+    }
     if (m_duckIndex == 1) {
         // 0.4: the gaming preset picks the voice and the game by track name (the timing sent still wins).
         request.params["preset"] = "gameUnderVoice";

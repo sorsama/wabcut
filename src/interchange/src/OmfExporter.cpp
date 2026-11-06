@@ -25,6 +25,7 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <numeric>
 
@@ -472,6 +473,37 @@ struct OmfWriter {
     }
 };
 
+/// What the container holds beyond the audio, upper bound per object: Bento TOC entries, mobs, slots and components.
+constexpr std::uint64_t kContainerBase = 256 * 1024;
+constexpr std::uint64_t kContainerPerObject = 2 * 1024;
+/// A rendered file's header (WAV: 44 bytes; AIFF-C: about 100).
+constexpr std::uint64_t kAudioFileHeader = 128;
+
+/// The size of an Embed export from the plan alone (nothing is rendered yet): every rendered file's header and samples
+/// plus a generous allowance for the structure. Bento::Builder::emit still checks the real size as a backstop.
+std::uint64_t embeddedContainerBytes(const audiopost::Plan& plan) {
+    std::uint64_t bytes = kContainerBase;
+    std::uint64_t objects = 0;
+    for (const audiopost::Source& s : plan.sources) {
+        ++objects;
+        if (s.rendered) {
+            bytes += kAudioFileHeader + static_cast<std::uint64_t>(std::max<std::int64_t>(s.length, 0)) *
+                                            static_cast<std::uint64_t>(std::max(s.bits, 8) / 8);
+        }
+    }
+    for (const audiopost::PlanTrack& t : plan.tracks) {
+        objects += 4 + 4 * t.clips.size() + t.fades.size();
+    }
+    return bytes + objects * kContainerPerObject;
+}
+
+std::string gigabytes(std::uint64_t bytes) {
+    const double gb = static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
+    char text[32];
+    std::snprintf(text, sizeof text, "%.1f", gb);
+    return std::string(text) + " GB";
+}
+
 } // namespace
 
 } // namespace detail
@@ -537,6 +569,17 @@ std::expected<AudioPostResult, Error> exportOmfToFile(const ProjectState& projec
     constexpr std::int64_t kMax32 = std::numeric_limits<std::int32_t>::max();
     if (plan->length > kMax32 || plan->lengthFrames > kMax32 || plan->startTimecodeFrames > kMax32) {
         return std::unexpected(Error{ErrorCode::Unsupported, "The sequence is too long for OMF (32-bit sample counts)"});
+    }
+    // Card 160: the 2 GB container limit is known from the plan, so refuse before anything is rendered (and in the
+    // dry run, so the export dialog's preview can tell too).
+    if (options.audio.files == AudioPostFiles::Embed) {
+        const std::uint64_t embedded = embeddedContainerBytes(*plan);
+        if (embedded > static_cast<std::uint64_t>(kMax32)) {
+            return std::unexpected(Error{ErrorCode::Unsupported,
+                                         "The embedded audio would make the OMF file about " + gigabytes(embedded) +
+                                             ", and OMF files cannot be larger than 2 GB (what OMF readers take): use Separate "
+                                             "Audio instead of Embed Audio"});
+        }
     }
     if (host.dryRun) {
         result.tracks = plan->tracks.size();

@@ -7,12 +7,30 @@ import QtQuick.Controls.Basic
 // and state, and its spoken name says all of it (ProjectController.clipList). The list is one tab stop:
 //   ↑ / ↓ move between clips (Home / End: first / last), Enter or Space selects the clip and moves the playhead to it,
 //   Ctrl/⌘+Space adds it to the selection, Delete removes the selected clips, Esc goes back to the lanes.
+//   0.7 (card 008): the Menu key or Shift+F10 opens the clip menu of the current row (the row's clip is selected first,
+//   unless it already is part of the selection).
 FocusScope {
     id: root
 
     objectName: "timelineList"
     signal closeRequested()
     signal revealRequested(string clipId)
+    /// 0.7 (card 008): the Menu key / Shift+F10 on a row: the clip menu for `clipId` at `at` (this list's coordinates).
+    signal menuRequested(string clipId, point at)
+
+    /// The clip menu of the current row, from the keyboard. False without a current row.
+    function openMenuForCurrent(): bool {
+        const row = list.currentIndex
+        const clip = row >= 0 ? ProjectController.clipList.clipIdAt(row) : ""
+        if (clip === "")
+            return false
+        if (ProjectController.selectedClips.indexOf(clip) < 0)
+            ProjectController.selectClip(clip, ProjectController.Replace)
+        const item = list.itemAtIndex(row)
+        const point = item ? list.mapFromItem(item, Theme.space(4), item.height / 2) : Qt.point(Theme.space(4), list.height / 2)
+        root.menuRequested(clip, root.mapFromItem(list, point.x, point.y))
+        return true
+    }
 
     function focusList() {
         list.forceActiveFocus(Qt.TabFocusReason)
@@ -91,7 +109,12 @@ FocusScope {
 
         // Which keys the list owns: unmodified ones, and Ctrl/⌘+Space (add to the selection). Modified keys stay
         // shortcuts: Shift+Delete is Ripple Delete (review P2-41).
+        function isMenuKey(event: KeyEvent): bool {
+            return event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier) !== 0)
+        }
         function owns(event: KeyEvent): bool {
+            if (list.isMenuKey(event))
+                return true
             const mods = event.modifiers & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
             if (event.key === Qt.Key_Space)
                 return (mods & ~(Qt.ControlModifier | Qt.MetaModifier)) === 0
@@ -102,6 +125,10 @@ FocusScope {
         Keys.onPressed: event => {
             if (!list.owns(event))
                 return
+            if (list.isMenuKey(event)) {
+                event.accepted = root.openMenuForCurrent()
+                return
+            }
             const add = (event.modifiers & (Qt.ControlModifier | Qt.MetaModifier)) !== 0
             switch (event.key) {
             case Qt.Key_Return:

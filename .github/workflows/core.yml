@@ -40,18 +40,17 @@ jobs:
             name: gcc-14
             cc: gcc-14
             cxx: g++-14
-            # Known Linux/macOS gaps, not yet brought up (Wabcut is developed and tested on Windows; README "Project
-            # status"): the local AI helper's port-conflict guard, the search index's saved graph, the recorded
-            # llama-server arguments (also 0.6's hybrid-GPU pinning test, which reads them) and transcript corrections (0.2: and the transcript's Find and Replace, which
-            # corrects words the same way) fail off Windows. Every other test must pass.
-            ctest_exclude: "Managed local helper lifecycle|HNSW graph agrees|llama-server starts with the tier context|llama-server on a hybrid-graphics machine is pinned|Transcript corrections apply on top|transcript.find lists the matches|transcript.findReplace corrects every match"
+            # Known Linux gaps: seven tests that fail off Windows for a cause nobody has fixed yet, each with its reason in
+            # tests/platform-gaps.json (tools/ci-known-gaps.py turns the table into the exclusion). They are left out of
+            # the gate, run apart ("Known-gap tests") so their failure output is in the log, and every other test must pass.
+            gaps: linux
           - os: macos-15
             name: llvm
             llvm: true
             # The same Homebrew LLVM setup as unix-full: its clang, its libc++ and the run-time path to it.
             configure: -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/macos-llvm.cmake
-            # Known gaps off Windows, as on Linux above.
-            ctest_exclude: "Managed local helper lifecycle|HNSW graph agrees|llama-server starts with the tier context|llama-server on a hybrid-graphics machine is pinned"
+            # Known gaps off Windows, as on Linux above (four of the seven).
+            gaps: macos
     name: core (${{ matrix.os }}, ${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     # A cold MSVC build of the core took about 43 minutes with debug information; the compiler cache makes later runs
@@ -161,10 +160,24 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          if [ -n "${{ matrix.ctest_exclude }}" ]; then
-            python3 tools/ci-test.py --build-dir build/core -- --preset core -E "${{ matrix.ctest_exclude }}"
+          exclude="$(python3 tools/ci-known-gaps.py "${{ matrix.gaps }}")"
+          if [ -n "$exclude" ]; then
+            python3 tools/ci-test.py --build-dir build/core -- --preset core -E "$exclude"
           else
             python3 tools/ci-test.py --build-dir build/core -- --preset core
+          fi
+
+      # The known-gap tests (tests/platform-gaps.json) run on their own, never failing the job: their output says why they
+      # fail here, and a run where they all pass says the table can lose them.
+      - name: Known-gap tests (information only)
+        if: ${{ !cancelled() && runner.os != 'Windows' && matrix.gaps != '' }}
+        shell: bash
+        run: |
+          gaps="$(python3 tools/ci-known-gaps.py "${{ matrix.gaps }}")"
+          if ctest --preset core -R "$gaps" --output-on-failure; then
+            echo "::notice title=Known gaps::every known-gap test passed on ${{ matrix.gaps }}: remove them from tests/platform-gaps.json"
+          else
+            echo "::notice title=Known gaps::some known-gap tests still fail on ${{ matrix.gaps }} (the reasons are in tests/platform-gaps.json)"
           fi
 
       # A failed toolchain check says only that it failed: the configure log has the compiler's own error.

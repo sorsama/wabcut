@@ -3,6 +3,7 @@
 #include "AudioCommandHelpers.h"
 
 #include <wabcut/audio/edit/AudioAnalysis.h>
+#include <wabcut/audio/edit/AutoMix.h>
 #include <wabcut/audio/edit/Ducking.h>
 #include <wabcut/audio/edit/EssentialSound.h>
 #include <wabcut/audio/edit/GameAudio.h>
@@ -17,6 +18,7 @@
 #include <wabcut/model/Resolve.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <exception>
@@ -363,6 +365,14 @@ CommandOutput loudness(ExecutionContext& c) {
         const LoudnessStats stats = measureOrFail(c, services, c.state(), t.target, range);
         Json r = statsJson(stats);
         r.update(whereJson(c, stats, oversAbove));
+        if (c.boolean("series", false)) { // 0.7 (Loudness Radar): the short-term loudness once a second from the start
+            Json series = Json::array();
+            for (const float v : stats.shortTerm) {
+                series.push_back(std::isfinite(v) ? Json(std::round(static_cast<double>(v) * 10.0) / 10.0) : Json(nullptr));
+            }
+            r["shortTermSeries"] = std::move(series);
+            r["shortTermSeriesSeconds"] = 1;
+        }
         r["target"] = t.label;
         results.push_back(std::move(r));
     }
@@ -584,6 +594,103 @@ CommandOutput autoDuck(ExecutionContext& c) {
                     {"preset", preset},
                     {"dialogue", duckTracksJson(c, dialogue)},
                     {"music", duckTracksJson(c, music)}};
+    return out;
+}
+
+// ---- Auto-mix of several voices (card 137) ---------------------------------------------------------------------
+
+CommandOutput autoMix(ExecutionContext& c) {
+    // The voices: the given tracks, else the dialogue-role ones. Fewer than two is not a mix.
+    const std::vector<TrackId> voices = tracksOrRole(c, "tracks", TrackRole::Dialogue);
+    if (voices.size() < 2) {
+        fail(ErrorCode::InvalidParams,
+             "auto-mix needs at least two voice tracks: give the microphone tracks the dialogue role (track.setRole) or pass "
+             "\"tracks\"",
+             Json{{"path", "/tracks"}});
+    }
+    AutoMixOptions options;
+    options.amountDb = c.has("amount") ? c.number("amount") : options.amountDb;
+    options.attack = secondsOr(c, "attack", options.attack);
+    options.release = secondsOr(c, "release", options.release);
+    options.hold = secondsOr(c, "hold", options.hold);
+    options.lead = secondsOr(c, "lead", options.lead);
+    options.minSpeech = secondsOr(c, "minSpeech", options.minSpeech);
+    options.gate = c.boolean("gate", false);
+    const SpeechSource source = speechSourceFromString(c.string("source", "auto")).value_or(SpeechSource::Auto);
+    const auto range = rangeOf(c);
+    AudioServices& services = servicesOf(c, false, true);
+
+    // Each voice's own speech: one detection per track, so a voice is known by what its microphone carries.
+    std::vector<std::vector<TimeRange>> speech;
+    for (const TrackId track : voices) {
+        c.checkpoint("finding speech on " + c.trackLabel(track));
+        const std::array<TrackId, 1> one{track};
+        auto found = services.speech->speech(c.state(), c.sequenceId(), one, source, range, c.control());
+        if (!found) {
+            fail(found.error().code == wabcut::ErrorCode::Cancelled ? ErrorCode::Cancelled : ErrorCode::EditRejected,
+                 "speech detection failed: " + found.error().message);
+        }
+        speech.push_back(std::move(*found));
+    }
+    const TimeRange span = range ? *range : TimeRange::fromStartEnd(Ticks{}, c.sequence().contentEnd());
+    const DuckingOptions written = duckingOptionsOf(options);
+
+    CommandOutput out;
+    ProjectState state = c.state();
+    Json clips = Json::array();
+    Json perVoice = Json::array();
+    Json allRegions = Json::array();
+    std::size_t lowered = 0;
+    for (std::size_t v = 0; v < voices.size(); ++v) {
+        const TrackId trackId = voices[v];
+        const std::string label = c.trackLabel(trackId);
+        const Track* track = sequenceIn(state, c.sequenceId()).findTrack(trackId);
+        if (track == nullptr || track->kind != TrackKind::Audio) {
+            continue;
+        }
+        const std::vector<DuckRegion> regions = autoMixRegions(speech, v, options, span);
+        Json regionRows = duckRegionsJson(c, regions);
+        for (Json& r : regionRows) {
+            Json tagged = r;
+            tagged["track"] = label;
+            allRegions.push_back(std::move(tagged));
+        }
+        Json voiceClips = Json::array();
+        if (track->locked) {
+            out.warnings.push_back(label + " is locked: not lowered");
+        } else if (!regions.empty()) {
+            std::vector<ClipId> ids;
+            for (const Clip& clip : track->clips) {
+                ids.push_back(clip.id);
+            }
+            for (const ClipId id : ids) {
+                if (Json row = duckClip(c, state, id, label, regions, written, range); !row.is_null()) {
+                    voiceClips.push_back(row);
+                    clips.push_back(std::move(row));
+                }
+            }
+        }
+        lowered += regions.size();
+        perVoice.push_back(Json{{"track", label},
+                                {"name", track->name},
+                                {"speechRuns", mergedRanges(speech[v]).size()},
+                                {"regions", std::move(regionRows)},
+                                {"clips", std::move(voiceClips)}});
+    }
+    const bool anySpeech = std::any_of(speech.begin(), speech.end(), [](const auto& s) { return !s.empty(); });
+    if (!anySpeech) {
+        out.warnings.push_back("no speech found on the voice tracks");
+    } else if (lowered == 0) {
+        out.warnings.push_back("the voices never speak apart: nothing was lowered");
+    }
+    out.state = std::move(state);
+    out.data = Json{{"voices", std::move(perVoice)},
+                    {"regions", std::move(allRegions)},
+                    {"clips", std::move(clips)},
+                    {"amountDb", options.amountDb},
+                    {"source", std::string(toString(source))},
+                    {"gate", options.gate},
+                    {"tracks", duckTracksJson(c, voices)}};
     return out;
 }
 
@@ -1282,7 +1389,9 @@ void registerAudioCommands(command::CommandRegistry& registry) {
                    "(dBTP), sample peak, loudest momentary and short-term LUFS, and where they are (maxMomentaryAt, "
                    "maxShortTermAt: where the loudest 400 ms / 3 s window starts; truePeakAt: the 100 ms block of the "
                    "true peak; each a timecode and ticks on the timeline) with the true-peak overs above \"oversAbove\" "
-                   "(default -1 dBTP; at most 200 listed, overCount counts them all). Targets: the mix (with mute/solo "
+                   "(default -1 dBTP; at most 200 listed, overCount counts them all; a programme with more than 100,000 "
+                   "blocks above -6 dBTP keeps only its loudest, so \"oversAbove\" rises to the ceiling counted and "
+                   "\"oversTruncated\" is true). Targets: the mix (with mute/solo "
                    "and the master effects: what export writes), a track (its clips and track effects) or a clip on its "
                    "own.",
                    Capability::MediaAnalysis,
@@ -1290,6 +1399,9 @@ void registerAudioCommands(command::CommandRegistry& registry) {
                                                                {"description", "\"mix\", {\"clip\": id} or {\"track\": \"A1\"}."}},
                                                           "What to measure (default: the mix).", 1)},
                                  {"oversAbove", schema::number("List true-peak overs above this ceiling in dBTP (default -1; -6..0).", -6.0, 0.0)},
+                                 {"series", schema::boolean("0.7: also list the short-term (3 s) loudness once a second from the "
+                                                            "start (shortTermSeries, LUFS, null where unknown): what the "
+                                                            "Loudness Radar draws.")},
                                  {"from", rangeFrom},
                                  {"to", rangeTo}}),
                    Json{{"targets", Json::array({"mix", Json{{"track", "A1"}}})}}, {}, loudness});
@@ -1345,6 +1457,30 @@ void registerAudioCommands(command::CommandRegistry& registry) {
                                  {"from", rangeFrom},
                                  {"to", rangeTo}}),
                    Json{{"amount", -15}, {"release", 1.0}}, {}, autoDuck});
+    add(registry, {"audio.autoMix", 1, "Auto-Mix Voices",
+                   "Levels a multi-microphone recording (podcast, interview, co-op stream): finds speech on each voice track "
+                   "and lowers the volume of the microphones whose speaker is silent while someone else talks, with "
+                   "keyframes on that track's clips. A voice is never lowered under its own words (it stays on for \"hold\" "
+                   "after its last word, and its microphone is back up \"lead\" before its next first word, also when it "
+                   "starts talking over someone); where both speak nothing is lowered; short pauses are bridged. With "
+                   "\"gate\" a microphone is also lowered while nobody speaks. The voice tracks are \"tracks\" (default: the "
+                   "dialogue-role tracks, at least two). Replaces those clips' volume keyframes in the range (like "
+                   "audio.autoDuck); the keys stay editable. The report lists each voice's speech runs, lowered regions and "
+                   "clips. One undo step; dryRun previews it.",
+                   Capability::EditSequence,
+                   withSequence({{"tracks", schema::array(trackParam("A track."), "The voice tracks, one per microphone (default: the dialogue-role tracks; at least two).", 2)},
+                                 {"amount", schema::number("How far a silent microphone goes down, dB (default -12).", -60.0, 0.0)},
+                                 {"attack", secondsParam("Seconds to go down (default 0.1).", 0.0, 10.0)},
+                                 {"release", secondsParam("Seconds to come back up (default 0.5).", 0.0, 10.0)},
+                                 {"hold", secondsParam("Seconds a voice stays on after its last word (default 0.4).", 0.0, 10.0)},
+                                 {"lead", secondsParam("A microphone is back up this long before its speaker's first word (default 0.08).", 0.0, 5.0)},
+                                 {"minSpeech", secondsParam("Ignore speech shorter than this: a cough, \"mm\" (default 0.2).", 0.0, 5.0)},
+                                 {"gate", schema::boolean("Also lower a microphone while nobody is speaking (default false).")},
+                                 {"source", schema::enumeration({"auto", "transcript", "energy"},
+                                                                "Where speech is found (default auto: transcripts, else the audio level).")},
+                                 {"from", rangeFrom},
+                                 {"to", rangeTo}}),
+                   Json{{"tracks", Json::array({"A1", "A2"})}, {"amount", -15}}, {}, autoMix});
     add(registry, command::runsModel({"audio.enhanceSpeech", 1, "Enhance Speech",
                    "Studio-quality dialogue (Premiere's Enhance Speech, Resolve's Voice Isolation): renders each clip's media "
                    "with DeepFilterNet3 on this computer (no audio leaves it; the model downloads on first use), records the "
@@ -1395,6 +1531,8 @@ void registerAudioCommands(command::CommandRegistry& registry) {
     registerChannelCommands(registry);        // A.9: audio channels, split to mono, track formats, 5.1
     registerSubmixCommands(registry);         // p02 audio: submix tracks, track outputs and sends
     registerAutoTagCommands(registry);        // p02 audio: audio.autoTag
+    registerMatchCommands(registry);          // 0.7: audio.eqMatch, audio.eqMatchReset, audio.levelMatch
+    registerSpectralRepairCommands(registry); // 0.7: audio.spectralAttenuate / Heal / NoiseFloor / RemoveTone, ...Remove, ...Options, ...Edits
 }
 
 } // namespace wabcut::audio::edit

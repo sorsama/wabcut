@@ -4,6 +4,7 @@
 #include "TimelineFixture.h"
 
 #include <wabcut/model/ChangeSet.h>
+#include <wabcut/model/GraphicJson.h>
 #include <wabcut/model/GraphicOps.h>
 #include <wabcut/model/GraphicResolve.h>
 #include <wabcut/model/Merge.h>
@@ -13,6 +14,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -694,4 +696,152 @@ TEST_CASE("Merging revisions merges templates by id and the brand kit as one obj
     const auto chosen = mergeProjects(base, mineKit, theirs, {{"brandKit", MergeChoice::Theirs}});
     REQUIRE(chosen);
     CHECK(chosen->merged.brandKit == theirs.brandKit);
+}
+
+// ---- Keys on template fields (0.7, card 71) -----------------------------------------------------------------------------
+
+namespace {
+
+const DrawItem& itemOf(const DrawList& list, std::uint32_t layer) {
+    const auto it = std::find_if(list.items.begin(), list.items.end(), [&](const DrawItem& i) { return i.layer == layer; });
+    REQUIRE(it != list.items.end());
+    return *it;
+}
+
+FieldValue colour(double r, double g, double b) {
+    FieldValue v;
+    v.color = GraphicColor{{r, g, b, 1.0}, {}};
+    return v;
+}
+
+} // namespace
+
+TEST_CASE("A template colour field with keys blends over the clip and is drawn that way (card 71)", "[model][graphics][templates][keys]") {
+    Timeline tl(kPicture);
+    const GraphicTemplate t = *edit::makeTemplate(lowerThird(tl.media('A')), "lower-third", "Lower third", lowerThirdFields(), seconds(4));
+    const auto placed = ok(edit::instantiateTemplate(tl.state, tl.seq, tl.track("V2"), f(0), std::nullopt, t));
+    const ClipId clip = placed.placed[0];
+
+    auto keyed = ok(edit::setTemplateFieldKey(placed.state, tl.seq, clip, "boxColor", Ticks{}, colour(1, 0, 0)));
+    keyed = ok(edit::setTemplateFieldKey(keyed.state, tl.seq, clip, "boxColor", seconds(2), colour(0, 0, 1)));
+    keyed = ok(edit::setTemplateFieldKey(keyed.state, tl.seq, clip, "boxColor", seconds(3), colour(0, 1, 0), Interpolation::Hold));
+    const Graphic& g = graphicOf(keyed.state, tl.seq, clip);
+    const TemplateField& field = g.instance->fields[2];
+    REQUIRE(field.id == "boxColor");
+    REQUIRE(field.keys.size() == 3);
+    CHECK(field.keys[1].time == seconds(2));
+    CHECK(hasFieldKeys(g));
+
+    // The value at a time: before the first key the first's, blended between two Linear keys, held after a Hold key.
+    CHECK(fieldValueAt(field, Ticks{}).color.rgba == std::array<double, 4>{1, 0, 0, 1});
+    const auto half = fieldValueAt(field, seconds(1)).color.rgba;
+    CHECK(half[0] == Approx(0.5));
+    CHECK(half[2] == Approx(0.5));
+    CHECK(fieldValueAt(field, seconds(2)).color.rgba == std::array<double, 4>{0, 0, 1, 1});
+    CHECK(fieldValueAt(field, seconds(2.5)).color.rgba[2] == Approx(0.5)); // 2 s -> 3 s, linear
+    CHECK(fieldValueAt(field, seconds(3.5)).color.rgba == std::array<double, 4>{0, 1, 0, 1}); // after the last key
+
+    // Preview and export draw it: the box layer's fill at 1 s is the blend, at 0 the first key.
+    const auto at = [&](double s) { return itemOf(resolveGraphic(g, seconds(s)), 1).fill.color; };
+    CHECK(at(0.0)[0] == Approx(1.0));
+    CHECK(at(1.0)[0] == Approx(0.5));
+    CHECK(at(1.0)[2] == Approx(0.5));
+    CHECK(at(2.0)[2] == Approx(1.0));
+    // A graphic without keys is drawn as it was.
+    CHECK(withFieldKeysAt(graphicOf(placed.state, tl.seq, clip), Ticks{}) == graphicOf(placed.state, tl.seq, clip));
+
+    // A key at the same time is replaced; removing a key leaves the others.
+    const auto replaced = ok(edit::setTemplateFieldKey(keyed.state, tl.seq, clip, "boxColor", seconds(2), colour(1, 1, 0)));
+    REQUIRE(graphicOf(replaced.state, tl.seq, clip).instance->fields[2].keys.size() == 3);
+    CHECK(graphicOf(replaced.state, tl.seq, clip).instance->fields[2].keys[1].value.color.rgba[0] == 1.0);
+    const auto fewer = ok(edit::removeTemplateFieldKey(keyed.state, tl.seq, clip, "boxColor", 2));
+    CHECK(graphicOf(fewer.state, tl.seq, clip).instance->fields[2].keys.size() == 2);
+    CHECK_FALSE(edit::removeTemplateFieldKey(keyed.state, tl.seq, clip, "boxColor", 9));
+
+    // Stop animating: the keys go and the value at the playhead stays on the layer.
+    const auto cleared = ok(edit::clearTemplateFieldKeys(keyed.state, tl.seq, clip, "boxColor", seconds(1)));
+    const Graphic& after = graphicOf(cleared.state, tl.seq, clip);
+    CHECK_FALSE(hasFieldKeys(after));
+    CHECK(after.findLayer(1)->shape.fill.color.rgba[0] == Approx(0.5));
+    CHECK(after.instance->fields[2].value.color.rgba[2] == Approx(0.5));
+    CHECK_FALSE(edit::clearTemplateFieldKeys(cleared.state, tl.seq, clip, "boxColor", Ticks{})); // nothing to clear
+
+    // A static edit of an animated field is refused with the way out; other fields still edit.
+    FieldValue other;
+    other.text = "Ann";
+    CHECK_FALSE(edit::setTemplateFields(keyed.state, tl.seq, clip, {{"boxColor", colour(0, 0, 0)}}));
+    CHECK(edit::setTemplateFields(keyed.state, tl.seq, clip, {{"name", other}}));
+}
+
+TEST_CASE("Template text, font and checkbox fields switch at their keys (card 71)", "[model][graphics][templates][keys]") {
+    Timeline tl(kPicture);
+    const GraphicTemplate t = *edit::makeTemplate(lowerThird(tl.media('A')), "lower-third", "Lower third", lowerThirdFields(), seconds(4));
+    const auto placed = ok(edit::instantiateTemplate(tl.state, tl.seq, tl.track("V2"), f(0), std::nullopt, t));
+    const ClipId clip = placed.placed[0];
+    FieldValue first;
+    first.text = "Chapter one";
+    FieldValue second;
+    second.text = "Chapter two";
+    FieldValue hidden;
+    hidden.flag = false;
+    FieldValue shown;
+    shown.flag = true;
+    auto r = ok(edit::setTemplateFieldKey(placed.state, tl.seq, clip, "name", Ticks{}, first));
+    r = ok(edit::setTemplateFieldKey(r.state, tl.seq, clip, "name", seconds(2), second));
+    r = ok(edit::setTemplateFieldKey(r.state, tl.seq, clip, "showLogo", Ticks{}, hidden));
+    r = ok(edit::setTemplateFieldKey(r.state, tl.seq, clip, "showLogo", seconds(1), shown));
+    const Graphic& g = graphicOf(r.state, tl.seq, clip);
+    const auto textAt = [&](double s) { return itemOf(resolveGraphic(g, seconds(s)), 2).text.runs.front().text; };
+    CHECK(textAt(0.0) == "Chapter one");
+    CHECK(textAt(1.9) == "Chapter one"); // a text holds until its next key
+    CHECK(textAt(2.0) == "Chapter two");
+    CHECK(textAt(3.5) == "Chapter two");
+    const auto shownAt = [&](double s) {
+        const DrawList list = resolveGraphic(g, seconds(s));
+        return std::any_of(list.items.begin(), list.items.end(), [](const DrawItem& i) { return i.layer == 4; });
+    };
+    CHECK_FALSE(shownAt(0.5)); // the logo is hidden until its key at 1 s
+    CHECK(shownAt(1.0));
+    // The layers themselves keep their static look: only the draw list follows the keys.
+    CHECK(g.findLayer(2)->text.runs[0].text == "Name");
+
+    // A Font field keys a family; a Duration field cannot be keyed.
+    FieldValue serif;
+    serif.text = "Noto Serif";
+    r = ok(edit::setTemplateFieldKey(r.state, tl.seq, clip, "font", seconds(1), serif));
+    CHECK(itemOf(resolveGraphic(graphicOf(r.state, tl.seq, clip), seconds(1.5)), 2).text.runs.front().fontFamily == "Noto Serif");
+    FieldValue length;
+    length.duration = seconds(2);
+    CHECK_FALSE(edit::setTemplateFieldKey(r.state, tl.seq, clip, "length", Ticks{}, length));
+    CHECK_FALSE(edit::setTemplateFieldKey(r.state, tl.seq, clip, "titleOut", Ticks{}, length));
+    // Refusals: a time before the clip, an unknown field, a picture that is not in the project, too many keys.
+    CHECK_FALSE(edit::setTemplateFieldKey(r.state, tl.seq, clip, "name", Ticks{-1}, first));
+    CHECK_FALSE(edit::setTemplateFieldKey(r.state, tl.seq, clip, "nothing", Ticks{}, first));
+    FieldValue missing;
+    missing.media = MediaId{424242};
+    CHECK_FALSE(edit::setTemplateFieldKey(r.state, tl.seq, clip, "logo", Ticks{}, missing));
+    ProjectState many = placed.state;
+    for (std::size_t i = 0; i < kMaxFieldKeys; ++i) {
+        FieldValue v;
+        v.text = "n" + std::to_string(i);
+        many = ok(edit::setTemplateFieldKey(many, tl.seq, clip, "title", Ticks{static_cast<std::int64_t>(i)}, v)).state;
+    }
+    CHECK_FALSE(edit::setTemplateFieldKey(many, tl.seq, clip, "title", Ticks{static_cast<std::int64_t>(kMaxFieldKeys)}, first));
+}
+
+TEST_CASE("Keyed template fields are saved with the graphic and read back (card 71)", "[model][graphics][templates][keys][json]") {
+    Timeline tl(kPicture);
+    const GraphicTemplate t = *edit::makeTemplate(lowerThird(tl.media('A')), "lower-third", "Lower third", lowerThirdFields(), seconds(4));
+    const auto placed = ok(edit::instantiateTemplate(tl.state, tl.seq, tl.track("V2"), f(0), std::nullopt, t));
+    const ClipId clip = placed.placed[0];
+    auto r = ok(edit::setTemplateFieldKey(placed.state, tl.seq, clip, "boxColor", Ticks{}, colour(1, 0, 0)));
+    r = ok(edit::setTemplateFieldKey(r.state, tl.seq, clip, "boxColor", seconds(2), colour(0, 0, 1), Interpolation::Hold));
+    const Graphic& g = graphicOf(r.state, tl.seq, clip);
+    const std::string json = io::graphicToJson(g);
+    CHECK(json.find("\"keys\"") != std::string::npos);
+    const auto back = io::graphicFromJson(json);
+    REQUIRE(back);
+    CHECK(*back == g);
+    // Fields without keys write none (older files stay as they are).
+    CHECK(io::graphicToJson(graphicOf(placed.state, tl.seq, clip)).find("\"keys\"") == std::string::npos);
 }

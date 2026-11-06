@@ -36,6 +36,50 @@ int exportThreadLimit();
 /// The thread limit of `percent` of this computer's logical processors (at least 1); 100 or more = 0 (no limit).
 int threadLimitForPercent(int percent);
 
+/// 0.7 (background rendering): caps the threads of the exports that are SET UP ON THIS THREAD while the guard lives, in
+/// addition to setExportThreadLimit() (exportThreadLimit() then returns the smaller of the two): the idle preview render
+/// runs on half the cores while a real export started meanwhile on another thread keeps the user's own limit.
+class ScopedExportThreadLimit {
+public:
+    explicit ScopedExportThreadLimit(int threads);
+    ~ScopedExportThreadLimit();
+    ScopedExportThreadLimit(const ScopedExportThreadLimit&) = delete;
+    ScopedExportThreadLimit& operator=(const ScopedExportThreadLimit&) = delete;
+
+private:
+    int m_previous = 0;
+};
+
+/// 0.7 (background rendering): while the guard lives, the helper threads exports set up on THIS thread start (render, decode and
+/// frame conversion threads) run in the OS background mode (Windows: lowest CPU, I/O and memory priority). The OS does not hand
+/// the mode on to a thread a background thread starts, so each helper thread reads exportBackgroundMode() when it is made and
+/// enters the mode itself (BackgroundThreadMode). FFmpeg's own encoder threads keep normal priority: they are capped by
+/// ScopedExportThreadLimit instead.
+class ScopedExportBackgroundMode {
+public:
+    ScopedExportBackgroundMode();
+    ~ScopedExportBackgroundMode();
+    ScopedExportBackgroundMode(const ScopedExportBackgroundMode&) = delete;
+    ScopedExportBackgroundMode& operator=(const ScopedExportBackgroundMode&) = delete;
+
+private:
+    bool m_previous = false;
+};
+/// Whether helper threads made on the calling thread now are to run in the background mode.
+bool exportBackgroundMode();
+
+/// Puts the calling thread in the OS background mode when `on` (and the platform has one) until it goes out of scope.
+class BackgroundThreadMode {
+public:
+    explicit BackgroundThreadMode(bool on);
+    ~BackgroundThreadMode();
+    BackgroundThreadMode(const BackgroundThreadMode&) = delete;
+    BackgroundThreadMode& operator=(const BackgroundThreadMode&) = delete;
+
+private:
+    bool m_active = false;
+};
+
 /// Every encoder "auto" tries for `codec`, in order: hardwareEncoderOrder(codec) then softwareEncoder(codec).
 std::vector<std::string> encoderCandidates(VideoCodec codec);
 

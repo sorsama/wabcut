@@ -93,6 +93,17 @@ class ProjectLifecycle : public QObject {
     Q_PROPERTY(bool autosaveOk READ autosaveOk NOTIFY autosaveChanged FINAL)
     Q_PROPERTY(int autosaveIntervalSeconds READ autosaveIntervalSeconds WRITE setAutosaveIntervalSeconds NOTIFY
                    autosaveChanged FINAL)
+    /// 0.7 (card 029): where a saved project's "<file>.bakN" and ".autosave" copies go: "beside" (next to the project),
+    /// "folder" ("Wabcut Auto-Save" next to it) or "chosen" (`backupFolder`, one sub-folder per project). QSettings
+    /// project/backupLocation; an install from before 0.7 keeps "beside", a new one starts with "folder".
+    Q_PROPERTY(QString backupLocation READ backupLocation WRITE setBackupLocation NOTIFY backupSettingsChanged FINAL)
+    /// The chosen root ("chosen"): a folder URL; empty while none is picked. QSettings project/backupFolder.
+    Q_PROPERTY(QUrl backupFolder READ backupFolder WRITE setBackupFolder NOTIFY backupSettingsChanged FINAL)
+    /// Saved versions kept as "<file>.bak1" .. (0-10, default 5) and autosave versions kept (1-10, default 3).
+    Q_PROPERTY(int backupCount READ backupCount WRITE setBackupCount NOTIFY backupSettingsChanged FINAL)
+    Q_PROPERTY(int autosaveCopies READ autosaveCopies WRITE setAutosaveCopies NOTIFY backupSettingsChanged FINAL)
+    /// Where the open project's copies go now, for Settings ("Next to the project", "Documents/Film/Wabcut Auto-Save").
+    Q_PROPERTY(QString backupWhere READ backupWhere NOTIFY backupSettingsChanged FINAL)
     /// [{ id: "m…", name, path }] of the media items whose file is missing or not the original.
     Q_PROPERTY(QVariantList offlineMedia READ offlineMedia NOTIFY mediaStatusChanged FINAL)
     Q_PROPERTY(int offlineCount READ offlineCount NOTIFY mediaStatusChanged FINAL)
@@ -147,12 +158,24 @@ public:
     bool autosaveOk() const { return m_autosaveOk; }
     int autosaveIntervalSeconds() const { return m_autosaveSeconds; }
     void setAutosaveIntervalSeconds(int seconds);
+    QString backupLocation() const;
+    void setBackupLocation(const QString& location);
+    QUrl backupFolder() const;
+    void setBackupFolder(const QUrl& folder);
+    int backupCount() const;
+    void setBackupCount(int count);
+    int autosaveCopies() const;
+    void setAutosaveCopies(int copies);
+    QString backupWhere() const;
     QVariantList offlineMedia() const;
     int offlineCount() const;
     QString lastError() const { return m_lastError; }
     QStringList importNameFilters() const;
     bool readOnly() const { return m_readOnly; }
     QString lockOwner() const { return m_lockOwner; }
+    /// 0.7 (cloud projects): another editor holds the project's cloud editing lock, so it is read-only here like a project another session has open
+    /// (`owner` names them); false gives back what was before. Only the cloud bridge calls it.
+    void setCloudReadOnly(bool readOnly, const QString& owner);
     QString productionFolder() const;
     bool lockProjects() const;
     void setLockProjects(bool on);
@@ -180,6 +203,15 @@ public:
     /// launchProject() for an argument list: the first argument that names an existing .wabcut file (any case), skipping
     /// the program, options and the value of --rhi; anything else is ignored.
     static QUrl launchProjectIn(const QStringList& arguments);
+    /// 0.7 (card 005): every existing file the app was started with - "Open with" on a recording or a timeline file
+    /// in File Explorer runs `wabcut.exe "<file>"` too - as absolute file URLs in argument order. Main.qml opens a
+    /// lone .wabcut as launchProject() does; anything else goes through Home's import (New project page) or the
+    /// editor's import into the current bin.
+    Q_INVOKABLE QList<QUrl> launchFiles() const;
+    /// launchFiles() for an argument list: every argument that is not an option (starts with '-'; `--rhi` takes the next
+    /// argument as its value) and names an existing file, made absolute; anything else (the program, options, missing
+    /// files, folders) is ignored. Repeats of one file are kept once.
+    static QList<QUrl> launchFilesIn(const QStringList& arguments);
     /// False while untitled (QML then asks for a file and calls saveAs) or when writing fails (lastError).
     Q_INVOKABLE bool save();
     Q_INVOKABLE bool saveAs(const QUrl& file);
@@ -188,6 +220,16 @@ public:
     /// its unsaved changes, lock and autosaves; the copy is not opened. Works for untitled projects and the demo too.
     /// False (lastError) when it cannot be written, or `file` is this project's own file or one open next to it.
     Q_INVOKABLE bool saveCopy(const QUrl& file);
+    /// 0.7 (card 059), File > Save for an Older Version…: the Wabcut releases a copy can be written for, newest first
+    /// ([{ id: "0.6", name: "Wabcut 0.6", versions: "0.6.x" }, ...]).
+    Q_INVOKABLE QVariantList olderReleases() const;
+    /// What a copy for release `id` leaves out, from the project as it is now: [{ id, what, effect, count }]; empty when
+    /// nothing is lost (or the release is unknown: lastError says so).
+    Q_INVOKABLE QVariantList olderReleaseLosses(const QString& id);
+    /// Writes the project as it is now to `file` the way Wabcut `id` reads it (".wabcut" added when missing), changing
+    /// nothing else (like saveCopy). The result: { saved, name, lost: [{ id, what, effect, count }] } - `saved` false with
+    /// lastError set when it cannot be written, or `file` is this project's own file or one open next to it.
+    Q_INVOKABLE QVariantMap saveForOlderVersion(const QUrl& file, const QString& id);
     /// UX rework (stream S), File > Revert: the project as last saved, read again from its file (QML asks first). The
     /// unsaved changes, the undo history and this project's autosaves are dropped (so no recovery offer follows); the
     /// sequence shown and the playhead stay when they still exist. False (lastError) while untitled, for the demo,
@@ -266,6 +308,8 @@ public:
     ///   binsFrom                    P1 round (#63): folders (URLs) the media files given came from: a file inside
     ///                               one goes into bins as if that folder had been given (its bin, subfolders
     ///                               nested; the undo step is "Import Folder"). Home's Import folder… uses it.
+    ///   undoLabel                   0.7: the name of the undo step of a media import ("" = "Import"; File > Capture… sends
+    ///                               "Capture"); a folder import keeps "Import Folder"
     /// 0.4: folders given (Import Folder, folder drops) are expanded (editor::collectImportFolder): each becomes a bin
     /// of its name in `bin`, subfolders nested, in the same one undo step, named "Import Folder". The summary then also
     /// has folders (how many were given), bins (how many were made), skipped: [{ name, reason: "notMedia" | "hidden" |
@@ -323,8 +367,8 @@ public:
     ///   audioRate       Hz, 8000 to 384000 (44100, 48000, 96000)
     ///   dropFrame       drop-frame timecode (kept only at 29.97 and 59.94)
     ///   videoTracks, audioTracks  1 to 99 (default 3 each)
-    ///   trackFormat     the audio tracks' channel format: "stereo" (default), "mono", "5.1", "adaptive"
-    ///   masterFormat    "stereo" (default) or "5.1"
+    ///   trackFormat     the audio tracks' channel format: "stereo" (default), "mono", "5.1", "7.1", "adaptive"
+    ///   masterFormat    "stereo" (default), "5.1" or (0.7) "7.1"
     ///   pixelAspect     { num, den } or a ratio (1, 0.9091, 2), 0.1 to 10
     ///   fields          "progressive" (default), "upperFirst", "lowerFirst"
     ///   startTimecode   the first frame's timecode ("01:00:00:00"; "" = 00:00:00:00)
@@ -365,11 +409,12 @@ public:
                                bool overwrite);
     /// Files dragged from the desktop (Explorer, Finder) onto the timeline: imported as importFiles does, then the
     /// media placed one after another from `timecode` on the track `trackId` (dropMedia; a new project started for
-    /// the demo has none of its tracks: the targeted ones). A dropped folder is imported into bins at the Library
-    /// root (as Import Folder) and its files are not placed. Returns importFiles' summary plus `placed` (how many
-    /// files went on the timeline); the new clips are selected.
+    /// the demo has none of its tracks: the targeted ones). A dropped folder is imported into bins (as Import Folder)
+    /// and its files are not placed. 0.7 (card 039): `bin` is the Library bin key the media and the folders' bins go
+    /// in (the bin the Library shows, as File > Import does; "" or unknown: the root). Returns importFiles' summary
+    /// plus `placed` (how many files went on the timeline); the new clips are selected.
     Q_INVOKABLE QVariantMap dropFiles(const QList<QUrl>& files, const QString& timecode, const QString& trackId,
-                                      bool overwrite);
+                                      bool overwrite, const QString& bin = {});
     /// Ctrl (Cmd on macOS) is held now: a drop inserts (Premiere: a plain drop overwrites).
     Q_INVOKABLE bool insertModifierHeld() const;
 
@@ -391,6 +436,8 @@ signals:
     void recoveryChanged();
     void recoveryVersionsChanged();
     void lockProjectsChanged();
+    /// 0.7 (card 029): a backup setting changed, or the open project (so where its copies go) did.
+    void backupSettingsChanged();
     /// Recovery files appeared after startup (an opened project has a newer autosave).
     void recoveryAvailable();
     /// 0.2 (P.3): the active project's scratch disks may have changed (another project, or its Production Settings).
@@ -414,6 +461,9 @@ private:
     /// 0.2 (P.3): lets go of the lock held, then locks `project` (empty: none) when it is in a production or locking
     /// is on; read-only when another session holds it.
     void updateLock(const std::filesystem::path& project);
+
+    /// 0.7 (card 029): hands the settings (location, counts) to the document.
+    void applyBackupSettings();
 
     ProjectController* m_controller = nullptr;
     std::unique_ptr<editor::ProjectDocument> m_document;
@@ -477,6 +527,7 @@ private:
     bool m_lastDirty = false;
     int m_lastOfflineCount = 0;
     bool m_readOnly = false;
+    bool m_cloudReadOnly = false;      ///< m_readOnly was set by the cloud lock
     QString m_lockOwner;
     std::filesystem::path m_locked; ///< the project this session holds the lock of (the active one)
 

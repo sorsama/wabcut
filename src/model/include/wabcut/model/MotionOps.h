@@ -47,6 +47,10 @@ EditOutcome setTimeInterpolation(const ProjectState& state, SequenceId sequence,
 
 /// Motion parameters in the model's units (ClipProperties: position and anchor in pixels from the centre, scale as a
 /// factor, rotation in degrees clockwise). Unset = unchanged.
+/// 0.7 (card #12): `scaleWidth` is Premiere's Scale Width (`scale` is then the Scale Height) and `uniformScale` its Uniform
+/// Scale switch. Giving a `scaleWidth` while Uniform Scale is on (and `uniformScale` is not given) turns Uniform Scale off
+/// first, as dragging a side handle does; giving `uniformScale` is applied before the values, and switching it carries
+/// Scale Width along (setParameter: off copies Scale to it, on puts it back to 100 %) so the picture does not jump.
 struct MotionChange {
     std::optional<double> positionX;
     std::optional<double> positionY;
@@ -54,13 +58,16 @@ struct MotionChange {
     std::optional<double> rotation;
     std::optional<double> anchorX;
     std::optional<double> anchorY;
+    std::optional<double> scaleWidth;
+    std::optional<bool> uniformScale;
 
     bool empty() const {
-        return !positionX && !positionY && !scale && !rotation && !anchorX && !anchorY;
+        return !positionX && !positionY && !scale && !rotation && !anchorX && !anchorY && !scaleWidth && !uniformScale;
     }
 };
 
-/// The Motion values of a clip at a curve time (Clip::curveTimeAt).
+/// The Motion values of a clip at a curve time (Clip::curveTimeAt). `scaleWidth` is the width factor that is drawn: equal to
+/// `scale` while Uniform Scale is on.
 struct MotionValues {
     double positionX = 0.0;
     double positionY = 0.0;
@@ -68,6 +75,8 @@ struct MotionValues {
     double rotation = 0.0;
     double anchorX = 0.0;
     double anchorY = 0.0;
+    double scaleWidth = 1.0;
+    bool uniformScale = true;
 };
 MotionValues motionAt(const Clip& clip, Ticks curveTime);
 

@@ -226,7 +226,7 @@ TEST_CASE("Captions: Export all tracks writes each caption track and the single 
     const QString sequenceName = QString::fromStdString(tl.sequence().name);
 
     CHECK(captions->exportAllTracks(QUrl::fromLocalFile(q(dir)), QStringLiteral("srt")).isEmpty());
-    CHECK(captions->property("message").toString() == QStringLiteral("Saved 2 caption file(s)"));
+    CHECK(captions->property("message").toString() == QStringLiteral("Saved 2 caption files"));
     const QString english = q(dir) + QLatin1Char('/') + sequenceName + QStringLiteral(" - English.en.srt");
     const QString thai = q(dir) + QLatin1Char('/') + sequenceName + QStringLiteral(" - Thai.th.srt");
     REQUIRE(QFileInfo::exists(english));

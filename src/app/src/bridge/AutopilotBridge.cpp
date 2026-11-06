@@ -179,11 +179,17 @@ QString AutopilotBridge::rerun() {
 }
 
 bool AutopilotBridge::cloudAvailable() const {
-    if (!m_ai || m_ai->offlineMode() || (m_controller && m_controller->snapshot()->aiNoCloud)) {
+    if (!m_ai) {
         return false;
     }
+    // QA-07: offline mode and the no-cloud lock stop cloud models only (resolve() leaves them out); the local assistant,
+    // Ollama or a custom provider on localhost keeps working.
     auto resolved = m_ai->platform().resolve(ai::Capability::Chat);
-    return resolved && !resolved->empty();
+    if (!resolved || resolved->empty()) {
+        return false;
+    }
+    const bool blocked = m_ai->offlineMode() || m_ai->projectLock() || (m_controller && m_controller->snapshot()->aiNoCloud);
+    return !blocked || m_ai->runsLocally(resolved->front().model->id);
 }
 
 QUrl AutopilotBridge::kitFolder() const {

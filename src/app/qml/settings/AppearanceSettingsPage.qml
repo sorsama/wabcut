@@ -46,6 +46,11 @@ SettingsPage {
         const any = all.find(t => page.sameTheme(t, page.currentTheme))
         return any ? any.name : ""
     }
+    /// A theme's name as its card shows it: a preset's label ("Echo" for the stored name Ultraviolet), a saved theme's own name.
+    function labelOf(name: string): string {
+        const found = page.presets.concat(page.savedThemes).find(t => t.name === name)
+        return found ? (found.label ?? found.name) : name
+    }
     property string message: ""
     property bool messageOk: true
 
@@ -143,8 +148,8 @@ SettingsPage {
     SettingsSection {
         rowKey: "theme"
         title: qsTr("Theme")
-        description: page.matchingTheme !== "" ? qsTr("Using %1.").arg(page.matchingTheme)
-                   : Preferences.themeName !== "" ? qsTr("Edited from %1: save it to keep it as a theme.").arg(Preferences.themeName)
+        description: page.matchingTheme !== "" ? qsTr("Using %1.").arg(page.labelOf(page.matchingTheme))
+                   : Preferences.themeName !== "" ? qsTr("Edited from %1: save it to keep it as a theme.").arg(page.labelOf(Preferences.themeName))
                    : qsTr("Custom colours: save them to keep them as a theme.")
         flat: true
 
@@ -362,6 +367,23 @@ SettingsPage {
                 currentIndex: Preferences.timelineCorners === "square" ? 1 : 0
                 onActivated: index => Preferences.timelineCorners = index === 1 ? "square" : "rounded"
                 Accessible.name: qsTr("Timeline corners")
+            }
+        }
+        // 0.7 (card 118): the 16 clip label colours - Echo's, or the softer Classic set (Premiere's pre-2024 look). Every
+        // label can still be changed one by one under Custom colours below; Reset labels comes back to this choice.
+        SettingsRow {
+            objectName: "labelPaletteRow"
+            rowKey: "labelPalette"
+            label: qsTr("Label colours")
+            description: qsTr("Echo's bright labels, or the softer Classic set from older Premiere. Change single labels under Custom colours.")
+            PillTabs {
+                objectName: "labelPaletteTabs"
+                width: Theme.space(56)
+                compact: true
+                model: [{ label: qsTr("Echo") }, { label: qsTr("Classic") }]
+                currentIndex: Preferences.labelPalette === "classic" ? 1 : 0
+                onActivated: index => Preferences.labelPalette = index === 1 ? "classic" : "echo"
+                Accessible.name: qsTr("Label colours")
             }
         }
     }

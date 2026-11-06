@@ -63,6 +63,7 @@ public:
         bool speakersInRoom = true;     ///< the microphone hears the output (loopback)
         int channels = 1;
         std::function<float(std::int64_t)> voice; ///< also heard: a sound by device frame (optional)
+        std::int64_t maxTakeFrames = 0;           ///< the recorder's cap on a take (0: the WAV's 4 GiB)
     };
 
     Booth(Project& project, Setup setup)
@@ -74,6 +75,7 @@ public:
         REQUIRE(input.start(config));
         playback::VoiceOverRecorder::Options options;
         options.writerThread = false;
+        options.maxTakeFrames = m_setup.maxTakeFrames;
         options.clock = [this] { return rig.simulatedTime(); };
         recorder = std::make_unique<playback::VoiceOverRecorder>(rig.engine, *rig.player, input, options);
     }

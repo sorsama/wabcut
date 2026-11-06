@@ -68,6 +68,10 @@ class LayoutBridge : public QObject {
     /// The gameplay clip ("c12", "" for none) and its name.
     Q_PROPERTY(QString gameplay READ gameplay NOTIFY targetsChanged FINAL)
     Q_PROPERTY(QString gameplayName READ gameplayName NOTIFY targetsChanged FINAL)
+    /// 0.7 (card #54), while no gameplay clip is chosen: the video clip one click can make it - { key, name,
+    /// underPlayhead } for the lowest video clip under the playhead, else the nearest one in time; empty when the
+    /// sequence has no video clip with a picture.
+    Q_PROPERTY(QVariantMap suggestedGameplay READ suggestedGameplay NOTIFY targetsChanged FINAL)
     /// The facecam clip ("" for none, or when a region is used); setting it picks a candidate.
     Q_PROPERTY(QString facecam READ facecam WRITE setFacecam NOTIFY targetsChanged FINAL)
     /// [{ key, name, track ("V2") }]: video clips above the gameplay that overlap it, best first.
@@ -105,6 +109,7 @@ public:
     QVariantMap defaults() const;
     QString gameplay() const;
     QString gameplayName() const { return m_gameplayName; }
+    QVariantMap suggestedGameplay() const;
     QString facecam() const;
     void setFacecam(const QString& clip);
     QVariantList facecamCandidates() const { return m_candidates; }
@@ -123,6 +128,8 @@ public:
 
     /// Picks the gameplay and the facecam again (the picker calls it when it opens).
     Q_INVOKABLE void refreshTargets();
+    /// Selects the suggestedGameplay clip (the picker then has its gameplay). False when there is none.
+    Q_INVOKABLE bool useSuggestedGameplay();
     /// layout.apply's parameters for `options` (with "preset"), clamped to the command's ranges, with the targets.
     Q_INVOKABLE QVariantMap params(const QVariantMap& options) const;
     /// The layout's boxes in fractions of an output frame of `aspect` (width / height), bottom to top:

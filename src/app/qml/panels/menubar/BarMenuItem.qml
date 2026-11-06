@@ -17,6 +17,9 @@ ContextMenuItem {
     property bool runsCommand: command !== ""
     /// Conditions of the row's own, on top of the command's state.
     property bool available: true
+    /// 0.7: a colour chip between the check gutter and the label (Edit > Label's sixteen colours); transparent: none.
+    property color chipColor: "transparent"
+    readonly property bool hasChip: control.chipColor.a > 0
     /// The command's state while the menu shows ({enabled, reason}; null without a command or while it is closed).
     readonly property var commandInfo: control.command !== "" && (control.menu?.visible ?? false)
                                        ? control.stateOf(control.command) : null
@@ -45,6 +48,7 @@ ContextMenuItem {
     }
 
     contentItem: Item {
+        readonly property real chipSize: Theme.iconSm - Theme.space(1)
         implicitWidth: label.x + label.implicitWidth + Theme.space(6)
                        + (control.subMenu !== null ? Theme.iconSm : keys.implicitWidth)
         implicitHeight: label.implicitHeight
@@ -60,9 +64,23 @@ ContextMenuItem {
             visible: control.checkable && control.checked
         }
 
+        Rectangle {
+            objectName: "barMenuItemChip"
+            visible: control.hasChip
+            x: Theme.dotSize + Theme.space(2)
+            anchors.verticalCenter: parent.verticalCenter
+            width: parent.chipSize
+            height: parent.chipSize
+            radius: Theme.space(0.5)
+            color: control.chipColor
+            border.width: Theme.hairline
+            border.color: Theme.borderStrong
+            opacity: control.enabled ? 1 : Theme.disabledOpacity
+        }
+
         Text {
             id: label
-            x: Theme.dotSize + Theme.space(2)
+            x: Theme.dotSize + Theme.space(2) + (control.hasChip ? parent.chipSize + Theme.space(1.5) : 0)
             anchors.verticalCenter: parent.verticalCenter
             text: control.text
             font.family: control.font.family

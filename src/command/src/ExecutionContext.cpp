@@ -150,7 +150,19 @@ bool ExecutionContext::has(std::string_view key) const {
 
 Ticks ExecutionContext::timeValue(const Json& value, const std::string& path) {
     if (value.is_number_integer()) {
-        return {value.get<std::int64_t>()};
+        // Card 091: 18446744073709551615 is an integer too, and get<int64_t>() would wrap it to -1; 9223372036854775807
+        // would overflow the edit engine's start() + delta. Plain Ticks arithmetic is for timeline values (a few days);
+        // parseTimecode bounds a timecode string the same way (31 days).
+        constexpr std::int64_t kMaxTimeTicks = 31LL * 24 * 3600 * kTicksPerSecond;
+        if (value.is_number_unsigned() &&
+            value.get<std::uint64_t>() > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+            fail(ErrorCode::InvalidParams, "the time is out of range", at(path));
+        }
+        const std::int64_t ticks = value.get<std::int64_t>();
+        if (ticks > kMaxTimeTicks || ticks < -kMaxTimeTicks) {
+            fail(ErrorCode::InvalidParams, "the time is out of range (more than 31 days from zero)", at(path));
+        }
+        return {ticks};
     }
     if (value.is_string()) {
         const Sequence& s = sequence();

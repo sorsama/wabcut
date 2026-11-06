@@ -20,10 +20,12 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <QQmlComponent>
 #include <QQuickItem>
 #include <QTemporaryDir>
 
 #include <cmath>
+#include <memory>
 #include <filesystem>
 #include <functional>
 
@@ -337,6 +339,85 @@ TEST_CASE("Essential Graphics edits the same text layer: faux styles and capital
     graphics.endEdit();
     CHECK(sourceRunsAt(r.layer(2).text, seconds(3)).at(0).text == "Later");
     CHECK(sourceRunsAt(r.layer(2).text, seconds(2)).at(0).text == "Somchai Jaidee");
+}
+
+TEST_CASE("Text typography: Optical Kerning and OpenType features from Effect Controls and Essential Graphics (card 138)",
+          "[app][graphics][text][typography]") {
+    Rig r;
+    QTemporaryDir library;
+    REQUIRE(library.isValid());
+    GraphicsBridge graphics;
+    graphics.setUserLibrary(std::filesystem::path(library.path().toStdU16String()));
+    graphics.setController(&r.controller);
+    graphics.setSelectedLayer(2);
+    const auto style = [&] { return r.layer(2).text.runs.at(0).style; };
+    EffectControlsModel& fx = r.fx();
+
+    // Rows of the Text section: the switches show what the shaper does (ligatures and alternates on by default).
+    const QVariantMap optical = fx.row(QStringLiteral("g2:opticalKerning"));
+    REQUIRE_FALSE(optical.isEmpty());
+    CHECK(optical.value(QStringLiteral("kind")).toString() == QStringLiteral("toggle"));
+    CHECK(optical.value(QStringLiteral("title")).toString() == QStringLiteral("Optical Kerning"));
+    CHECK(optical.value(QStringLiteral("value")).toDouble() == 0.0);
+    CHECK(fx.row(QStringLiteral("g2:feat_liga")).value(QStringLiteral("value")).toDouble() == 1.0);
+    CHECK(fx.row(QStringLiteral("g2:feat_calt")).value(QStringLiteral("title")).toString() == QStringLiteral("Contextual Alternates"));
+    CHECK(fx.row(QStringLiteral("g2:feat_calt")).value(QStringLiteral("value")).toDouble() == 1.0);
+    CHECK(fx.row(QStringLiteral("g2:feat_dlig")).value(QStringLiteral("value")).toDouble() == 0.0);
+
+    // Each switch is one undo step, undone as one.
+    r.oneStep([&] { fx.setValue(QStringLiteral("g2:opticalKerning"), 1.0); }, [&] { return style().opticalKerning; });
+    r.oneStep([&] { fx.setValue(QStringLiteral("g2:feat_dlig"), 1.0); }, [&] { return style().features == "dlig"; });
+    r.oneStep([&] { fx.setValue(QStringLiteral("g2:feat_liga"), 0.0); }, [&] { return style().features == "-liga"; });
+    fx.setValue(QStringLiteral("g2:feat_liga"), 0.0);
+    fx.setValue(QStringLiteral("g2:feat_calt"), 0.0);
+    fx.endEdit();
+    CHECK(style().features == "-liga, -calt");
+    CHECK(fx.row(QStringLiteral("g2:feat_calt")).value(QStringLiteral("value")).toDouble() == 0.0);
+    // Back to the defaults leaves nothing in the list.
+    fx.setValue(QStringLiteral("g2:feat_liga"), 1.0);
+    fx.setValue(QStringLiteral("g2:feat_calt"), 1.0);
+    fx.endEdit();
+    CHECK(style().features.empty());
+
+    // Essential Graphics: the same style through the bridge, one feature at a time or the whole list.
+    r.oneStep([&] { CHECK(graphics.setRun(2, 0, QStringLiteral("feature:ss01"), true).isEmpty()); graphics.endEdit(); },
+              [&] { return style().features == "ss01"; });
+    r.oneStep([&] { CHECK(graphics.setRun(2, 0, QStringLiteral("features"), QStringLiteral(" \"smcp\" 1 ,  -liga ")).isEmpty()); graphics.endEdit(); },
+              [&] { return style().features == "smcp, -liga"; });
+    r.oneStep([&] { CHECK(graphics.setRun(2, 0, QStringLiteral("opticalKerning"), true).isEmpty()); graphics.endEdit(); },
+              [&] { return style().opticalKerning; });
+    CHECK(graphics.setRun(2, 0, QStringLiteral("features"), QStringLiteral("smcp, -liga")).isEmpty());
+    graphics.endEdit();
+    const QVariantMap shown = graphics.layer().value(QStringLiteral("text")).toMap().value(QStringLiteral("runs")).toList().at(0).toMap();
+    CHECK(shown.value(QStringLiteral("features")).toString() == QStringLiteral("smcp, -liga"));
+    const QVariantMap states = shown.value(QStringLiteral("featureOn")).toMap();
+    CHECK(states.value(QStringLiteral("liga")).toBool() == false);
+    CHECK(states.value(QStringLiteral("calt")).toBool());
+    CHECK(states.value(QStringLiteral("dlig")).toBool() == false);
+
+    // An unreadable list is refused with the reason, and the style stays as it was.
+    const std::size_t steps = r.undo();
+    const QString why = graphics.setRun(2, 0, QStringLiteral("features"), QStringLiteral("calt, nonsense!"));
+    CHECK(why.startsWith(QStringLiteral("OpenType features")));
+    CHECK(style().features == "smcp, -liga");
+    CHECK(r.undo() == steps);
+    CHECK(graphics.setRun(2, 0, QStringLiteral("feature:no"), true).startsWith(QStringLiteral("OpenType features")));
+
+    // The draw list the renderer lays out carries both (Optical only while kerning is on).
+    const auto loc = r.controller.currentSequence()->findClip(r.clip);
+    REQUIRE(loc);
+    graphics.setRun(2, 0, QStringLiteral("opticalKerning"), true);
+    graphics.endEdit();
+    const DrawList list = resolveGraphicClip(*r.controller.snapshot(), r.controller.currentSequence()->findClip(r.clip)->clip(), seconds(1));
+    bool found = false;
+    for (const DrawItem& item : list.items) {
+        if (item.layer != 2 || item.kind != DrawKind::Text || item.text.runs.empty())
+            continue;
+        found = true;
+        CHECK(item.text.runs.front().features == "smcp, -liga");
+        CHECK(item.text.runs.front().opticalKerning);
+    }
+    CHECK(found);
 }
 
 TEST_CASE("Effect Controls Text section: keys of a graphic with responsive time sit at their timeline place", "[app][effects][text][keyframes]") {
@@ -697,4 +778,98 @@ TEST_CASE("Keyframe clipboard: Source Text keys paste their own text onto anothe
     REQUIRE(fx.pasteKeys().isEmpty());
     CHECK(shownAt(seconds(0.4)) == QStringLiteral("Somchai Jaidee"));
     CHECK(shownAt(seconds(0.8)) == QStringLiteral("Guest"));
+}
+
+// 0.7 (card #135): a number field takes a calculation.
+TEST_CASE("Number fields take a calculation such as 360/12 or 1920-50 and a bad one changes nothing (card 135)",
+          "[app][effects][numberfield]") {
+    Shell shell;
+    REQUIRE(shell.window);
+    QQmlComponent component(&shell.engine);
+    component.setData(QByteArrayLiteral(R"(
+import QtQuick
+import Wabcut
+Item {
+    property alias field: f
+    property var got: []
+    function type(typed) {
+        f.forceActiveFocus()
+        f.text = typed
+        f.editingFinished()
+    }
+    NumberField {
+        id: f
+        from: 0
+        to: 5000
+        decimals: 2
+        value: 100
+        onValueModified: v => parent.got = parent.got.concat([v])
+    }
+}
+)"),
+                      QUrl(QStringLiteral("qrc:/b1/NumberFieldHost.qml")));
+    std::unique_ptr<QObject> host(component.create());
+    INFO(component.errorString().toStdString());
+    REQUIRE(host);
+    auto* field = host->property("field").value<QObject*>();
+    REQUIRE(field);
+
+    const auto parse = [&](const QString& typed) {
+        QVariant result;
+        REQUIRE(QMetaObject::invokeMethod(field, "parseInput", Q_RETURN_ARG(QVariant, result), Q_ARG(QVariant, typed)));
+        return result.toDouble();
+    };
+    // Calculations.
+    CHECK(parse(QStringLiteral("360/12")) == Approx(30.0));
+    CHECK(parse(QStringLiteral("1920-50")) == Approx(1870.0));
+    CHECK(parse(QStringLiteral("(1080+120)/2")) == Approx(600.0));
+    CHECK(parse(QStringLiteral("  10 - 2 - 3 ")) == Approx(5.0)); // left to right
+    CHECK(parse(QStringLiteral("2+3*4")) == Approx(14.0));        // * before +
+    CHECK(parse(QStringLiteral("2^3^2")) == Approx(512.0));       // ^ to the right
+    CHECK(parse(QStringLiteral("-2^2")) == Approx(-4.0));
+    CHECK(parse(QStringLiteral("2*-3")) == Approx(-6.0));
+    CHECK(parse(QStringLiteral("((1+2)*3)")) == Approx(9.0));
+    CHECK(parse(QStringLiteral("1e3+1")) == Approx(1001.0));
+    CHECK(parse(QStringLiteral("1,5+2,5")) == Approx(4.0));       // a comma is a decimal point
+    CHECK(parse(QStringLiteral("3×4")) == Approx(12.0));     // x and division signs
+    CHECK(parse(QStringLiteral("9÷3")) == Approx(3.0));
+    CHECK(parse(QStringLiteral("5−1")) == Approx(4.0));
+    // Plain numbers read as before, including the unit a user types after them.
+    CHECK(parse(QStringLiteral("42")) == Approx(42.0));
+    CHECK(parse(QStringLiteral("-7.5")) == Approx(-7.5));
+    CHECK(parse(QStringLiteral("2,5")) == Approx(2.5));
+    CHECK(parse(QStringLiteral("50%")) == Approx(50.0));
+    CHECK(parse(QStringLiteral("12px")) == Approx(12.0));
+    CHECK(parse(QStringLiteral("2+")) == Approx(2.0)); // unfinished: the number it starts with, as before
+    // Not numbers: refused (NaN), never a wrong value.
+    CHECK(std::isnan(parse(QStringLiteral("1/0"))));
+    CHECK(std::isnan(parse(QStringLiteral("0/0"))));
+    CHECK(std::isnan(parse(QStringLiteral("abc"))));
+    CHECK(std::isnan(parse(QStringLiteral(""))));
+    CHECK(std::isnan(parse(QStringLiteral("*3"))));
+    // Too deep or too long to be read as a calculation (no crash, no runaway recursion): a refusal, or the number it
+    // starts with.
+    CHECK(std::isnan(parse(QStringLiteral("(").repeated(40) + QStringLiteral("1") + QStringLiteral(")").repeated(40))));
+    CHECK(parse(QStringLiteral("1+").repeated(300) + QStringLiteral("1")) == Approx(1.0));
+
+    // Typed into the field: the result is the edit (rounded to its decimals, clamped to its range).
+    const auto typeIn = [&](const QString& typed) {
+        host->setProperty("got", QVariantList{});
+        REQUIRE(QMetaObject::invokeMethod(host.get(), "type", Q_ARG(QVariant, typed)));
+        return host->property("got").toList();
+    };
+    auto got = typeIn(QStringLiteral("360/12"));
+    REQUIRE(got.size() == 1);
+    CHECK(got[0].toDouble() == Approx(30.0));
+    got = typeIn(QStringLiteral("10/3"));
+    REQUIRE(got.size() == 1);
+    CHECK(got[0].toDouble() == Approx(3.33)); // two decimals
+    got = typeIn(QStringLiteral("100*100"));
+    REQUIRE(got.size() == 1);
+    CHECK(got[0].toDouble() == Approx(5000.0)); // clamped to the field's maximum
+    got = typeIn(QStringLiteral("1/0"));
+    CHECK(got.isEmpty());
+    CHECK(field->property("text").toString() == QStringLiteral("100.00")); // back to the value it shows
+    got = typeIn(QStringLiteral("100"));
+    CHECK(got.isEmpty()); // the same value: no edit
 }

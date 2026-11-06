@@ -19,6 +19,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <string>
@@ -542,4 +543,131 @@ TEST_CASE("Loudness QC on the real render path: where the loudest moments are an
         CHECK(again->peakBlocks[i].truePeakDbtp == Approx(stats->peakBlocks[i].truePeakDbtp).margin(0.006));
     }
     CHECK(truePeakOvers(*again, -1.0).size() == 2);
+}
+
+// ---- 0.7 (cards 045, 141): the match measurement and the radar's series on the real render path -------------------------
+
+TEST_CASE("measureMatch on the real render path: loudness, levels and the spectrum of a tone", "[audio][edit][analysis][match]") {
+    Rig rig;
+    auto analyzer = rig.analyzer();
+    const auto stats = analyzer->measureMatch(rig.tl.state, rig.tl.seq, LoudnessTarget::ofClip(rig.tl.clip("A1@0")), std::nullopt, nullptr);
+    REQUIRE(stats);
+    // A -23 dBFS 1 kHz tone on both channels: -23 LUFS, RMS -26 dBFS, a crest factor of 3 dB, 20 s of audible sound.
+    CHECK(stats->loudness.integratedLufs == Approx(-23.0).margin(0.1));
+    CHECK(stats->rmsDbfs == Approx(-26.0).margin(0.1));
+    CHECK(stats->crestDb == Approx(3.01).margin(0.1));
+    CHECK(stats->channels == 2);
+    CHECK(stats->spectrum.usable());
+    CHECK(stats->spectrum.activeSeconds == Approx(20.0).margin(0.5));
+    // The tone sits in the 1 kHz band (band 15 of the 30), 40 dB or more over the bands far from it.
+    const auto& spectrum = stats->spectrum.levelDb;
+    int loudest = 0;
+    for (int b = 0; b < kMatchBandCount; ++b) {
+        if (std::isfinite(spectrum[static_cast<std::size_t>(b)]) && spectrum[static_cast<std::size_t>(b)] > spectrum[static_cast<std::size_t>(loudest)]) {
+            loudest = b;
+        }
+    }
+    CHECK(loudest == 15);
+    CHECK(spectrum[15] - spectrum[6] > 40.0);
+    CHECK(spectrum[15] - spectrum[24] > 40.0);
+    // The same render's loudness as measure() gives.
+    const auto alone = analyzer->measure(rig.tl.state, rig.tl.seq, LoudnessTarget::ofClip(rig.tl.clip("A1@0")), std::nullopt, nullptr);
+    REQUIRE(alone);
+    CHECK(stats->loudness.integratedLufs == Approx(alone->integratedLufs).margin(1e-6));
+    CHECK(stats->loudness.truePeakDbtp == Approx(alone->truePeakDbtp).margin(1e-6));
+    // A silent range has nothing to learn from.
+    rig.feed->setSignal(rig.tl.media('A'), 0, tone(-120.0));
+    const auto quiet = analyzer->measureMatch(rig.tl.state, rig.tl.seq, LoudnessTarget::ofClip(rig.tl.clip("A1@0")), std::nullopt, nullptr);
+    REQUIRE(quiet);
+    CHECK_FALSE(quiet->spectrum.usable());
+}
+
+TEST_CASE("Loudness keeps the short-term series for the radar and the cache hands it back", "[audio][edit][analysis][radar]") {
+    Rig rig;
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "wabcut-d5-series-cache";
+    std::filesystem::remove_all(dir);
+    auto analyzer = rig.analyzer(std::make_shared<ai::AnalysisCache>(dir));
+    const LoudnessTarget target = LoudnessTarget::ofTrack(rig.tl.track("A1"));
+    const auto first = analyzer->measure(rig.tl.state, rig.tl.seq, target, std::nullopt, nullptr);
+    REQUIRE(first);
+    // 20 s: one value a second, the first two unknown (no 3 s window yet), the rest the tone's -23 LUFS.
+    REQUIRE(first->shortTerm.size() == 20);
+    CHECK_FALSE(std::isfinite(first->shortTerm[0]));
+    CHECK_FALSE(std::isfinite(first->shortTerm[1]));
+    for (std::size_t i = 2; i < first->shortTerm.size(); ++i) {
+        CHECK(static_cast<double>(first->shortTerm[i]) == Approx(-23.0).margin(0.1));
+    }
+    // From the cache: the same series (tenths of a LU).
+    const auto second = analyzer->measure(rig.tl.state, rig.tl.seq, target, std::nullopt, nullptr);
+    REQUIRE(second);
+    CHECK(analyzer->cacheHits() == 1);
+    REQUIRE(second->shortTerm.size() == 20);
+    CHECK_FALSE(std::isfinite(second->shortTerm[0]));
+    CHECK(static_cast<double>(second->shortTerm[10]) == Approx(static_cast<double>(first->shortTerm[10])).margin(0.06));
+    // audio.loudness lists it on request.
+    auto services = std::make_shared<AudioServices>(analyzer, nullptr);
+    CommandHarness h(rig.tl, command::EnginePolicy{command::CapabilitySet::all(), 16, services}, ai::edit::editingCommands());
+    const auto plain = h.ok("audio.loudness", {{"targets", Json::array({"mix"})}});
+    CHECK_FALSE(plain.data["results"][0].contains("shortTermSeries"));
+    const auto listed = h.ok("audio.loudness", {{"targets", Json::array({"mix"})}, {"series", true}});
+    const Json& series = listed.data["results"][0]["shortTermSeries"];
+    REQUIRE(series.size() == 20);
+    CHECK(series[0].is_null());
+    CHECK(series[10].get<double>() > -23.0); // the mix of A1 (-23) and A2 (-30) is louder than A1 alone
+    CHECK(listed.data["results"][0]["shortTermSeriesSeconds"] == 1);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("audio.eqMatch and audio.levelMatch end to end on rendered audio", "[audio][edit][analysis][match]") {
+    // A reference that is brighter and louder than the target: noise on A (the target) and M (the reference), the reference
+    // shaped by a high shelf in the project (a Graphic EQ on its clip), the target plain.
+    Rig rig;
+    playback::SyntheticSignal white;
+    white.kind = playback::SyntheticSignal::Kind::Noise;
+    white.amplitude = 0.05F;
+    rig.feed->setSignal(rig.tl.media('A'), 0, white);
+    white.amplitude = 0.1F;
+    rig.feed->setSignal(rig.tl.media('M'), 0, white);
+    std::vector<EffectParam> bright;
+    for (int b = 16; b <= 30; ++b) { // +6 dB from 1.25 kHz up
+        bright.push_back({"band" + std::to_string(b), ParamValue(6.0)});
+    }
+    rig.tl.state = test::ok(edit::addEffect(rig.tl.state, rig.tl.seq, std::vector<ClipId>{rig.tl.clip("A2@0")}, "wabcut.audio.graphicEq30", bright)).state;
+    auto services = std::make_shared<AudioServices>(rig.analyzer(), nullptr);
+    CommandHarness h(rig.tl, command::EnginePolicy{command::CapabilitySet::all(), 16, services}, ai::edit::editingCommands());
+    const ClipId target = h.clip("A1@0");
+    const ClipId reference = h.clip("A2@0");
+
+    const auto learned = h.ok("audio.eqMatch", {{"reference", {{"clip", reference.value}}}, {"clips", Json::array({target.value})}, {"apply", false}});
+    const Json& bands = learned.data["curve"]["bands"];
+    REQUIRE(bands.size() == 30);
+    // Low bands are cut and high bands boosted around zero: the +6 dB shelf, level removed (about -3 / +3 dB).
+    CHECK(bands[6]["gainDb"].get<double>() < -1.5);
+    CHECK(bands[24]["gainDb"].get<double>() > 1.5);
+    CHECK(bands[24]["gainDb"].get<double>() - bands[6]["gainDb"].get<double>() == Approx(6.0).margin(1.5));
+
+    h.ok("audio.eqMatch", {{"reference", {{"clip", reference.value}}}, {"clips", Json::array({target.value})}});
+    // The target now sounds like the reference in tone: its measured spectrum differs from the reference's by a flat offset.
+    auto analyzer = rig.analyzer();
+    const auto afterTarget = analyzer->measureMatch(*h.state(), rig.tl.seq, LoudnessTarget::ofClip(target), std::nullopt, nullptr);
+    const auto afterReference = analyzer->measureMatch(*h.state(), rig.tl.seq, LoudnessTarget::ofClip(reference), std::nullopt, nullptr);
+    REQUIRE(afterTarget);
+    REQUIRE(afterReference);
+    double mean = 0.0;
+    for (int b = kMatchFirstBand; b < kMatchFirstBand + kMatchBands; ++b) {
+        mean += afterReference->spectrum.levelDb[static_cast<std::size_t>(b)] - afterTarget->spectrum.levelDb[static_cast<std::size_t>(b)];
+    }
+    mean /= kMatchBands;
+    for (int b = kMatchFirstBand; b < kMatchFirstBand + kMatchBands; ++b) {
+        INFO("band " << b);
+        CHECK(afterReference->spectrum.levelDb[static_cast<std::size_t>(b)] - afterTarget->spectrum.levelDb[static_cast<std::size_t>(b)] ==
+              Approx(mean).margin(1.5));
+    }
+
+    // Level: matched to the reference's loudness within 0.1 LU, measured independently on the render.
+    const auto level = h.ok("audio.levelMatch", {{"reference", {{"clip", reference.value}}}, {"clips", Json::array({target.value})}});
+    const auto now = analyzer->measureMatch(*h.state(), rig.tl.seq, LoudnessTarget::ofClip(target), std::nullopt, nullptr);
+    REQUIRE(now);
+    CHECK(now->loudness.integratedLufs == Approx(afterReference->loudness.integratedLufs).margin(0.1));
+    CHECK(level.data["results"][0]["after"]["integratedLufs"].get<double>() == Approx(now->loudness.integratedLufs).margin(0.01));
 }

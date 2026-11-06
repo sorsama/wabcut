@@ -20,6 +20,9 @@
 #include <wabcut/color/Lut.h>
 #include <wabcut/model/ProjectState.h>
 
+#include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -62,21 +65,46 @@ class LutLibrary {
 public:
     static LutLibrary& shared();
 
+    /// How long a resolved file is trusted before its size and modification time are read again (0.7, card #153): a
+    /// LUT replaced on disk while Wabcut runs reaches the preview and the exports within this time, and the evaluator,
+    /// which resolves every frame, touches the disk at most once per file per interval.
+    static constexpr std::chrono::milliseconds kDefaultRecheckInterval{1000};
+    /// Changes the interval (tests; 0 reads the disk on every resolve).
+    void setRecheckInterval(std::chrono::milliseconds interval);
+
     /// The LUT of a file, loaded once per (path, size, mtime); null with `error` set when it cannot be read.
     std::shared_ptr<const Lut> load(const std::filesystem::path& file, std::string* error = nullptr);
-    /// Resolves "builtin:<name>" and "asset:<id>" (an asset of `state` whose file is online) for evaluateGrade.
+    /// Resolves "builtin:<name>" and "asset:<id>" (an asset of `state` whose file is online) for evaluateGrade. A file
+    /// that changed on disk since it was loaded is loaded again (at most one recheck interval late).
     LutResolver resolver(const ProjectState& state);
     void clear();
 
+    /// Review fix (card #153): how many resolves found a LUT asset whose file cannot be used - offline, missing, half
+    /// written by the program that is saving it, not a valid .cube - and so gave no LUT. A frame graded after such a resolve
+    /// is missing its look; an export compares the count before and after a frame and stops (RenderedVideoSource) rather
+    /// than write frames without the look.
+    std::uint64_t unreadableCount() const { return m_unreadable.load(); }
+    /// The most recent such file and why ("<file>: the LUT file is missing"); empty before any.
+    std::string lastUnreadable();
+    /// Reads the file of every LUT asset of `state` again now, whatever the recheck interval says: an export that is waiting
+    /// for a file that is being rewritten calls it before it asks again.
+    void refresh(const ProjectState& state);
+
 private:
+    void noteUnreadable(const std::filesystem::path& file, const std::string& why);
     struct Entry {
         std::int64_t size = -1;
         std::int64_t mtime = 0;
         std::shared_ptr<const Lut> lut;
         std::string error;
+        /// When the file was last compared with the disk (load(), either way).
+        std::chrono::steady_clock::time_point checked{};
     };
     std::mutex m_mutex;
     std::unordered_map<std::string, Entry> m_entries;
+    std::chrono::milliseconds m_recheck = kDefaultRecheckInterval;
+    std::atomic<std::uint64_t> m_unreadable{0};
+    std::string m_lastUnreadable; ///< guarded by m_mutex
 };
 
 } // namespace wabcut::color

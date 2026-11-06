@@ -257,7 +257,8 @@ EditOutcome duplicateClips(const ProjectState& state, SequenceId sequenceId, std
         return std::unexpected(seq.error());
     }
     const Sequence& s = **seq;
-    const auto selection = detail::resolveClips(s, clips, links);
+    // 0.7 (card 064): a locked clip can be copied (the copy is not locked); the originals are not touched.
+    const auto selection = detail::resolveClips(s, clips, links, true);
     if (!selection) {
         return std::unexpected(selection.error());
     }
@@ -294,6 +295,7 @@ EditOutcome duplicateClips(const ProjectState& state, SequenceId sequenceId, std
         const Clip& c = s.findTrack(ref.track)->clips[ref.index];
         Clip n = c;
         n.id = ed.newClipId();
+        n.locked = false; // 0.7 (card 064): a copy of a locked clip is a new, unlocked clip
         n.timelineRange.start = c.start() + d;
         if (c.linkGroup.isValid()) {
             auto g = linkMap.find(c.linkGroup.value);
@@ -321,6 +323,7 @@ EditOutcome duplicateClips(const ProjectState& state, SequenceId sequenceId, std
             }
             n.setEffects(std::move(effects));
         }
+        ed.renewTakeEffectIds(n); // card 092: an audition's other takes keep no effect id of the original
         clipMap.emplace(c.id.value, n.id);
         copies.emplace_back(plan->destination[i], std::move(n));
     }

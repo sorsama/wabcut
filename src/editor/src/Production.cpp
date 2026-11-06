@@ -2,6 +2,8 @@
 
 #include <wabcut/editor/Production.h>
 
+#include "PathSafety.h"
+
 #include <wabcut/editor/ProjectDocument.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectIO.h>
@@ -155,6 +157,37 @@ bool isPlainName(std::string_view name) {
         return c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' ||
                c == '|' || static_cast<unsigned char>(c) < 0x20;
     });
+}
+
+/// Whether `name` is, or would make, a Windows device file: CON, PRN, AUX, NUL, CONIN$, CONOUT$, COM0-9 or LPT0-9 (also
+/// with the superscript digits 1-3), alone or before an extension ("Con", "nul.txt", "COM1 .x"). The same rule as Home's
+/// new / rename / duplicate project (card 168), refused on every system because a production moves between them.
+/// Microsoft: "Do not use the following reserved names for the name of a file ... Also avoid these names followed
+/// immediately by an extension; for example, NUL.txt and NUL.tar.gz are both equivalent to NUL"
+/// (https://learn.microsoft.com/windows/win32/fileio/naming-a-file).
+bool isWindowsDeviceName(std::string_view name) {
+    const std::size_t dot = name.find('.');
+    std::string stem(dot == std::string_view::npos ? name : name.substr(0, dot));
+    while (!stem.empty() && stem.back() == ' ') {
+        stem.pop_back();
+    }
+    for (char& c : stem) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    for (const std::string_view device : {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}) {
+        if (stem == device) {
+            return true;
+        }
+    }
+    if (stem.starts_with("COM") || stem.starts_with("LPT")) {
+        const std::string_view digit = std::string_view(stem).substr(3);
+        // One ASCII digit, or one of the superscript digits 1-3 (U+00B9, U+00B2, U+00B3: C2 B9 / C2 B2 / C2 B3).
+        return (digit.size() == 1 && digit[0] >= '0' && digit[0] <= '9') ||
+               (digit.size() == 2 && static_cast<unsigned char>(digit[0]) == 0xC2 &&
+                (static_cast<unsigned char>(digit[1]) == 0xB9 || static_cast<unsigned char>(digit[1]) == 0xB2 ||
+                 static_cast<unsigned char>(digit[1]) == 0xB3));
+    }
+    return false;
 }
 
 bool isProjectFile(const fs::path& p) {
@@ -363,8 +396,15 @@ fs::path Production::previewFolderFor(const fs::path& projectFile) const {
     if (base.empty()) {
         return {};
     }
+    // Card #159: every project of the production shares this scratch disk, and file names repeat across its folders
+    // (Ep1/Edit.wabcut, Ep2/Edit.wabcut): the folder names its project by a short hash of the project's path, so two
+    // projects never share (and never throw away) each other's rendered previews and index.
+    std::uint64_t hash = 14695981039346656037ull; // FNV-1a
+    for (const char c : pathToUtf8(fs::path(paths::key(projectFile)))) {
+        hash = (hash ^ static_cast<unsigned char>(c)) * 1099511628211ull;
+    }
     fs::path stem = projectFile.stem();
-    stem += " Preview Files";
+    stem += " Preview Files " + std::format("{:06x}", hash & 0xFFFFFFull);
     return base / stem;
 }
 
@@ -492,6 +532,9 @@ std::expected<fs::path, Error> Production::newFolder(std::string_view relative, 
     if (!isPlainName(name)) {
         return std::unexpected(Error{ErrorCode::InvalidArgument, "a folder needs a name without / \\ : * ? \" < > |"});
     }
+    if (isWindowsDeviceName(name)) {
+        return std::unexpected(Error{ErrorCode::InvalidArgument, "'" + std::string(name) + "' is a reserved name on Windows: choose another name"});
+    }
     auto parent = folderAt(relative);
     if (!parent) {
         return std::unexpected(parent.error());
@@ -512,6 +555,9 @@ std::expected<fs::path, Error> Production::newProject(std::string_view relative,
                                                       const ProjectState& initial) {
     if (!isPlainName(name)) {
         return std::unexpected(Error{ErrorCode::InvalidArgument, "a project needs a name without / \\ : * ? \" < > |"});
+    }
+    if (isWindowsDeviceName(name)) { // card 168 (Home) and its follow-up: "Con.wabcut" is the console on Windows
+        return std::unexpected(Error{ErrorCode::InvalidArgument, "'" + std::string(name) + "' is a reserved name on Windows: choose another name"});
     }
     auto parent = folderAt(relative);
     if (!parent) {

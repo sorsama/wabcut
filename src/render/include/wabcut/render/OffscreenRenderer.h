@@ -62,6 +62,8 @@ struct OffscreenOptions {
     /// I.9: render into and read back 10 bits per channel (RGB10A2: R in bits 0-9, G 10-19, B 20-29, alpha 30-31 of
     /// each little-endian 32-bit word), for HDR and 10-bit colour-managed exports. RenderedImage::tenBit says so.
     bool tenBit = false;
+    /// 0.7 (VR / 360 video): draw the canvas through the VR viewer (tests of the monitor's picture, flat exports of a view).
+    VrView vr;
 };
 
 /// RGBA8 pixels (or RGB10A2 words with OffscreenOptions::tenBit), top row first, tightly packed (stride = 4 * width).

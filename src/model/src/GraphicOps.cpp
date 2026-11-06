@@ -871,6 +871,24 @@ EditOutcome saveProjectTemplate(const ProjectState& state, GraphicTemplate tmpl)
     return result;
 }
 
+EditOutcome setProjectTemplateFolder(const ProjectState& state, std::string_view id, std::string folder) {
+    if (const auto problem = templateFolderProblem(folder)) {
+        return std::unexpected(detail::invalidArgument(*problem));
+    }
+    if (!state.findTemplate(id)) {
+        return std::unexpected(detail::notFound("the project has no template \"" + std::string(id) + "\""));
+    }
+    EditResult result;
+    result.state = state;
+    for (GraphicTemplate& t : result.state.templates.edit()) {
+        if (t.id == id) {
+            t.folder = std::move(folder);
+        }
+    }
+    result.changes = diff(state, result.state);
+    return result;
+}
+
 EditOutcome removeProjectTemplate(const ProjectState& state, std::string_view id) {
     if (!state.findTemplate(id)) {
         return std::unexpected(detail::notFound("the project has no template \"" + std::string(id) + "\""));
@@ -891,6 +909,10 @@ std::expected<Graphic, Error> withFieldValues(const ProjectState& state, Graphic
         const TemplateField* field = findField(g, id);
         if (!field) {
             return std::unexpected(detail::invalidArgument("the template has no field \"" + id + "\""));
+        }
+        if (!field->keys.empty()) {
+            return std::unexpected(detail::invalidArgument(
+                "field \"" + id + "\" is animated: change it with a key (template.setFieldKey) or stop animating it first"));
         }
         const TemplateField copy = *field;
         if (auto applied = applyField(state, g, copy, value); !applied) {
@@ -931,6 +953,109 @@ EditOutcome instantiateTemplate(const ProjectState& state, SequenceId sequence, 
         }
     }
     return addGraphic(state, sequence, track, at, length, std::move(*filled), bin);
+}
+
+namespace {
+
+constexpr std::int64_t kMaxKeyTicks = std::int64_t{1} << 60; ///< the longest timeline (as Graphics.cpp and GraphicJson.cpp)
+
+/// The instance field `id` of a graphic of a template, to edit (0.7, card #71).
+std::expected<TemplateField*, Error> instanceField(Graphic& g, std::string_view id) {
+    if (!g.instance) {
+        return std::unexpected(detail::invalidArgument("the graphic is not made from a template"));
+    }
+    const auto it = std::find_if(g.instance->fields.begin(), g.instance->fields.end(), [&](const TemplateField& f) { return f.id == id; });
+    if (it == g.instance->fields.end()) {
+        return std::unexpected(detail::invalidArgument("the template has no field \"" + std::string(id) + "\""));
+    }
+    if (it->kind == FieldKind::Duration) {
+        return std::unexpected(detail::invalidArgument("field \"" + std::string(id) + "\" is a length: it cannot have keys"));
+    }
+    return &*it;
+}
+
+} // namespace
+
+EditOutcome setTemplateFieldKey(const ProjectState& state, SequenceId sequence, ClipId clip, std::string_view fieldId, Ticks time,
+                                const FieldValue& value, Interpolation interpolation) {
+    const auto at = locate(state, sequence, clip);
+    if (!at) {
+        return std::unexpected(at.error());
+    }
+    Graphic g = *at->clip->graphic();
+    auto field = instanceField(g, fieldId);
+    if (!field) {
+        return std::unexpected(field.error());
+    }
+    if (time.value < 0 || time.value >= kMaxKeyTicks) {
+        return std::unexpected(detail::invalidArgument("a key's time must be within the timeline"));
+    }
+    if ((*field)->kind == FieldKind::Image) {
+        const MediaItem* media = state.findMedia(value.media);
+        if (!media || media->info.video.empty()) {
+            return std::unexpected(detail::invalidArgument("field " + std::string(fieldId) + ": media " + std::to_string(value.media.value) +
+                                                           " is not a picture of this project"));
+        }
+    }
+    std::vector<FieldKey>& keys = (*field)->keys;
+    const auto position = std::lower_bound(keys.begin(), keys.end(), time, [](const FieldKey& k, Ticks t) { return k.time < t; });
+    if (position != keys.end() && position->time == time) {
+        position->value = value;
+        position->interpolation = interpolation;
+    } else {
+        if (keys.size() >= kMaxFieldKeys) {
+            return std::unexpected(detail::invalidArgument("field " + std::string(fieldId) + " has the most keys it can hold (" +
+                                                           std::to_string(kMaxFieldKeys) + ")"));
+        }
+        keys.insert(position, FieldKey{time, value, interpolation});
+    }
+    if (const auto problem = graphicProblem(g)) {
+        return std::unexpected(detail::invalidArgument("the graphic " + *problem));
+    }
+    return replaceGraphic(state, *at, std::move(g));
+}
+
+EditOutcome removeTemplateFieldKey(const ProjectState& state, SequenceId sequence, ClipId clip, std::string_view fieldId,
+                                   std::size_t index) {
+    const auto at = locate(state, sequence, clip);
+    if (!at) {
+        return std::unexpected(at.error());
+    }
+    Graphic g = *at->clip->graphic();
+    auto field = instanceField(g, fieldId);
+    if (!field) {
+        return std::unexpected(field.error());
+    }
+    if (index >= (*field)->keys.size()) {
+        return std::unexpected(detail::notFound("field " + std::string(fieldId) + " has no key " + std::to_string(index)));
+    }
+    (*field)->keys.erase((*field)->keys.begin() + static_cast<std::ptrdiff_t>(index));
+    return replaceGraphic(state, *at, std::move(g));
+}
+
+EditOutcome clearTemplateFieldKeys(const ProjectState& state, SequenceId sequence, ClipId clip, std::string_view fieldId,
+                                   Ticks keepAt) {
+    const auto at = locate(state, sequence, clip);
+    if (!at) {
+        return std::unexpected(at.error());
+    }
+    Graphic g = *at->clip->graphic();
+    auto field = instanceField(g, fieldId);
+    if (!field) {
+        return std::unexpected(field.error());
+    }
+    if ((*field)->keys.empty()) {
+        return std::unexpected(detail::invalidArgument("field " + std::string(fieldId) + " has no keys"));
+    }
+    const TemplateField keyed = **field;
+    const FieldValue kept = fieldValueAt(keyed, keepAt);
+    (*field)->keys.clear();
+    (*field)->value = kept;
+    const TemplateField bare = **field;
+    if (auto applied = applyField(state, g, bare, kept); !applied) {
+        return std::unexpected(applied.error());
+    }
+    return replaceGraphic(state, *at, std::move(g));
 }
 
 EditOutcome setTemplateFields(const ProjectState& state, SequenceId sequence, ClipId clip,
@@ -1443,6 +1568,23 @@ EditOutcome renameTextStyle(const ProjectState& state, std::string_view from, st
     return projectResult(state, std::move(out));
 }
 
+EditOutcome moveTextStyle(const ProjectState& state, std::string_view name, std::size_t index) {
+    const ProjectTextStyle* style = state.findTextStyle(name);
+    if (!style) {
+        return std::unexpected(detail::notFound("there is no text style '" + std::string(name) + "'"));
+    }
+    const auto from = static_cast<std::size_t>(style - state.textStyles.data());
+    const std::size_t to = std::min(index, state.textStyles.size() - 1);
+    ProjectState out = state;
+    if (from != to) {
+        std::vector<ProjectTextStyle>& list = out.textStyles.edit();
+        ProjectTextStyle moved = std::move(list[from]);
+        list.erase(list.begin() + static_cast<std::ptrdiff_t>(from));
+        list.insert(list.begin() + static_cast<std::ptrdiff_t>(to), std::move(moved));
+    }
+    return projectResult(state, std::move(out));
+}
+
 EditOutcome removeTextStyle(const ProjectState& state, std::string_view name) {
     const ProjectTextStyle* style = state.findTextStyle(name);
     if (!style) {
@@ -1879,6 +2021,179 @@ bool editSourceRunsAt(TextContent& text, Ticks time, const std::function<bool(st
     text.sourceKey = ParamValue(std::move(curve));
     normalizeSources(text);
     return true;
+}
+
+// ---- Run-level text styling (0.7, card #81) ---------------------------------------------------------------------------
+
+namespace {
+
+/// The byte offsets where each code point of `text` starts, and its length at the end.
+std::vector<std::size_t> codePointStarts(std::string_view text) {
+    std::vector<std::size_t> starts;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if ((static_cast<unsigned char>(text[i]) & 0xC0U) != 0x80U) {
+            starts.push_back(i);
+        }
+    }
+    starts.push_back(text.size());
+    return starts;
+}
+
+std::string joinedText(const std::vector<TextRun>& runs) {
+    std::string out;
+    for (const TextRun& r : runs) {
+        out += r.text;
+    }
+    return out;
+}
+
+/// Splits the run that straddles byte offset `at` of the joined text, so a run boundary lies there.
+void splitRunsAt(std::vector<TextRun>& runs, std::size_t at) {
+    std::size_t start = 0;
+    for (std::size_t i = 0; i < runs.size(); ++i) {
+        const std::size_t end = start + runs[i].text.size();
+        if (at > start && at < end) {
+            TextRun tail{runs[i].text.substr(at - start), runs[i].style};
+            runs[i].text.resize(at - start);
+            runs.insert(runs.begin() + static_cast<std::ptrdiff_t>(i) + 1, std::move(tail));
+            return;
+        }
+        start = end;
+    }
+}
+
+/// Drops empty runs and joins neighbours of one style (a text keeps at least one run).
+void tidyRuns(std::vector<TextRun>& runs) {
+    std::vector<TextRun> out;
+    for (TextRun& r : runs) {
+        if (r.text.empty()) {
+            continue;
+        }
+        if (!out.empty() && out.back().style == r.style) {
+            out.back().text += r.text;
+        } else {
+            out.push_back(std::move(r));
+        }
+    }
+    if (out.empty() && !runs.empty()) {
+        out.push_back(TextRun{{}, runs.front().style});
+    }
+    runs = std::move(out);
+}
+
+} // namespace
+
+std::vector<TextRun> retextRuns(const std::vector<TextRun>& runs, std::string_view text, const TextStyle& fallback) {
+    if (runs.empty()) {
+        return {TextRun{std::string(text), fallback}};
+    }
+    if (runs.size() == 1) {
+        return {TextRun{std::string(text), runs.front().style}};
+    }
+    const std::string old = joinedText(runs);
+    // The common start and end, on code point boundaries and not overlapping.
+    std::size_t prefix = 0;
+    while (prefix < old.size() && prefix < text.size() && old[prefix] == text[prefix]) {
+        ++prefix;
+    }
+    while (prefix > 0 && prefix < old.size() && (static_cast<unsigned char>(old[prefix]) & 0xC0U) == 0x80U) {
+        --prefix;
+    }
+    std::size_t suffix = 0;
+    while (suffix < old.size() - prefix && suffix < text.size() - prefix &&
+           old[old.size() - 1 - suffix] == text[text.size() - 1 - suffix]) {
+        ++suffix;
+    }
+    while (suffix > 0 && (static_cast<unsigned char>(text[text.size() - suffix]) & 0xC0U) == 0x80U) {
+        --suffix;
+    }
+    std::vector<TextRun> work = runs;
+    splitRunsAt(work, prefix);
+    splitRunsAt(work, old.size() - suffix);
+    std::vector<TextRun> head;
+    std::vector<TextRun> tail;
+    std::size_t start = 0;
+    for (TextRun& r : work) {
+        const std::size_t end = start + r.text.size();
+        if (end <= prefix) {
+            head.push_back(std::move(r)); // inside the kept start
+        } else if (start >= old.size() - suffix) {
+            tail.push_back(std::move(r)); // inside the kept end
+        } // else: the replaced part
+        start = end;
+    }
+    // The changed middle continues the run before it (typing at a run's end goes on in that run), else the first run's style.
+    const TextStyle middleStyle = !head.empty() ? head.back().style : runs.front().style;
+    std::vector<TextRun> out = std::move(head);
+    const std::string middle(text.substr(prefix, text.size() - prefix - suffix));
+    if (!middle.empty()) {
+        out.push_back(TextRun{middle, middleStyle});
+    }
+    for (TextRun& r : tail) {
+        out.push_back(std::move(r));
+    }
+    tidyRuns(out);
+    if (out.empty()) {
+        out.push_back(TextRun{{}, middleStyle});
+    }
+    return out;
+}
+
+bool styleRunsRange(std::vector<TextRun>& runs, std::size_t from, std::size_t to, const TextStyle& style) {
+    const std::string all = joinedText(runs);
+    const std::vector<std::size_t> starts = codePointStarts(all);
+    const std::size_t characters = starts.size() - 1;
+    if (from >= to || to > characters) {
+        return false;
+    }
+    std::vector<TextRun> work = runs;
+    splitRunsAt(work, starts[from]);
+    splitRunsAt(work, starts[to]);
+    std::size_t at = 0;
+    bool changed = false;
+    for (TextRun& r : work) {
+        const std::size_t end = at + r.text.size();
+        if (at >= starts[from] && end <= starts[to] && !(r.style == style)) {
+            r.style = style;
+            changed = true;
+        }
+        at = end;
+    }
+    if (!changed) {
+        return false;
+    }
+    tidyRuns(work);
+    if (work.size() > kMaxTextRuns) {
+        return false;
+    }
+    runs = std::move(work);
+    return true;
+}
+
+EditOutcome applyTextStyleToRange(const ProjectState& state, SequenceId sequence, ClipId clip, std::uint32_t layer, std::size_t from,
+                                  std::size_t to, std::string_view styleName, Ticks time) {
+    const ProjectTextStyle* style = state.findTextStyle(styleName);
+    if (!style) {
+        return std::unexpected(detail::notFound("there is no text style '" + std::string(styleName) + "'"));
+    }
+    const auto at = locate(state, sequence, clip);
+    if (!at) {
+        return std::unexpected(at.error());
+    }
+    Graphic g = *at->clip->graphic();
+    GraphicLayer* target = findMutable(g.layers, layer);
+    if (!target) {
+        return std::unexpected(detail::notFound("the graphic has no layer " + std::to_string(layer)));
+    }
+    if (target->kind != LayerKind::Text) {
+        return std::unexpected(detail::invalidArgument("layer '" + target->name + "' is not a text layer"));
+    }
+    const bool changed = editSourceRunsAt(target->text, time, [&](std::vector<TextRun>& runs) { return styleRunsRange(runs, from, to, style->style); });
+    if (!changed) {
+        return std::unexpected(detail::invalidArgument("the range [" + std::to_string(from) + ", " + std::to_string(to) +
+                                                       ") is empty, outside the text, or already in that style"));
+    }
+    return replaceGraphic(state, *at, std::move(g));
 }
 
 } // namespace wabcut::edit

@@ -1664,14 +1664,25 @@ TEST_CASE("Panel header: More tools rows act like a click and hidden tools leave
     QQuickItem* inspector = shell.item("effectControls");
     REQUIRE(inspector != nullptr);
     REQUIRE(evaluate(shell, QStringLiteral("Preferences.keyframeLane")).toBool());
-    CHECK(inPanel(inspector, QStringLiteral("trailing[1].objectName")).toString() == QStringLiteral("keyframeLaneToggle"));
-    CHECK(inPanel(inspector, QStringLiteral("trailing[1].tooltip")).toString() == QStringLiteral("Hide the keyframe lane"));
-    CHECK(inPanel(inspector, QStringLiteral("menuLabel(trailing[1])")).toString() == QStringLiteral("Keyframe lane"));
-    CHECK(inPanel(inspector, QStringLiteral("menuLabel(trailing[0])")).toString() == QStringLiteral("Explain this frame"));
+    // The header tools are found by name: releases add tools (Graph Editor, Track Motion, the Library's Freeform view) before them.
+    const auto toolAt = [&](QQuickItem* panel, const QString& name) {
+        const int index = inPanel(panel, QStringLiteral("(function() { for (let i = 0; i < trailing.length; ++i) { if (trailing[i].objectName === '%1') "
+                                                        "return i; } return -1; })()")
+                                             .arg(name))
+                              .toInt();
+        REQUIRE(index >= 0);
+        return QStringLiteral("trailing[%1]").arg(index);
+    };
+    const QString laneTool = toolAt(inspector, QStringLiteral("keyframeLaneToggle"));
+    CHECK(inPanel(inspector, laneTool + QStringLiteral(".tooltip")).toString() == QStringLiteral("Hide the keyframe lane"));
+    CHECK(inPanel(inspector, QStringLiteral("menuLabel(%1)").arg(laneTool)).toString() == QStringLiteral("Keyframe lane"));
+    CHECK(inPanel(inspector, QStringLiteral("menuLabel(%1)").arg(toolAt(inspector, QStringLiteral("explainFrameButton")))).toString() ==
+          QStringLiteral("Explain this frame"));
     // A tool without a menuText: its tooltip (the Library's List view).
     QQuickItem* libraryPanel = shell.item("libraryPanel");
     REQUIRE(libraryPanel != nullptr);
-    CHECK(inPanel(libraryPanel, QStringLiteral("menuLabel(trailing[1])")).toString() == QStringLiteral("List view"));
+    CHECK(inPanel(libraryPanel, QStringLiteral("menuLabel(%1)").arg(toolAt(libraryPanel, QStringLiteral("libraryListButton")))).toString() ==
+          QStringLiteral("List view"));
     // In a short header the row shows it so.
     const QStringList inspectorHidden = hiddenNames(inspector);
     if (inspectorHidden.contains(QStringLiteral("keyframeLaneToggle"))) {
