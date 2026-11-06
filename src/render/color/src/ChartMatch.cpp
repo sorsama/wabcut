@@ -686,7 +686,8 @@ std::optional<ChartDetection> detectIn(const WorkImage& im, double threshold, Ch
             }
         }
     }
-    std::sort(hypotheses.begin(), hypotheses.end(), [](const Hypothesis& a, const Hypothesis& b) { return a.score > b.score; });
+    // stable: hypotheses tie on their score, and only the first 12 are tried - every standard library must try the same 12
+    std::stable_sort(hypotheses.begin(), hypotheses.end(), [](const Hypothesis& a, const Hypothesis& b) { return a.score > b.score; });
     std::optional<Candidate> best;
     int tried = 0;
     for (const Hypothesis& h : hypotheses) {
@@ -950,7 +951,7 @@ ChartMeasurement measureChart(const ColorImage& image, const ChartCorners& corne
         if (taps.size() < static_cast<std::size_t>(kTaps * kTaps) / 2) {
             continue;
         }
-        std::sort(taps.begin(), taps.end(), [](const auto& a, const auto& b) { return a[0] < b[0]; });
+        std::stable_sort(taps.begin(), taps.end(), [](const auto& a, const auto& b) { return a[0] < b[0]; });
         const std::size_t trim = taps.size() * 15 / 100;
         const std::size_t first = trim, last = taps.size() - trim;
         Rgb mean{0, 0, 0};
@@ -1045,7 +1046,7 @@ double round1(double v, double unit) { return std::round(v / unit) * unit; }
 
 /// The curve points of one channel from (x, y) nodes: anchors at both ends, increasing x, non-decreasing y, in [0, 1].
 std::vector<EffectPoint> curveFromNodes(std::vector<EffectPoint> nodes) {
-    std::sort(nodes.begin(), nodes.end(), [](const EffectPoint& a, const EffectPoint& b) { return a.x < b.x; });
+    std::stable_sort(nodes.begin(), nodes.end(), [](const EffectPoint& a, const EffectPoint& b) { return a.x < b.x; });
     std::vector<EffectPoint> points;
     points.push_back({0.0, 0.0});
     for (const EffectPoint& n : nodes) {
@@ -1334,7 +1335,7 @@ ChartMatchResult solveChartMatch(const ChartMeasurement& measurement, const Grad
         // The hue curves from a set of points: patches within `gap` turns of hue share one point (their average), at
         // `damping` of the full correction.
         const auto hueCurvesFrom = [&](std::vector<Point> list, double damping, double gap, int* count) {
-            std::sort(list.begin(), list.end(), [](const Point& a, const Point& b) { return a.hue < b.hue; });
+            std::stable_sort(list.begin(), list.end(), [](const Point& a, const Point& b) { return a.hue < b.hue; });
             std::vector<Point> merged;
             std::vector<double> members;
             for (const Point& p : list) {

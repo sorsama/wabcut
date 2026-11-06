@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <fstream>
 #include <mutex>
 #include <system_error>
@@ -40,7 +41,9 @@ std::string etagOfFile(const fs::path& file) {
         }
     }
     const auto time = fs::last_write_time(file, ec);
-    return "\"" + std::to_string(size) + "-" + std::to_string(ec ? 0 : time.time_since_epoch().count()) + "\"";
+    // An explicit int64: the file clock counts in __int128 on libc++, where std::to_string has no exact overload.
+    const std::int64_t ticks = ec ? 0 : static_cast<std::int64_t>(time.time_since_epoch().count());
+    return "\"" + std::to_string(size) + "-" + std::to_string(ticks) + "\"";
 }
 
 std::int64_t unixSecondsOf(const fs::file_time_type& time) {
