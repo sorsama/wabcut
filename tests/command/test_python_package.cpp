@@ -20,22 +20,6 @@
 
 namespace {
 
-std::string envValue(const char* name) {
-#ifdef _WIN32
-    char* value = nullptr;
-    std::size_t length = 0;
-    if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) {
-        return {};
-    }
-    std::string out(value);
-    std::free(value);
-    return out;
-#else
-    const char* value = std::getenv(name);
-    return value ? value : "";
-#endif
-}
-
 void setEnv(const char* name, const std::string& value) {
 #ifdef _WIN32
     _putenv_s(name, value.c_str());
@@ -57,20 +41,14 @@ int shell(const std::string& line) {
 
 std::string quoted(const std::string& text) { return "\"" + text + "\""; }
 
-/// A Python 3.11 or newer: $WABCUT_TEST_PYTHON, else python3 / python / py -3 on the PATH.
+/// A Python 3.11 or newer on the PATH: py -3 / python / python3. Only these fixed names go through the shell, nothing
+/// taken from the environment.
 std::optional<std::string> findPython() {
-    std::vector<std::string> candidates;
-    // $WABCUT_TEST_PYTHON goes through the shell: only a plain path to an existing file is taken (no quotes or shell
-    // operators), anything else is ignored.
-    if (const std::string given = envValue("WABCUT_TEST_PYTHON"); !given.empty() &&
-        given.find_first_of("\"'`$&|;<>^%!\r\n") == std::string::npos && std::filesystem::is_regular_file(given)) {
-        candidates.push_back(quoted(given));
-    }
 #ifdef _WIN32
-    candidates.insert(candidates.end(), {"py -3", "python", "python3"});
+    const std::vector<std::string> candidates{"py -3", "python", "python3"};
     const char* nothing = "nul";
 #else
-    candidates.insert(candidates.end(), {"python3", "python"});
+    const std::vector<std::string> candidates{"python3", "python"};
     const char* nothing = "/dev/null";
 #endif
     for (const std::string& candidate : candidates) {
@@ -88,8 +66,8 @@ std::optional<std::string> findPython() {
 TEST_CASE("the Python package's own tests pass against wabcut-cli", "[command][python][stdio]") {
     const auto python = findPython();
     if (!python) {
-        SKIP("no Python 3.11 or newer was found (put python3 on the PATH or set WABCUT_TEST_PYTHON to its full path): the "
-             "Python package tests did not run");
+        SKIP("no Python 3.11 or newer was found on the PATH (py -3, python or python3): the Python package tests did not "
+             "run");
     }
     const std::filesystem::path packageRoot = std::filesystem::path(WABCUT_PYTHON_PACKAGE_DIR).parent_path();
     REQUIRE(std::filesystem::exists(packageRoot / "tests"));

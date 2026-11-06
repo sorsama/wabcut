@@ -79,7 +79,7 @@ std::optional<int> mainTrack(const std::vector<const SubjectSample*>& samples, b
             if (b.track < 0) {
                 continue;
             }
-            weight[b.track] += std::sqrt(std::max(b.box.area(), 0.0f)) * b.score;
+            weight[b.track] += std::sqrt(static_cast<double>(std::max(b.box.area(), 0.0f))) * static_cast<double>(b.score);
             ++seen[b.track];
         }
     }
