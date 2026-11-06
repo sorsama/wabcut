@@ -77,7 +77,7 @@ public:
     BackgroundThreadMode& operator=(const BackgroundThreadMode&) = delete;
 
 private:
-    bool m_active = false;
+    [[maybe_unused]] bool m_active = false; // Windows only (background thread mode)
 };
 
 /// Every encoder "auto" tries for `codec`, in order: hardwareEncoderOrder(codec) then softwareEncoder(codec).

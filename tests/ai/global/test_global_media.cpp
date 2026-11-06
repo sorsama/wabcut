@@ -82,6 +82,7 @@ std::string env(const char* name) {
     std::free(value);
     return s;
 #else
+    (void)value;
     (void)length;
     const char* v = std::getenv(name);
     return v ? std::string(v) : std::string();
@@ -223,7 +224,7 @@ TEST_CASE("OPUS-MT on the real helper: English to Thai and back, cues a second (
         }
         CHECK(thai >= english.size() * 8 / 10);
         std::printf("opus-mt-en-mul en->th asked for %s, ran on %s: %.1f cues/s, %.0f ms per cue, %lld tokens\n  \"%s\" -> \"%s\"\n", device,
-                    translator.device().c_str(), english.size() / seconds, seconds * 1000.0 / english.size(),
+                    translator.device().c_str(), static_cast<double>(english.size()) / seconds, seconds * 1000.0 / static_cast<double>(english.size()),
                     static_cast<long long>(translator.tokens()), english[1].c_str(), result->segments[1].text.c_str());
     }
     translate::LocalTranslatorOptions back;
