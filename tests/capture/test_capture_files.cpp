@@ -225,7 +225,7 @@ TEST_CASE("Fake pictures carry their number in a barcode every layout reads back
     }
     // Pictures differ from one to the next apart from the code (so a repeated picture can be told from a new one by its number).
     const CaptureFrame a = makeFrame(PixelFormat::Nv12, 320, 180, 0, [](std::uint8_t* b) { drawFakePicture(PixelFormat::Nv12, 320, 180, 3, b); });
-    const CaptureFrame b = makeFrame(PixelFormat::Nv12, 320, 180, 0, [](std::uint8_t* b) { drawFakePicture(PixelFormat::Nv12, 320, 180, 4, b); });
+    const CaptureFrame b = makeFrame(PixelFormat::Nv12, 320, 180, 0, [](std::uint8_t* bytes) { drawFakePicture(PixelFormat::Nv12, 320, 180, 4, bytes); });
     CHECK(*a.data != *b.data);
 }
 

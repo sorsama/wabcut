@@ -102,7 +102,6 @@ public:
     playback::TimelineAudioPlayer* audioPlayer() { return m_audioStarted ? m_player.get() : nullptr; }
 
 private:
-    const EditSession& m_session;
     PlaybackSessionOptions m_options;
     SequenceId m_sequence;
     std::unique_ptr<audio::AudioEngine> m_engine;

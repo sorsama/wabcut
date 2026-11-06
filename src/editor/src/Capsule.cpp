@@ -659,7 +659,7 @@ std::int64_t estimate(const MediaPlan& p) {
     }
     // A share of the file, plus a GOP or two on each side.
     const double share = std::clamp(p.keep->duration.toSeconds() / p.item->info.duration.toSeconds(), 0.0, 1.0);
-    return std::min(size, static_cast<std::int64_t>(size * share * 1.1) + 4 * 1024 * 1024);
+    return std::min(size, static_cast<std::int64_t>(static_cast<double>(size) * share * 1.1) + 4 * 1024 * 1024);
 }
 
 /// The asset references ("asset:<id>") effects in the project use.

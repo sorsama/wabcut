@@ -94,7 +94,7 @@ std::optional<std::string> readSmallFile(const fs::path& p, std::size_t max = 4 
 
 /// The BDMV folder of an AVCHD card root.
 std::optional<fs::path> avchdBdmv(const fs::path& root) {
-    for (const fs::path candidate : {root / "PRIVATE" / "AVCHD" / "BDMV", root / "AVCHD" / "BDMV", root / "BDMV"}) {
+    for (const fs::path& candidate : {root / "PRIVATE" / "AVCHD" / "BDMV", root / "AVCHD" / "BDMV", root / "BDMV"}) {
         if (isDir(candidate / "STREAM")) {
             return candidate;
         }
