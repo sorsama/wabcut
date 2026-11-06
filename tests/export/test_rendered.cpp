@@ -1319,7 +1319,7 @@ TEST_CASE("Rendered export == preview with a motion graphic over the picture (C.
     CHECK(cmp.minPsnr >= 50.0);
     // A frame of the export as a picture (the report's screenshot).
     exporttest::PreviewRenderer preview(project);
-    const auto rgba = preview.render(Ticks::fromSeconds(1.5), framesToTicks(1, kRate));
+    const auto rgba = preview.render(Ticks{kTicksPerSecond * 3 / 2}, framesToTicks(1, kRate));
     const QImage image(rgba.data(), kWidth, kHeight, kWidth * 4, QImage::Format_RGBA8888);
     CHECK(image.save(QString::fromStdString((dir / "graphic_lower_third.png").string())));
 }

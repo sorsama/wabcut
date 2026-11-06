@@ -1006,8 +1006,8 @@ void ProjectLifecycle::scanRecoveryVersions(const QUrl& file) {
         for (qsizetype i = 0; i < list.size(); ++i) {
             const editor::RecoveryEntry& e = entries[static_cast<std::size_t>(i)];
             std::error_code fileEc;
-            const std::filesystem::path file = editor::recoveryPosterFile(posters, e);
-            if (e.summary.loadable && std::filesystem::is_regular_file(file, fileEc) && std::filesystem::file_size(file, fileEc) > 0) {
+            const std::filesystem::path posterFile = editor::recoveryPosterFile(posters, e);
+            if (e.summary.loadable && std::filesystem::is_regular_file(posterFile, fileEc) && std::filesystem::file_size(posterFile, fileEc) > 0) {
                 QVariantMap m = list[i].toMap();
                 m.insert(QStringLiteral("poster"), QUrl::fromLocalFile(posterPathOf(e)));
                 list[i] = m;

@@ -142,11 +142,11 @@ QString GraphicsImportBridge::start(const QUrl& url, const QVariantMap& options,
             }
             // The next file dropped with this one.
             if (!self->m_queue.isEmpty()) {
-                const auto [url, options] = self->m_queue.takeFirst();
+                const auto [queuedUrl, queuedOptions] = self->m_queue.takeFirst();
                 const Ticks next = self->m_nextAt;
-                QMetaObject::invokeMethod(self, [self, url, options, next] {
+                QMetaObject::invokeMethod(self, [self, queuedUrl, queuedOptions, next] {
                     if (self)
-                        self->start(url, options, next);
+                        self->start(queuedUrl, queuedOptions, next);
                 }, Qt::QueuedConnection);
             }
         });

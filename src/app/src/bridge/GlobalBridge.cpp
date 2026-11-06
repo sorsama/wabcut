@@ -274,8 +274,6 @@ public:
     }
 };
 
-double cents(double dollars) { return std::round(dollars * 100.0) / 100.0; }
-
 } // namespace
 
 std::shared_ptr<const LineBreaker> qtLineBreaker() {

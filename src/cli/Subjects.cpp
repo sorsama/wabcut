@@ -33,15 +33,15 @@ std::shared_ptr<wabcut::command::CommandServices> reframeServicesFor(const std::
         [provider](const wabcut::ProjectState& state, wabcut::SequenceId source, int width, int height,
                    std::string name) -> std::expected<wabcut::ReframedSequence, wabcut::Error> {
             namespace rf = wabcut::ai::reframe;
-            rf::ReframeOptions options;
-            options.aspect = rf::Aspect{width, height};
-            options.width = width;
-            options.height = height;
-            options.name = std::move(name);
+            rf::ReframeOptions reframeOptions;
+            reframeOptions.aspect = rf::Aspect{width, height};
+            reframeOptions.width = width;
+            reframeOptions.height = height;
+            reframeOptions.name = std::move(name);
             const rf::SubjectSource subjects = [provider](const wabcut::MediaItem& media, int stream) {
                 return provider->subjects(media, stream, [](double) { return true; });
             };
-            auto made = rf::reframeSequence(state, source, options, subjects);
+            auto made = rf::reframeSequence(state, source, reframeOptions, subjects);
             if (!made) {
                 return std::unexpected(made.error());
             }

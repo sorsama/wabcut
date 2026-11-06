@@ -119,7 +119,7 @@ struct LogoProject {
     ProjectState current;
     std::vector<playback::LayerSpec> layers() const {
         std::vector<playback::LayerSpec> specs;
-        playback::evaluateVideoLayers(current, *current.findSequence(sequence), Ticks::fromSeconds(0.5), specs, false);
+        playback::evaluateVideoLayers(current, *current.findSequence(sequence), Ticks{kTicksPerSecond / 2}, specs, false);
         return specs;
     }
 };

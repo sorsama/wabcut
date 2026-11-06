@@ -124,6 +124,29 @@ QPainter::CompositionMode compositionOf(BlendMode mode) {
         return QPainter::CompositionMode_Lighten;
     case BlendMode::Difference:
         return QPainter::CompositionMode_Difference;
+    // The clip blend modes a graphic item is never offered (Essential Graphics lists the eight above): drawn as Normal,
+    // as render/src/GraphicRaster.cpp draws them for export. Mapping the ones QPainter has (Color Burn, Color Dodge,
+    // Soft Light, Hard Light, Exclusion) belongs in both tables at once, or the editor and the export would differ.
+    case BlendMode::ColorBurn:
+    case BlendMode::ColorDodge:
+    case BlendMode::SoftLight:
+    case BlendMode::HardLight:
+    case BlendMode::Exclusion:
+    case BlendMode::Dissolve:
+    case BlendMode::LinearBurn:
+    case BlendMode::DarkerColor:
+    case BlendMode::LighterColor:
+    case BlendMode::VividLight:
+    case BlendMode::LinearLight:
+    case BlendMode::PinLight:
+    case BlendMode::HardMix:
+    case BlendMode::Subtract:
+    case BlendMode::Divide:
+    case BlendMode::Hue:
+    case BlendMode::Saturation:
+    case BlendMode::Color:
+    case BlendMode::Luminosity:
+        return QPainter::CompositionMode_SourceOver;
     }
     return QPainter::CompositionMode_SourceOver;
 }

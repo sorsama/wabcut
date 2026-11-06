@@ -512,9 +512,9 @@ SpectralEdit SpectrogramView::draftEdit() const {
 
 void SpectrogramView::drawEdit(QPainter& p, const SpectralEdit& e, bool draft) const {
     QColor fill = draft ? m_selectionColor : m_editColor;
-    fill.setAlphaF(draft ? 0.22 : 0.16);
+    fill.setAlphaF(draft ? 0.22f : 0.16f);
     QColor line = draft ? m_selectionColor : m_editColor;
-    line.setAlphaF(draft ? 1.0 : 0.85);
+    line.setAlphaF(draft ? 1.0f : 0.85f);
     QPen pen(line, draft ? 1.6 : 1.2, draft ? Qt::DashLine : Qt::SolidLine);
     p.setPen(pen);
     p.setBrush(fill);

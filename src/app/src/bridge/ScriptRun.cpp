@@ -50,7 +50,7 @@ bool sameToken(const QByteArray& a, const QByteArray& b) {
     }
     unsigned char difference = 0;
     for (qsizetype i = 0; i < a.size(); ++i) {
-        difference |= static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]);
+        difference = static_cast<unsigned char>(difference | (static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i])));
     }
     return difference == 0;
 }

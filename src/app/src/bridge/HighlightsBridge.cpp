@@ -743,8 +743,8 @@ QString HighlightsBridge::runJobs(const QString& kind, const QString& startText,
                 }
             }
             const ProjectSnapshot after = kept;
-            const std::string label = !commitLabel.empty() ? commitLabel : scratch.undoLabel().value_or(std::string());
-            return [self, live, base, after, label, staleIsError, done, stopped, results = std::move(results)]() mutable {
+            const std::string finalLabel = !commitLabel.empty() ? commitLabel : scratch.undoLabel().value_or(std::string());
+            return [self, live, base, after, finalLabel, staleIsError, done, stopped, results = std::move(results)]() mutable {
                 // Back on the GUI thread: the copy's result is one undo step when nothing changed meanwhile; a project
                 // that changed is never edited behind the user's edits.
                 bool stale = false;
@@ -769,7 +769,7 @@ QString HighlightsBridge::runJobs(const QString& kind, const QString& startText,
                         // done() reads the new markers itself (with the result's signals), once.
                         if (self)
                             self->m_committing = true;
-                        auto committed = live->session().commit(label, *after);
+                        auto committed = live->session().commit(finalLabel, *after);
                         if (self)
                             self->m_committing = false;
                         if (!committed)

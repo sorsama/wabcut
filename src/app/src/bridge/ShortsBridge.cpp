@@ -965,12 +965,12 @@ QString ReframeBridge::makePreview(const QVariantMap& options) {
                 clip.insert(QStringLiteral("name"), qs(c.value("name", std::string())));
                 clip.insert(QStringLiteral("guide"), qs(c.value("guide", std::string())));
                 clip.insert(QStringLiteral("zoomedOut"), c.value("zoomedOut", false));
-                const MediaId media{c.value("media", std::uint64_t{0})};
+                const MediaId clipMedia{c.value("media", std::uint64_t{0})};
                 QVariantList path;
                 QStringList frames;
                 for (const Json& p : c.value("path", Json::array())) {
                     path.append(QVariant(QVariantList{p[0].get<double>(), p[1].get<double>(), p[2].get<double>(), p[3].get<double>(), p[4].get<double>()}));
-                    frames << frameUrl(media, Ticks{static_cast<std::int64_t>(std::llround(p[0].get<double>() * static_cast<double>(kTicksPerSecond)))});
+                    frames << frameUrl(clipMedia, Ticks{static_cast<std::int64_t>(std::llround(p[0].get<double>() * static_cast<double>(kTicksPerSecond)))});
                 }
                 QVariantList subjects;
                 for (const Json& s : c.value("subjects", Json::array())) {
@@ -979,7 +979,7 @@ QString ReframeBridge::makePreview(const QVariantMap& options) {
                 clip.insert(QStringLiteral("path"), path);
                 clip.insert(QStringLiteral("subjects"), subjects);
                 clip.insert(QStringLiteral("frames"), frames);
-                const MediaItem* item = base->findMedia(media);
+                const MediaItem* item = base->findMedia(clipMedia);
                 double aspect = 16.0 / 9.0;
                 if (item && !item->info.video.empty()) {
                     const auto display = ai::reframe::displayGeometry(item->info.video.front());

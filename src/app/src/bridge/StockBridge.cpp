@@ -32,8 +32,6 @@ namespace {
 
 constexpr int kMaxThumbWidth = 480;
 
-cloud::StockProvider providerOf(const QString& id) { return cloud::stockProviderFromId(id.toStdString()).value_or(cloud::StockProvider::Pexels); }
-
 QString fileLabel(const cloud::StockFile& f) {
     QStringList parts;
     if (f.width > 0 && f.height > 0)

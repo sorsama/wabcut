@@ -2208,8 +2208,8 @@ void AiController::startModelListing(const QString& providerId, const ProviderSp
                         if (entry.is_string()) {
                             id = qs(entry.get<std::string>());
                         } else if (entry.is_object()) {
-                            for (const char* key : {"id", "name"}) { // OpenAI-style "id"; Gemini "name"
-                                if (const auto field = entry.find(key); id.isEmpty() && field != entry.end() && field->is_string()) {
+                            for (const char* fieldName : {"id", "name"}) { // OpenAI-style "id"; Gemini "name"
+                                if (const auto field = entry.find(fieldName); id.isEmpty() && field != entry.end() && field->is_string()) {
                                     id = qs(field->get<std::string>());
                                 }
                             }

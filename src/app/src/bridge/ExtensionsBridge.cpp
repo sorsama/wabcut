@@ -793,7 +793,7 @@ bool ExtensionsBridge::answerPrompt(const QString& key, const QVariantMap& value
         return false;
     bool ok = false;
     const std::uint64_t prompt = key.mid(hash + 1).toULongLong(&ok);
-    if (!ok || !m_manager->answerPrompt(key.left(hash).toStdString(), prompt, toJson(values)))
+    if (!ok || !m_manager->answerPrompt(key.left(hash).toStdString(), prompt, std::optional<Json>(std::in_place, toJson(values))))
         return false;
     removePrompt(key);
     schedule();

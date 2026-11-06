@@ -471,7 +471,7 @@ void ObjectMaskBridge::refreshPreview() {
                         }
                     }
                 }
-                for (const auto [u, v] : {std::pair{0.0, 0.0}, std::pair{1.0, 0.0}, std::pair{0.0, 1.0}}) {
+                for (const auto& [u, v] : {std::pair{0.0, 0.0}, std::pair{1.0, 0.0}, std::pair{0.0, 1.0}}) {
                     const QPointF p = where->toCanvas(u, v);
                     quad << p.x() << p.y();
                 }
@@ -672,8 +672,8 @@ bool ObjectMaskBridge::prompt(std::vector<seg::PromptPoint> points, std::optiona
         params["effect"] = parsed->first.value;
         return runCommand("mask.refine", params, tr("Refining the object…"), [this, clipId, parsed](const Outcome& o) -> QString {
             ProjectController* live = controller();
-            const auto loc = o.state->findSequence(live->currentSequenceId())->findClip(clipId);
-            const Mask* made = loc ? findMask(loc->clip(), parsed->first, parsed->second) : nullptr;
+            const auto maskClip = o.state->findSequence(live->currentSequenceId())->findClip(clipId);
+            const Mask* made = maskClip ? findMask(maskClip->clip(), parsed->first, parsed->second) : nullptr;
             if (!made) {
                 return tr("The object mask is gone");
             }
@@ -696,8 +696,8 @@ bool ObjectMaskBridge::prompt(std::vector<seg::PromptPoint> points, std::optiona
         ProjectController* live = controller();
         const EffectInstanceId holder{o.result.data.value("effect", std::uint64_t{0})};
         const std::uint32_t id = o.result.data.value("mask", 0u);
-        const auto loc = o.state->findSequence(live->currentSequenceId())->findClip(clipId);
-        const Mask* made = loc ? findMask(loc->clip(), holder, id) : nullptr;
+        const auto maskClip = o.state->findSequence(live->currentSequenceId())->findClip(clipId);
+        const Mask* made = maskClip ? findMask(maskClip->clip(), holder, id) : nullptr;
         if (!made) {
             return tr("The object mask could not be made");
         }

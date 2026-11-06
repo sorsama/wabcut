@@ -329,7 +329,7 @@ void KeyframeGraph::rebuild(bool force) {
             {QStringLiteral("visible"), !m_hidden.contains(e.row->key)},
             {QStringLiteral("active"), e.row->key == m_activeRow},
             {QStringLiteral("keys"), static_cast<int>(curve.keys.size())},
-            {QStringLiteral("valueText"), QString::number(nowValue, 'f', e.row->decimals) + (e.row->unit.isEmpty() ? QString() : QStringLiteral(" ") + e.row->unit)},
+            {QStringLiteral("valueText"), QString::number(nowValue, 'f', static_cast<int>(e.row->decimals)) + (e.row->unit.isEmpty() ? QString() : QStringLiteral(" ") + e.row->unit)},
         });
     }
     const bool activeVisible = std::any_of(entries.begin(), entries.end(), [&](const Entry& e) {
@@ -483,7 +483,7 @@ void KeyframeGraph::rebuild(bool force) {
                 {QStringLiteral("selected"), selected},
                 {QStringLiteral("shape"), fromView(toString(k.interpolation))},
                 {QStringLiteral("timeText"), pc->formatTimecode(t)},
-                {QStringLiteral("valueText"), QString::number(ui(k.value), 'f', r.decimals) + (r.unit.isEmpty() ? QString() : QStringLiteral(" ") + r.unit)},
+                {QStringLiteral("valueText"), QString::number(ui(k.value), 'f', static_cast<int>(r.decimals)) + (r.unit.isEmpty() ? QString() : QStringLiteral(" ") + r.unit)},
             };
             // The speed at the key: Bezier keys name theirs; the others run at the slope to their neighbour.
             double keySpeed = 0;

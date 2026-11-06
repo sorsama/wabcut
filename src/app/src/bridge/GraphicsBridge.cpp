@@ -1125,7 +1125,7 @@ QVariantMap GraphicsBridge::templateReport(const QVariantMap& data, const QStrin
     QString author = data.value(QStringLiteral("authorApp")).toString();
     if (author.isEmpty())
         author = tr("Wabcut");
-    const int fieldCount = data.value(QStringLiteral("fields")).toList().size();
+    const int fieldCount = static_cast<int>(data.value(QStringLiteral("fields")).toList().size());
     QString summary = tr("%1 template · %n field(s)", "", fieldCount).arg(author);
     if (const QString name = data.value(QStringLiteral("name")).toString(); !name.isEmpty())
         summary = name + QStringLiteral(" · ") + summary;
@@ -1227,7 +1227,7 @@ QVariantMap GraphicsBridge::importTemplateFolder(const QUrl& folder, const QStri
     }
     refreshTemplates();
     const int imported = data.value(QStringLiteral("imported")).toInt();
-    const int skipped = data.value(QStringLiteral("skipped")).toList().size();
+    const int skipped = static_cast<int>(data.value(QStringLiteral("skipped")).toList().size());
     result.insert(QStringLiteral("imported"), imported);
     result.insert(QStringLiteral("skipped"), skipped);
     result.insert(QStringLiteral("library"), where);
@@ -2507,11 +2507,11 @@ QString GraphicsBridge::setPin(int layerId, int pinTo, const QStringList& edges)
         return setError(tr("Select a graphic clip"));
     std::uint8_t mask = 0;
     for (const QString& e : edges) {
-        mask |= e == QLatin1String("left")     ? LayerPin::kLeft
-                : e == QLatin1String("top")    ? LayerPin::kTop
-                : e == QLatin1String("right")  ? LayerPin::kRight
-                : e == QLatin1String("bottom") ? LayerPin::kBottom
-                                               : 0;
+        mask = static_cast<std::uint8_t>(mask | (e == QLatin1String("left")     ? LayerPin::kLeft
+                                                 : e == QLatin1String("top")    ? LayerPin::kTop
+                                                 : e == QLatin1String("right")  ? LayerPin::kRight
+                                                 : e == QLatin1String("bottom") ? LayerPin::kBottom
+                                                                                : 0));
     }
     std::array<double, 4> offsets{0.0, 0.0, 0.0, 0.0};
     const bool toFrame = pinTo == -1; // 0.2: the video frame

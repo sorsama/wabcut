@@ -51,9 +51,6 @@ namespace {
 using Json = command::Json;
 using Frames = std::int64_t;
 
-Ticks secondsToTicks(double s) {
-    return Ticks{static_cast<std::int64_t>(std::llround(s * static_cast<double>(kTicksPerSecond)))};
-}
 Ticks times(Ticks t, std::int64_t n) { return Ticks{t.value * n}; }
 /// The nearest frame boundary.
 Ticks nearestFrame(Ticks t, Ticks frame) { return Ticks{floorDiv(t.value + frame.value / 2, frame.value) * frame.value}; }

@@ -254,11 +254,13 @@ QString probe(const Candidate& candidate, int timeoutMs, QString& why) {
     return out;
 }
 
+#ifdef Q_OS_WIN
 /// The Microsoft Store's "python.exe" stubs in WindowsApps are zero-byte aliases that print an install hint.
 bool isStoreStub(const QString& path) {
     const QFileInfo info(path);
     return path.contains(QStringLiteral("WindowsApps"), Qt::CaseInsensitive) && info.size() == 0;
 }
+#endif
 
 } // namespace
 

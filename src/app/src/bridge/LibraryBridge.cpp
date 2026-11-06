@@ -1867,8 +1867,8 @@ QVariantMap LibraryBridge::deleteImpact(const QStringList& keys) const {
         usedItems = static_cast<int>(usedIds.size());
         // Fix round 1 (ARGON-12): the keys no sequence uses on their own (a bin: nothing inside it is used) - what
         // Delete with Options deletes when "Remove their clips from sequences" is off; the used ones stay.
-        const auto none = [](const std::map<std::uint64_t, std::vector<ClipId>>& uses) {
-            return std::ranges::all_of(uses, [](const auto& entry) { return entry.second.empty(); });
+        const auto none = [](const std::map<std::uint64_t, std::vector<ClipId>>& clipsById) {
+            return std::ranges::all_of(clipsById, [](const auto& entry) { return entry.second.empty(); });
         };
         for (const QString& key : keys) {
             std::vector<BinId> oneBin;
@@ -3199,7 +3199,7 @@ std::optional<command::Json> LibraryBridge::runCameraImport(const QStringList& f
     if (const int markers = result.data.value("markers", 0); markers > 0)
         emit notice(markers == 1 ? tr("1 chapter marker became a clip marker.")
                                  : tr("%1 chapter markers became clip markers.").arg(markers));
-    return result.data.value("imported", command::Json::array());
+    return std::optional<command::Json>(std::in_place, result.data.value("imported", command::Json::array()));
 }
 
 void LibraryBridge::setIngest(bool on) {
