@@ -79,8 +79,9 @@ if(TARGET wabcut_ui AND TARGET wabcut)
     wabcut_allow_qt_generated_code(wabcut_perf_tests)
 endif()
 
-# The sampling profiler (docs/performance.md, "Profiling"): no installation needed.
-if(WIN32)
+# The sampling profiler (docs/performance.md, "Profiling"): no installation needed. x64 Windows only: it walks x64 stacks
+# (CONTEXT::Rip/Rsp/Rbp and the x64 .pdata unwind entries), which Windows on ARM64 does not have.
+if(WIN32 AND NOT (CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$" OR CMAKE_CXX_COMPILER_ARCHITECTURE_ID MATCHES "ARM64"))
     add_executable(wabcut_perf_sampler tools/sampler.cpp)
     target_compile_definitions(wabcut_perf_sampler PRIVATE UNICODE _UNICODE)
     target_link_libraries(wabcut_perf_sampler PRIVATE dbghelp psapi winmm)
