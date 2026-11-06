@@ -629,7 +629,11 @@ LONG WINAPI onUnhandledException(EXCEPTION_POINTERS* exception) {
     RtlCaptureContext(&context);
     EXCEPTION_RECORD record{};
     record.ExceptionCode = code;
+#if defined(_M_ARM64) || defined(_M_ARM64EC)
+    record.ExceptionAddress = reinterpret_cast<PVOID>(context.Pc); // ARM64: the program counter
+#else
     record.ExceptionAddress = reinterpret_cast<PVOID>(context.Rip);
+#endif
     EXCEPTION_POINTERS pointers{&record, &context};
     crashed(&pointers, code, what);
 }

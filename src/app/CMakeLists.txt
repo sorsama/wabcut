@@ -1503,9 +1503,16 @@ target_sources(wabcut_ui PRIVATE
 target_link_libraries(wabcut_ui PRIVATE wabcut_mcp)
 wabcut_ui_qml_sources(QML_FILES qml/dialogs/ScriptsDialog.qml)
 if(TARGET wabcut)
+    # Next to wabcut; in a macOS bundle in Contents/Resources (codesign treats every file in Contents/MacOS as code and
+    # refuses the .py files there). ScriptsBridge looks in both places.
+    if(APPLE)
+        set(wabcut_python_build_dir "$<TARGET_BUNDLE_CONTENT_DIR:wabcut>/Resources/python/wabcut")
+    else()
+        set(wabcut_python_build_dir "$<TARGET_FILE_DIR:wabcut>/python/wabcut")
+    endif()
     add_custom_command(TARGET wabcut POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/python/wabcut"
-                "$<TARGET_FILE_DIR:wabcut>/python/wabcut"
+                "${wabcut_python_build_dir}"
         COMMENT "the wabcut Python package next to wabcut"
         VERBATIM)
 endif()

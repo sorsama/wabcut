@@ -38,7 +38,7 @@ class FakeVideoSource final : public VideoSource {
 public:
     FakeVideoSource(std::string name, VideoFormat format, int startDelayMs, int failAfter)
         : m_name(std::move(name)), m_format(std::move(format)), m_startDelayMs(startDelayMs), m_failAfter(failAfter) {}
-    ~FakeVideoSource() override { stop(); }
+    ~FakeVideoSource() override { shutdown(); } // non-virtual: no virtual call while destroying
 
     std::string description() const override { return m_name; }
     VideoFormat format() const override { return m_format; }
@@ -53,7 +53,10 @@ public:
         return {};
     }
 
-    void stop() noexcept override {
+    void stop() noexcept override { shutdown(); }
+
+    /// What stop() does; the destructor calls it directly.
+    void shutdown() noexcept {
         m_stop = true;
         if (m_thread.joinable()) {
             m_thread.join();
@@ -103,7 +106,7 @@ class FakeAudioSource final : public AudioSource {
 public:
     FakeAudioSource(std::string name, int rate, int channels, int delayMs, double hz, float level)
         : m_name(std::move(name)), m_rate(rate), m_channels(channels), m_delayMs(delayMs), m_hz(hz), m_level(level) {}
-    ~FakeAudioSource() override { stop(); }
+    ~FakeAudioSource() override { shutdown(); } // non-virtual: no virtual call while destroying
 
     std::string description() const override { return m_name; }
     int sampleRate() const override { return m_rate; }
@@ -119,7 +122,10 @@ public:
         return {};
     }
 
-    void stop() noexcept override {
+    void stop() noexcept override { shutdown(); }
+
+    /// What stop() does; the destructor calls it directly.
+    void shutdown() noexcept {
         m_stop = true;
         if (m_thread.joinable()) {
             m_thread.join();

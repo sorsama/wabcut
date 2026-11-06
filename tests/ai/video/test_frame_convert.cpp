@@ -14,6 +14,7 @@
 
 #include <cmath>
 #include <numeric>
+#include <string_view>
 
 using namespace wabcut;
 using namespace wabcut::ai::video;
@@ -304,6 +305,12 @@ TEST_CASE("Real decoded frames go through: 8-bit 4:2:0, 10-bit 4:2:2 and ProRes 
     for (const char* name : {"h264_360p120.mp4", "h264_422_10bit.mp4", "hevc_main10_420.mp4", "prores_4444_alpha.mov"}) {
         const std::filesystem::path file = media / name;
         INFO(name);
+        // tools/gen_test_media.py makes the HEVC Main 10 clip only when a 10-bit HEVC encoder is there (it is optional,
+        // and CI runners have none), so that one clip is skipped when missing; the other three are always made.
+        if (std::string_view(name) == "hevc_main10_420.mp4" && !std::filesystem::exists(file)) {
+            WARN("hevc_main10_420.mp4 was not generated (no 10-bit HEVC encoder); skipping that clip");
+            continue;
+        }
         REQUIRE(std::filesystem::exists(file));
         auto decoder = wabcut::media::VideoDecoder::open(file.string());
         REQUIRE(decoder);

@@ -36,7 +36,7 @@ class InputSource final : public AudioSource {
 public:
     InputSource(std::string deviceId, std::string name, int rate, int channels)
         : m_deviceId(std::move(deviceId)), m_name(std::move(name)), m_rate(rate), m_channels(channels) {}
-    ~InputSource() override { stop(); }
+    ~InputSource() override { shutdown(); } // non-virtual: no virtual call while destroying
 
     std::string description() const override { return m_name; }
     int sampleRate() const override { return m_rate; }
@@ -70,7 +70,10 @@ public:
         return {};
     }
 
-    void stop() noexcept override {
+    void stop() noexcept override { shutdown(); }
+
+    /// What stop() does; the destructor calls it directly.
+    void shutdown() noexcept {
         m_stop = true;
         if (m_thread.joinable()) {
             m_thread.join();

@@ -60,7 +60,10 @@ std::string quoted(const std::string& text) { return "\"" + text + "\""; }
 /// A Python 3.11 or newer: $WABCUT_TEST_PYTHON, else python3 / python / py -3 on the PATH.
 std::optional<std::string> findPython() {
     std::vector<std::string> candidates;
-    if (const std::string given = envValue("WABCUT_TEST_PYTHON"); !given.empty()) {
+    // $WABCUT_TEST_PYTHON goes through the shell: only a plain path to an existing file is taken (no quotes or shell
+    // operators), anything else is ignored.
+    if (const std::string given = envValue("WABCUT_TEST_PYTHON"); !given.empty() &&
+        given.find_first_of("\"'`$&|;<>^%!\r\n") == std::string::npos && std::filesystem::is_regular_file(given)) {
         candidates.push_back(quoted(given));
     }
 #ifdef _WIN32
