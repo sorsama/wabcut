@@ -113,7 +113,7 @@ jobs:
       # Qt's native ARM64 kit (windows_arm64 repository: compiler and tools run natively, unlike the cross-compiled kit
       # of the x64 repository). https://doc.qt.io/qt-6.11/windows.html lists Windows on ARM (ARM64, MSVC 2022).
       - name: Qt ${{ env.QT_VERSION }}
-        uses: jurplel/install-qt-action@v4.4.1
+        uses: jurplel/install-qt-action@v4.5.0
         with:
           version: ${{ env.QT_VERSION }}
           host: windows_arm64

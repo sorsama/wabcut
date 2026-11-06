@@ -79,7 +79,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: lukka/get-cmake@v4.4.4
+      - uses: lukka/get-cmake@v4.4.5
 
       # Plus the xcb helpers Qt's xcb platform plugin links: the install tree bundles them from here
       # (cmake/packaging/linux/BundleLibraries.cmake), and install.smoke fails without them.
@@ -143,7 +143,7 @@ jobs:
         run: python3 tools/ci-cache.py ccache-setup --max-size ${{ matrix.ccache_size }} ${{ github.ref != 'refs/heads/main' && '--read-only' || '' }}
 
       - name: Qt ${{ env.QT_VERSION }}
-        uses: jurplel/install-qt-action@v4.4.1
+        uses: jurplel/install-qt-action@v4.5.0
         with:
           version: ${{ env.QT_VERSION }}
           modules: qtshadertools

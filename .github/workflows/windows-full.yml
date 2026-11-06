@@ -95,7 +95,7 @@ jobs:
         run: python tools/ci-cache.py ccache-setup --max-size 2G
 
       - name: Qt ${{ env.QT_VERSION }}
-        uses: jurplel/install-qt-action@v4.4.1
+        uses: jurplel/install-qt-action@v4.5.0
         with:
           version: ${{ env.QT_VERSION }}
           host: windows
