@@ -42,6 +42,8 @@ struct VideoSourceFormat {
     /// source counts what it mapped).
     OutputColorSpace outputSpace = OutputColorSpace::Rec709;
     std::optional<SdrConform> sdrConform;
+    /// 0.7 (HDR10+, DynamicMetadata.h): measure every frame's light (FrameLightStats) as it is rendered; PQ sources only.
+    bool frameStats = false;
 };
 
 /// 0.6 (#72): what SDR Conform mapped over the frames rendered: pixels brighter than the SDR white (rolled off by the
@@ -65,6 +67,18 @@ struct ContentLightLevels {
     double maxCll = 0.0;
     double maxFall = 0.0;
     std::int64_t frames = 0;
+};
+
+/// 0.7: the statistics HDR10+ (SMPTE ST 2094-40) is built from, measured on the rendered pixels of a PQ source, in nits of
+/// linear light. The percentiles are of the per-pixel maximum of R, G and B.
+inline constexpr int kHdr10PlusPercentiles = 10;
+inline constexpr float kHdr10PlusPercentages[kHdr10PlusPercentiles] = {1, 5, 10, 25, 50, 75, 90, 95, 98, 99};
+struct FrameLightStats {
+    float maxR = 0.0f; ///< the brightest red, green and blue component of any pixel
+    float maxG = 0.0f;
+    float maxB = 0.0f;
+    float meanMaxRgb = 0.0f; ///< the mean of the per-pixel maximum of R, G, B
+    float percentile[kHdr10PlusPercentiles] = {};
 };
 
 /// A pipelined, in-order frame producer.
@@ -91,6 +105,12 @@ public:
     /// 0.6 (#72): what SDR Conform mapped in the frames rendered so far (sources with VideoSourceFormat::sdrConform),
     /// or nullopt.
     virtual std::optional<SdrConformReport> conformReport() const { return std::nullopt; }
+    /// 0.7: the light statistics of output frame `frameIndex` (sources with VideoSourceFormat::frameStats, once that frame was
+    /// delivered by next()), or nullopt.
+    virtual std::optional<FrameLightStats> frameStats(std::int64_t frameIndex) const {
+        (void)frameIndex;
+        return std::nullopt;
+    }
 };
 
 /// Deterministic test pattern with three layers, rendered on its own thread (like the real renderer):

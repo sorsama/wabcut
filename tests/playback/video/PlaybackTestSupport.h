@@ -53,6 +53,8 @@ struct Presented {
     std::int64_t barcode = -1; ///< Of the top layer (-1: no layers).
     std::uint64_t epoch = 0;
     int layers = 0;
+    render::CanvasSize canvas{};
+    double pixelAspect = 1.0; ///< The composite's (the sequence's, for the monitor: 156).
 };
 
 /// Acts as the render thread: acquires from `mailbox` every ~16.7 ms for `duration` (or until `stop` returns

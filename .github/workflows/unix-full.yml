@@ -1,9 +1,10 @@
-# EXPERIMENTAL full builds on Linux and macOS (linux-gcc / macos-clang presets): the app, the CLI, every test suite but
-# the GPU and audio-device ones, and the install tree. Windows is the verified platform; these jobs show how far the
-# other two are and never block (docs/release.md, "Platform status": CI-ready, unverified locally). Runs on every push to
-# main, weekly and on demand: the first build of FFmpeg, x264 and x265 from source takes hours (the vcpkg binary cache
-# keeps them). The caches it saves on main are the ones the release workflow's Linux and macOS jobs restore
-# (tools/ci-cache.py): the vcpkg packages and the compiler cache.
+# Full builds on Linux and macOS (linux-gcc / macos-clang presets): the app, the CLI, every test suite but the GPU and
+# audio-device ones and the known-gap tests (tests/platform-gaps.json), and the install tree. Windows is the verified
+# platform; these jobs show how far the other two are, with the test counts and every skip's reason in the job summary
+# (tools/ci-test-report.py), and do not block while their matrix entry says `experimental: true` (docs/release.md,
+# "Platform status"). Runs on every push to main, weekly and on demand: the first build of FFmpeg, x264 and x265 from
+# source takes hours (the vcpkg binary cache keeps them). The caches it saves on main are the ones the release workflow's
+# Linux and macOS jobs restore (tools/ci-cache.py): the vcpkg packages and the compiler cache.
 #
 # Dependency set: the same vcpkg manifest as Windows, with local AI off (whisper.cpp / ggml are not measured on these
 # platforms yet: WABCUT_WITH_LOCAL_AI=OFF) and smart search on Microsoft's prebuilt ONNX Runtime for the platform
@@ -12,7 +13,7 @@
 #
 # macOS builds with Homebrew's LLVM (libc++ 20+): Apple Clang's libc++ lacks std::jthread and floating-point
 # std::from_chars. cmake/toolchains/macos-llvm.cmake and the arm64-osx-llvm triplet use it for Wabcut and every port.
-name: unix-full (experimental)
+name: unix-full
 
 on:
   push:
@@ -41,22 +42,32 @@ env:
 
 jobs:
   build:
-    name: ${{ matrix.preset }} (experimental)
-    continue-on-error: true
+    name: ${{ matrix.preset }}${{ matrix.experimental && ' (experimental)' || '' }}
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
             preset: linux-gcc
+            title: Linux x64 (linux-gcc)
             # GCC 14 (the image's default is 13; both pass the toolchain check, 14 is what docs/building.md lists).
             configure: -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14
             ccache_size: 2500M
+            # The platform's rows in tests/platform-gaps.json: tests left out of the gate for a known, unfixed cause.
+            gaps: linux
+            # A failure here does not fail the workflow (the job's continue-on-error). Linux's core gate (core.yml, GCC 14)
+            # is required on every pull request; this full job becomes a gate the same way once main's runs have been green
+            # for a while: set `experimental: false` on this entry (docs/release.md, "Platform status").
+            experimental: true
           - os: macos-15
             preset: macos-clang
+            title: macOS Apple silicon (macos-clang)
             # An absolute path: CMake's compiler checks include the toolchain from their own scratch projects.
             configure: -DVCPKG_TARGET_TRIPLET=arm64-osx-llvm -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$GITHUB_WORKSPACE/cmake/toolchains/macos-llvm.cmake
             ccache_size: 1500M
+            gaps: macos
+            experimental: true
     runs-on: ${{ matrix.os }}
     timeout-minutes: 360
     permissions:
@@ -208,12 +219,41 @@ jobs:
             python3 tools/ci-cache.py delete-older --ref "$GITHUB_REF" --prefix "${{ steps.vcpkg.outputs.prefix }}" --keep "$VCPKG_KEY"
           fi
 
-      # Runs even when some targets failed to build (their tests show as Not Run), so one run reports everything.
+      # Runs even when some targets failed to build (their tests show as Not Run), so one run reports everything. Without
+      # the gpu and audio-device tests (a runner has neither) and the known-gap tests (tests/platform-gaps.json, run apart
+      # below).
       - name: Test (without gpu and audio-device tests)
+        id: test
         if: always() && steps.build.outcome != 'skipped'
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --preset ${{ matrix.preset }} -j 3 --output-junit "$GITHUB_WORKSPACE/ctest-${{ matrix.preset }}.xml"
+        run: |
+          exclude="$(python3 tools/ci-known-gaps.py ${{ matrix.gaps }})"
+          skip=()
+          if [ -n "$exclude" ]; then skip=(-E "$exclude"); fi
+          ctest --preset ${{ matrix.preset }} -j 3 --output-junit "$GITHUB_WORKSPACE/ctest-${{ matrix.preset }}.xml" ${skip[@]+"${skip[@]}"}
+
+      # The counts next to Windows': passed, failed, and every skipped test with the reason it gave (docs/building.md,
+      # "Platforms and their test status").
+      - name: Test report
+        if: always() && steps.build.outcome != 'skipped'
+        run: |
+          python3 tools/ci-test-report.py --junit "ctest-${{ matrix.preset }}.xml" --title "${{ matrix.title }}" \
+            --gaps tests/platform-gaps.json --platform ${{ matrix.gaps }} --excluded-labels gpu,audio-device
+
+      # The known gaps run on their own and never fail the job: their output says why they fail here, and a run where they
+      # all pass says tests/platform-gaps.json can lose them.
+      - name: Known-gap tests (information only)
+        if: always() && steps.build.outcome != 'skipped'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          gaps="$(python3 tools/ci-known-gaps.py ${{ matrix.gaps }})"
+          if ctest --preset ${{ matrix.preset }} -R "$gaps" --output-on-failure; then
+            echo "::notice title=Known gaps::every known-gap test passed on ${{ matrix.gaps }}: remove them from tests/platform-gaps.json"
+          else
+            echo "::notice title=Known gaps::some known-gap tests still fail on ${{ matrix.gaps }} (the reasons are in tests/platform-gaps.json)"
+          fi
 
       - uses: actions/upload-artifact@v7
         if: always()

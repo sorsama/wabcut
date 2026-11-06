@@ -1,13 +1,21 @@
 // Markers 2.0 (M5i): editing sequence markers (marker.update, marker.clearAll), clip markers on media items in media
 // time (source.addMarker / updateMarker / removeMarker), and exporting a sequence's markers as CSV or as YouTube
-// chapters (sequence.exportMarkers; text only, so read-only clients can use it: the app writes the file).
+// chapters (sequence.exportMarkers; text only, so read-only clients can use it: the app writes the file). 0.7: reading
+// a marker list from a CSV, text or JSON file (marker.import, source.importMarkers; MarkerImport.cpp parses it).
 
 #include "Catalog.h"
+#include "MarkerImport.h"
 
+#include <wabcut/command/CsvText.h>
 #include <wabcut/command/SourceServices.h>
 #include <wabcut/model/EditOps.h>
+#include <wabcut/model/MarkerGroupOps.h>
+#include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/Timecode.h>
 
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <vector>
@@ -17,8 +25,8 @@ namespace wabcut::command::detail {
 // --- Shared marker params (also used by marker.add) --------------------------------------------------------
 
 Json markerTypeParam() {
-    return schema::enumeration({"comment", "chapter", "segmentation", "webLink"},
-                               "Premiere's marker type. Default comment.");
+    return schema::enumeration({"comment", "chapter", "segmentation", "webLink", "source"},
+                               "Premiere's marker type (0.7: \"source\" marks a citation, see sources.add). Default comment.");
 }
 
 Json markerUrlParam() { return schema::string("Web link URL (http or https)."); }
@@ -122,6 +130,8 @@ std::string typeLabel(MarkerType type) {
         return "Segmentation";
     case MarkerType::WebLink:
         return "Web Link";
+    case MarkerType::Source:
+        return "Source";
     case MarkerType::Comment:
         break;
     }
@@ -200,6 +210,49 @@ CommandOutput updateMarker(ExecutionContext& c) {
     return edited(std::move(r), Json{{"marker", markerJson(c, marker, index)}});
 }
 
+// --- Several markers at once (0.7, card 119) ---------------------------------------------------------------------
+
+Json markerIndexesParam(std::string description) {
+    Json indexes = schema::array(schema::integer("A marker index.", 0), std::move(description), 1);
+    indexes["maxItems"] = static_cast<std::int64_t>(kMaxMarkers);
+    return indexes;
+}
+
+/// The "indexes" param: marker indices into the sequence's list, each existing.
+std::vector<std::size_t> markerIndexList(ExecutionContext& c, std::size_t count) {
+    const Json& list = c.params()["indexes"];
+    if (!list.is_array() || list.empty()) {
+        fail(ErrorCode::InvalidParams, "name at least one marker index", Json{{"path", "/indexes"}});
+    }
+    std::vector<std::size_t> out;
+    out.reserve(list.size());
+    for (std::size_t i = 0; i < list.size(); ++i) {
+        const std::size_t index = c.indexValue(list[i], "/indexes/" + std::to_string(i));
+        if (index >= count) {
+            fail(ErrorCode::NotFound, "there is no marker " + std::to_string(index), Json{{"path", "/indexes/" + std::to_string(i)}});
+        }
+        out.push_back(index);
+    }
+    return out;
+}
+
+Json indexListJson(const std::vector<std::size_t>& touched) {
+    Json out = Json::array();
+    for (const std::size_t i : touched) {
+        out.push_back(i);
+    }
+    return out;
+}
+
+CommandOutput groupEdited(ExecutionContext& c, std::expected<edit::MarkerGroupEdit, Error> group, Json extra = Json::object()) {
+    if (!group) {
+        fail(group.error().code == wabcut::ErrorCode::NotFound ? ErrorCode::NotFound : ErrorCode::InvalidParams, group.error().message);
+    }
+    edit::EditResult r = c.take(edit::setSequenceMarkers(c.state(), c.sequenceId(), std::move(group->markers)));
+    extra["indexes"] = indexListJson(group->touched);
+    return edited(std::move(r), std::move(extra));
+}
+
 // --- Clip markers (media time) -----------------------------------------------------------------------------
 
 const MediaItem& markerMedia(ExecutionContext& c) { return *c.state().findMedia(c.media("media")); }
@@ -251,19 +304,10 @@ CommandOutput removeClipMarker(ExecutionContext& c) {
 
 // --- Export -------------------------------------------------------------------------------------------------
 
-std::string csvField(const std::string& text) {
-    if (text.find_first_of(",\"\r\n") == std::string::npos) {
-        return text;
-    }
-    std::string out = "\"";
-    for (const char ch : text) {
-        out += ch;
-        if (ch == '"') {
-            out += '"';
-        }
-    }
-    return out + "\"";
-}
+/// A marker's name or comment as a CSV cell. Marker text comes from clips, files and projects other people made: a cell
+/// that starts with = + - @ (or a tab or carriage return) would run as a formula in a spreadsheet (CSV injection), so
+/// it gets a leading quote (CsvText.h; csvTextUnguarded() takes it off again).
+std::string csvField(const std::string& text) { return csvText(text); }
 
 /// Premiere's marker CSV columns, plus the colour.
 std::string markersCsv(ExecutionContext& c, const std::vector<Marker>& markers) {
@@ -378,6 +422,135 @@ CommandOutput exportMarkers(ExecutionContext& c) {
     return out;
 }
 
+// --- Import -------------------------------------------------------------------------------------------------------
+
+Json markerPathParam(std::string description) {
+    Json path = schema::string(std::move(description));
+    path["maxLength"] = 4096;
+    path["minLength"] = 1;
+    return path;
+}
+
+/// The marker file's bytes (at most kMaxMarkerImportBytes).
+std::string readMarkerFileBytes(const std::filesystem::path& path) {
+    std::error_code ec;
+    const std::uintmax_t size = std::filesystem::file_size(path, ec);
+    if (ec) {
+        fail(ErrorCode::NotFound, "cannot read \"" + pathToUtf8(path) + "\"", Json{{"path", "/path"}});
+    }
+    if (size > kMaxMarkerImportBytes) {
+        fail(ErrorCode::InvalidParams, "the marker file is larger than 16 MiB", Json{{"path", "/path"}});
+    }
+    std::ifstream in(path, std::ios::binary);
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    bytes.resize(static_cast<std::size_t>(in.gcount()));
+    return bytes;
+}
+
+/// What an import found, ready to join the markers already there.
+struct MarkerImport {
+    std::vector<Marker> markers;
+    std::string format;
+    std::size_t skipped = 0;
+    std::vector<std::string> warnings;
+};
+
+/// Reads the file named by "path": its markers shifted by "offset" and put on the frame grid of `rate`. A marker that
+/// would start before 0 or breaks a marker limit is skipped and reported.
+MarkerImport readMarkerImport(ExecutionContext& c, Rate rate, bool dropFrame, Ticks offset) {
+    const std::filesystem::path file = pathFromUtf8(c.string("path"));
+    auto parsed = parseMarkerList(markerFileText(readMarkerFileBytes(file)), c.string("format", "auto"), rate, dropFrame);
+    if (!parsed) {
+        fail(ErrorCode::InvalidParams, parsed.error(), Json{{"path", "/path"}});
+    }
+    MarkerImport out;
+    out.format = parsed->format;
+    out.skipped = parsed->skipped;
+    out.warnings = std::move(parsed->warnings);
+    const auto note = [&](std::string message) {
+        if (out.warnings.size() < kMaxMarkerImportWarnings) {
+            out.warnings.push_back(std::move(message));
+        }
+    };
+    for (ParsedMarker& p : parsed->markers) {
+        Marker m = std::move(p.marker);
+        const std::int64_t shifted = m.start.value + offset.value;
+        if (shifted < 0) {
+            ++out.skipped;
+            note("entry " + std::to_string(p.where) + ": starts before 0 after the offset");
+            continue;
+        }
+        m.start = snapToFrame(Ticks{shifted}, rate);
+        if (const auto problem = markerProblem(m)) {
+            ++out.skipped;
+            note("entry " + std::to_string(p.where) + ": " + *problem);
+            continue;
+        }
+        out.markers.push_back(std::move(m));
+    }
+    return out;
+}
+
+/// `imported` joined to `markers` (replace: instead of them). An imported marker equal to one already there (the same
+/// start, length, name and comment) is left out, so reading one file twice adds nothing. Returns how many were added;
+/// `duplicates` counts those left out.
+std::size_t joinMarkers(std::vector<Marker>& markers, bool replace, std::vector<Marker> imported, std::size_t& duplicates) {
+    if (replace) {
+        markers.clear();
+    }
+    const std::size_t existing = markers.size();
+    std::size_t added = 0;
+    for (Marker& m : imported) {
+        const bool same = std::any_of(markers.begin(), markers.begin() + static_cast<std::ptrdiff_t>(existing), [&](const Marker& e) {
+            return e.start == m.start && e.duration == m.duration && e.name == m.name && e.comment == m.comment;
+        });
+        if (same) {
+            ++duplicates;
+            continue;
+        }
+        markers.push_back(std::move(m));
+        ++added;
+    }
+    if (markers.size() > kMaxMarkers) {
+        fail(ErrorCode::InvalidParams,
+             "the markers would be more than " + std::to_string(kMaxMarkers) + " (the limit of a sequence or a clip)");
+    }
+    return added;
+}
+
+Json importReport(const MarkerImport& in, std::size_t added, std::size_t duplicates, bool replaced) {
+    return Json{{"format", in.format},
+                {"imported", added},
+                {"skipped", in.skipped},
+                {"duplicates", duplicates},
+                {"replaced", replaced},
+                {"warnings", in.warnings}};
+}
+
+CommandOutput importSequenceMarkers(ExecutionContext& c) {
+    const Sequence& seq = c.sequence();
+    const MarkerImport in = readMarkerImport(c, seq.frameRate, seq.dropFrame, c.has("offset") ? c.time("offset") : Ticks{});
+    const bool replace = c.boolean("replace", false);
+    std::vector<Marker> markers = seq.markers;
+    std::size_t duplicates = 0;
+    const std::size_t added = joinMarkers(markers, replace, in.markers, duplicates);
+    return edited(c.take(edit::setSequenceMarkers(c.state(), seq.id, std::move(markers))),
+                  importReport(in, added, duplicates, replace));
+}
+
+CommandOutput importClipMarkers(ExecutionContext& c) {
+    const MediaItem& media = markerMedia(c);
+    const Rate rate = sourceTimecodeRate(c.state(), media);
+    const MarkerImport in = readMarkerImport(c, rate, false, sourceTime(c, "offset", rate, Ticks{}));
+    const bool replace = c.boolean("replace", false);
+    std::vector<Marker> markers = media.markers;
+    std::size_t duplicates = 0;
+    const std::size_t added = joinMarkers(markers, replace, in.markers, duplicates);
+    return edited(c.take(edit::setMediaMarkers(c.state(), media.id, std::move(markers))),
+                  importReport(in, added, duplicates, replace));
+}
+
 } // namespace
 
 void registerMarkerCommands(CommandRegistry& registry) {
@@ -397,6 +570,59 @@ void registerMarkerCommands(CommandRegistry& registry) {
                 Capability::EditSequence, withSequence({}), Json::object(), {"markers.clearAll"},
                 [](ExecutionContext& c) {
                     return edited(c.take(edit::setSequenceMarkers(c.state(), c.sequenceId(), {})));
+                }});
+    addBuiltin(registry,
+               {"marker.removeMany", 1, "Remove Markers",
+                "Removes several sequence markers in one step (0.7): the markers at the given indices (as marker.list "
+                "numbers them) go; the others stay. One undo step.",
+                Capability::EditSequence,
+                withSequence({{"indexes", markerIndexesParam("Marker indices to remove.")}}, {"indexes"}),
+                Json{{"indexes", Json::array({0, 2, 3})}}, {"markers.removeMany"},
+                [](ExecutionContext& c) {
+                    const std::vector<std::size_t> indexes = markerIndexList(c, c.sequence().markers.size());
+                    edit::EditResult r = c.take(edit::setSequenceMarkers(
+                        c.state(), c.sequenceId(), [&] {
+                            auto group = edit::removeMarkersAt(c.sequence().markers, indexes);
+                            if (!group) {
+                                fail(ErrorCode::InvalidParams, group.error().message);
+                            }
+                            return std::move(group->markers);
+                        }()));
+                    return edited(std::move(r), Json{{"removed", indexes.size()}});
+                }});
+    addBuiltin(registry,
+               {"marker.moveMany", 1, "Move Markers",
+                "Moves several sequence markers by the same amount in one step (0.7): `by` is added to the start of each "
+                "marker at the given indices (negative = earlier; their lengths stay; a highlight's peak moves with its "
+                "marker). The move is cut short so the earliest of them does not start before 0; the result says how far "
+                "they went. The list stays sorted by start, so the result lists the markers' new indices. One undo step.",
+                Capability::EditSequence,
+                withSequence({{"indexes", markerIndexesParam("Marker indices to move.")},
+                              {"by", deltaParam("How far; positive = later. It lands on the frame grid.")}},
+                             {"indexes", "by"}),
+                Json{{"indexes", Json::array({1, 2})}, {"by", "00:00:01:00"}}, {"markers.moveMany"},
+                [](ExecutionContext& c) {
+                    const std::vector<std::size_t> indexes = markerIndexList(c, c.sequence().markers.size());
+                    const Ticks by = snapToFrame(c.time("by"), c.sequence().frameRate);
+                    auto group = edit::moveMarkersBy(c.sequence().markers, indexes, by);
+                    const Ticks applied = group ? group->appliedDelta : Ticks{};
+                    return groupEdited(c, std::move(group), Json{{"moved", indexes.size()}, {"applied", timeJson(c, applied)}});
+                }});
+    addBuiltin(registry,
+               {"marker.duplicate", 1, "Duplicate Markers",
+                "Copies several sequence markers in one step (0.7): each marker at the given indices gets a copy `offset` "
+                "later (or earlier when negative) with the same name, comment, colour, type, link and length. The copies' "
+                "new indices are in the result. One undo step.",
+                Capability::EditSequence,
+                withSequence({{"indexes", markerIndexesParam("Marker indices to copy.")},
+                              {"offset", deltaParam("How far from the originals (not 0). It lands on the frame grid.")}},
+                             {"indexes", "offset"}),
+                Json{{"indexes", Json::array({0, 1})}, {"offset", "00:00:10:00"}}, {"markers.duplicate"},
+                [](ExecutionContext& c) {
+                    const std::vector<std::size_t> indexes = markerIndexList(c, c.sequence().markers.size());
+                    const Ticks offset = snapToFrame(c.time("offset"), c.sequence().frameRate);
+                    return groupEdited(c, edit::duplicateMarkersBy(c.sequence().markers, indexes, offset),
+                                       Json{{"copied", indexes.size()}});
                 }});
     addBuiltin(registry,
                {"marker.list", 1, "List Markers",
@@ -440,6 +666,47 @@ void registerMarkerCommands(CommandRegistry& registry) {
                 withSequence({{"media", mediaParam("The media.")}, {"index", schema::integer("Marker index.", 0)}},
                              {"media", "index"}),
                 Json{{"media", 3}, {"index", 0}}, {}, [](ExecutionContext& c) { return removeClipMarker(c); }});
+    addBuiltin(registry,
+               touchesFiles(
+                   {"marker.import", 1, "Import Markers",
+                    "Reads a marker list into the sequence's markers: a CSV or tab-separated table with a header row "
+                    "(Premiere's marker export, a spreadsheet: Marker Name / Name, Description / Comment, In / Start / "
+                    "Time, Out, Duration, Marker Type, Color), a text file with one marker a line (YouTube chapters "
+                    "\"0:00 Intro\", \"00:01:23:10 Name\", Audacity labels) or JSON (an array, or an object with a "
+                    "\"markers\" array; marker.list's output reads back). Times: HH:MM:SS:FF at the sequence's frame "
+                    "rate, H:MM:SS.fff or M:SS clocks, seconds (\"12.5\", \"12.5s\"), \"1500ms\"; they land on the frame "
+                    "grid. \"offset\" is added to every time (a file that counts from 0 to start at the playhead). The "
+                    "markers join the ones already there, leaving out exact copies (reading a file twice adds nothing); "
+                    "\"replace\" clears the existing markers first. A line that cannot be read is skipped and listed in "
+                    "the result's warnings. Untrusted input: at most 16 MiB and the 10,000 markers a sequence holds.",
+                    Capability::EditSequence,
+                    withSequence({{"path", markerPathParam("The marker file (UTF-8 path).")},
+                                  {"format", schema::enumeration({"auto", "csv", "txt", "json"},
+                                                                 "The file's shape. Default auto: detected from the content.")},
+                                  {"offset", timeParam("Added to every marker's time. Default 0.")},
+                                  {"replace", schema::boolean("Remove the sequence's markers first. Default false.")}},
+                                 {"path"}),
+                    Json{{"path", "C:/Delivery/chapters.csv"}}, {"markers.import"},
+                    [](ExecutionContext& c) { return importSequenceMarkers(c); }},
+                   {"path"}));
+    addBuiltin(registry,
+               touchesFiles(
+                   {"source.importMarkers", 1, "Import Clip Markers",
+                    "Reads a marker list (see marker.import: CSV, text lines or JSON) into a media item's clip markers, in "
+                    "media time (\"HH:MM:SS:FF\" at the media's own frame rate). Every clip of the media shows them. "
+                    "\"offset\" is added to every time; \"replace\" clears the media's markers first; exact copies of "
+                    "markers already there are left out.",
+                    Capability::EditProject,
+                    withSequence({{"media", mediaParam("The media.")},
+                                  {"path", markerPathParam("The marker file (UTF-8 path).")},
+                                  {"format", schema::enumeration({"auto", "csv", "txt", "json"},
+                                                                 "The file's shape. Default auto: detected from the content.")},
+                                  {"offset", sourceTimeParam("Added to every marker's time, in media time. Default 0.")},
+                                  {"replace", schema::boolean("Remove the media's markers first. Default false.")}},
+                                 {"media", "path"}),
+                    Json{{"media", 3}, {"path", "C:/Delivery/takes.csv"}}, {},
+                    [](ExecutionContext& c) { return importClipMarkers(c); }},
+                   {"path"}));
     addBuiltin(registry,
                {"sequence.exportMarkers", 1, "Export Markers",
                 "Returns the sequence's markers as text: \"csv\" (Premiere's columns: Marker Name, Description, In, Out, "

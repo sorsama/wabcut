@@ -33,6 +33,12 @@ bool audioBounds(int channels, int frames, int rate) {
            rate <= 192000;
 }
 
+/// A picture of the AI video effects: both sides within bounds and the area too.
+bool pictureBounds(int width, int height) {
+    return width > 0 && height > 0 && width <= kMaxPictureSide && height <= kMaxPictureSide &&
+           static_cast<std::int64_t>(width) * height <= kMaxPicturePixels;
+}
+
 Json audioJson(const AudioBlock& a) {
     return Json{{"path", pathToUtf8(a.path)}, {"channels", a.channels}, {"frames", a.frames}, {"rate", a.rate}};
 }
@@ -75,6 +81,13 @@ std::string encode(const Request& request) {
                 }
                 if (!r.segmentation.empty()) {
                     j["segmentation"] = pathToUtf8(r.segmentation);
+                }
+                if (!r.pictures.empty()) {
+                    Json models = Json::array();
+                    for (const PictureModelFile& m : r.pictures) {
+                        models.push_back(Json{{"key", m.key}, {"path", pathToUtf8(m.path)}});
+                    }
+                    j["pictures"] = std::move(models);
                 }
                 return dump(j);
             } else if constexpr (std::is_same_v<T, EmbedImages>) {
@@ -122,6 +135,21 @@ std::string encode(const Request& request) {
                                  {"output", pathToUtf8(r.output)},
                                  {"width", r.width},
                                  {"height", r.height}});
+            } else if constexpr (std::is_same_v<T, ProcessPicture>) {
+                Json message{{"type", "process_picture"},
+                             {"id", r.id},
+                             {"model", r.model},
+                             {"input", Json{{"path", pathToUtf8(r.input.path)}, {"width", r.input.width}, {"height", r.input.height}}},
+                             {"output", pathToUtf8(r.output)},
+                             {"scale", r.scale},
+                             {"tile", r.tile},
+                             {"pad", r.pad},
+                             {"sigma", r.sigma}};
+                if (!r.input2.path.empty()) { // 0.7: frame interpolation
+                    message["input2"] = Json{{"path", pathToUtf8(r.input2.path)}, {"width", r.input2.width}, {"height", r.input2.height}};
+                    message["timestep"] = r.timestep;
+                }
+                return dump(message);
             } else {
                 return dump(Json{{"type", "shutdown"}});
             }
@@ -172,6 +200,14 @@ std::string encode(const Response& response) {
                                  {"present", r.present},
                                  {"width", r.width},
                                  {"height", r.height},
+                                 {"ms", r.milliseconds},
+                                 {"device", r.device}});
+            } else if constexpr (std::is_same_v<T, PictureDone>) {
+                return dump(Json{{"type", "picture"},
+                                 {"id", r.id},
+                                 {"width", r.width},
+                                 {"height", r.height},
+                                 {"tiles", r.tiles},
                                  {"ms", r.milliseconds},
                                  {"device", r.device}});
             } else {
@@ -265,8 +301,22 @@ std::expected<Request, Error> decodeRequest(std::string_view line) {
         if (r.device != "auto" && r.device != "gpu" && r.device != "cpu") {
             return bad("unknown device \"" + r.device + "\"");
         }
+        if (const Json* pictures = jsonArray(j, "pictures")) {
+            if (pictures->size() > static_cast<std::size_t>(kMaxPictureModels)) {
+                return bad("load names too many picture models");
+            }
+            for (const Json& m : *pictures) {
+                PictureModelFile file;
+                file.key = m.is_object() ? jsonStringOr(m, "key") : std::string{};
+                file.path = m.is_object() ? optionalPath(m, "path") : std::filesystem::path{};
+                if (file.key.empty() || file.key.size() > 64 || file.path.empty()) {
+                    return bad("a picture model needs a key and a path");
+                }
+                r.pictures.push_back(std::move(file));
+            }
+        }
         if (r.vision.empty() && r.text.empty() && r.faces.empty() && r.objects.empty() && r.speech.empty() && r.stems.empty() &&
-            r.translation.empty() && r.segmentation.empty()) {
+            r.translation.empty() && r.segmentation.empty() && r.pictures.empty()) {
             return bad("load names no model");
         }
         if (!r.text.empty() && r.tokenizer.empty()) {
@@ -353,6 +403,40 @@ std::expected<Request, Error> decodeRequest(std::string_view line) {
         }
         if (r.mode == "prompt" && r.points.empty()) {
             return bad("a segment prompt needs points or a box");
+        }
+        return r;
+    }
+    if (type == "process_picture") {
+        const Json* input = jsonObject(j, "input");
+        if (!input) {
+            return bad("process_picture without an input");
+        }
+        ProcessPicture r;
+        r.id = *id;
+        r.model = jsonStringOr(j, "model");
+        r.input.path = optionalPath(*input, "path");
+        r.input.width = static_cast<int>(std::clamp<std::int64_t>(jsonIntOr(*input, "width", 0), 0, 1 << 30));
+        r.input.height = static_cast<int>(std::clamp<std::int64_t>(jsonIntOr(*input, "height", 0), 0, 1 << 30));
+        r.output = optionalPath(j, "output");
+        r.scale = static_cast<int>(std::clamp<std::int64_t>(jsonIntOr(j, "scale", 1), 0, 64));
+        r.tile = static_cast<int>(std::clamp<std::int64_t>(jsonIntOr(j, "tile", 256), 0, 1 << 20));
+        r.pad = static_cast<int>(std::clamp<std::int64_t>(jsonIntOr(j, "pad", 16), -1, 1 << 20));
+        r.sigma = std::clamp(jsonNumberOr(j, "sigma", 0.0), -1.0, 2.0);
+        if (const Json* second = jsonObject(j, "input2")) { // 0.7: the later frame of a frame interpolation
+            r.input2.path = optionalPath(*second, "path");
+            r.input2.width = static_cast<int>(std::clamp<std::int64_t>(jsonIntOr(*second, "width", 0), 0, 1 << 30));
+            r.input2.height = static_cast<int>(std::clamp<std::int64_t>(jsonIntOr(*second, "height", 0), 0, 1 << 30));
+            r.timestep = jsonNumberOr(j, "timestep", 0.5);
+            if (r.input2.path.empty() || r.input2.width != r.input.width || r.input2.height != r.input.height ||
+                !(r.timestep >= 0.0 && r.timestep <= 1.0)) {
+                return bad("process_picture out of bounds");
+            }
+        }
+        if (r.model.empty() || r.model.size() > 64 || r.input.path.empty() || r.output.empty() || !pictureBounds(r.input.width, r.input.height) ||
+            (r.scale != 1 && r.scale != 2 && r.scale != 4) || r.tile < kMinTile || r.tile > kMaxTile || r.tile % 8 != 0 || r.pad < 0 ||
+            r.pad > kMaxTilePad || r.pad % 8 != 0 || r.sigma < 0.0 ||
+            !pictureBounds(r.input.width * r.scale, r.input.height * r.scale)) {
+            return bad("process_picture out of bounds");
         }
         return r;
     }
@@ -469,6 +553,19 @@ std::expected<Response, Error> decodeResponse(std::string_view line) {
         r.device = jsonStringOr(j, "device");
         if (r.width <= 0 || r.height <= 0) {
             return bad("segmented without a matte size");
+        }
+        return r;
+    }
+    if (type == "picture") {
+        PictureDone r;
+        r.id = *id;
+        r.width = static_cast<int>(std::clamp<std::int64_t>(jsonIntOr(j, "width", 0), 0, kMaxPictureSide));
+        r.height = static_cast<int>(std::clamp<std::int64_t>(jsonIntOr(j, "height", 0), 0, kMaxPictureSide));
+        r.tiles = static_cast<int>(std::clamp<std::int64_t>(jsonIntOr(j, "tiles", 0), 0, 1 << 24));
+        r.milliseconds = jsonNumberOr(j, "ms", 0.0);
+        r.device = jsonStringOr(j, "device");
+        if (!pictureBounds(r.width, r.height)) {
+            return bad("picture without a size");
         }
         return r;
     }
@@ -610,6 +707,41 @@ std::expected<std::vector<Image>, Error> readImageBatch(const ImageBatch& batch)
         }
     }
     return images;
+}
+
+// --- Pictures of the AI video effects -----------------------------------------------------------------------------
+
+std::expected<PictureFile, Error> writePictureFile(const std::filesystem::path& path, int width, int height,
+                                                   std::span<const std::uint16_t> rgb) {
+    if (!pictureBounds(width, height) || rgb.size() != static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3) {
+        return std::unexpected(Error(ErrorCode::InvalidArgument, "picture out of bounds"));
+    }
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return std::unexpected(Error(ErrorCode::IoError, "cannot write " + pathToUtf8(path)));
+    }
+    out.write(reinterpret_cast<const char*>(rgb.data()), static_cast<std::streamsize>(rgb.size_bytes()));
+    out.close();
+    if (!out) {
+        return std::unexpected(Error(ErrorCode::IoError, "cannot write " + pathToUtf8(path)));
+    }
+    return PictureFile{path, width, height};
+}
+
+std::expected<std::vector<std::uint16_t>, Error> readPictureFile(const PictureFile& file) {
+    if (!pictureBounds(file.width, file.height)) {
+        return std::unexpected(Error(ErrorCode::InvalidArgument, "picture out of bounds"));
+    }
+    std::ifstream in(file.path, std::ios::binary);
+    if (!in) {
+        return std::unexpected(Error(ErrorCode::IoError, "cannot read " + pathToUtf8(file.path)));
+    }
+    std::vector<std::uint16_t> rgb(static_cast<std::size_t>(file.width) * static_cast<std::size_t>(file.height) * 3);
+    in.read(reinterpret_cast<char*>(rgb.data()), static_cast<std::streamsize>(rgb.size() * sizeof(std::uint16_t)));
+    if (static_cast<std::size_t>(in.gcount()) != rgb.size() * sizeof(std::uint16_t)) {
+        return std::unexpected(Error(ErrorCode::IoError, "the picture file is shorter than announced"));
+    }
+    return rgb;
 }
 
 // --- Audio blocks -------------------------------------------------------------------------------------------------

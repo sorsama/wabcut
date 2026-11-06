@@ -172,11 +172,13 @@ sizes in sequence pixels, as Premiere's Effect Controls shows them for a frame-s
 |---|---|---|---|
 | Blur & Sharpen | Camera Blur | `wabcut.blur.camera` | a disc (lens) blur of 64 taps, Percent Blur 100 = a 40-pixel radius |
 | Blur & Sharpen | Directional Blur | `wabcut.blur.directional` | Direction, Blur Length (sequence pixels) |
+| Blur & Sharpen | Motion Blur | `wabcut.blur.motion` (0.7) | Shutter Angle, Shutter Phase, Export Samples, Preview Samples: blurs the clip's Motion by drawing it at several instants of the shutter ([Motion Blur](#motion-blur-07)) |
 | Blur & Sharpen | Unsharp Mask | `wabcut.blur.unsharpMask` | Amount, Radius, Threshold; two passes (blur, then the difference) |
 | Distort | Corner Pin | `wabcut.distort.cornerPin` | the four corners (a projective map) |
 | Distort | Lens Distortion | `wabcut.distort.lensDistortion` | Curvature, decentering, prisms, Fill Alpha / Fill Color |
 | Distort | Magnify | `wabcut.distort.magnify` | Circle or Square, Magnification, Link, Size, Feather, Opacity, Scaling, blending mode |
 | Distort | Mirror | `wabcut.distort.mirror` | Reflection Center and Angle |
+| Immersive Video | VR Reorient (0.7) | `wabcut.vr.reorient` | turns an equirectangular 360 / VR180 sphere: Yaw, Pitch, Roll (keyframable), Projection, Stereoscopic Layout; see [VR / 360 video](vr.md) |
 | Distort | Offset | `wabcut.distort.offset` | Shift Center To, Blend With Original (wraps) |
 | Distort | Spherize | `wabcut.distort.spherize` | Radius, Center of Sphere |
 | Distort | Transform | `wabcut.distort.transform` | anchor, position, uniform or separate scale, skew, rotation, opacity; with Use Composition's Shutter Angle off, Shutter Angle > 0 blurs the motion over the shutter (16 taps between now and Shutter Angle / 360 of a frame later) |
@@ -199,7 +201,7 @@ sizes in sequence pixels, as Premiere's Effect Controls shows them for a frame-s
 | Noise & Grain | Median | `wabcut.noise.median` | the median (by luma) of 9 samples spread over Radius - an approximation of the full window, Operate On Alpha Channel |
 | Keying | Color Key | `wabcut.key.colorKey` | Key Color, Color Tolerance, Edge Thin, Edge Feather; three passes (matte, thin, feather) |
 | Keying | Difference Matte | `wabcut.key.differenceMatte` | Difference Layer: a video track's clip at this time (a track number, none = nothing keyed); Final Output / Source Only / Matte Only, Matching Tolerance and Softness |
-| Keying | Image Matte Key | `wabcut.key.imageMatte` | the matte is a still image item of the project, set as the effect's data `image` = `media:<id>` (`clip.setEffect` with `data`); Matte Alpha or Matte Luma, Reverse |
+| Keying | Image Matte Key | `wabcut.key.imageMatte` | the matte is a still image item of the project, set as the effect's data `image` = `media:<id>` (`clip.setEffect` with `data`); Matte Alpha or Matte Luma, Reverse; edit the picture file in place and the next frame uses the new version (the matte is kept by path, canvas size, file size and modification time) |
 | Generate | 4-Color Gradient | `wabcut.generate.fourColorGradient` | four points and colours, Blend, Jitter, Opacity, blending mode |
 | Generate | Checkerboard, Grid | `wabcut.generate.checkerboard`, `wabcut.generate.grid` | Anchor, Size From (Corner Point / Width / Width & Height sliders), Feather, Color, Opacity, blending mode (Grid: Border, Invert) |
 | Generate | Circle | `wabcut.generate.circle` | Radius, Edge (none, thickness, ...), feathers, Invert, Color, Opacity, blending mode |
@@ -224,7 +226,7 @@ Not implemented or partial: Echo's echoes leave out the clip's effects (Premiere
 of it); Posterize Time affects the whole clip (in Premiere, the effects before it); Gradient Wipe's Gradient Placement
 always stretches the layer to the frame; Difference Matte's If Layer Sizes Differ and Blur Before Difference, Magnify's
 Scaling, Wave Warp's antialiasing and the Transform effect's Sampling are accepted and stored but do not change the
-picture; Timecode's Field Symbol is not drawn; Image Matte Key has no file picker in the panel (the command's data sets
+picture (for hard pixel edges on enlarged footage use the clip's Clip > Video Options > Nearest Neighbor Scaling); Timecode's Field Symbol is not drawn; Image Matte Key has no file picker in the panel (the command's data sets
 it).
 
 **Cost.** Most effects are one pass over the layer. The two- and three-pass ones are Unsharp Mask, Alpha Glow, Bevel
@@ -404,6 +406,84 @@ Wabcut differs from Premiere in three ways: the effects clipboard is kept for th
 (the newest copy wins, as in Premiere); Time Remapping is not a section here (it stays in the speed controls above the
 list); and Transform, Opacity and Audio have no Effect Enabled switch.
 
+### Keyframes that follow edits (0.7)
+
+- **Pin a keyframe to the clip's start or end.** A clip's keyframes stay on its picture, so trimming a head leaves a fade-in
+  keyed there behind (hidden). Right-click a keyframe in the lane > **"Pin to Clip Start"** or **"Pin to Clip End"**: the
+  key moves to that end of the clip, keeping its value, and follows it from then on - a trim, a slip, a roll or a speed
+  change that moves the clip's first (or last) frame moves the key with it, in the same undo step. The menu item is checked
+  while the selected keys are pinned there; choosing it again unpins them (the key stays where it is). A razor cut leaves the
+  key with the half that still owns its end, and a key you drag off the end stops following until it is pinned again.
+  Command `clip.pinKeyframe` (`clip`, `param`, `index`, `pin`: start, end or none); `clip.details` lists a curve's pins.
+  (A cut-and-delete that removes the head of a clip as a new clip does not carry the pin; trim the head instead.)
+- **Ripple Track Keyframes.** The keyframes of a track (its fader, panner, effects and sends) and of the master bus are in
+  timeline time, so by default a ripple edit leaves them where they are. **Sequence > "Ripple Track Keyframes"** (off by
+  default, saved per sequence) makes them follow insert, extract, ripple delete, ripple trims and speed changes with ripple, as
+  **Ripple Sequence Markers** does for markers: later keys move with the material, keys inside a removed stretch go with it
+  (a curve whose keys all go keeps its last one at the cut) and a key an insert lands on moves later. Only tracks that ripple
+  with the edit follow (unlocked, sync lock on; submix tracks always). One undo step with the edit; `sequence.setSettings`
+  `rippleTrackKeyframes` does it for scripts.
+
+### Graph Editor (0.7)
+
+**Window > Graph Editor** (or the spline button in Effect Controls' header) opens the keyframes of the clip Effect Controls shows as
+curves, in a panel that docks like any other and can be as big as the screen. It is a second view of the same keyframes: the key
+selection is shared with the lanes and the inline value graphs, every change is the clip's own edit and one undo step.
+
+- **Curves and legend.** Every animated parameter of the clip - Transform, Opacity, any effect's parameters, a text layer's
+  numbers, Volume and Pan of the linked audio - is a curve in its own colour with a row in the legend (name, section, value at the
+  playhead). The eye shows or hides the curve, a click names it the *active* curve (its values label the axis), a double click
+  shows only that one, **All** shows every curve, **Selected** the curves that have a selected key. Each curve is fitted to its own
+  range so a Scale in % and a Position in pixels fill the panel together; **Shared scale** puts them on one axis instead.
+- **Value graph and speed graph.** The value graph is the curve itself. **Speed graph** adds a second pane under it with the curve's
+  rate of change (parameter units a second, zero in the middle): a Hold segment is a spike, a linear one a flat line, an ease a hill.
+  The speed pane also draws the Bezier handles of the selected keys as After Effects does: a handle's height is the speed leaving
+  or arriving at the key, its distance along the segment the influence.
+- **Keys.** Click selects (Shift adds, Ctrl toggles), a box drawn on empty space selects the keys inside it (Shift or Ctrl adds),
+  **Ctrl+A** every key shown. Drag a key to move all selected keys: in whole frames, and in value by the same share of each curve's
+  height; **Shift** holds one axis. **Double-click** a curve to add a key there (the curve's value on that frame). **Delete** removes
+  the selected keys, the arrow keys nudge them a frame (Shift: ten) or a step of the parameter, **Esc** clears the selection.
+- **Bezier handles.** A selected Bezier key shows its two handles in both panes; drag one to change the speed and the influence of
+  that side (linked with the other side), **Shift** levels it with the key (a flat ease), **Alt** drags it apart from the other side.
+- **Type it.** *Time* (a timecode: the first selected key goes there, the others keep their distances, whole frames) and *Value* (the
+  selected keys of the active curve) take numbers; the interpolation pills set Linear, Hold, Bezier, Ease In, Ease Out or Ease In and
+  Out on the selected keys.
+- **Easing library.** **Easing** opens thirty-two presets with a thumbnail each - Ease, Ease In / Out / In Out, the Sine, Quad, Cubic,
+  Quart, Quint, Expo, Circ and Back families (overshoot), Fast Out Slow In, Snap, Linear. A preset shapes the segment after every
+  selected key as one cubic Bezier (a key that was not Bezier keeps the shape of its other side, so only that segment changes); a
+  Hold key stays a step. Command `keyframes.ease` (`clip`, `param`, `preset`, `keys`) does the same for scripts and the assistant.
+- **View.** The wheel zooms time at the pointer (**Shift**: the value axis, **Alt**: pans), the middle button pans, **F** fits the
+  selected keys (or every key), **Home** shows the whole clip, Fit selection / Fit all / Show the whole clip are in the toolbar, and
+  the ruler above the panes moves the playhead. At least three frames fill the window. The playhead is drawn in both panes.
+- **Left for a later version.** One clip at a time (several selected clips edit their Transform and Opacity rows only in Effect
+  Controls); no value snapping to nice numbers or to other keys; no per-curve value axes side by side (the labelled axis is the
+  active curve's); the view is not saved with the project.
+
+### Motion Blur (0.7)
+
+**Video Effects > Blur & Sharpen > Motion Blur** (`wabcut.blur.motion`) blurs a clip's Motion the way a camera does: the clip is drawn
+at several instants of the time the shutter is open and the pictures are averaged, so a fast move, zoom or spin smears along its
+path instead of stepping from frame to frame. It covers everything that moves a clip through Motion - keyframes, the Animations and
+Zoom Punch / Shake of the gaming tools, tracked moves - on footage, titles, graphics and colour mattes, in the preview and in every
+export, and it follows speed ramps: the keys are in the clip's own time, so a clip played at 400 % moves four times as far in each
+frame and smears four times as far.
+
+- **Shutter Angle** (default 180 degrees, 0 to 720, keyframable): the share of the frame the shutter stays open; 360 is a whole frame,
+  **0 turns the blur off** and the picture is exactly what it was without the effect.
+- **Shutter Phase** (default -90, -360 to 360): where the shutter opens relative to the frame's instant; -90 centres a 180-degree
+  shutter on the frame, 0 smears forward from it.
+- **Export Samples** (default 16, 2 to 64) and **Preview Samples** (default 8): the most pictures one frame averages in an export and in the
+  monitors. A layer is drawn once per pixel and a half its farthest corner travels, so a slow move uses two or three and never more
+  than these; a clip that moves less than a quarter pixel is not blurred at all. The same geometry decides in the preview and in an
+  export, so only the sample cap differs between them (set both to 64 for a frame-exact preview).
+- **What it does not blur**: the footage's own content (a speed-ramped gameplay clip still shows one source frame per output frame,
+  so a fast ramp steps from frame to frame even though its Motion is smooth), nested sequences and multicam clips (their Motion is
+  not sampled yet: the effect on such a clip counts as a bypassed effect), and the clip's Opacity. The effect can sit anywhere in the clip's stack - it is a switch for the evaluator, not a pass - and the
+  clip's other effects then apply to the averaged picture.
+- Under the hood the compositor draws a blurred layer into an intermediate once per instant with an additive blend and each draw at
+  1/n of the layer's opacity; `render/reference/MotionBlur.h` is the CPU twin the GPU tests compare with
+  (`tests/render/test_motion_blur.cpp`).
+
 ### Effect Controls: copy and paste keyframes, several clips at once (0.6)
 
 - **Copy and paste keyframes** (Premiere: select keyframes, Ctrl+C, move the playhead or select another clip, Ctrl+V).
@@ -422,6 +502,36 @@ list); and Transform, Opacity and Audio have no Effect Enabled switch.
   the parameter is animated it sets the key at the playhead. The notice says how many clips took it and how many were
   skipped ("Scale set on 7 clips (2 audio skipped)"; clips on locked tracks are left out too). The stopwatches, the
   keyframe lane and the effect sections are hidden while several clips are selected.
+
+### Effect Controls: favourites, blend mode and more (0.7)
+
+- **Pinned favourites** (roadmap #57). An effect added to **Favorites** (the Effects panel's right-click **Add to Favorites**,
+  or **Pin to Effect Controls** in an effect header's menu here) shows in Effect Controls on every clip that does not have
+  it: a header at the end of the clip's stack with the effect's name, **Add** and a small x (**Unpin**: it leaves the
+  Favorites). **Add** puts the effect on the clip as the Effects panel's double-click does (one undo step, "Add Effect")
+  and the real section takes its place; video favourites show on video clips, audio ones on audio clips. Presets,
+  transitions and plug-ins in Favorites stay in the Effects panel. (The header shows no parameters until it is added: an
+  effect that is not on a clip has no values to edit.)
+- **Blend Mode** (roadmap #136). The **Opacity** section ends with a **Blend Mode** menu (Premiere's list: Normal, Dissolve,
+  Darken ... Luminosity; the command is `clip.setBlendMode`). **Shift+=** and **Shift+-** with Effect Controls focused step
+  it to the next or previous mode in that order, wrapping at both ends, on every selected video clip (one undo step "Blend
+  Mode", and the panel says "Blend mode: Screen"). The keys are the Keyboard Shortcuts editor's **Next Blend Mode** and
+  **Previous Blend Mode** (Effect Controls group, Wabcut's own, After Effects' keys) and are in the command palette; while
+  Effect Controls has the focus they take Shift+= and Shift+- from the timeline's Expand and Minimize All Tracks.
+  Reset on Opacity puts the mode back to Normal too.
+- **Nearest Neighbor Scaling** (roadmap #98). The **Transform** section ends with a **Nearest Neighbor Scaling** switch:
+  the same flag as Clip > Video Options (`clip.nearestNeighborScaling`, one undo step); Reset on Transform turns it off.
+- **Shift pins a Bezier handle** (roadmap #79). In an open value graph, dragging a handle with Shift keeps it level with
+  its key (a flat ease, as in After Effects): only its length follows the pointer. Alt still breaks the pair.
+- **Keys for effects and presets** (roadmap #82). Every video and audio effect and every preset (Wabcut's and yours) is a
+  command of **Edit > Keyboard Shortcuts…**: groups **Apply Effect** ("Apply Gaussian Blur") and **Apply Preset** ("Apply
+  Preset: Twirl In"), with no default key. A key bound to one applies it to the **selected clips** exactly as the Effects
+  panel's double-click does (each selected clip of the item's kind, a clip of the other kind standing for its linked
+  partner; one undo step; a toast says "Added Gaussian Blur to 2 clips", or why nothing happened). The Effects panel's
+  right-click menu shows the bound key on **Apply to Selected Clips** and has **Keyboard Shortcut…**, which opens the editor
+  on that item. New presets appear as commands when you save or import them; a key bound to a preset you later delete stays
+  in your keys as "(unavailable)" (it does nothing) and works again if a preset of that name comes back. Transitions have
+  Apply Default Transitions, and audio plug-ins are not listed.
 
 ### Master Clip Effects (0.6)
 
@@ -469,3 +579,139 @@ the clips added later.
   export report says "Master Clip Effects folded onto N clips"; importing such a file brings them back as each clip's own
   effects where the format carries effects (FCP7 XML: blur, crop and drop shadow as FCP filters, the rest by Wabcut id).
   A private block that would bring them back as one master stack is not written yet. `effects.savePreset` takes `master` (indices into the clip's master clip effects of its kind).
+
+### AI Restore and AI Denoise (0.7)
+
+Two effects in the **AI** bin of the Effects panel (`wabcut.ai.restore`, `wabcut.ai.denoise`) that improve footage with local AI
+models. They work on the source picture - before the clip's other effects, masks and colour - from pictures made ahead of time by
+**Process** in the effect's Effect Controls header (and made on the spot by an export); playback shows the unprocessed picture,
+with a badge on the Program Monitor, where a frame has none yet. **Amount** (0..100 %, keyframable) mixes the processed picture with
+the unprocessed one; the other settings decide what the models make and are constants.
+
+| Effect | Settings |
+|---|---|
+| AI Restore | Scale (Auto / 1x / 2x / 4x), Upscaler (Fast / High quality), Deblur, Light Denoise, Preserve Grain, Tile Size, Amount |
+| AI Denoise | Strength, Preserve Grain, Tile Size, Amount |
+
+The models are downloaded on request with their licence shown first. Several AI effects on a clip form a chain in stack order.
+See [ai.md](ai.md#ai-video-effects-restore-and-denoise-07) for the models, the cache and the limits.
+
+### AI Refocus (0.7)
+
+**AI Refocus** (`wabcut.ai.refocus`, Effects panel > AI) moves the focus after the shot: a local depth model (Depth Anything V2 Small)
+estimates how far each part of the picture is, and the effect blurs it like a lens by the distance from **Focus**
+(0 = nearest, 100 = farthest; keyframe it for a focus pull). Other settings: **Sharp Zone**, **Blur Size**, **Near Blur**,
+**Far Blur**, and **Show** (Result / Depth Map / Blur Map). **Process** in the effect's Effect Controls header makes the depth
+maps ahead of time (the model is downloaded on request, licence first); changing any setting never makes them again. Put it first in the
+clip's effects. See [ai.md](ai.md#ai-frame-interpolation-and-ai-refocus-07).
+
+### Skin Smoothing (0.7)
+
+**Skin Smoothing** (`wabcut.retouch.skinSmoothing`, Effects panel > Blur & Sharpen) is a beauty filter for talking heads that runs
+live in playback: it smooths the pixels in a skin-tone range and leaves every other pixel exactly as it was, keeping the edges (eyes,
+lips, hair, the line of the jaw) sharp. It is an edge-preserving (bilateral) filter limited to a skin mask, entirely on the GPU: no
+model, nothing to download, no Process step, and the same picture in preview and export.
+
+| Setting | |
+|---|---|
+| Amount | how much of the smoothing is applied (0 changes nothing) |
+| Keep Detail | how much of the fine texture (pores, stubble) stays: 100 keeps all of it, 0 smooths it away |
+| Size | how far the smoothing reaches, in sequence pixels (about 6 for a face that fills a third of a 1080p frame) |
+| Skin Tone | the colour treated as skin, as an angle on the vectorscope (BT.709 Cb / Cr); 123 degrees is the skin line, where skin of every complexion lies |
+| Tone Range | how far from Skin Tone a colour may be and still count as skin |
+| Softness | how gradually a colour stops counting as skin at the edge of the range |
+| Show | **Result**, or **Skin Mask** (white is what the effect treats as skin) |
+
+Every setting but Show can be keyframed. To use it: add it to the clip, switch **Show** to *Skin Mask* and move **Skin Tone** and
+**Tone Range** until the face is white and the rest is black, switch back to *Result*, and set **Amount** and **Keep Detail** for a
+natural look (a low Amount with Keep Detail around 30 evens the skin; Amount 100 with Keep Detail 0 is the flat, "plastic" extreme).
+Grey, white and black are never skin, and a pixel the effect does not treat as skin is not changed at all.
+
+**Limits.** The effect finds skin by colour, not by looking for a face: skin-coloured things (wood, sand, an orange jacket, a dog) are
+smoothed too, and strongly coloured light moves the tone out of the range. Narrow Tone Range, or put a mask on the effect (it
+follows the usual mask and tracking tools) to keep it on the face. For retouching that knows where the face is (and heals blemishes,
+whitens teeth, brightens eyes) use **AI Face Retouch**.
+
+### AI Face Retouch (0.7)
+
+**AI Face Retouch** (`wabcut.ai.faceRetouch`, Effects panel > AI) is a Facetune-style refinement that finds the faces in the picture
+and works only where each part belongs: skin, the inside of the mouth, the eyes. A local model (YuNet finds each face, BiSeNet face
+parsing labels its pixels; both downloaded on request, licence first) makes a **face map** for every frame ahead of time:
+**Process** in the effect's Effect Controls header makes them for the clip (and an export makes the missing ones on the spot), so the
+retouch follows the faces through the shot, and changing any setting never makes the maps again.
+
+| Setting | |
+|---|---|
+| Smoothing | evens the skin of the face, ears and neck, keeping edges (0 changes nothing) |
+| Keep Detail | how much of the skin's fine texture stays |
+| Smooth Size | how far the smoothing reaches, in sequence pixels |
+| Blemishes | heals small spots in the skin (spots, redness) without touching moles, nostrils, lines or shadows; they are healed to the colour of the skin around them, keeping the pixel's own fine texture |
+| Blemish Size | the largest spot it looks at, in sequence pixels |
+| Whiten Teeth | takes the yellow out of the teeth and lifts them a little; the tongue, gums and lips are left alone |
+| Bright Eyes | brightens the whites of the eyes and calms their redness; the iris, pupil and lashes are left alone |
+| Show | **Result**, **Skin Map**, **Mouth Map** or **Eye Map** (what the model found) |
+
+Every setting but Show can be keyframed; with every amount at 0 the picture is exactly as it was. The effects of other tools act on
+the retouched picture in stack order, so put it above colour work you do not want it to see through. A clip whose frames have no
+face map yet plays as it is, and the Program Monitor says **AI: 1 layer not processed**. See
+[ai.md](ai.md#ai-face-retouch-07) for the model, the map and the limits.
+
+### AI Eye Contact (0.7)
+
+**AI Eye Contact** (`wabcut.ai.eyeContact`, Effects panel > AI) makes a speaker who reads notes below the camera look into it. A local
+model (YuNet finds each face, MediaPipe's face landmark network places the eyelids and the irises; both downloaded on request, licence
+first, 5 MB) measures the eyes of every face once per frame ahead of time: **Process** in the effect's Effect Controls header does it for
+the clip (an export makes the missing ones on the spot), and changing any setting never measures again. The effect then moves each iris
+towards where it sits when the person looks into the lens - centred between the eye's corners, at the middle of the opening - **inside the
+opening of the eye**: the lids never move, the sclera next to the iris fills what the iris left, and nothing outside the eyes is touched.
+
+| Setting | |
+|---|---|
+| Amount | how far the iris moves towards the lens (0 changes nothing, 100 puts it where it looks into the lens) |
+| Down From / Down To | the range of **looking down** (percent of the eye's width, measured from where the iris would be looking into the lens) that is corrected; looking up (thinking) or already into the lens is left alone, and looking far down (the keyboard, the floor) is another look |
+| Side Limit | a glance to a side by more than this (percent of the eye's width) is deliberate and left alone |
+| Faces | **All** (every face is corrected on its own) or **Largest** (a two-person interview: only the main speaker) |
+| Show | **Result** or **Eye Map** (the opening of each corrected eye, the new iris and what it left) |
+
+Blinks (an opening under 7 % of the eye's width, fading in to 14 %) and heads turned away (the nose off the middle between the cheeks:
+fading out from a turn of 30 % to 55 %) are left alone automatically, and so is any shift of more than about one iris radius, so a
+correction never looks stretched. Every setting but the two menus can be keyframed; with Amount at 0 the picture is exactly as it was.
+A clip whose frames are not measured yet plays as it is, and the Program Monitor says **AI: 1 layer not processed**. See
+[ai.md](ai.md#ai-eye-contact-07) for the model, the geometry and the limits.
+
+### Effects on a whole video track (0.7)
+
+A video track has an effect stack of its own that applies to the **composite of every clip on the track** (a colour grade,
+a blur, a LUT, a vignette for all of V2 at once), after the clips' own effects. It is the track-level counterpart of an
+adjustment layer without a clip to place, trim or forget, and it also covers the track's transitions and nested sequences.
+
+- **Open it.** Right-click a video track's header > **Video Track Effects...** (audio tracks keep their Audio Track Mixer
+  racks). The popover is not modal: it stays open while you scrub or edit the timeline, and Escape or **Done** closes it.
+- **The stack**, bottom to top: an **On** switch (bypass), the effect's name with its first settings, **move up / down**
+  (the order is the order they apply in) and **remove**. **Add Effect...** shows the video effects by category with a
+  filter; Enter adds the first match, a click adds one, and the new effect is selected.
+- **Settings.** The selected effect's settings are the same controls as Effect Controls: a slider with a number field and
+  its unit, a switch or a menu, **Reset** per setting and **Reset to defaults**. Every change is live and one undo step
+  (a slider drag is one step, "Gaussian Blur: Radius"). The stopwatch on a setting that can be animated puts a key at
+  the playhead and follows the keys from then on; a track's keys are at **timeline** times (clips' keys are at media
+  times), so they stay on the timeline when clips move. Turning the stopwatch off removes the keys and keeps the value at
+  the playhead.
+- **Commands** (MCP, scripts and the CLI): `track.effects` (the stack), `track.addEffect`, `track.setEffect`,
+  `track.removeEffect`, `track.moveEffect`, `track.addKeyframe`, `track.removeKeyframe`; the track is `"V1"`, `"V2"`, ...
+  or its id. The audio equivalents are the `audio.*` effect commands.
+- **Saved** with the project (`effects` on the track, only when it has any), rendered by preview and export through the
+  same evaluator as clip effects, and kept by older versions of Wabcut, which show it too (the stack is not new; the
+  interface to edit it is).
+- **Not yet:** a track effect cannot be dragged from the Effects panel onto a track header (use Add Effect...); Effect
+  Controls does not list the track's stack (select the track's clips and use the popover); a track effect's keys cannot
+  be copied between tracks.
+
+### OpenFX video plug-ins (0.7)
+
+OpenFX image effect plug-ins (`.ofx`, the standard of DaVinci Resolve, Vegas and Nuke) are effects of a clip's stack too: the
+Effects panel's "OpenFX Plug-ins" folder lists the ones installed on this computer, a double-click or a drag puts one on the
+selected video clips, and its parameters are Effect Controls rows, keyframable where the plug-in allows, saved with the
+project. They run outside the editor (a plug-in that crashes or hangs is badged and bypassed, never takes Wabcut down), on the
+CPU, before the clip's Motion and built-in effects; preview and export show the same picture. A project with a plug-in this
+computer does not have shows it as "not available" and keeps it. What is supported and what is not yet is in
+[plugins.md](plugins.md#openfx-video-plug-ins-07).

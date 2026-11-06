@@ -348,6 +348,22 @@ WabcutDialog {
     }
 
     footerData: [
+        // 0.7: the frame as a picture on the clipboard (the sequence's size), without saving a file.
+        PillButton {
+            objectName: "exportFrameCopy"
+            visible: dialog.mode === "frame"
+            variant: "secondary"
+            iconName: "copy"
+            text: qsTr("Copy to Clipboard")
+            tooltip: qsTr("Put the frame on the clipboard as a picture instead of saving a file")
+            enabled: dialog.defaults.available === true
+            onClicked: {
+                if (Monitors.copyFrame(dialog.source))
+                    dialog.close()
+                else
+                    dialog.errorText = Monitors.message
+            }
+        },
         PillButton {
             objectName: "exportFrameCancel"
             variant: "ghost"

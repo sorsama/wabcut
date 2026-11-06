@@ -15,11 +15,13 @@
 #include <wabcut/ai/search/SearchCommands.h>
 #include <wabcut/ai/shorts/ShortsCommands.h>
 #include <wabcut/ai/stabilize/StabilizeCommands.h>
+#include <wabcut/ai/video/VideoCommands.h>
 #include <wabcut/ai/autopilot/AutopilotCommands.h>
 #include <wabcut/audio/edit/AudioCommands.h>
 #include <wabcut/color/ColorCommands.h>
 #include <wabcut/masks/MaskCommands.h>
 
+#include <wabcut/ai/SpokenLanguages.h>
 #include <wabcut/ai/TranscriptRedaction.h>
 #include <wabcut/ai/edit/CaptionBuilder.h>
 #include <wabcut/ai/edit/MediaTranscript.h>
@@ -27,10 +29,13 @@
 #include <wabcut/ai/edit/TextEdits.h>
 #include <wabcut/ai/edit/TranscriptEditing.h>
 #include <wabcut/model/CaptionOps.h>
+#include <wabcut/command/EditingServices.h>
+#include <wabcut/command/CsvText.h>
 #include <wabcut/command/Schema.h>
 #include <wabcut/command/SourceServices.h>
 #include <wabcut/interchange/Docx.h>
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/Plural.h>
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectIO.h>
@@ -40,6 +45,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <cmath>
 #include <cstdio>
 #include <exception>
@@ -210,11 +216,25 @@ CommandOutput transcriptText(ExecutionContext& c) {
         }
         first = i + 1;
     }
-    return readOutput(c, st,
-                      Json{{"words", st.size()},
-                           {"language", st.empty() ? std::string() : std::string(st.language(0))},
-                           {"paragraphFields", Json::array({"first", "last", "start", "end", "speaker", "text"})},
-                           {"paragraphs", std::move(paragraphs)}});
+    Json data{{"words", st.size()},
+              {"language", st.empty() ? std::string() : std::string(st.language(0))},
+              {"paragraphFields", Json::array({"first", "last", "start", "end", "speaker", "text"})},
+              {"paragraphs", std::move(paragraphs)}};
+    // 0.7 (card 111): a recording that switches language lists the languages and how many words each has.
+    std::map<std::string, std::size_t> counts;
+    for (std::size_t i = 0; i < st.size(); ++i) {
+        ++counts[std::string(st.language(i))];
+    }
+    if (counts.size() > 1) {
+        std::vector<std::pair<std::string, std::size_t>> ordered(counts.begin(), counts.end());
+        std::ranges::stable_sort(ordered, [](const auto& a, const auto& b) { return a.second > b.second; });
+        Json languages = Json::array();
+        for (const auto& [language, words] : ordered) {
+            languages.push_back(Json{{"language", language}, {"words", words}});
+        }
+        data["languages"] = std::move(languages);
+    }
+    return readOutput(c, st, std::move(data));
 }
 
 CommandOutput transcriptWords(ExecutionContext& c) {
@@ -350,6 +370,16 @@ CommandOutput transcriptMediaWords(ExecutionContext& c) {
     if (truncated) {
         data["truncated"] = true;
     }
+    // 0.7 (card 111): a recording that switches language lists the languages and how many words each has.
+    if (mt.transcript()) {
+        if (const auto shares = languageShares(*mt.transcript()); shares.size() > 1) {
+            Json languages = Json::array();
+            for (const LanguageShare& share : shares) {
+                languages.push_back(Json{{"language", share.language}, {"words", share.words}});
+            }
+            data["languages"] = std::move(languages);
+        }
+    }
     CommandOutput out;
     out.state = c.state();
     out.data = std::move(data);
@@ -474,8 +504,24 @@ CommandOutput transcribeMedia(ExecutionContext& c) {
     MediaTranscriber& transcriber = transcriberOf(c);
     MediaTranscriber::Options options;
     options.provider = c.string("provider", "auto");
-    options.language = c.string("language", "auto");
+    // Card 073: a language of the recogniser's list ("he-IL" is Hebrew), or "auto".
+    options.language = spokenLanguageCode(c.string("language", "auto"));
+    if (options.language.empty()) {
+        fail(ErrorCode::InvalidParams,
+             "unknown language \"" + c.string("language") + "\": use \"auto\" or a code from \"check\": true (\"he\", \"id\", \"uk\", ...)",
+             Json{{"path", "/language"}});
+    }
+    options.translate = c.boolean("translate", false);
+    options.mixedLanguages = c.boolean("mixedLanguages", false);
     options.force = c.boolean("force", false);
+    // 0.7 (card 061): the words to listen for - "vocabulary", else the project's custom words (transcript.setCustomWords).
+    if (c.has("vocabulary")) {
+        for (const Json& w : c.params()["vocabulary"]) {
+            options.vocabulary.push_back(w.get<std::string>());
+        }
+    } else {
+        options.vocabulary = c.state().customWords;
+    }
     const std::vector<TranscribeItem> items = transcribeItems(c);
     CommandOutput out;
     out.state = c.state(); // transcripts go to the analysis cache, not the project
@@ -496,8 +542,19 @@ CommandOutput transcribeMedia(ExecutionContext& c) {
             rows.push_back(std::move(row));
         }
         const auto resolved = transcriber.resolve(options.provider);
+        Json languages = Json::array();
+        for (const SpokenLanguage& language : spokenLanguages()) {
+            languages.push_back(Json{{"code", language.code},
+                                     {"name", language.name},
+                                     {"nativeName", language.nativeName},
+                                     {"rtl", language.rtl},
+                                     {"tier", language.tier == SpokenTier::Strong ? "strong"
+                                              : language.tier == SpokenTier::Fair ? "fair"
+                                                                                  : "limited"}});
+        }
         out.data = Json{{"provider", resolved ? Json(*resolved) : Json(nullptr)},
                         {"providers", std::move(providers)},
+                        {"languages", std::move(languages)},
                         {"items", std::move(rows)}};
         if (!resolved) {
             out.data["providerError"] = resolved.error().message;
@@ -564,6 +621,40 @@ CommandOutput transcribeMedia(ExecutionContext& c) {
                     {"cached", cached},
                     {"failed", items.size() - transcribed - cached},
                     {"items", std::move(rows)}};
+    return out;
+}
+
+/// transcript.delete (card 080): throws the cached transcripts of the audio away, so the next Transcribe starts again.
+CommandOutput deleteTranscripts(ExecutionContext& c) {
+    MediaTranscriber& transcriber = transcriberOf(c);
+    const std::vector<TranscribeItem> items = transcribeItems(c);
+    CommandOutput out;
+    out.state = c.state(); // transcripts are in the analysis cache, not the project
+    Json rows = Json::array();
+    std::size_t deleted = 0;
+    for (const TranscribeItem& item : items) {
+        c.checkpoint("deleting the transcript of '" + item.media->name + "'");
+        Json row = itemJson(item);
+        const bool had = transcriber.hasTranscript(*item.media, item.audioStream);
+        row["hadTranscript"] = had;
+        row["deleted"] = 0;
+        if (had && !c.dryRun()) {
+            const auto removed = transcriber.forget(*item.media, item.audioStream);
+            if (!removed) {
+                fail(commandCode(removed.error()),
+                     "cannot delete the transcript of '" + item.media->name + "': " + removed.error().message);
+            }
+            row["deleted"] = *removed;
+        }
+        deleted += had ? 1 : 0;
+        rows.push_back(std::move(row));
+    }
+    if (items.empty()) {
+        out.warnings.push_back("nothing to delete: the sequence has no audio clips");
+    } else if (deleted == 0) {
+        out.warnings.push_back("none of this audio had a transcript");
+    }
+    out.data = Json{{"deleted", deleted}, {"dryRun", c.dryRun()}, {"items", std::move(rows)}};
     return out;
 }
 
@@ -840,6 +931,9 @@ CommandOutput hideProfanity(ExecutionContext& c) {
     return out;
 }
 
+/// 0.7 (card 102): the largest sound file audio.bleepProfanity takes (it plays the first 20 seconds of it).
+constexpr std::uintmax_t kMaxReplacementSoundBytes = 64ull * 1024 * 1024;
+
 CommandOutput bleepProfanity(ExecutionContext& c) {
     const SequenceTranscript st = transcriptOf(c);
     const ProfanityFilter filter = *profanityOf(c, true);
@@ -847,6 +941,28 @@ CommandOutput bleepProfanity(ExecutionContext& c) {
     const auto mode = redactionAudioFromString(modeName);
     if (!mode || *mode == RedactionAudio::None) {
         fail(ErrorCode::InvalidParams, "mode is bleep or mute", Json{{"path", "/mode"}});
+    }
+    // 0.7 (card 102): "sound" - a file that plays in place of the tone. It must be an audio file the host can read.
+    std::string soundPath;
+    if (c.has("sound")) {
+        if (*mode != RedactionAudio::Bleep) {
+            fail(ErrorCode::InvalidParams, "a sound replaces the bleep: use mode \"bleep\" (the default), not mute", Json{{"path", "/sound"}});
+        }
+        const std::filesystem::path file = pathFromUtf8(c.string("sound"));
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(file, ec)) {
+            fail(ErrorCode::InvalidParams, "the sound file does not exist", Json{{"path", "/sound"}});
+        }
+        if (std::filesystem::file_size(file, ec) > kMaxReplacementSoundBytes) {
+            fail(ErrorCode::InvalidParams, "the sound file is larger than 64 MiB: use a short sound", Json{{"path", "/sound"}});
+        }
+        if (const auto* probe = command::findService<command::MediaProbeServices>(c.services())) {
+            const auto described = probe->describe(file);
+            if (!described || described->info.audio.empty()) {
+                fail(ErrorCode::InvalidParams, "the file has no sound to play", Json{{"path", "/sound"}});
+            }
+        }
+        soundPath = pathToUtf8(std::filesystem::absolute(file, ec));
     }
     const Ticks padding = secondsOr(c, "padding", 0.02);
     const Sequence& seq = c.sequence();
@@ -872,6 +988,24 @@ CommandOutput bleepProfanity(ExecutionContext& c) {
     }
     ProjectState state = c.state();
     CommandOutput out;
+    // The chosen sound is a file of the project (an asset, found again and collected with the media): one asset per file.
+    AssetId sound;
+    if (!soundPath.empty() && !byMedia.empty()) {
+        const auto existing = std::find_if(state.assets.begin(), state.assets.end(), [&](const ProjectAsset& a) {
+            return a.kind == kAssetKindSound && a.locator.path == soundPath;
+        });
+        if (existing != state.assets.end()) {
+            sound = existing->id;
+        } else {
+            ProjectAsset asset;
+            asset.kind = std::string(kAssetKindSound);
+            asset.name = pathToUtf8(pathFromUtf8(soundPath).filename());
+            asset.locator.path = soundPath;
+            auto added = c.take(::wabcut::edit::addAsset(state, std::move(asset)));
+            sound = added.id;
+            state = std::move(added.state);
+        }
+    }
     for (auto& [media, ranges] : byMedia) {
         std::sort(ranges.begin(), ranges.end(), [](const TimeRange& a, const TimeRange& b) { return a.start < b.start; });
         std::vector<TimeRange> merged;
@@ -887,6 +1021,7 @@ CommandOutput bleepProfanity(ExecutionContext& c) {
         r.name = "Profanity";
         r.audio = *mode;
         r.audioRanges = merged;
+        r.sound = sound;
         r.source = TimeRange::fromStartEnd(merged.front().start, merged.back().end());
         // The sound only: a region of no size covers no picture (Masks.h: an empty shape covers nothing).
         r.region.shape = MaskShape::Ellipse;
@@ -902,6 +1037,9 @@ CommandOutput bleepProfanity(ExecutionContext& c) {
     }
     out.state = std::move(state);
     out.data = Json{{"mode", modeName}, {"words", std::move(words)}, {"redactions", byMedia.size()}, {"skippedNested", nested}};
+    if (!soundPath.empty()) {
+        out.data["sound"] = soundPath;
+    }
     return out;
 }
 
@@ -1005,7 +1143,9 @@ CommandOutput exportTranscript(ExecutionContext& c) {
         const std::string who = speakers ? speakerName(c, st[first]) : std::string();
         const std::string words = st.textOf(first, i);
         if (format == "csv") {
-            text += csvField(start) + "," + csvField(end) + "," + csvField(who) + "," + csvField(words) + "\n";
+            // The speaker's name and the words come from recordings and projects other people made: a cell that starts
+            // with = + - @ would run as a formula in a spreadsheet, so those two are guarded (CsvText.h).
+            text += csvField(start) + "," + csvField(end) + "," + command::csvText(who) + "," + command::csvText(words) + "\n";
         } else if (format == "docx") {
             // The .txt layout as a Word document (Premiere's): the timecodes in grey, the speaker in bold, the text,
             // an empty paragraph between blocks (captions.import reads it back the same way).
@@ -1149,7 +1289,7 @@ CommandOutput findReplaceTranscript(ExecutionContext& c) {
         out.warnings.push_back("\"" + find + "\" was not found in the transcript");
     }
     if (skipped > 0) {
-        out.warnings.push_back(std::to_string(skipped) + " match(es) span two media items and were left alone");
+        out.warnings.push_back("Left alone because they span two media items: " + counted(static_cast<std::int64_t>(skipped), "match", "matches"));
     }
     return out;
 }
@@ -1255,10 +1395,40 @@ void registerTranscriptCommands(command::CommandRegistry& registry) {
          withSequence({{"media", schema::array(mediaRef("A media item."), "Media items to transcribe.", 1)},
                        {"clips", schema::array(clipRef("A clip."), "Clips whose media to transcribe.", 1)},
                        {"provider", schema::string("\"auto\" (default), \"local\" or \"cloud:<model id>\".")},
-                       {"language", schema::string("ISO 639-1 language (\"en\", \"th\", ...) or \"auto\" (default).")},
-                       {"force", schema::boolean("Transcribe even audio that has a transcript. Default false.", false)},
-                       {"check", schema::boolean("Only list providers and which audio has a transcript. Default false.", false)}}),
+                       {"language", schema::string("The language spoken: \"auto\" (default: detected) or an ISO 639-1 code such as "
+                                                   "\"he\", \"id\", \"uk\", \"ar\", \"pl\", \"tr\", \"is\", \"fi\", \"cs\", \"sk\", \"ro\", "
+                                                   "\"hr\", \"sr\", \"bs\" (\"check\": true lists all of them with their own names and how well Whisper "
+                                                   "knows them). Naming it helps a short or noisy recording that detection gets wrong.")},
+                       {"translate", schema::boolean("Whisper's translate task: the transcript comes out in English, whatever the language "
+                                                     "spoken (Icelandic or Finnish interviews, say). Local transcription only, with a "
+                                                     "multilingual model (Small, Medium or Large v3 translate best). Default false.", false)},
+                       {"mixedLanguages", schema::boolean("The recording switches between languages (an interview with a translator, a "
+                                                          "streamer who changes language): with \"language\" \"auto\", every stretch of speech "
+                                                          "is transcribed in the language it is spoken in, and each transcript segment names "
+                                                          "its own (transcript.get shows them). Local transcription only, with a multilingual "
+                                                          "model (Small or larger tells languages apart best); slower, since the audio is "
+                                                          "listened to in short pieces. Ignored with a named language or \"translate\". "
+                                                          "Default false.", false)},
+                       {"force", schema::boolean("Transcribe even audio that has a transcript (the new one replaces the old: how to redo it "
+                                                 "in another language). Default false.", false)},
+                       {"vocabulary", schema::array(schema::string("A name, title or term."),
+                                                    "Words the recogniser should spell right (character names, game titles, "
+                                                    "jargon). Default: the project's custom words (transcript.setCustomWords). The "
+                                                    "local transcriber uses the first ones that fit its vocabulary hint (about 480 "
+                                                    "bytes), a cloud transcriber the first 100 as key terms. [] means none.")},
+                       {"check", schema::boolean("Only list providers, languages and which audio has a transcript. Default false.", false)}}),
          Json{{"media", Json::array({"Interview A"})}, {"language", "th"}}, {}, transcribeMedia}));
+    add(registry,
+        {"transcript.delete", 1, "Delete Transcript",
+         "Throws away the transcript of media items or clips (default: every audio clip of the sequence) so the audio can "
+         "be transcribed again, with another language or model. Transcripts live beside the source file in the analysis "
+         "cache, not in the project: this removes the cached transcripts of those audio streams (and only transcripts). "
+         "Captions already made from them, and cuts made by editing the text, stay. The words disappear from the "
+         "Transcript tab at once; transcript.transcribe starts from nothing. dryRun lists what would go.",
+         Capability::MediaAnalysis,
+         withSequence({{"media", schema::array(mediaRef("A media item."), "Media items whose transcript to delete.", 1)},
+                       {"clips", schema::array(clipRef("A clip."), "Clips whose media's transcript to delete.", 1)}}),
+         Json{{"media", Json::array({"Interview A"})}}, {}, deleteTranscripts});
     add(registry,
         {"transcript.text", 1, "Transcript Text",
          "What the sequence says, in timeline order, as paragraphs (split at speaker changes and pauses) with the "
@@ -1421,13 +1591,33 @@ void registerTranscriptCommands(command::CommandRegistry& registry) {
          "redaction per media item over those words (with \"padding\" each side), so they stay bleeped in every use of "
          "the media, in preview and export, and captions over them read [bleep]. The picture is untouched. Built-in "
          "English and Thai lists, \"profanityWords\" added, \"allowedWords\" taken out. dryRun lists the words first. "
-         "One undo step.",
+         "One undo step. A sound file of your own instead of the tone: audio.replaceProfanity.",
          Capability::EditProject,
          withSequence({{"mode", schema::enumeration({"bleep", "mute"}, "Bleep (default) or mute.")},
                        {"padding", secondsParam("Seconds added before and after each word. Default 0.02.", 0.0, 1.0)},
                        {"profanityWords", profanityWords},
                        {"allowedWords", allowedWords}}),
          Json{{"mode", "bleep"}}, {}, bleepProfanity});
+    // 0.7 (card 102): the same, with a sound file of the user's in place of the tone.
+    add(registry,
+        command::touchesFiles(
+            {"audio.replaceProfanity", 1, "Replace Profanity with a Sound",
+             "Plays a sound file of yours (a short effect, a chosen bleep) in place of the profane words the sequence's "
+             "transcript finds: like audio.bleepProfanity, one audio redaction per media item over those words (with "
+             "\"padding\" each side), so the sound plays in every use of the media, in preview and export, and captions "
+             "over them read [bleep]. The sound starts with each word and is cut at the word's end (a shorter sound is "
+             "followed by silence); only its first 20 seconds are used. The file joins the project's files (found "
+             "again, relinked and collected with the media); if it goes missing the tone plays. The picture is "
+             "untouched. Built-in English and Thai lists, \"profanityWords\" added, \"allowedWords\" taken out. dryRun "
+             "lists the words first. One undo step.",
+             Capability::EditProject,
+             withSequence({{"sound", schema::string("Path of a sound file (wav, mp3, flac, ogg, m4a...; at most 64 MiB).")},
+                           {"padding", secondsParam("Seconds added before and after each word. Default 0.02.", 0.0, 1.0)},
+                           {"profanityWords", profanityWords},
+                           {"allowedWords", allowedWords}},
+                          {"sound"}),
+             Json{{"sound", "C:/Sounds/boing.wav"}}, {}, bleepProfanity},
+            {"sound"}));
     Json correctionText = schema::string("The corrected text (UTF-8; words separated by spaces). Empty removes the words.");
     correctionText["maxLength"] = 4096;
     add(registry,
@@ -1741,6 +1931,7 @@ const command::CommandRegistry& editingCommands() {
         segment::registerFaceRedactionCommands(r); // 0.2: redaction.detectFaces
         highlights::registerHighlightCommands(r); // G.2: highlights.find, highlights.toReel, highlights.toShort
         stabilize::registerStabilizeCommands(r);  // P.2: effect.analyzeStabilization, effect.analyzeRollingShutter
+        video::registerVideoCommands(r);          // 0.7: effect.aiStatus, effect.processAi
         autopilot::registerAutopilotCommands(r);  // P1 #62: autopilot.broll, autopilot.publishKit, autopilot.pacing
         return r;
     }();

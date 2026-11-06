@@ -67,12 +67,14 @@ double duckOffsetDb(std::span<const DuckRegion> regions, const DuckingOptions& o
     double offset = 0.0;
     for (const DuckRegion& r : regions) {
         double here = 0.0;
+        // The ramps run as long as the region says (duckRegions: the attack and the release; autoMixRegions: ramps that
+        // were moved so they never run under the voice's own words), so both planners share this envelope.
         if (t >= r.downStart && t < r.speech.start) {
-            here = options.amountDb * rampFraction(t, r.downStart, options.attack);
+            here = options.amountDb * rampFraction(t, r.downStart, r.speech.start - r.downStart);
         } else if (t >= r.speech.start && t < r.upStart) {
             here = options.amountDb;
         } else if (t >= r.upStart && t < r.upEnd) {
-            here = options.amountDb * (1.0 - rampFraction(t, r.upStart, options.release));
+            here = options.amountDb * (1.0 - rampFraction(t, r.upStart, r.upEnd - r.upStart));
         }
         offset = std::min(offset, here);
     }

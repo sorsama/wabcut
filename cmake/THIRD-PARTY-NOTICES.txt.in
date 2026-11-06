@@ -73,6 +73,10 @@ pyaaf2 1.7.1 object model tables (Mark Reid)
     License: MIT (licenses/pyaaf2.txt). AAF export's baseline class, property and type definitions are generated
     from pyaaf2's aaf2/model tables (tools/gen_aaf_model.py) and compiled into Wabcut. No pyaaf2 code is included.
 
+OpenFX API headers 1.5.1 (OpenFX and contributors to the OpenFX project) - builds with WABCUT_WITH_AUDIO_PLUGINS
+    License: BSD 3-Clause (licenses/openfx.txt). The image effect plug-in API headers (github.com/AcademySoftwareFoundation/
+    openfx, tag OFX_Release_1.5.1), unmodified, compiled into the wabcut-ofxhost helper that hosts OpenFX video plug-ins.
+
 zlib @V_zlib@ (Jean-loup Gailly and Mark Adler)
     License: zlib License (licenses/zlib.txt).
 

@@ -44,6 +44,7 @@ struct Compare {
     bool links = true;
     bool markers = true;
     bool marks = true;
+    bool workArea = true; ///< the sequence's work area (0.7)
     bool paths = true;      ///< media file paths
     bool pan = true;
     bool enabled = true;      ///< clips' on/off state
@@ -168,6 +169,12 @@ void differences(const ProjectState& a, SequenceId sa, const ProjectState& b, Se
     if (opt.marks) {
         diff("mark in", x.markIn.value_or(Ticks{-1}).value, y.markIn.value_or(Ticks{-1}).value);
         diff("mark out", x.markOut.value_or(Ticks{-1}).value, y.markOut.value_or(Ticks{-1}).value);
+    }
+    if (opt.workArea) {
+        const auto text = [](const std::optional<TimeRange>& w) {
+            return w ? std::to_string(w->start.value) + "+" + std::to_string(w->duration.value) : std::string("none");
+        };
+        diff("work area", text(x.workArea), text(y.workArea));
     }
     if (opt.markers) {
         diff("markers", x.markers.size(), y.markers.size());
@@ -326,6 +333,39 @@ TEST_CASE("Export: FCP7 XML brings cuts, links, gaps, markers and track settings
     CHECK(r.exported.report.count(ReportOutcome::Approximated) == 0);
     CHECK(r.exported.data.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE xmeml>\n<xmeml version=\"5\">"));
     CHECK(r.exported.data.find("<pathurl>file://localhost/D%3a/footage/A.mov</pathurl>") != std::string::npos);
+}
+
+TEST_CASE("Export: FCP7 XML names the sequence's pixel aspect ratio from Apple's list (145)", "[interchange][export]") {
+    const auto tl = basicTimeline();
+    const auto exportedWith = [&](int width, int height, Rate par) {
+        ProjectState s = tl.state;
+        auto copy = std::make_shared<Sequence>(*s.findSequence(tl.seq));
+        copy->width = width;
+        copy->height = height;
+        copy->pixelAspect = par;
+        for (SequencePtr& seq : s.sequences) {
+            if (seq->id == tl.seq) {
+                seq = copy;
+            }
+        }
+        return roundTrip(s, tl.seq, Format::Fcp7Xml).exported.data;
+    };
+    const auto has = [](const std::string& xml, const char* text) { return xml.find(text) != std::string::npos; };
+    const std::string square = exportedWith(1920, 1080, Rate{1, 1});
+    CHECK(has(square, "<pixelaspectratio>square</pixelaspectratio>"));
+    CHECK(has(square, "<anamorphic>FALSE</anamorphic>"));
+    const std::string hdv = exportedWith(1440, 1080, Rate{4, 3});
+    CHECK(has(hdv, "<pixelaspectratio>HD-(1440x1080)</pixelaspectratio>"));
+    CHECK(has(exportedWith(960, 720, Rate{4, 3}), "<pixelaspectratio>HD-(960x720)</pixelaspectratio>"));
+    CHECK(has(exportedWith(1280, 1080, Rate{3, 2}), "<pixelaspectratio>HD-(1280x1080)</pixelaspectratio>"));
+    const std::string dvWide = exportedWith(720, 480, Rate{40, 33});
+    CHECK(has(dvWide, "<pixelaspectratio>NTSC-601</pixelaspectratio>"));
+    CHECK(has(dvWide, "<anamorphic>TRUE</anamorphic>"));
+    const std::string dv = exportedWith(720, 480, Rate{10, 11});
+    CHECK(has(dv, "<pixelaspectratio>NTSC-601</pixelaspectratio>"));
+    CHECK(has(exportedWith(720, 576, Rate{59, 54}), "<pixelaspectratio>PAL-601</pixelaspectratio>"));
+    // A ratio the list has no name for is written square (the size still travels).
+    CHECK(has(exportedWith(1920, 1080, Rate{2, 1}), "<pixelaspectratio>square</pixelaspectratio>"));
 }
 
 TEST_CASE("Export: OTIO brings the timeline back unchanged (X.1)", "[interchange][export]") {
@@ -504,6 +544,47 @@ TEST_CASE("Export: opacity, motion, volume and their keyframes survive FCP7 XML,
         const RoundTrip r = roundTrip(s, tl.seq, format, opt);
         INFO(joined(r.differences));
         CHECK(r.differences.empty());
+    }
+}
+
+TEST_CASE("Export: a clip stretched with Scale Width survives FCP7 XML, FCPXML and OTIO, keys included (card 12)",
+          "[interchange][export][scalewidth]") {
+    wabcut::test::Timeline tl(R"(
+        V1 tgt |A10aaaaaaaaB30bbbbbbb|
+    )");
+    ProjectState s = tl.state;
+    // A: 150 % wide, 50 % high, Uniform Scale off. B: both keyed (width 100 % -> 200 %, height 50 % -> 75 %).
+    ClipProperties wide;
+    wide.set(ParamId::UniformScale, 0.0);
+    wide.set(ParamId::ScaleWidth, 1.5);
+    wide.set(ParamId::Scale, 0.5);
+    edit::ClipAttributeChange change;
+    change.properties = wide;
+    const ClipId a = tl.clip("V1@0");
+    s = ok(edit::setClipAttributes(s, tl.seq, std::span(&a, 1), change)).state;
+    ClipProperties growing;
+    growing.set(ParamId::UniformScale, 0.0);
+    Curve width;
+    width.keys = {Keyframe{f(33), 1.0}, Keyframe{f(37), 2.0}};
+    Curve height;
+    height.keys = {Keyframe{f(33), 0.5}, Keyframe{f(37), 0.75}};
+    growing[ParamId::ScaleWidth] = ParamValue(width);
+    growing[ParamId::Scale] = ParamValue(height);
+    change.properties = growing;
+    const ClipId b = tl.clip("V1@11");
+    s = ok(edit::setClipAttributes(s, tl.seq, std::span(&b, 1), change)).state;
+    for (const Format format : {Format::Fcp7Xml, Format::FcpXml, Format::Otio}) {
+        INFO(toString(format));
+        Compare opt;
+        if (format == Format::FcpXml) {
+            opt.trackState = false;
+            opt.extraEmptyTracks = true;
+            opt.multicamSources = false;
+        }
+        const RoundTrip r = roundTrip(s, tl.seq, format, opt);
+        INFO(joined(r.differences));
+        CHECK(r.differences.empty());
+        CHECK(r.exported.report.count(ReportOutcome::Dropped) == 0);
     }
 }
 
@@ -802,4 +883,168 @@ TEST_CASE("Export: Master Clip Effects are folded onto every clip and reported (
     INFO(joined(r.differences));
     CHECK(r.differences.empty());
     CHECK(r.exported.data.find("<effectid>GaussianBlur</effectid>") != std::string::npos);
+}
+
+// ---- 0.7 (card 046): the sequence work area and split edits (L/J cuts) -----------------------------------------------------
+
+namespace {
+
+/// A picture and its sound over three clips whose sound starts and ends apart from the picture: A's sound runs two frames
+/// into B (an L cut, so B's sound starts late), C's sound starts two frames before its picture (a J cut). Linked in pairs.
+wabcut::test::Timeline splitEditTimeline() {
+    wabcut::test::Timeline tl(R"(
+        V1 tgt |AaaaBbbbbbC2cc|
+        A1 tgt |AaaaaaB2Cccccc|
+    )");
+    ProjectState& s = tl.state;
+    const std::vector<std::pair<std::string, std::string>> pairs{{"V1@0", "A1@0"}, {"V1@4", "A1@6"}, {"V1@10", "A1@8"}};
+    for (const auto& [video, audio] : pairs) {
+        s = ok(edit::linkClips(s, tl.seq, std::vector<ClipId>{tl.clip(video), tl.clip(audio)})).state;
+    }
+    return tl;
+}
+
+std::string workAreaText(const ProjectState& s, SequenceId seq) {
+    const auto& w = s.findSequence(seq)->workArea;
+    return w ? std::to_string(w->start.value) + "+" + std::to_string(w->duration.value) : std::string("none");
+}
+
+} // namespace
+
+TEST_CASE("Export: the sequence work area comes back from FCP7 XML, FCPXML and OTIO; an EDL says it has none (card 046)",
+          "[interchange][export][workarea]") {
+    auto tl = basicTimeline();
+    tl.state = ok(edit::setWorkArea(tl.state, tl.seq, TimeRange::fromStartEnd(f(3), f(12)))).state;
+    for (const Format format : {Format::Fcp7Xml, Format::FcpXml, Format::Otio}) {
+        INFO(displayName(format));
+        Compare opt;
+        opt.trackState = format != Format::FcpXml;
+        opt.marks = format != Format::FcpXml;
+        opt.mediaMarkers = format != Format::FcpXml;
+        const RoundTrip r = roundTrip(tl.state, tl.seq, format, opt);
+        INFO(joined(r.differences));
+        CHECK(r.differences.empty());
+        CHECK(workAreaText(r.imported.project, r.imported.sequences.front()) == workAreaText(tl.state, tl.seq));
+        // The report says how far it travels.
+        CHECK(it::hasEntry(r.exported.report, format == Format::Fcp7Xml ? ReportOutcome::Carried : ReportOutcome::Approximated,
+                           ReportCategory::SequenceSetting, "work area"));
+        CHECK(it::hasEntry(r.imported.report, ReportOutcome::Carried, ReportCategory::SequenceSetting, "work area"));
+    }
+    // FCP7 XML writes Premiere's own attributes (its ticks are Wabcut's).
+    const auto fcp7 = exportSequence(tl.state, tl.seq, Format::Fcp7Xml);
+    REQUIRE(fcp7.has_value());
+    CHECK(fcp7->data.find("MZ.WorkInPoint=\"" + std::to_string(f(3).value) + "\"") != std::string::npos);
+    CHECK(fcp7->data.find("MZ.WorkOutPoint=\"" + std::to_string(f(12).value) + "\"") != std::string::npos);
+    // An EDL cannot say it.
+    const auto edl = exportSequence(tl.state, tl.seq, Format::Edl);
+    REQUIRE(edl.has_value());
+    CHECK(it::hasEntry(edl->report, ReportOutcome::Dropped, ReportCategory::SequenceSetting, "work area"));
+    // No work area: nothing is written, nothing comes back.
+    const auto plain = basicTimeline();
+    const auto plainXml = exportSequence(plain.state, plain.seq, Format::Fcp7Xml);
+    REQUIRE(plainXml.has_value());
+    CHECK(plainXml->data.find("MZ.Work") == std::string::npos);
+    const auto plainFcpx = exportSequence(plain.state, plain.seq, Format::FcpXml);
+    REQUIRE(plainFcpx.has_value());
+    CHECK(plainFcpx->data.find("com.wabcut.workArea") == std::string::npos);
+}
+
+TEST_CASE("Import: a work area from Premiere's sequence attributes, snapped to frames; the whole sequence is none (card 046)",
+          "[interchange][workarea]") {
+    const auto tl = basicTimeline();
+    const auto exported = exportSequence(tl.state, tl.seq, Format::Fcp7Xml);
+    REQUIRE(exported.has_value());
+    const auto withAttributes = [&](const std::string& in, const std::string& out) {
+        std::string text = exported->data;
+        const std::size_t at = text.find("<sequence ");
+        REQUIRE(at != std::string::npos);
+        text.insert(at + std::string("<sequence ").size(), "MZ.WorkInPoint=\"" + in + "\" MZ.WorkOutPoint=\"" + out + "\" ");
+        return text;
+    };
+    // Premiere's ticks, a sub-frame In: kept inside the sequence and snapped to a frame, and the report says so.
+    {
+        const ImportResult r = it::importText(withAttributes(std::to_string(f(2).value + 5), std::to_string(f(9).value)), Format::Fcp7Xml);
+        const Sequence& s = it::sequenceAt(r, 0);
+        REQUIRE(s.workArea.has_value());
+        CHECK(s.workArea->start == f(2));
+        CHECK(s.workArea->end() == f(9));
+        CHECK(it::hasEntry(r.report, ReportOutcome::Approximated, ReportCategory::SequenceSetting, "work area"));
+    }
+    // Premiere writes the whole sequence for a sequence nobody gave a work area: that is none.
+    {
+        const ImportResult r = it::importText(withAttributes("0", "91445760000000000"), Format::Fcp7Xml);
+        CHECK_FALSE(it::sequenceAt(r, 0).workArea.has_value());
+    }
+    // An Out past the end is cut at the end.
+    {
+        const ImportResult r = it::importText(withAttributes(std::to_string(f(2).value), "91445760000000000"), Format::Fcp7Xml);
+        const Sequence& s = it::sequenceAt(r, 0);
+        REQUIRE(s.workArea.has_value());
+        CHECK(s.workArea->start == f(2));
+        CHECK(s.workArea->end() == s.duration);
+    }
+    // Nonsense (Out before In, negative, not a number) is ignored.
+    for (const auto& bad : {std::pair<std::string, std::string>{"500", "100"}, {"-5", "100"}, {"abc", "def"}}) {
+        const ImportResult r = it::importText(withAttributes(bad.first, bad.second), Format::Fcp7Xml);
+        CHECK_FALSE(it::sequenceAt(r, 0).workArea.has_value());
+    }
+}
+
+TEST_CASE("Export: a split edit keeps its own picture and sound extents in FCP7 XML, FCPXML and OTIO (card 046)",
+          "[interchange][export][split]") {
+    const auto tl = splitEditTimeline();
+    for (const Format format : {Format::Fcp7Xml, Format::FcpXml, Format::Otio}) {
+        INFO(displayName(format));
+        Compare opt;
+        opt.trackState = format != Format::FcpXml;
+        opt.marks = format != Format::FcpXml;
+        opt.mediaMarkers = format != Format::FcpXml;
+        const RoundTrip r = roundTrip(tl.state, tl.seq, format, opt);
+        INFO(joined(r.differences));
+        CHECK(r.differences.empty());
+        CHECK(r.exported.report.count(ReportOutcome::Dropped) == 0);
+        // The sound still starts and ends apart from the picture, and each pair is still linked.
+        const Sequence& back = it::sequenceAt(r.imported, 0);
+        REQUIRE_FALSE(back.audioTracks.empty());
+        const auto& sound = back.audioTracks.front()->clips;
+        REQUIRE(sound.size() == 3);
+        CHECK(sound[0].start() == f(0));
+        CHECK(sound[0].duration() == f(6)); // A's sound runs 2 frames into B
+        CHECK(sound[1].start() == f(6));    // B's sound starts 2 frames after its picture
+        CHECK(sound[1].sourceIn == f(2));
+        CHECK(sound[2].start() == f(8));    // C's sound starts 2 frames before its picture
+        CHECK(sound[2].sourceIn == Ticks{});
+        CHECK(it::links(back).size() == 3);
+    }
+    // FCPXML: one clip per pair, the sound's extent in audioStart / audioDuration.
+    const auto fcpx = exportSequence(tl.state, tl.seq, Format::FcpXml);
+    REQUIRE(fcpx.has_value());
+    CHECK(fcpx->data.find("audioStart=") != std::string::npos);
+    CHECK(fcpx->data.find("audioDuration=") != std::string::npos);
+    CHECK(it::hasEntry(fcpx->report, ReportOutcome::Carried, ReportCategory::Clip, "split edit"));
+    CHECK_FALSE(it::hasEntry(fcpx->report, ReportOutcome::Approximated, ReportCategory::Clip, "shares time with a different V1 clip"));
+}
+
+TEST_CASE("Import: FCPXML audioStart and audioDuration give the sound its own extent; what cannot be is reported (card 046)",
+          "[interchange][fcpxml][split]") {
+    const auto tl = splitEditTimeline();
+    const auto exported = exportSequence(tl.state, tl.seq, Format::FcpXml);
+    REQUIRE(exported.has_value());
+    const ImportResult r = it::importText(exported->data, Format::FcpXml);
+    const Sequence& s = it::sequenceAt(r, 0);
+    REQUIRE_FALSE(s.audioTracks.empty());
+    const auto& sound = s.audioTracks.front()->clips;
+    REQUIRE(sound.size() == 3);
+    CHECK(sound[0].duration() == f(6));
+    CHECK(sound[1].start() == f(6));
+    CHECK(sound[2].start() == f(8));
+    CHECK(it::hasEntry(r.report, ReportOutcome::Carried, ReportCategory::Clip, "split edit"));
+    // A sound that would start before the media is cut there, and the report says so.
+    std::string text = exported->data;
+    const std::size_t at = text.find("audioStart=\"");
+    REQUIRE(at != std::string::npos);
+    const std::size_t end = text.find('"', at + std::string("audioStart=\"").size());
+    text.replace(at, end - at + 1, "audioStart=\"-100s\"");
+    const ImportResult cut = it::importText(text, Format::FcpXml);
+    CHECK(it::hasEntry(cut.report, ReportOutcome::Approximated, ReportCategory::Clip, "split edit"));
 }

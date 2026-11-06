@@ -168,10 +168,27 @@ public:
     Q_INVOKABLE void openInstallDialog(const QString& library = QStringLiteral("project"));
     /// Asks the window for the Export template save dialog (exportRequested(templateKey)): a template's menu.
     Q_INVOKABLE void openExportDialog(const QString& templateKey);
+    /// 0.7 (card #87): asks the window for the folder picker of "Install folder…" (installFolderRequested(library)).
+    Q_INVOKABLE void openInstallFolderDialog(const QString& library = QStringLiteral("project"));
+    /// 0.7 (card #87): files a project or user template ("project/<id>", "user/<id>") under a browser folder ("" = none;
+    /// template.setFolder). "" or the error.
+    Q_INVOKABLE QString setTemplateFolder(const QString& templateKey, const QString& folder);
+    /// 0.7 (card #87): template.importFolder: every .mogrt and .wabcut-template.json under a folder into the project's
+    /// library or the user's, each filed under a folder named after where it was. { error, imported, skipped, library,
+    /// reasons: [{ file, reason }] }.
+    Q_INVOKABLE QVariantMap importTemplateFolder(const QUrl& folder, const QString& library = QStringLiteral("project"));
 
     // ---- Edit: fields ----
     /// template.setField: a typing or a drag merges into one undo step until endEdit().
     Q_INVOKABLE QString setField(const QString& fieldId, const QVariant& value);
+    /// 0.7 (card #71): the stopwatch of a field: on puts a key with the value it shows at the playhead (the key's time is the
+    /// playhead inside the clip) and from then on setField sets the key at the playhead; off removes the keys and keeps the
+    /// value shown at the playhead. template.setFieldKey / template.clearFieldKeys. One undo step. "" or the error.
+    Q_INVOKABLE QString animateField(const QString& fieldId, bool animated);
+    /// Removes key `index` of a field (template.removeFieldKey; fields[].keys lists them in order).
+    Q_INVOKABLE QString removeFieldKey(const QString& fieldId, int index);
+    /// Puts the playhead on key `index` of a field.
+    Q_INVOKABLE void goToFieldKey(const QString& fieldId, int index);
 
     // ---- Edit: layers ----
     /// A new layer on top: "text", "rectangle", "ellipse", "shape" (= rectangle), "image" or "group". Without a graphic
@@ -259,6 +276,8 @@ signals:
     void installRequested(const QString& library);
     /// The window shows the Export template save dialog for `templateKey`.
     void exportRequested(const QString& templateKey);
+    /// 0.7 (card #87): the window shows the folder picker of Install folder…, into `library` ("project" | "user").
+    void installFolderRequested(const QString& library);
 
 public:
     /// What the thumbnail provider reads, on its own thread.
@@ -308,6 +327,8 @@ private:
     ClipId m_clip;
     QVariantMap m_graphic;
     QVariantList m_fields;
+    /// Some field of the shown graphic has keys: its rows follow the playhead (0.7, card #71).
+    bool m_hasKeyedFields = false;
     QVariantList m_layers;
     std::uint32_t m_selectedLayer = 0;
     std::vector<std::uint32_t> m_extraLayers; ///< also selected (Ctrl-click), in the order they were added

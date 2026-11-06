@@ -1,8 +1,8 @@
 import QtQuick
 import QtQuick.Controls.Basic
 
-// Text field of the AI preferences (keys, base URLs, model ids): raised fill, field radius, hairline border that
-// turns accent while focused. `masked` hides what is typed (API keys); a masked field never shows a stored key,
+// Text field of the AI preferences (keys, base URLs, model ids): a sunken pill with a hairline edge (r07: it sits on
+// raised cards, where a raised fill made it invisible) that becomes the focus ring's colour while focused. `masked` hides what is typed (API keys); a masked field never shows a stored key,
 // only what the user is pasting right now.
 TextField {
     id: control
@@ -35,9 +35,9 @@ TextField {
 
     background: Rectangle {
         radius: height / 2
-        color: Theme.raised
-        border.width: control.activeFocus ? Theme.focusRingWidth : 0
-        border.color: Theme.focus
+        color: Theme.sunken
+        border.width: control.activeFocus ? Theme.focusRingWidth : Theme.hairline
+        border.color: control.activeFocus ? Theme.focus : Theme.borderStrong
         opacity: control.enabled ? 1 : Theme.disabledOpacity
     }
 }

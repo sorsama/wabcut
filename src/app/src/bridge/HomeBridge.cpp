@@ -1,5 +1,6 @@
 #include "HomeBridge.h"
 
+#include "BackupSettings.h"
 #include "BrandBridge.h"
 #include "BridgeIds.h"
 #include "CommandJob.h"
@@ -67,6 +68,31 @@ const QString kWebsite = QStringLiteral("https://wabcut.zyphite.com");
 /// Characters a project (file) name cannot have, besides control characters.
 const QString kInvalidNameCharacters = QStringLiteral("\\/:*?\"<>|");
 bool s_showAtLaunch = false;
+
+/// Whether `name` is, or would make, a Windows device file: CON, PRN, AUX, NUL, CONIN$, CONOUT$, COM0-9 or LPT0-9 (also
+/// with the superscript digits 1-3), alone or before an extension ("Con", "nul.txt", "COM1 .x"); "Con.wabcut" is still the
+/// console. Microsoft: "Do not use the following reserved names for the name of a file ... Also avoid these names followed
+/// immediately by an extension; for example, NUL.txt and NUL.tar.gz are both equivalent to NUL"
+/// (https://learn.microsoft.com/windows/win32/fileio/naming-a-file). Refused on every system: a project is moved between them.
+bool isWindowsDeviceName(const QString& name) {
+    const qsizetype dot = name.indexOf(QLatin1Char('.'));
+    QString stem = dot < 0 ? name : name.left(dot);
+    while (stem.endsWith(QLatin1Char(' '))) {
+        stem.chop(1);
+    }
+    stem = stem.toUpper();
+    static const QStringList kDevices{QStringLiteral("CON"), QStringLiteral("PRN"), QStringLiteral("AUX"), QStringLiteral("NUL"),
+                                      QStringLiteral("CONIN$"), QStringLiteral("CONOUT$")};
+    if (kDevices.contains(stem)) {
+        return true;
+    }
+    if (stem.size() == 4 && (stem.startsWith(QLatin1String("COM")) || stem.startsWith(QLatin1String("LPT")))) {
+        const QChar digit = stem.at(3);
+        return (digit >= QLatin1Char('0') && digit <= QLatin1Char('9')) || digit == QChar(0x00B9) || digit == QChar(0x00B2) ||
+               digit == QChar(0x00B3);
+    }
+    return false;
+}
 
 /// classifyImport probes at most this many files of an unknown kind (media::probe on the GUI thread).
 constexpr int kMaxProbes = 16;
@@ -238,7 +264,8 @@ const QStringList& imageSuffixes() {
         QStringLiteral("png"), QStringLiteral("jpg"),  QStringLiteral("jpeg"), QStringLiteral("tif"),
         QStringLiteral("tiff"), QStringLiteral("bmp"), QStringLiteral("gif"),  QStringLiteral("webp"),
         QStringLiteral("exr"), QStringLiteral("dpx"),  QStringLiteral("tga"),  QStringLiteral("heic"),
-        QStringLiteral("heif"), QStringLiteral("avif")};
+        QStringLiteral("heif"), QStringLiteral("avif"), QStringLiteral("svg"),  QStringLiteral("svgz"),
+        QStringLiteral("ai"),   QStringLiteral("eps")}; // 0.7 (card #86): vector artwork
     return suffixes;
 }
 
@@ -291,13 +318,13 @@ QString mediaKindOf(const QString& suffix) {
     return {};
 }
 
-/// A dotLottie archive (.lottie, LottieFiles' zip): Wabcut reads only the Bodymovin JSON inside one.
-bool dotLottieFile(const QString& path) {
-    return QFileInfo(path).suffix().compare(QLatin1String("lottie"), Qt::CaseInsensitive) == 0;
-}
-
-/// A Lottie animation Wabcut imports: Bodymovin JSON.
+/// A Lottie animation Wabcut imports: Bodymovin JSON, a dotLottie archive (.lottie, 0.7) or an OGraf manifest
+/// (*.ograf.json, 0.7: a package with a Lottie version imports as a template).
 bool lottieFile(const QString& path) {
+    if (QFileInfo(path).suffix().compare(QLatin1String("lottie"), Qt::CaseInsensitive) == 0)
+        return true;
+    if (path.endsWith(QLatin1String(".ograf.json"), Qt::CaseInsensitive))
+        return true;
     if (QFileInfo(path).suffix().toLower() != QLatin1String("json"))
         return false;
     QFile file(path);
@@ -368,17 +395,6 @@ void sortFile(const QFileInfo& info, bool inFolder, Sorted& out) {
     }
     if (inFolder && !captionSuffixes().contains(suffix) && !layeredFile(path) && suffix != QLatin1String("json")) {
         ++out.skipped;
-        return;
-    }
-    // A dotLottie archive: not imported (Graphics Import reads Bodymovin JSON), so say what to do before a project is
-    // made for it.
-    if (dotLottieFile(path)) {
-        entry.insert(QStringLiteral("format"), QString());
-        entry.insert(QStringLiteral("formatName"), QString());
-        //: dotLottie is a zip format of LottieFiles; Bodymovin is After Effects' Lottie exporter
-        entry.insert(QStringLiteral("guidance"), HomeBridge::tr("This is a dotLottie archive: export the animation as "
-                                                                "Lottie JSON (Bodymovin) to import it."));
-        out.unsupported.append(entry);
         return;
     }
     switch (editor::classifyImportFile(fsPath(path))) {
@@ -544,7 +560,7 @@ std::optional<VideoFormat> firstVideoFormat(const QList<QUrl>& files) {
         const QString path = localPath(url);
         const QString suffix = QFileInfo(path).suffix().toLower();
         if (audioSuffixes().contains(suffix) || imageSuffixes().contains(suffix) || captionSuffixes().contains(suffix) ||
-            lottieFile(path) || dotLottieFile(path) || layeredFile(path))
+            lottieFile(path) || layeredFile(path))
             continue;
         if (++probes > 8)
             break;
@@ -820,7 +836,8 @@ QVariantMap HomeBridge::advancedChoices() const {
                                                 choice(QStringLiteral("upperFirst"), tr("Upper field first")),
                                                 choice(QStringLiteral("lowerFirst"), tr("Lower field first"))}},
         {QStringLiteral("masterFormats"),
-         QVariantList{choice(QStringLiteral("stereo"), tr("Stereo")), choice(QStringLiteral("5.1"), tr("5.1"))}},
+         QVariantList{choice(QStringLiteral("stereo"), tr("Stereo")), choice(QStringLiteral("5.1"), tr("5.1")),
+                      choice(QStringLiteral("7.1"), tr("7.1"))}},
         {QStringLiteral("trackFormats"),
          QVariantList{choice(QStringLiteral("stereo"), tr("Stereo")), choice(QStringLiteral("mono"), tr("Mono"))}},
         {QStringLiteral("previewFormats"),
@@ -883,7 +900,13 @@ void HomeBridge::setRecentLimit(int limit) {
 
 QUrl HomeBridge::projectUrl(const QString& name, const QUrl& folder) const {
     const QString base = folder.isLocalFile() ? folder.toLocalFile() : folder.toString();
-    return QUrl::fromLocalFile(QDir(base).filePath(name.trimmed() + QStringLiteral(".wabcut")));
+    // A name typed with its extension, in any case ("Show.WABCUT"), is that file: not "Show.WABCUT.wabcut" (card 174).
+    QString file = name.trimmed();
+    const QString extension = QStringLiteral(".wabcut");
+    if (file.size() <= extension.size() || !file.endsWith(extension, Qt::CaseInsensitive)) {
+        file += extension;
+    }
+    return QUrl::fromLocalFile(QDir(base).filePath(file));
 }
 
 QString HomeBridge::projectPath(const QString& name, const QUrl& folder) const {
@@ -902,6 +925,10 @@ QString HomeBridge::validateProject(const QString& name, const QUrl& folder) con
     }
     if (trimmed.endsWith(QLatin1Char('.'))) {
         return tr("A project name cannot end with a period");
+    }
+    // Card 168: "Con.wabcut" is the console on Windows: the first save would fail, or go to the device.
+    if (isWindowsDeviceName(trimmed)) {
+        return tr("“%1” is a reserved name on Windows. Choose another name").arg(trimmed);
     }
     if (folder.isEmpty() || (!folder.isLocalFile() && !QFileInfo(folder.toString()).isAbsolute())) {
         return tr("Choose where to save the project");
@@ -991,6 +1018,9 @@ QString HomeBridge::uniqueProjectName(const QString& base, const QUrl& folder) c
     if (name.isEmpty()) {
         name = tr("Untitled Project");
     }
+    if (isWindowsDeviceName(name)) { // a sequence or media called "NUL" must not give a name that Create refuses (card 168)
+        name = tr("%1 project").arg(name);
+    }
     QString candidate = name;
     for (int n = 2; n < 10000 && QFileInfo::exists(projectUrl(candidate, folder).toLocalFile()); ++n) {
         candidate = QStringLiteral("%1 %2").arg(name).arg(n);
@@ -1017,9 +1047,10 @@ QString HomeBridge::settingsSummary(const QVariantMap& settings) const {
     const QString rate = rateLabel(settings.value(QStringLiteral("rateNum"), sequence.frameRate.num).toInt(),
                                    settings.value(QStringLiteral("rateDen"), sequence.frameRate.den).toInt());
     const int audioRate = settings.value(QStringLiteral("audioRate"), sequence.audioRate.num).toInt();
-    const QString master = settings.value(QStringLiteral("masterFormat")).toString() == QLatin1String("5.1")
-                               ? tr("5.1")
-                               : tr("stereo");
+    const QString masterFormat = settings.value(QStringLiteral("masterFormat")).toString();
+    const QString master = masterFormat == QLatin1String("5.1")   ? tr("5.1")
+                           : masterFormat == QLatin1String("7.1") ? tr("7.1")
+                                                                  : tr("stereo");
     const int videoTracks = settings.value(QStringLiteral("videoTracks"), sequence.videoTracks).toInt();
     const int audioTracks = settings.value(QStringLiteral("audioTracks"), sequence.audioTracks).toInt();
     //: New project summary: "1920 × 1080 · 29.97 fps · 48 kHz stereo · 3 video / 3 audio tracks"
@@ -1075,8 +1106,8 @@ QVariantMap HomeBridge::createFromMediaWith(const QString& name, const QUrl& fol
     QVariantList deferred;
     for (const QUrl& url : files) {
         const QString path = localPath(url);
-        // A web address or a dotLottie archive is nothing this can import (classifyImport says why).
-        if (path.isEmpty() || remoteUrl(url) || dotLottieFile(path))
+        // A web address is nothing this can import (classifyImport says why).
+        if (path.isEmpty() || remoteUrl(url))
             continue;
         const QUrl absolute = QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath());
         if (lottieFile(path) || layeredFile(path)) {
@@ -1356,7 +1387,7 @@ QVariantMap HomeBridge::classifyImport(const QList<QUrl>& files) const {
                     "", sorted.skipped);
     }
     if (sorted.truncated) {
-        notes << tr("Only the first %n files of the folders were looked at.", "", kMaxFolderFiles);
+        notes << tr("Only the first %n file(s) of the folders were looked at.", "", kMaxFolderFiles);
     }
     if (sorted.hidden > 0) {
         notes << tr("%n hidden file(s) or folder(s) in the folders were left out.", "", sorted.hidden);
@@ -1399,7 +1430,7 @@ QStringList HomeBridge::importNameFilters() const {
         for (const QString& suffix : *suffixes)
             media << QStringLiteral("*.") + suffix;
     }
-    media << QStringLiteral("*.psd") << QStringLiteral("*.psb") << QStringLiteral("*.json"); // not .lottie (dotLottie)
+    media << QStringLiteral("*.psd") << QStringLiteral("*.psb") << QStringLiteral("*.json") << QStringLiteral("*.lottie");
     QStringList timelines;
     for (const QString& suffix : timelineSuffixes())
         timelines << QStringLiteral("*.") + suffix;
@@ -1840,6 +1871,7 @@ void forgetTrashRecord(const QString& inTrash) {
 
 /// Renames a file or a folder.
 bool renamePath(const QString& from, const QString& to) {
+    QDir().mkpath(QFileInfo(to).absolutePath()); // 0.7 (card 029): a copy's folder may not exist for the new name yet
     return QDir().rename(from, to);
 }
 
@@ -1859,7 +1891,23 @@ QString renamedSidecar(const QString& sidecar, const QString& oldPath, const QSt
     const QString previews = QString::fromStdU16String(editor::previewFolderFor(fsPath(oldPath)).u16string());
     if (samePath(side.absoluteFilePath(), previews))
         return QString::fromStdU16String(editor::previewFolderFor(fsPath(newPath)).u16string());
-    return newPath + side.fileName().mid(QFileInfo(oldPath).fileName().size());
+    const QString rest = side.fileName().mid(QFileInfo(oldPath).fileName().size());
+    // 0.7 (card 029): a copy kept in the project's Auto-Save folder stays there under the new name; one kept in the chosen
+    // folder moves to the folder of the new name (that folder is named after the project).
+    if (!samePath(side.absolutePath(), QFileInfo(oldPath).absolutePath())) {
+        if (side.dir().dirName() == QString::fromLatin1(io::kAutoSaveFolderName.data(), static_cast<qsizetype>(io::kAutoSaveFolderName.size())))
+            return side.absolutePath() + QLatin1Char('/') + QFileInfo(newPath).fileName() + rest;
+        const QString root = QSettings().value(QStringLiteral("project/backupFolder")).toString();
+        if (!root.isEmpty() && samePath(QFileInfo(side.absolutePath()).dir().absolutePath(), root)) {
+            io::BackupLocation chosen;
+            chosen.mode = io::BackupLocation::Mode::Chosen;
+            chosen.root = fsPath(root);
+            const std::filesystem::path moved = io::backupDirectory(fsPath(newPath), chosen);
+            if (!moved.empty())
+                return QString::fromStdU16String(moved.u16string()) + QLatin1Char('/') + QFileInfo(newPath).fileName() + rest;
+        }
+    }
+    return newPath + rest;
 }
 
 } // namespace
@@ -1871,31 +1919,44 @@ QStringList HomeBridge::sidecarsOf(const QString& projectPath) {
     const QFileInfo project(projectPath);
     if (project.fileName().isEmpty())
         return out;
-    const QDir dir(project.absolutePath());
     const QString name = project.fileName();
-    // "<name>.autosave", "<name>.autosave2", ... (rotated autosaves), "<name>.bak1".. (backups) and "<name>.lock".
-    const QStringList entries = dir.entryList(QDir::Files | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
-    for (const QString& entry : entries) {
+    // 0.7 (card 029): its copies may also be in its Auto-Save folder or in the chosen backup folder's folder for it, whatever
+    // the setting says now (an earlier setting may have put them there).
+    QStringList folders{project.absolutePath()};
+    {
+        const io::BackupLocation location = backup::locationFromSettings(QSettings());
+        for (const std::filesystem::path& backupDir : io::backupDirectories(fsPath(project.absoluteFilePath()), location)) {
+            const QString folder = QString::fromStdU16String(backupDir.u16string());
+            if (!backupDir.empty() && QFileInfo(folder).isDir() && !folders.contains(folder))
+                folders << folder;
+        }
+    }
+    for (const QString& folder : std::as_const(folders)) {
+        const QDir dir(folder);
+        // "<name>.autosave", "<name>.autosave2", ... (rotated autosaves), "<name>.bak1".. (backups) and "<name>.lock".
+        const QStringList entries = dir.entryList(QDir::Files | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+        for (const QString& entry : entries) {
 #ifdef Q_OS_WIN
-        constexpr Qt::CaseSensitivity sensitivity = Qt::CaseInsensitive;
+            constexpr Qt::CaseSensitivity sensitivity = Qt::CaseInsensitive;
 #else
-        constexpr Qt::CaseSensitivity sensitivity = Qt::CaseSensitive;
+            constexpr Qt::CaseSensitivity sensitivity = Qt::CaseSensitive;
 #endif
-        if (entry.size() <= name.size() + 1 || !entry.startsWith(name + QLatin1Char('.'), sensitivity))
-            continue;
-        const QString rest = entry.mid(name.size() + 1);
-        const auto digitsFrom = [&](qsizetype at) {
-            for (qsizetype i = at; i < rest.size(); ++i) {
-                if (!rest[i].isDigit())
-                    return false;
-            }
-            return true;
-        };
-        const bool autosave = rest.startsWith(QLatin1String("autosave"), Qt::CaseInsensitive) && digitsFrom(8);
-        const bool backup = rest.size() > 3 && rest.startsWith(QLatin1String("bak"), Qt::CaseInsensitive) && digitsFrom(3);
-        const bool lock = rest.compare(QLatin1String("lock"), Qt::CaseInsensitive) == 0;
-        if (autosave || backup || lock)
-            out << dir.filePath(entry);
+            if (entry.size() <= name.size() + 1 || !entry.startsWith(name + QLatin1Char('.'), sensitivity))
+                continue;
+            const QString rest = entry.mid(name.size() + 1);
+            const auto digitsFrom = [&](qsizetype at) {
+                for (qsizetype i = at; i < rest.size(); ++i) {
+                    if (!rest[i].isDigit())
+                        return false;
+                }
+                return true;
+            };
+            const bool autosave = rest.startsWith(QLatin1String("autosave"), Qt::CaseInsensitive) && digitsFrom(8);
+            const bool backup = rest.size() > 3 && rest.startsWith(QLatin1String("bak"), Qt::CaseInsensitive) && digitsFrom(3);
+            const bool lock = rest.compare(QLatin1String("lock"), Qt::CaseInsensitive) == 0;
+            if (autosave || backup || lock)
+                out << dir.filePath(entry);
+        }
     }
     // "<stem> Preview Files" next to it (render previews: editor::previewFolderFor).
     const QString previews = QString::fromStdU16String(editor::previewFolderFor(fsPath(project.absoluteFilePath())).u16string());

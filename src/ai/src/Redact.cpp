@@ -8,14 +8,18 @@ namespace wabcut::ai {
 
 namespace {
 
-constexpr std::array<std::string_view, 11> kSecretHeaders{
+constexpr std::array<std::string_view, 15> kSecretHeaders{
     "authorization", "proxy-authorization", "x-api-key", "xi-api-key",   "x-goog-api-key", "ocp-apim-subscription-key",
     "deepl-auth-key", "api-key",            "cookie",    "set-cookie", "x-goog-upload-url",
+    "x-gladia-key",  "x-hume-api-key",      "x-key", // r07: Gladia, Hume, Black Forest Labs
+    "x-amz-security-token", // 0.7: S3-compatible storage (temporary credentials)
 };
 
 // Query parameters that carry credentials.
-constexpr std::array<std::string_view, 7> kSecretParams{"key", "api_key", "apikey", "access_token", "token", "sig",
-                                                      "upload_id"};
+constexpr std::array<std::string_view, 10> kSecretParams{"key", "api_key", "apikey", "access_token", "token", "sig",
+                                                       "upload_id",
+                                                       // 0.7: S3 presigned links (a link carries the right to read the file)
+                                                       "x-amz-signature", "x-amz-credential", "x-amz-security-token"};
 
 bool isTokenChar(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.' || c == '~' || c == '+' ||

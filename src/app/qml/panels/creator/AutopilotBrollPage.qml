@@ -79,10 +79,11 @@ ColumnLayout {
             const track = page.report.track ?? {}
             const where = track.label ? (track.created ? qsTr("a new track %1").arg(track.label) : track.label) : ""
             const placed = page.suggestions.filter(s => s.chosen).length
-            return (page.applied ? qsTr("Added %1 B-roll clip(s) on %2").arg(placed).arg(where)
-                                 : where !== "" ? qsTr("%1 of %2 suggestion(s) on %3").arg(placed).arg(page.suggestions.length).arg(where)
-                                                : qsTr("%1 suggestion(s)").arg(page.suggestions.length))
-                   + " · " + qsTr("%1 line(s) read, %2 library item(s) looked at").arg(page.report.lines ?? 0).arg(page.report.candidates ?? 0)
+            return (page.applied ? qsTr("Added %n B-roll clip(s) on %1", "", placed).arg(where)
+                                 : where !== "" ? qsTr("%1 of %n suggestion(s) on %2", "", page.suggestions.length).arg(placed).arg(where)
+                                                : qsTr("%n suggestion(s)", "", page.suggestions.length))
+                   + " · " + qsTr("%n line(s) read", "", page.report.lines ?? 0)
+                   + ", " + qsTr("%n library item(s) looked at", "", page.report.candidates ?? 0)
                    + (page.report.visual ? " · " + qsTr("by picture and words") : " · " + qsTr("by words"))
         }
         color: Theme.textTertiary

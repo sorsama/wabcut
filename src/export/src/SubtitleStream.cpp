@@ -1,5 +1,7 @@
 #include "SubtitleStream.h"
 
+#include "Utf8.h"
+
 #include <wabcut/export/CaptionSidecar.h>
 #include <wabcut/playback/video/CaptionRedaction.h>
 
@@ -94,18 +96,19 @@ std::vector<SubtitleCue> subtitleCues(const ProjectState& project, const Sequenc
     for (const CaptionCue& cue : clean.cues) {
         const Ticks start = std::max(cue.start, range.start);
         const Ticks end = std::min(cue.end(), range.end());
-        std::string text = plainText(cue.text);
+        std::string text = plainText(captionStyledText(*track, cue.text));
         if (!(start < end) || text.empty()) {
             continue;
         }
-        if (text.size() > 60000) { // a 3GPP text sample holds at most 65535 bytes
-            text.resize(60000);
-        }
+        detail::truncateUtf8(text, 60000); // a 3GPP text sample holds at most 65535 bytes; 151: never mid-character
         SubtitleCue c{toMs(start - range.start), toMs(end - range.start), std::move(text)};
         if (c.endMs > c.startMs) {
             out.push_back(std::move(c));
         }
     }
+    // In start order: the export writes the cues as the video reaches them (SubtitleStream::writeUntil), and a track's
+    // cues are not required to be sorted.
+    std::stable_sort(out.begin(), out.end(), [](const SubtitleCue& a, const SubtitleCue& b) { return a.startMs < b.startMs; });
     return out;
 }
 
@@ -144,30 +147,49 @@ std::expected<SubtitleStream, Error> SubtitleStream::add(Container container, Mu
     return s;
 }
 
-std::expected<void, Error> SubtitleStream::write(const std::vector<SubtitleCue>& cues, Muxer& muxer) {
+std::expected<void, Error> SubtitleStream::writeOne(const SubtitleCue& cue, Muxer& muxer, AVPacket* packet) {
     const bool movText = m_ctx->codec_id == AV_CODEC_ID_MOV_TEXT;
+    // 3GPP Timed Text: a 16-bit big-endian length, then the UTF-8 text; SubRip in Matroska: the text itself.
+    const std::size_t size = cue.text.size() + (movText ? 2 : 0);
+    if (const int r = av_new_packet(packet, static_cast<int>(size)); r < 0) {
+        return std::unexpected(ffmpegError(ErrorCode::EncoderError, "Cannot allocate a subtitle", r));
+    }
+    std::uint8_t* data = packet->data;
+    if (movText) {
+        data[0] = static_cast<std::uint8_t>((cue.text.size() >> 8) & 0xFF);
+        data[1] = static_cast<std::uint8_t>(cue.text.size() & 0xFF);
+        data += 2;
+    }
+    std::memcpy(data, cue.text.data(), cue.text.size());
+    packet->pts = cue.startMs;
+    packet->dts = cue.startMs;
+    packet->duration = cue.endMs - cue.startMs;
+    packet->flags |= AV_PKT_FLAG_KEY;
+    auto ok = muxer.write(packet, m_ctx->time_base, m_stream);
+    av_packet_unref(packet);
+    return ok;
+}
+
+std::expected<void, Error> SubtitleStream::writeUntil(const std::vector<SubtitleCue>& cues, std::int64_t uptoMs, Muxer& muxer) {
+    if (m_next >= cues.size() || cues[m_next].startMs > uptoMs) {
+        return {}; // the usual frame: no cue starts yet
+    }
     PacketPtr packet(av_packet_alloc());
-    for (const SubtitleCue& cue : cues) {
-        // 3GPP Timed Text: a 16-bit big-endian length, then the UTF-8 text; SubRip in Matroska: the text itself.
-        const std::size_t size = cue.text.size() + (movText ? 2 : 0);
-        if (const int r = av_new_packet(packet.get(), static_cast<int>(size)); r < 0) {
-            return std::unexpected(ffmpegError(ErrorCode::EncoderError, "Cannot allocate a subtitle", r));
-        }
-        std::uint8_t* data = packet->data;
-        if (movText) {
-            data[0] = static_cast<std::uint8_t>((cue.text.size() >> 8) & 0xFF);
-            data[1] = static_cast<std::uint8_t>(cue.text.size() & 0xFF);
-            data += 2;
-        }
-        std::memcpy(data, cue.text.data(), cue.text.size());
-        packet->pts = cue.startMs;
-        packet->dts = cue.startMs;
-        packet->duration = cue.endMs - cue.startMs;
-        packet->flags |= AV_PKT_FLAG_KEY;
-        if (auto ok = muxer.write(packet.get(), m_ctx->time_base, m_stream); !ok) {
+    while (m_next < cues.size() && cues[m_next].startMs <= uptoMs) {
+        if (auto ok = writeOne(cues[m_next], muxer, packet.get()); !ok) {
             return ok;
         }
-        av_packet_unref(packet.get());
+        ++m_next;
+    }
+    return {};
+}
+
+std::expected<void, Error> SubtitleStream::write(const std::vector<SubtitleCue>& cues, Muxer& muxer) {
+    PacketPtr packet(av_packet_alloc());
+    for (; m_next < cues.size(); ++m_next) {
+        if (auto ok = writeOne(cues[m_next], muxer, packet.get()); !ok) {
+            return ok;
+        }
     }
     return {};
 }

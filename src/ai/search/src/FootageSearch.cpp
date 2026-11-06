@@ -4,6 +4,7 @@
 #include <wabcut/ai/JsonAccess.h>
 #include <wabcut/ai/Sha256.h>
 #include <wabcut/ai/search/Tokenizer.h>
+#include <wabcut/model/Plural.h>
 #include <wabcut/model/RedactionMedia.h>
 
 #include <nlohmann/json.hpp>
@@ -397,8 +398,8 @@ std::expected<SearchResults, Error> FootageSearch::search(const ProjectState& st
     }
     results.mediaSearched = allowed.size();
     if (!results.notIndexed.empty()) {
-        results.warnings.push_back(std::to_string(results.notIndexed.size()) +
-                                   " media item(s) are not indexed yet (search.indexMedia indexes them)");
+        results.warnings.push_back("Not indexed yet (search.indexMedia indexes them): " +
+                                   counted(static_cast<std::int64_t>(results.notIndexed.size()), "media item"));
     }
 
     const TextQuery textQuery = buildTextQuery(query);

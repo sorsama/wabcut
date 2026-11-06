@@ -9,6 +9,11 @@
 //   Optical Flow    the two frames warped along their motion (motion::estimateFlowPair) toward the source time and
 //                   blended, each side weighted by how surely it sees the point (occlusions); sections with it need
 //                   rendering for real-time playback (the render bar shows them red)
+//   AI Frame Interpolation (0.7, card #133)
+//                   the frame between the two made by a neural model (RIFE, run on this computer, downloaded on request):
+//                   Process makes the pictures ahead of time and keeps them for the media (wabcut/ai/video); playback shows them
+//                   and plays Optical Flow, with a badge, where they are not made yet; an export makes what is missing. Saved
+//                   as "opticalFlow" plus "aiInterpolation": true, so a build without it opens the project with Optical Flow
 //
 // It applies wherever a clip's video is retimed: a speed other than 100 %, reverse, time remapping (ramps), Rate
 // Stretch, and a media frame rate other than the sequence's (24 or 30 fps footage in a 60 fps sequence). The setting
@@ -26,9 +31,10 @@ namespace wabcut {
 struct Clip;
 struct MediaItem;
 
-enum class TimeInterpolation : std::uint8_t { FrameSampling, FrameBlending, OpticalFlow };
+enum class TimeInterpolation : std::uint8_t { FrameSampling, FrameBlending, OpticalFlow, AiInterpolation };
 
-/// "frameSampling", "frameBlending", "opticalFlow": what project files and the commands use.
+/// "frameSampling", "frameBlending", "opticalFlow", "aiInterpolation": what the commands use (a project file writes the last as
+/// "opticalFlow" with the key "aiInterpolation": true).
 std::string_view toString(TimeInterpolation mode);
 std::optional<TimeInterpolation> timeInterpolationFromString(std::string_view text);
 /// Premiere's menu labels: "Frame Sampling", "Frame Blending", "Optical Flow".

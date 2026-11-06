@@ -148,15 +148,43 @@ TEST_CASE("Trim Edit and Make Subsequence follow the shipped key sets; Previous 
     CHECK(resolved(Platform::MacOS, Scope::Application, "Opt+;") == "sequence.previousInSequence");
 }
 
-TEST_CASE("Verified: Ctrl/Cmd+L is Link, but Loop in the Audio Track Mixer, Metadata and Effect Controls",
+TEST_CASE("Verified: Ctrl/Cmd+L is Link, but Loop in the Audio Track Mixer and Effect Controls",
           "[keymap][tables][verified]") {
     const Platform p = GENERATE(Platform::Windows, Platform::MacOS);
     const char* key = p == Platform::MacOS ? "Cmd+L" : "Ctrl+L";
     CHECK(resolved(p, Scope::Application, key) == "clip.link");
     CHECK(resolved(p, Scope::Timeline, key) == "clip.link");
     CHECK(resolved(p, Scope::AudioMixer, key) == "audioMixer.loop");
-    CHECK(resolved(p, Scope::Metadata, key) == "metadata.loop");
     CHECK(resolved(p, Scope::EffectControls, key) == "effectControls.loopAudioPlayback");
+    // 0.7 (card 024): the Metadata panel's Loop is unbound (Wabcut's Metadata panel has no player), so Link keeps the key there.
+    CHECK(resolved(p, Scope::Metadata, key) == "clip.link");
+}
+
+// 0.7 (card 024): Premiere's default keys of features Wabcut does not have are unbound, with the command ids kept so a
+// Premiere key set (.kys) or the Keyboard Shortcuts editor still know them. Each would never fire (no panel has the
+// Metadata scope). The mixer's Show/Hide Tracks and Meter Inputs Only were unbound here before those features were
+// built (card 032); they act now, so their keys are back.
+TEST_CASE("Premiere default keys of features Wabcut does not have are unbound (card 024)", "[keymap][tables][verified]") {
+    const Platform p = GENERATE(Platform::Windows, Platform::MacOS);
+    const bool mac = p == Platform::MacOS;
+    for (const char* id : {"metadata.loop", "metadata.play"}) {
+        INFO(id);
+        CHECK(CommandRegistry::builtin().find(id) != nullptr); // still a command: assignable, and a .kys can name it
+        CHECK(keymap(p).chordsFor(id).empty());
+    }
+    // The mixer's menu commands act (card 032), so their Premiere keys are bound; Ctrl+Shift+I there is Meter Inputs
+    // Only, as in Premiere (Clear In keeps it everywhere else).
+    CHECK(resolved(p, Scope::AudioMixer, mac ? "Opt+Cmd+T" : "Ctrl+Alt+T") == "audioMixer.showHideTracks");
+    CHECK(resolved(p, Scope::AudioMixer, "Ctrl+Shift+I") == "audioMixer.meterInputsOnly");
+    CHECK(resolved(p, Scope::Application, mac ? "Opt+I" : "Ctrl+Shift+I") == "marker.clearIn");
+    // What the freed keys do instead.
+    CHECK(resolved(p, Scope::Metadata, "Space") == "transport.playStop");
+    // ... while the keys of the panel commands that act stay: Loop in the mixer, the Media Browser's three.
+    CHECK(resolved(p, Scope::AudioMixer, mac ? "Cmd+L" : "Ctrl+L") == "audioMixer.loop");
+    CHECK(resolved(p, Scope::MediaBrowser, "Shift+O") == "mediaBrowser.openInSourceMonitor");
+    CHECK(resolved(p, Scope::MediaBrowser, "Shift+Left") == "mediaBrowser.selectDirectoryList");
+    CHECK(resolved(p, Scope::MediaBrowser, "Shift+Right") == "mediaBrowser.selectMediaList");
+    CHECK(resolved(p, Scope::Application, "Shift+Left") == "transport.stepBackwardFive");
 }
 
 TEST_CASE("Verified: Ctrl/Cmd+R is Speed/Duration, but Show Rulers in the Program Monitor",
@@ -277,12 +305,11 @@ TEST_CASE("MVP shortcuts from the brief resolve on both OSes", "[keymap][tables]
 }
 
 TEST_CASE("macOS physical-Control shortcuts use MetaModifier", "[keymap][tables]") {
-    // Audio Track Mixer > Meter Input(s) Only is "Ctrl + Shift + I" in Adobe's macOS column: the ⌃ key.
-    CHECK(keymap(Platform::MacOS).chordsFor("audioMixer.meterInputsOnly") ==
-          std::vector<KeyChord>{{Key_I, Modifier::Meta | Modifier::Shift}});
-    CHECK(keymap(Platform::Windows).chordsFor("audioMixer.meterInputsOnly") ==
-          std::vector<KeyChord>{{Key_I, Modifier::Control | Modifier::Shift}});
-    CHECK(keymap(Platform::MacOS).shortcutText("audioMixer.meterInputsOnly") == "⌃⇧I");
+    // Toggle Trim Type is Control+T on macOS (the shipped key set's physical Control key: the ⌃ key), Ctrl+Shift+T on Windows.
+    CHECK(keymap(Platform::MacOS).chordsFor("sequence.toggleTrimType") == std::vector<KeyChord>{{Key_T, Modifier::Meta}});
+    CHECK(keymap(Platform::Windows).chordsFor("sequence.toggleTrimType") ==
+          std::vector<KeyChord>{{Key_T, Modifier::Control | Modifier::Shift}});
+    CHECK(keymap(Platform::MacOS).shortcutText("sequence.toggleTrimType") == "⌃T");
     CHECK(keymap(Platform::MacOS).shortcutText("marker.clearIn") == "⌥I");
     CHECK(keymap(Platform::Windows).shortcutText("marker.clearIn") == "Ctrl+Shift+I");
 }
@@ -582,6 +609,128 @@ TEST_CASE("Verified (0.6, D9): the beat tools are Wabcut commands with no defaul
         REQUIRE(c != nullptr);
         CHECK(c->scope == Scope::Application);
         CHECK(c->group == "Sequence");
+        CHECK(c->premiereName.empty());
+        CHECK(c->kysName.empty());
+        CHECK(keysOf(p, id).empty());
+    }
+    CHECK(keymap(p).conflicts().empty());
+}
+
+TEST_CASE("Batch A2: the track switch, range marker and edit overlay keys are bound on both OSes",
+          "[keymap][tables][a2]") {
+    const Platform p = GENERATE(Platform::Windows, Platform::MacOS);
+    const bool mac = p == Platform::MacOS;
+    // None has a Premiere default: all are Wabcut's own, and none takes a key Premiere's tables give another command.
+    const std::pair<std::string, const char*> rows[] = {
+        {mac ? "Opt+Shift+O" : "Alt+Shift+O", "timeline.toggleTrackOutput"},
+        {mac ? "Opt+Shift+U" : "Alt+Shift+U", "timeline.toggleTrackMute"},
+        {mac ? "Opt+Shift+Cmd+S" : "Ctrl+Alt+Shift+S", "timeline.toggleTrackSolo"},
+        {mac ? "Opt+Shift+S" : "Alt+Shift+S", "timeline.soloSelectedClipTrack"},
+        {"Shift+X", "marker.addFromInOut"},
+        {mac ? "Opt+Cmd+," : "Ctrl+Alt+,", "clip.insertBefore"},
+        {mac ? "Opt+Cmd+." : "Ctrl+Alt+.", "clip.insertAfter"},
+        {mac ? "Opt+Cmd+O" : "Ctrl+Alt+O", "clip.overlayEdit"},
+        {mac ? "Opt+Cmd+P" : "Ctrl+Alt+P", "clip.appendEdit"},
+    };
+    for (const auto& [key, command] : rows) {
+        INFO(key << " -> " << command);
+        CHECK(resolved(p, Scope::Application, key) == command);
+        CHECK(resolved(p, Scope::Timeline, key) == command); // application keys work in every panel
+        CHECK(keysOf(p, command) == Keys{key});
+        CHECK(keymap(p).registry().contains(command));
+    }
+    // The keys sit beside Premiere's own: Insert and Overwrite are unchanged.
+    CHECK(resolved(p, Scope::Application, ",") == "clip.insert");
+    CHECK(resolved(p, Scope::Application, ".") == "clip.overwrite");
+    CHECK(resolved(p, Scope::Application, "M") == "marker.add");
+    CHECK(keymap(p).conflicts().empty());
+}
+
+TEST_CASE("The workspace keys are positional, and the new monitor and transport keys are bound on both OSes (cards 026 001 042)",
+          "[keymap][tables]") {
+    const Platform p = GENERATE(Platform::Windows, Platform::MacOS);
+    const bool mac = p == Platform::MacOS;
+    // Alt+Shift+1..9 stay on window.workspace1..9 (Opt+Shift on macOS), which the app opens by tab position; they are named
+    // by their place, Premiere's names stay for .kys import.
+    for (int i = 1; i <= 9; ++i) {
+        const std::string id = "window.workspace" + std::to_string(i);
+        INFO(id);
+        REQUIRE(keymap(p).registry().contains(id));
+        const auto info = keymap(p).registry().find(id);
+        REQUIRE(info);
+        CHECK(info->displayName == "Workspace " + std::to_string(i));
+        CHECK_FALSE(info->premiereName.empty());
+        CHECK_FALSE(info->kysName.empty());
+        CHECK(keysOf(p, id) == Keys{(mac ? "Opt+Shift+" : "Alt+Shift+") + std::to_string(i)});
+    }
+    // Next and Previous Workspace exist and take no default key.
+    for (const char* id : {"window.nextWorkspace", "window.previousWorkspace"}) {
+        INFO(id);
+        CHECK(keymap(p).registry().contains(id));
+        CHECK(keysOf(p, id).empty());
+    }
+    // Copy Frame (a Wabcut extra) and Play In to Out with Preroll and Postroll (Shift+Space).
+    const std::pair<std::string, const char*> rows[] = {
+        {mac ? "Opt+Shift+Cmd+E" : "Ctrl+Alt+Shift+E", "monitor.copyFrame"},
+        {"Shift+Space", "transport.playInToOutAround"},
+    };
+    for (const auto& [key, command] : rows) {
+        INFO(key << " -> " << command);
+        CHECK(resolved(p, Scope::Application, key) == command);
+        CHECK(keysOf(p, command) == Keys{key});
+        CHECK(keymap(p).registry().contains(command));
+    }
+    // The neighbours keep their keys: Export Frame, Play In to Out, Play/Stop.
+    CHECK(resolved(p, Scope::Application, mac ? "Shift+E" : "Ctrl+Shift+E") == "file.exportFrame");
+    CHECK(resolved(p, Scope::Application, mac ? "Opt+K" : "Ctrl+Shift+Space") == "transport.playInToOut");
+    CHECK(resolved(p, Scope::Application, "Space") == "transport.playStop");
+    // The composition guides and the source mute are commands without default keys.
+    for (const char* id : {"programMonitor.ruleOfThirds", "programMonitor.goldenRatio", "programMonitor.diagonalGuides",
+                           "sourceMonitor.toggleMute"}) {
+        INFO(id);
+        CHECK(keymap(p).registry().contains(id));
+        CHECK(keysOf(p, id).empty());
+    }
+    CHECK(keymap(p).conflicts().empty());
+}
+
+TEST_CASE("Verified (card 136): Next / Previous Blend Mode are Wabcut's Effect Controls keys",
+          "[keymap][tables][verified]") {
+    // Premiere has no such command: Shift+= / Shift+- (After Effects' keys) in the Effect Controls scope, source "wabcut"
+    // in both tables, no .kys identity. They shadow the Application-scope Expand / Minimize All Tracks only while Effect
+    // Controls has the focus (docs/keymap.md, footnote bm); everywhere else those two keep working.
+    const Platform p = GENERATE(Platform::Windows, Platform::MacOS);
+    const CommandRegistry& registry = CommandRegistry::builtin();
+    for (const char* id : {"effectControls.nextBlendMode", "effectControls.previousBlendMode"}) {
+        INFO(id);
+        const CommandInfo* c = registry.find(id);
+        REQUIRE(c != nullptr);
+        CHECK(c->scope == Scope::EffectControls);
+        CHECK(c->group == "Effect Controls");
+        CHECK(c->premiereName.empty());
+        CHECK(c->kysName.empty());
+    }
+    CHECK(keysOf(p, "effectControls.nextBlendMode") == Keys{"Shift+="});
+    CHECK(keysOf(p, "effectControls.previousBlendMode") == Keys{"Shift+-"});
+    CHECK(resolved(p, Scope::EffectControls, "Shift+=") == "effectControls.nextBlendMode");
+    CHECK(resolved(p, Scope::EffectControls, "Shift+-") == "effectControls.previousBlendMode");
+    CHECK(resolved(p, Scope::Application, "Shift+=") == "timeline.expandAllTracks");
+    CHECK(resolved(p, Scope::Timeline, "Shift+-") == "timeline.minimizeAllTracks");
+    CHECK(keymap(p).conflicts().empty());
+}
+
+TEST_CASE("Verified (0.7): Save Version and Version History are Wabcut commands with no default key",
+          "[keymap][tables][verified]") {
+    // File > Save Version... (a named version of the project's history) and Version History... (the Review panel's Versions
+    // page) are Wabcut's: no default key in either shipped key set and no .kys identity (docs/keymap.md).
+    const Platform p = GENERATE(Platform::Windows, Platform::MacOS);
+    const CommandRegistry& registry = CommandRegistry::builtin();
+    for (const char* id : {"file.saveVersion", "file.versionHistory"}) {
+        INFO(id);
+        const CommandInfo* c = registry.find(id);
+        REQUIRE(c != nullptr);
+        CHECK(c->scope == Scope::Application);
+        CHECK(c->group == "File");
         CHECK(c->premiereName.empty());
         CHECK(c->kysName.empty());
         CHECK(keysOf(p, id).empty());

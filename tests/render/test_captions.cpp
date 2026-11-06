@@ -421,3 +421,222 @@ TEST_CASE("Captions: styled (the model's styles) composited by the GPU match the
         CHECK(psnr >= 42.0);
     }
 }
+
+// ---- card 114: the text rules ---------------------------------------------------------------------------------------
+
+TEST_CASE("Caption text rules: punctuation and accents and case in the scripts of the card languages", "[render][captions][text]") {
+    const auto text = [](const std::string& in, CaptionCase c, bool punct, bool accents, const std::string& lang = {}) {
+        return captionDisplayText(in, c, punct, accents, lang);
+    };
+    // Nothing asked: the same text, byte for byte.
+    CHECK(text("Hello, World!", CaptionCase::AsWritten, false, false) == "Hello, World!");
+    // Punctuation: sentence marks go; apostrophes and hyphens inside words, the separators of numbers and symbols stay.
+    CHECK(text("Hello, World! It's 3.5% \xE2\x80\x94 well-known; ok?", CaptionCase::AsWritten, true, false) ==
+          "Hello World It's 3.5% well-known ok");
+    CHECK(text("\xE2\x80\x9CHi\xE2\x80\x9D (there)... 1,000 times.", CaptionCase::AsWritten, true, false) == "Hi there 1,000 times");
+    // A mark that was the only thing between two words leaves a space; line breaks stay.
+    CHECK(text("yes,no", CaptionCase::AsWritten, true, false) == "yes no");
+    CHECK(text("One,\ntwo.", CaptionCase::AsWritten, true, false) == "One\ntwo");
+    // Spanish, Arabic and Chinese marks.
+    CHECK(text("\xC2\xBF" "Qu\xC3\xA9 tal?", CaptionCase::AsWritten, true, true) == "Que tal");
+    CHECK(text("مرحبا، كيف؟", CaptionCase::AsWritten, true, false) ==
+          "مرحبا كيف");
+    CHECK(text("你好，世界。", CaptionCase::AsWritten, true, false) == "你好 世界");
+    // Accents: Polish (l-stroke has no mark), Icelandic (eth, thorn, ae), French; Hebrew points; Thai stays.
+    CHECK(text("Zażółć gęślą jaźń", CaptionCase::AsWritten, false, true) == "Zazolc gesla jazn");
+    CHECK(text("Þórður Ægir", CaptionCase::AsWritten, false, true) == "Thordur AEgir");
+    CHECK(text("Crème brûlée", CaptionCase::AsWritten, false, true) == "Creme brulee");
+    CHECK(text("שָׁלוֹם", CaptionCase::AsWritten, false, true) == "שלום");
+    CHECK(text("สวัสดี", CaptionCase::AsWritten, true, true) == "สวัสดี");
+    CHECK(text("がんばる", CaptionCase::AsWritten, true, true) == "がんばる"); // kana keep their marks
+    // Case: Latin, Cyrillic, Greek; Turkish and Azeri turn I into dotless i.
+    CHECK(text("Hello World", CaptionCase::Lower, false, false) == "hello world");
+    CHECK(text("Hello World", CaptionCase::Upper, false, false) == "HELLO WORLD");
+    CHECK(text("Привет", CaptionCase::Upper, false, false) == "ПРИВЕТ");
+    CHECK(text("ISTANBUL", CaptionCase::Lower, false, false, "tr") == "ıstanbul");
+    CHECK(text("istanbul", CaptionCase::Upper, false, false, "tr-TR") == "İSTANBUL");
+    CHECK(text("ISTANBUL", CaptionCase::Lower, false, false, "en") == "istanbul");
+    // Everything at once, and again: applying it twice changes nothing.
+    const std::string once = text("¡Qué día, Señor!", CaptionCase::Upper, true, true, "es");
+    CHECK(once == "QUE DIA SENOR");
+    CHECK(text(once, CaptionCase::Upper, true, true, "es") == once);
+}
+
+TEST_CASE("Caption emphasis: keywords without case and the automatic rules", "[render][captions][text]") {
+    const std::string line = "GG this is 3 clutch! win";
+    const auto spans = captionWordSpans(line);
+    REQUIRE(spans.size() == 6);
+    const auto flags = [&](bool automatic, std::vector<std::string> words) { return captionEmphasisFlags(line, spans, automatic, words); };
+    // Keywords only: compared without case ("win" matches "WIN").
+    CHECK(flags(false, {"gg", "WIN"}) == std::vector<char>{1, 0, 0, 0, 0, 1});
+    // Automatic: capitals (GG), numbers (3), the word before "!" (clutch), plus the keywords.
+    CHECK(flags(true, {}) == std::vector<char>{1, 0, 0, 1, 1, 0});
+    CHECK(flags(true, {"win"}) == std::vector<char>{1, 0, 0, 1, 1, 1});
+    // A single capital letter is not shouting ("I", "A"); a word with accents and capitals is.
+    const std::string small = "I am ÉLAN";
+    CHECK(captionEmphasisFlags(small, captionWordSpans(small), true, {}) == std::vector<char>{0, 0, 1});
+}
+
+// ---- card 074: per-word effects and the highlight bar ------------------------------------------------------------------
+
+namespace {
+
+/// Rows with text (alpha above half) between columns [x0, x1].
+std::pair<int, int> inkRows(const TitleRaster& r, int x0, int x1) {
+    int top = r.height();
+    int bottom = -1;
+    for (int y = 0; y < r.height(); ++y) {
+        for (int x = std::max(0, x0); x <= std::min(r.width() - 1, x1); ++x) {
+            if (pixel(r, x, y)[3] > 128) {
+                top = std::min(top, y);
+                bottom = std::max(bottom, y);
+                break;
+            }
+        }
+    }
+    return {top, bottom};
+}
+
+int maxAlpha(const TitleRaster& r, int x0, int x1) {
+    int best = 0;
+    for (int y = 0; y < r.height(); ++y) {
+        for (int x = std::max(0, x0); x <= std::min(r.width() - 1, x1); ++x) {
+            best = std::max<int>(best, pixel(r, x, y)[3]);
+        }
+    }
+    return best;
+}
+
+CaptionStyle openStyle() {
+    CaptionStyle s;
+    s.box = false;
+    s.sizePx = 144.0; // 48 px at 360 lines
+    return s;
+}
+
+} // namespace
+
+TEST_CASE("Captions: a word with an effect is scaled and lifted and faded around its own centre", "[render][captions][animation]") {
+    const CaptionFrame base = frameOf("AAAA BBBB", openStyle());
+    const auto plain = CaptionRenderer::renderUncached(base);
+    const auto [plainLeft, plainRight] = inkColumns(*plain, 0, kH);
+    const auto [plainTop, plainBottom] = inkRows(*plain, 0, kW);
+
+    // Scale: the second word twice as large grows the block's ink to the right (and its height).
+    CaptionFrame big = base;
+    big.wordFx = {{5, 9, 2.0, 0.0, 1.0}};
+    const auto grown = CaptionRenderer::renderUncached(big);
+    const auto [bigLeft, bigRight] = inkColumns(*grown, 0, kW);
+    CHECK(bigLeft == plainLeft);       // the first word did not move
+    CHECK(bigRight > plainRight + 8);  // the second one is wider
+    CHECK(inkRows(*grown, 0, kW).first < plainTop - 3);
+
+    // Lift: the first word 0.5 em higher; the second stays on the line.
+    CaptionFrame lifted = base;
+    lifted.wordFx = {{0, 4, 1.0, 0.5, 1.0}};
+    const auto hop = CaptionRenderer::renderUncached(lifted);
+    const int firstWordRight = plainLeft + (plainRight - plainLeft) / 2 - 2;
+    CHECK(inkRows(*hop, plainLeft, firstWordRight).first < inkRows(*plain, plainLeft, firstWordRight).first - 4);
+    CHECK(inkRows(*hop, firstWordRight + 6, plainRight).first == inkRows(*plain, firstWordRight + 6, plainRight).first);
+
+    // Opacity: the second word half transparent, the first fully drawn.
+    CaptionFrame faded = base;
+    faded.wordFx = {{5, 9, 1.0, 0.0, 0.5}};
+    const auto dim = CaptionRenderer::renderUncached(faded);
+    const int middle = (plainLeft + plainRight) / 2;
+    CHECK(maxAlpha(*dim, plainLeft, middle - 4) > 240);
+    const int dimmest = maxAlpha(*dim, middle + 4, plainRight);
+    CHECK(dimmest > 100);
+    CHECK(dimmest < 150);
+
+    // An effect on a hidden word draws nothing; the layout of the others is unchanged.
+    CaptionFrame hidden = base;
+    hidden.hidden = {{5, 9}};
+    hidden.wordFx = {{5, 9, 2.0, 0.0, 1.0}};
+    const auto shown = CaptionRenderer::renderUncached(hidden);
+    CHECK(inkColumns(*shown, 0, kH).second < middle + 2);
+}
+
+TEST_CASE("Captions: the highlight bar sits behind its word in the highlight colour and slides between words",
+          "[render][captions][animation]") {
+    CaptionStyle style = openStyle();
+    style.highlight = {1.0, 0.0, 1.0}; // magenta: nothing else is magenta
+    const auto magenta = [](const std::array<std::uint8_t, 4>& px) { return px[3] > 200 && px[0] > 200 && px[1] < 60 && px[2] > 200; };
+    const auto columnsOf = [&](const CaptionFrame& f) {
+        const auto r = CaptionRenderer::renderUncached(f);
+        int left = r->width();
+        int right = -1;
+        int n = 0;
+        for (int y = 0; y < r->height(); ++y) {
+            for (int x = 0; x < r->width(); ++x) {
+                if (magenta(pixel(*r, x, y))) {
+                    left = std::min(left, x);
+                    right = std::max(right, x);
+                    ++n;
+                }
+            }
+        }
+        return std::array<int, 3>{left, right, n};
+    };
+    CaptionFrame f = frameOf("AAAA BBBB", style);
+    CHECK(columnsOf(f)[2] == 0); // no bar: no magenta
+
+    f.bar.toBegin = 0;
+    f.bar.toEnd = 4;
+    const auto first = columnsOf(f);
+    f.bar.toBegin = 5;
+    f.bar.toEnd = 9;
+    const auto second = columnsOf(f);
+    CHECK(first[2] > 300);
+    CHECK(second[2] > 300);
+    CHECK(second[0] > first[0] + 20);             // the second word's bar is to the right of the first's
+    CHECK(std::abs((first[1] - first[0]) - (second[1] - second[0])) < 24); // words of about one width: bars of about one width
+
+    // Sliding: half way from the first word to the second, the bar is between them.
+    f.bar.fromBegin = 0;
+    f.bar.fromEnd = 4;
+    f.bar.t = 0.5;
+    const auto sliding = columnsOf(f);
+    CHECK(sliding[0] > first[0] + 10);
+    CHECK(sliding[0] < second[0] - 10);
+    // At t = 0 it is where it came from; at 1, where it goes.
+    f.bar.t = 0.0;
+    CHECK(std::abs(columnsOf(f)[0] - first[0]) <= 1);
+    f.bar.t = 1.0;
+    CHECK(std::abs(columnsOf(f)[0] - second[0]) <= 1);
+    // The bar's opacity: fading in.
+    f.bar.opacity = 0.0;
+    CHECK(columnsOf(f)[2] == 0);
+}
+
+// ---- card 073: right-to-left scripts ------------------------------------------------------------------------------------
+
+TEST_CASE("Captions: Hebrew and Arabic are shaped with nothing missing and read right to left", "[render][captions][rtl]") {
+    CaptionStyle style = openStyle();
+    // Hebrew "shalom." - in a right-to-left paragraph the full stop ends the line on its left.
+    const auto hebrew = CaptionRenderer::renderUncached(frameOf("שלום.", style));
+    INFO("fonts used: " << (hebrew->info().fonts.empty() ? std::string("none") : hebrew->info().fonts.front()));
+    CHECK(hebrew->info().missingGlyphs == 0);
+    const auto [left, right] = inkColumns(*hebrew, 0, kH);
+    REQUIRE(right > left);
+    const int sliver = left + 3; // the first three columns of ink
+    const auto [overallTop, overallBottom] = inkRows(*hebrew, left, right);
+    const auto [sliverTop, sliverBottom] = inkRows(*hebrew, left, sliver);
+    REQUIRE(sliverBottom >= sliverTop);
+    // The leftmost ink is the small full stop at the baseline, not a tall letter.
+    CHECK((sliverBottom - sliverTop) * 10 < (overallBottom - overallTop) * 4);
+
+    // The same letters without the full stop have no small mark anywhere near the left edge.
+    const auto bare = CaptionRenderer::renderUncached(frameOf("שלום", style));
+    const auto [bareLeft, bareRight] = inkColumns(*bare, 0, kH);
+    const auto [bareTop, bareBottom] = inkRows(*bare, bareLeft, bareRight);
+    const auto [bareSliverTop, bareSliverBottom] = inkRows(*bare, bareLeft, bareLeft + 3);
+    CHECK((bareSliverBottom - bareSliverTop) * 10 >= (bareBottom - bareTop) * 4);
+
+    // Arabic, with its comma: shaped, nothing missing, centred like any caption.
+    const auto arabic = CaptionRenderer::renderUncached(frameOf("مرحبا، كيف حالك", style));
+    CHECK(arabic->info().missingGlyphs == 0);
+    const auto [arLeft, arRight] = inkColumns(*arabic, 0, kH);
+    REQUIRE(arRight > arLeft);
+    CHECK(std::abs((arLeft + arRight) / 2.0 - kW / 2.0) < 12.0);
+}

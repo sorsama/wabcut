@@ -946,7 +946,7 @@ struct VideoDecoder::Impl {
                 }
             }
         }
-        params.exposureStops = rawSettings.exposure;
+        params.exposureStops = rawSettings.totalExposure(); // the settings' exposure plus the ISO's stops (0.7, card #108)
         if (rawSettings.white) {
             params.whiteAdaptation =
                 whiteBalanceAdaptation(shotKelvin, rawSettings.white->temperature, rawSettings.white->tint);

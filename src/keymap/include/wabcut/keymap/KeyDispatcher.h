@@ -31,8 +31,11 @@ struct KeyResult {
     bool handled = false;
     std::vector<CommandId> commands;        ///< commands to run, in order
     std::vector<TransportIntent> transport; ///< J/K/L intents, in order
+    /// 0.7 (card 063): on a key release, the momentary commands (CommandInfo::momentary) whose key was held past the
+    /// hold threshold (or began to repeat): the app hands back what the command had replaced. A tap reports nothing.
+    std::vector<CommandId> released;
 
-    bool empty() const { return commands.empty() && transport.empty(); }
+    bool empty() const { return commands.empty() && transport.empty() && released.empty(); }
 };
 
 class KeyDispatcher {
@@ -46,13 +49,17 @@ public:
                            std::chrono::milliseconds holdThreshold = TransportGesture::kDefaultHoldThreshold);
 
     KeyResult keyPress(Scope focused, KeyChord chord, bool autoRepeat);
-    /// Only the J/K/L gesture reacts to releases; `handled` is true when the press was handled.
+    /// The J/K/L gesture reacts to releases, and so do momentary commands held past the threshold
+    /// (KeyResult::released); `handled` is true when the press was handled.
     KeyResult keyRelease(KeyChord chord, bool autoRepeat);
     /// Runs a command as if its key had been tapped (menus, buttons): shuttle commands go through the gesture
     /// (press + release), anything else is returned as a command. Unknown ids are not handled.
     KeyResult trigger(std::string_view command);
     /// Lets the gesture recognise a hold that key repeat did not report.
     std::vector<TransportIntent> tick();
+    /// The momentary commands (CommandInfo::momentary) whose keys are down now and have been held past the threshold:
+    /// what focusLost() is about to forget, so the app can hand their state back (their releases will never arrive).
+    std::vector<CommandId> heldMomentary() const;
     /// Forgets held keys and ends any slow play.
     std::vector<TransportIntent> focusLost();
     /// See TransportGesture::syncSpeed().
@@ -66,9 +73,17 @@ private:
     const KeymapManager* m_keymap;
     Clock m_clock;
     TransportGesture m_gesture;
-    /// Key code → command resolved when the key went down (nullptr: unbound). Releases are matched by key
-    /// code, so a release still reaches the command its press resolved to after modifiers or focus changed.
-    std::map<int, const CommandInfo*> m_held;
+    /// A key that is down: the command its press resolved to (nullptr: unbound), when it went down and whether key
+    /// repeat has begun (a hold, even before the threshold).
+    struct Held {
+        const CommandInfo* info = nullptr;
+        std::chrono::milliseconds since{0};
+        bool repeated = false;
+    };
+    /// Key code → what its press resolved to. Releases are matched by key code, so a release still reaches the
+    /// command its press resolved to after modifiers or focus changed.
+    std::map<int, Held> m_held;
+    std::chrono::milliseconds m_holdThreshold;
 };
 
 } // namespace wabcut::keymap

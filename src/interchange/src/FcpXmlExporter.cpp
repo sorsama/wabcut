@@ -284,6 +284,22 @@ private:
                v.sourceIn == a.sourceIn && sameSpeed && sameRemap;
     }
 
+    /// 0.7 (card 046): a split edit (L/J cut) of the primary storyline: a picture and a sound of one link group over one
+    /// media file, in step (the same media time at the same sequence time), sharing time, but starting or ending apart.
+    /// Written as one clip with audioStart / audioDuration (FCPXML DTD: "Use 'audioStart' and 'audioDuration' to define
+    /// J/L cuts (i.e., split edits) on composite A/V clips"). Not for retimed clips, titles or generators.
+    bool splitPlay(const IrClip& v, const IrClip& a) const {
+        if (v.media == kNoMedia || v.media != a.media || v.linkGroup < 0 || v.linkGroup != a.linkGroup || v.title || a.title ||
+            v.speed || a.speed || v.remap || a.remap || !v.alternates.empty() || !a.alternates.empty() ||
+            generatorOf(v) || generatorOf(a)) {
+            return false;
+        }
+        if (v.start - v.sourceIn != a.start - a.sourceIn) {
+            return false; // out of step: no audioStart can say it
+        }
+        return v.start < a.start + a.duration && a.start < v.start + v.duration;
+    }
+
     void writeSequenceBody(pugi::xml_node node, std::size_t index) {
         const IrSequence& seq = m_doc.sequences[index];
         Ticks end = seq.duration.value_or(Ticks{});
@@ -315,6 +331,15 @@ private:
                             item.audio = &a;
                             placed.insert(&a);
                             break;
+                        }
+                    }
+                    if (!item.audio) { // 0.7 (card 046): a split edit of this picture, if it has one
+                        for (const IrClip& a : a1->clips) {
+                            if (!placed.contains(&a) && splitPlay(v, a)) {
+                                item.audio = &a;
+                                placed.insert(&a);
+                                break;
+                            }
                         }
                     }
                 }
@@ -423,6 +448,15 @@ private:
         for (const IrMarker& m : seq.markers) {
             SpineItem* anchor = anchorOf(m.marker.start);
             writeMarker(anchor->node, m, anchor->localStart + (m.marker.start - anchor->start), seq);
+        }
+        // 0.7 (card 046): Final Cut has no work area; Wabcut keeps its own in the sequence's metadata (ticks "in:out").
+        if (seq.workIn && seq.workOut) {
+            pugi::xml_node md = node.append_child("metadata").append_child("md");
+            md.append_attribute("key") = "com.wabcut.workArea";
+            md.append_attribute("value") = (std::to_string(seq.workIn->value) + ":" + std::to_string(seq.workOut->value)).c_str();
+            m_ctx.add(ReportOutcome::Approximated, ReportCategory::SequenceSetting,
+                      "work area: Final Cut Pro has none, so it is written as Wabcut metadata only Wabcut reads", seq.location,
+                      seq.name);
         }
     }
 
@@ -550,6 +584,17 @@ private:
         }
         node.append_attribute("start") = fcpxTime(localStart).c_str();
         node.append_attribute("duration") = fcpxTime(c.duration).c_str();
+        if (partner && c.media != kNoMedia && !generator && splitPlay(c, *partner) && !samePlay(c, *partner)) {
+            // 0.7 (card 046): the sound starts or ends apart from the picture (an L or J cut): its own extent, in the
+            // clip's time like start / duration.
+            node.append_attribute("audioStart") = fcpxTime(partner->sourceIn).c_str();
+            node.append_attribute("audioDuration") = fcpxTime(partner->duration).c_str();
+            m_ctx.add(ReportOutcome::Carried, ReportCategory::Clip,
+                      "split edit of '" + c.name + "': its sound runs " + std::to_string(partner->start.value - c.start.value) +
+                          " ticks from the picture's start for " + std::to_string(partner->duration.value) +
+                          " ticks (audioStart / audioDuration)",
+                      c.location, seq.name);
+        }
         if (!c.enabled) {
             node.append_attribute("enabled") = "0";
         }
@@ -746,8 +791,10 @@ private:
             }
         };
         if (kind == TrackKind::Video) {
+            const bool stretched = !p.uniformScale(); // 0.7 (card #12): Scale Width and Scale (the height) differ
             const bool transform = differs(ParamId::Scale) || differs(ParamId::Rotation) || differs(ParamId::PositionX) ||
-                                   differs(ParamId::PositionY) || differs(ParamId::AnchorX) || differs(ParamId::AnchorY);
+                                   differs(ParamId::PositionY) || differs(ParamId::AnchorX) || differs(ParamId::AnchorY) ||
+                                   stretched;
             if (transform) {
                 pugi::xml_node t = node.append_child("adjust-transform");
                 // FCP measures position and anchor in percent of the frame height, y up; rotation counter-clockwise.
@@ -755,11 +802,35 @@ private:
                 const auto pct = [h](double px) { return px / h * 100.0; };
                 t.append_attribute("position") =
                     (number(pct(p[ParamId::PositionX].constant())) + " " + number(-pct(p[ParamId::PositionY].constant()))).c_str();
-                t.append_attribute("scale") = (number(p[ParamId::Scale].constant()) + " " + number(p[ParamId::Scale].constant())).c_str();
+                // FCP's scale is "x y"; a clip with Uniform Scale off writes its Scale Width and Scale (the height).
+                const double scaleX = stretched ? p[ParamId::ScaleWidth].constant() : p[ParamId::Scale].constant();
+                t.append_attribute("scale") = (number(scaleX) + " " + number(p[ParamId::Scale].constant())).c_str();
                 t.append_attribute("rotation") = number(-p[ParamId::Rotation].constant()).c_str();
                 t.append_attribute("anchor") =
                     (number(pct(p[ParamId::AnchorX].constant())) + " " + number(-pct(p[ParamId::AnchorY].constant()))).c_str();
-                animate(t, "scale", ParamId::Scale, [](double v) { return number(v) + " " + number(v); });
+                if (stretched && (keyed(ParamId::Scale) || keyed(ParamId::ScaleWidth))) {
+                    // Both axes at every key of either (a curve is the same shape through the keys of the other).
+                    std::set<std::int64_t> times;
+                    for (const ParamId id : {ParamId::Scale, ParamId::ScaleWidth}) {
+                        if (const Curve* curve = p[id].curve()) {
+                            for (const Keyframe& k : curve->keys) {
+                                times.insert(k.time.value);
+                            }
+                        }
+                    }
+                    pugi::xml_node param = t.append_child("param");
+                    param.append_attribute("name") = "scale";
+                    pugi::xml_node animation = param.append_child("keyframeAnimation");
+                    for (const std::int64_t ticks : times) {
+                        const Ticks at{ticks};
+                        pugi::xml_node key = animation.append_child("keyframe");
+                        key.append_attribute("time") = fcpxTime(at).c_str();
+                        key.append_attribute("value") =
+                            (number(p[ParamId::ScaleWidth].valueAt(at)) + " " + number(p[ParamId::Scale].valueAt(at))).c_str();
+                    }
+                } else {
+                    animate(t, "scale", ParamId::Scale, [](double v) { return number(v) + " " + number(v); });
+                }
                 animate(t, "rotation", ParamId::Rotation, [](double v) { return number(-v); });
                 if (keyed(ParamId::PositionX) || keyed(ParamId::PositionY) || keyed(ParamId::AnchorX) || keyed(ParamId::AnchorY)) {
                     notes.push_back("position and anchor keyframes became their first key's value");

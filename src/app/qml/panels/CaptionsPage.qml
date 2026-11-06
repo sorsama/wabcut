@@ -26,6 +26,8 @@ Item {
     property int lines: 2
     /// Shift Captions… was chosen: the row opens once the track menu has closed (the field takes the focus).
     property bool shiftPending: false
+    /// 0.7 (card 075): Convert to graphics runs once the track menu has closed.
+    property bool graphicsPending: false
     /// Why the last shift was refused ("" after a shift that went through).
     property string shiftError: ""
 
@@ -155,6 +157,10 @@ Item {
                             root.shiftPending = false
                             root.openShiftRow()
                         }
+                        if (root.graphicsPending) {
+                            root.graphicsPending = false
+                            Captions.convertToGraphics("hide")
+                        }
                     }
                     ContextMenuSeparator {}
                     ContextMenuItem {
@@ -170,6 +176,32 @@ Item {
                         text: qsTr("Import captions…")
                         iconName: "download"
                         onTriggered: importDialog.open()
+                    }
+                    // 0.7 (card 075): Premiere's Upgrade Caption to Graphic - every cue a graphic clip whose box grows with its text.
+                    ContextMenuItem {
+                        objectName: "captionsToGraphics"
+                        text: qsTr("Convert to graphics")
+                        iconName: "layers"
+                        enabled: root.hasTrack && Captions.cues.length > 0
+                        disabledReason: qsTr("Generate or add captions first")
+                        hint: qsTr("Each caption becomes a graphic clip you can style and animate. The caption track is switched off so the text is not drawn twice")
+                        onTriggered: root.graphicsPending = true
+                    }
+                    // 0.7 (card 116): bilingual captions - this track is drawn together with the main one, stacked in track order.
+                    ContextMenuItem {
+                        id: togetherItem
+                        objectName: "captionsShowTogether"
+                        text: qsTr("Show with the main track")
+                        iconName: "layers"
+                        checkable: true
+                        checked: root.hasTrack && (Captions.trackInfo.showTogether ?? false)
+                        enabled: root.hasTrack
+                        disabledReason: qsTr("Make a caption track first")
+                        hint: qsTr("Draw this track on screen together with the main caption track (bilingual captions), in the monitor and in exports. Tracks stack in the order of this list, each in its own style")
+                        onTriggered: {
+                            Captions.setTrackShowTogether(!(Captions.trackInfo.showTogether ?? false))
+                            togetherItem.checked = Qt.binding(() => root.hasTrack && (Captions.trackInfo.showTogether ?? false))
+                        }
                     }
                     // 0.4: resync the shown track by an offset (the row opens after the menu has closed).
                     ContextMenuItem {

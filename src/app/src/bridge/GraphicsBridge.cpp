@@ -70,6 +70,15 @@ QString hexOf(const std::array<double, 4>& rgba, bool withAlpha = false) {
     return out.toUpper();
 }
 
+/// 0.7 (card #138): whether the common OpenType features are in effect for a style's feature list: the shaper's defaults
+/// (ligatures, contextual alternates) unless the list turns them off, the others only when the list turns them on.
+QVariantMap featureStates(const std::string& features) {
+    QVariantMap out;
+    for (const char* tag : {"liga", "calt", "dlig", "salt", "swsh"})
+        out.insert(QLatin1String(tag), fontFeatureOn(features, tag));
+    return out;
+}
+
 QVariantMap colorMap(const GraphicColor& c, const BrandKit* kit) {
     const auto rgba = resolveColor(c, kit);
     return {{QStringLiteral("color"), hexOf(rgba)}, {QStringLiteral("alpha"), rgba[3]}, {QStringLiteral("brand"), QString::fromStdString(c.brand)}};
@@ -734,6 +743,8 @@ void GraphicsBridge::setController(ProjectController* controller) {
         connect(m_controller, &ProjectController::playheadChanged, this, [this] {
             if (m_clip.isValid() && m_selectedLayer != 0)
                 rebuildLayer();
+            if (m_hasKeyedFields)
+                rebuild(); // 0.7 (card #71): the keyed fields show their value at the playhead
         });
     }
     rebuildBrand();
@@ -816,6 +827,7 @@ void GraphicsBridge::refreshTemplates() {
                                 {QStringLiteral("height"), t.graphic.height},
                                 {QStringLiteral("seconds"), toSeconds(length)},
                                 {QStringLiteral("fields"), fields},
+                                {QStringLiteral("folder"), QString::fromStdString(t.folder)}, // 0.7 (card #87)
                                 {QStringLiteral("thumbnail"), QStringLiteral("image://%1/%2/%3/%4").arg(QString::fromLatin1(kProviderId), key).arg(t.version).arg(m_kitRevision)}});
     };
     const auto addFolder = [&](const std::filesystem::path& folder, const QString& library) {
@@ -1114,7 +1126,7 @@ QVariantMap GraphicsBridge::templateReport(const QVariantMap& data, const QStrin
     if (author.isEmpty())
         author = tr("Wabcut");
     const int fieldCount = data.value(QStringLiteral("fields")).toList().size();
-    QString summary = tr("%1 template · %2 fields").arg(author).arg(fieldCount);
+    QString summary = tr("%1 template · %n field(s)", "", fieldCount).arg(author);
     if (const QString name = data.value(QStringLiteral("name")).toString(); !name.isEmpty())
         summary = name + QStringLiteral(" · ") + summary;
     return {{QStringLiteral("file"), fileName},
@@ -1183,6 +1195,49 @@ void GraphicsBridge::openInstallDialog(const QString& library) {
 
 void GraphicsBridge::openExportDialog(const QString& templateKey) { emit exportRequested(templateKey); }
 
+void GraphicsBridge::openInstallFolderDialog(const QString& library) {
+    emit installFolderRequested(library == QLatin1String("user") ? QStringLiteral("user") : QStringLiteral("project"));
+}
+
+QString GraphicsBridge::setTemplateFolder(const QString& templateKey, const QString& folder) {
+    const qsizetype slash = templateKey.indexOf(QLatin1Char('/'));
+    const QString library = slash > 0 ? templateKey.left(slash) : QString();
+    const QString id = slash > 0 ? templateKey.mid(slash + 1) : QString();
+    if (library != QLatin1String("project") && library != QLatin1String("user"))
+        return setError(tr("Built-in templates cannot be put in a folder"));
+    const QString wanted = folder.trimmed();
+    const QString error = runCommandNow("template.setFolder",
+                                        Json{{"template", id.toStdString()}, {"library", library.toStdString()}, {"folder", wanted.toStdString()}}.dump());
+    if (!error.isEmpty())
+        return setError(error);
+    refreshTemplates();
+    setMessage(wanted.isEmpty() ? tr("Template taken out of its folder") : tr("Template filed in \"%1\"").arg(wanted));
+    return {};
+}
+
+QVariantMap GraphicsBridge::importTemplateFolder(const QUrl& folder, const QString& library) {
+    const QString where = library == QLatin1String("user") ? QStringLiteral("user") : QStringLiteral("project");
+    QVariantMap data;
+    const QString error = runCommandNow("template.importFolder",
+                                        Json{{"path", folder.toLocalFile().toStdString()}, {"library", where.toStdString()}}.dump(), &data);
+    QVariantMap result{{QStringLiteral("error"), error}};
+    if (!error.isEmpty()) {
+        setError(error);
+        return result;
+    }
+    refreshTemplates();
+    const int imported = data.value(QStringLiteral("imported")).toInt();
+    const int skipped = data.value(QStringLiteral("skipped")).toList().size();
+    result.insert(QStringLiteral("imported"), imported);
+    result.insert(QStringLiteral("skipped"), skipped);
+    result.insert(QStringLiteral("library"), where);
+    result.insert(QStringLiteral("reasons"), data.value(QStringLiteral("skipped")));
+    setMessage(imported == 0 ? tr("No templates were found in that folder")
+                             : skipped > 0 ? tr("%n template(s) installed, %1 skipped", "", imported).arg(skipped)
+                                           : tr("%n template(s) installed", "", imported));
+    return result;
+}
+
 // ---- The selected graphic -------------------------------------------------------------------------------------------
 
 std::optional<GraphicsBridge::Target> GraphicsBridge::target() const {
@@ -1203,6 +1258,35 @@ Ticks GraphicsBridge::graphicTime() const {
     return graphicTimeAt(t->placed, t->graphic, m_controller->playhead());
 }
 
+namespace {
+
+/// The graphic time of the playhead, held inside the clip (0.7, card #71: the time a field key goes at).
+Ticks playheadGraphicTime(const ProjectController* controller, const Clip& placed, const Graphic& graphic) {
+    const Ticks at = std::clamp(controller->playhead(), placed.start(), placed.end() - Ticks{1});
+    return graphicTimeAt(placed, graphic, at);
+}
+
+/// Where a key at graphic time `key` plays on the timeline (inverse of graphicTimeAt; a responsive graphic's design time
+/// grows with the timeline, so it is found by halving).
+Ticks keyTimelineTime(const Clip& placed, const Graphic& graphic, Ticks key) {
+    if (!graphic.responsive) {
+        return placed.timelineTimeOfCurveTime(key).value_or(placed.start());
+    }
+    Ticks lo = placed.start();
+    Ticks hi = placed.end() - Ticks{1};
+    for (int i = 0; i < 48 && lo < hi; ++i) {
+        const Ticks mid{lo.value + (hi.value - lo.value) / 2};
+        if (graphicTimeAt(placed, graphic, mid) < key) {
+            lo = Ticks{mid.value + 1};
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+} // namespace
+
 void GraphicsBridge::rebuild() {
     const auto t = target();
     const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
@@ -1215,6 +1299,7 @@ void GraphicsBridge::rebuild() {
     m_clip = showing;
     m_graphic.clear();
     m_fields.clear();
+    m_hasKeyedFields = false;
     m_layers.clear();
     if (t) {
         const Graphic& g = t->graphic;
@@ -1237,7 +1322,16 @@ void GraphicsBridge::rebuild() {
                      {QStringLiteral("seconds"), toSeconds(t->placed.duration())}};
         if (g.instance) {
             for (const TemplateField& f : g.instance->fields) {
-                const FieldValue value = edit::currentFieldValue(g, f, t->placed.duration());
+                // 0.7 (card #71): a keyed field shows its value at the playhead, and lists its keys on the timeline.
+                const bool keyed = !f.keys.empty() && f.kind != FieldKind::Duration;
+                m_hasKeyedFields = m_hasKeyedFields || keyed;
+                const FieldValue value = keyed ? fieldValueAt(f, playheadGraphicTime(m_controller, t->placed, g))
+                                               : edit::currentFieldValue(g, f, t->placed.duration());
+                QVariantList keys;
+                for (std::size_t k = 0; keyed && k < f.keys.size(); ++k) {
+                    keys.append(QVariantMap{{QStringLiteral("index"), static_cast<int>(k)},
+                                            {QStringLiteral("seconds"), toSeconds(keyTimelineTime(t->placed, g, f.keys[k].time) - t->placed.start())}});
+                }
                 QVariant shown;
                 switch (f.kind) {
                 case FieldKind::Text:
@@ -1264,7 +1358,10 @@ void GraphicsBridge::rebuild() {
                                             {QStringLiteral("kind"), nameOf(f.kind)},
                                             {QStringLiteral("layer"), static_cast<int>(f.layer)},
                                             {QStringLiteral("property"), QString::fromStdString(f.property)},
-                                            {QStringLiteral("value"), shown}});
+                                            {QStringLiteral("value"), shown},
+                                            {QStringLiteral("animatable"), f.kind != FieldKind::Duration},
+                                            {QStringLiteral("keyed"), keyed},
+                                            {QStringLiteral("keys"), keys}});
             }
         }
         // The tree, top first, children after their group.
@@ -1411,6 +1508,9 @@ void GraphicsBridge::rebuildLayer() {
                                         {QStringLiteral("leading"), r.style.leading},
                                         {QStringLiteral("baselineShift"), r.style.baselineShift},
                                         {QStringLiteral("kerning"), r.style.kerning},
+                                        {QStringLiteral("opticalKerning"), r.style.opticalKerning}, // 0.7 (card #138)
+                                        {QStringLiteral("features"), QString::fromStdString(r.style.features)},
+                                        {QStringLiteral("featureOn"), featureStates(r.style.features)},
                                         {QStringLiteral("caps"), QString::fromUtf8(toString(r.style.caps).data())},
                                         {QStringLiteral("fauxBold"), r.style.fauxBold},
                                         {QStringLiteral("fauxItalic"), r.style.fauxItalic}});
@@ -1596,7 +1696,9 @@ QString GraphicsBridge::setField(const QString& fieldId, const QVariant& value) 
         return setError(tr("The template has no such field"));
     const ProjectSnapshot snap = m_controller->snapshot();
     const BrandKit* kit = snap && snap->brandKit ? &*snap->brandKit : nullptr;
-    FieldValue v = edit::currentFieldValue(t->graphic, *it, t->placed.duration());
+    const bool keyed = !it->keys.empty() && it->kind != FieldKind::Duration;
+    const Ticks keyAt = playheadGraphicTime(m_controller, t->placed, t->graphic);
+    FieldValue v = keyed ? fieldValueAt(*it, keyAt) : edit::currentFieldValue(t->graphic, *it, t->placed.duration());
     switch (it->kind) {
     case FieldKind::Text:
         v.text = value.toString().toStdString();
@@ -1628,6 +1730,22 @@ QString GraphicsBridge::setField(const QString& fieldId, const QVariant& value) 
     const SequenceId sequence = t->sequence;
     const ClipId clip = t->clip;
     const std::string id = it->id;
+    if (keyed) {
+        // An animated field: the edit is the key at the playhead (a key already there keeps its way to the next).
+        Interpolation interpolation = Interpolation::Linear;
+        for (const FieldKey& k : it->keys) {
+            if (k.time == keyAt)
+                interpolation = k.interpolation;
+        }
+        const bool done = m_controller->applyEditFn(
+            "Key Template Field",
+            [&](const ProjectState& s) { return edit::setTemplateFieldKey(s, sequence, clip, id, keyAt, v, interpolation); },
+            "graphicFieldKey:" + std::to_string(clip.value) + ":" + id + ":" + std::to_string(keyAt.value));
+        if (!done)
+            return setError(m_controller->lastError());
+        setMessage({});
+        return {};
+    }
     const bool ok = m_controller->applyEditFn(
         "Edit Template Fields",
         [&](const ProjectState& s) { return edit::setTemplateFields(s, sequence, clip, {{id, v}}); },
@@ -1636,6 +1754,68 @@ QString GraphicsBridge::setField(const QString& fieldId, const QVariant& value) 
         return setError(m_controller->lastError());
     setMessage({});
     return {};
+}
+
+QString GraphicsBridge::animateField(const QString& fieldId, bool animated) {
+    const auto t = target();
+    if (!t || !t->graphic.instance)
+        return setError(tr("Select a graphic made from a template"));
+    const auto it = std::find_if(t->graphic.instance->fields.begin(), t->graphic.instance->fields.end(),
+                                 [&](const TemplateField& f) { return f.id == fieldId.toStdString(); });
+    if (it == t->graphic.instance->fields.end())
+        return setError(tr("The template has no such field"));
+    if (it->kind == FieldKind::Duration)
+        return setError(tr("A length cannot be animated"));
+    const Ticks at = playheadGraphicTime(m_controller, t->placed, t->graphic);
+    const SequenceId sequence = t->sequence;
+    const ClipId clip = t->clip;
+    const std::string id = it->id;
+    m_controller->endPropertyGesture();
+    bool ok = true;
+    if (animated) {
+        if (!it->keys.empty())
+            return {};
+        const FieldValue now = edit::currentFieldValue(t->graphic, *it, t->placed.duration());
+        ok = m_controller->applyEditFn("Animate Template Field",
+                                       [&](const ProjectState& s) { return edit::setTemplateFieldKey(s, sequence, clip, id, at, now); });
+    } else {
+        if (it->keys.empty())
+            return {};
+        ok = m_controller->applyEditFn("Stop Animating Template Field",
+                                       [&](const ProjectState& s) { return edit::clearTemplateFieldKeys(s, sequence, clip, id, at); });
+    }
+    if (!ok)
+        return setError(m_controller->lastError());
+    setMessage({});
+    return {};
+}
+
+QString GraphicsBridge::removeFieldKey(const QString& fieldId, int index) {
+    const auto t = target();
+    if (!t || !t->graphic.instance)
+        return setError(tr("Select a graphic made from a template"));
+    const SequenceId sequence = t->sequence;
+    const ClipId clip = t->clip;
+    const std::string id = fieldId.toStdString();
+    m_controller->endPropertyGesture();
+    const bool ok = m_controller->applyEditFn("Remove Template Field Key", [&](const ProjectState& s) {
+        return edit::removeTemplateFieldKey(s, sequence, clip, id, static_cast<std::size_t>(std::max(0, index)));
+    });
+    if (!ok)
+        return setError(m_controller->lastError());
+    setMessage({});
+    return {};
+}
+
+void GraphicsBridge::goToFieldKey(const QString& fieldId, int index) {
+    const auto t = target();
+    if (!t || !t->graphic.instance || !m_controller)
+        return;
+    const auto it = std::find_if(t->graphic.instance->fields.begin(), t->graphic.instance->fields.end(),
+                                 [&](const TemplateField& f) { return f.id == fieldId.toStdString(); });
+    if (it == t->graphic.instance->fields.end() || index < 0 || static_cast<std::size_t>(index) >= it->keys.size())
+        return;
+    m_controller->setPlayhead(keyTimelineTime(t->placed, t->graphic, it->keys[static_cast<std::size_t>(index)].time));
 }
 
 QString GraphicsBridge::addLayer(const QString& kind, const QVariantMap& properties) {
@@ -1905,12 +2085,9 @@ QString GraphicsBridge::setText(int layerId, const QString& text) {
             if (l.kind != LayerKind::Text)
                 return tr("Not a text layer");
             // 0.6: with Source Text keys, the text shown at the playhead (a key there).
+            // 0.7 (card #81): the runs keep their styles where the text did not change.
             edit::editSourceRunsAt(l.text, time, [&](std::vector<TextRun>& runs) {
-                TextRun run;
-                if (!runs.empty())
-                    run.style = runs.front().style;
-                run.text = text.toStdString();
-                runs = {std::move(run)};
+                runs = edit::retextRuns(runs, text.toStdString());
                 return true;
             });
             return std::nullopt;
@@ -2022,6 +2199,19 @@ std::optional<QString> runValue(TextRun& r, const QString& key, const QVariant& 
                 s.baselineShift = value.toDouble();
             else if (key == QLatin1String("kerning")) // 0.6
                 s.kerning = value.toBool();
+            else if (key == QLatin1String("opticalKerning")) // 0.7 (card #138)
+                s.opticalKerning = value.toBool();
+            else if (key == QLatin1String("features")) { // 0.7 (card #138): OpenType features, in parseFontFeatures' syntax
+                const auto parsed = parseFontFeatures(value.toString().trimmed().toStdString());
+                if (!parsed)
+                    return GraphicsBridge::tr("OpenType features: %1").arg(QString::fromStdString(parsed.error()));
+                s.features = toString(*parsed);
+            } else if (key.startsWith(QLatin1String("feature:"))) { // one feature on or off: feature:dlig = true
+                const auto next = withFontFeature(s.features, key.mid(8).toStdString(), value.toBool());
+                if (!next)
+                    return GraphicsBridge::tr("OpenType features: %1").arg(QString::fromStdString(next.error()));
+                s.features = *next;
+            }
             else if (key == QLatin1String("caps")) {
                 const auto caps = textCapsFromString(value.toString().toStdString());
                 if (!caps)

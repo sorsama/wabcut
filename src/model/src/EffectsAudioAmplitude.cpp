@@ -102,6 +102,43 @@ constexpr std::array<EffectParamInfo, 37> kMultibandCompressorParams{{
 }};
 #undef WABCUT_MBC_BAND
 
+// 0.7 (card 044), Dynamics Processing: the master section (input and output gain, mix, band count, three crossovers), four
+// bands of ten (Mode, Threshold, Ratio, Range, Attack, Release, Knee, Make-up, Bypass, Solo), the output limiter and the
+// Auto Gate: 53 parameters (kMaxEffectParams is 64). The modes, the band count and the two optional stages are choices and
+// switches (constants for a processor's life); Bypass and Solo are read at every cell so that switching them while the
+// sound plays does not restart the processor.
+#define WABCUT_DYN_BAND(n)                                                                                              \
+    {"band" #n "Mode", "Band " #n " Mode", U::Amount, 0.0, 0.0, 3.0, false, "Compress|Expand|Gate|Limit"},             \
+        {"band" #n "Threshold", "Band " #n " Threshold", U::Decibels, -24.0, -80.0, 0.0},                              \
+        {"band" #n "Ratio", "Band " #n " Ratio", U::Ratio, 2.0, 1.0, 30.0},                                            \
+        {"band" #n "Range", "Band " #n " Range", U::Decibels, 40.0, 0.0, 80.0},                                        \
+        {"band" #n "Attack", "Band " #n " Attack", U::Milliseconds, 10.0, 0.1, 500.0},                                 \
+        {"band" #n "Release", "Band " #n " Release", U::Milliseconds, 100.0, 1.0, 5000.0},                             \
+        {"band" #n "Knee", "Band " #n " Knee", U::Decibels, 6.0, 0.0, 24.0},                                           \
+        {"band" #n "Makeup", "Band " #n " Make-up Gain", U::Decibels, 0.0, -24.0, 24.0},                               \
+        {"band" #n "Bypass", "Band " #n " Bypass (0 Off, 1 On)", U::Amount, 0.0, 0.0, 1.0},                            \
+        {"band" #n "Solo", "Band " #n " Solo (0 Off, 1 On)", U::Amount, 0.0, 0.0, 1.0}
+constexpr std::array<EffectParamInfo, 53> kDynamicsProcessingParams{{
+    {"inputGain", "Input Gain", U::Decibels, 0.0, -24.0, 24.0},
+    {"outputGain", "Output Gain", U::Decibels, 0.0, -24.0, 24.0},
+    {"mix", "Mix (%)", U::Amount, 100.0, 0.0, 100.0},
+    {"bandCount", "Bands", U::Amount, 4.0, 1.0, 4.0, false, "1 band|2 bands|3 bands|4 bands"},
+    {"crossover1", "Crossover 1", U::Hertz, 120.0, 20.0, 20000.0},
+    {"crossover2", "Crossover 2", U::Hertz, 1200.0, 20.0, 20000.0},
+    {"crossover3", "Crossover 3", U::Hertz, 8000.0, 20.0, 20000.0},
+    WABCUT_DYN_BAND(1),
+    WABCUT_DYN_BAND(2),
+    WABCUT_DYN_BAND(3),
+    WABCUT_DYN_BAND(4),
+    {"limiterEnable", "Output Limiter", U::Amount, 0.0, 0.0, 1.0, false},
+    {"limiterCeiling", "Limiter Ceiling", U::Decibels, -1.0, -24.0, 0.0},
+    {"limiterRelease", "Limiter Release", U::Milliseconds, 100.0, 1.0, 1000.0},
+    {"autoGate", "Auto Gate", U::Amount, 0.0, 0.0, 1.0, false},
+    {"autoGateThreshold", "Auto Gate Threshold", U::Decibels, -50.0, -80.0, 0.0},
+    {"autoGateRelease", "Auto Gate Release", U::Milliseconds, 150.0, 10.0, 1000.0},
+}};
+#undef WABCUT_DYN_BAND
+
 constexpr std::array<EffectParamInfo, 5> kSingleBandCompressorParams{{
     {"threshold", "Threshold", U::Decibels, -20.0, -60.0, 0.0},
     {"ratio", "Ratio", U::Ratio, 4.0, 1.0, 30.0},
@@ -195,6 +232,15 @@ void appendAmplitudeEffects(std::vector<EffectDescriptor>& out) {
                    "compressor (Threshold, Ratio, Attack, Release), make-up Gain, Bypass and Solo, then Output Gain and a "
                    "limiter that holds the level to its Threshold and raises it to Margin. Brickwall Limiter: a 5 ms "
                    "lookahead limiter that never exceeds Margin (5 ms latency); off, a fast peak limiter that may overshoot."});
+    out.push_back({"wabcut.audio.dynamicsProcessing", 1, "Dynamics Processing", kAmplitude, audio, false,
+                   kDynamicsProcessingParams, lookahead,
+                   "Graph-based multiband dynamics: up to four bands split by Linkwitz-Riley 24 dB/octave crossovers (the "
+                   "bands sum back flat). Each band is a Compressor, Expander, Gate or Limiter with Threshold, Ratio, Range, "
+                   "Attack, Release, Knee and Make-up Gain, can be bypassed or soloed, and has its own transfer curve; drag "
+                   "the dividers and the curves in the graph. Input and Output Gain, a dry/wet Mix, an Auto Gate in front "
+                   "of the bands and an optional lookahead limiter after them (5 ms latency; the dry signal of the Mix is "
+                   "delayed to match). One gain per band for all channels, from the band's peak (the LFE of 5.1 and 7.1 "
+                   "is not listened to and follows the gain)."});
     out.push_back({"wabcut.audio.singleBandCompressor", 1, "Single-band Compressor", kAmplitude, audio, false,
                    kSingleBandCompressorParams, stateful,
                    "Feed-forward peak compressor (hard knee, channels linked): above Threshold the level rises 1/Ratio as "

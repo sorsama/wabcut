@@ -3,26 +3,39 @@
 #include "CommandPalette.h"
 #include "EditingBridge.h"
 #include "EffectPresetsBridge.h"
+#include "GyroAvailability.h"
+#include "KeyframeGraph.h"
+#include "OfxUi.h"
 #include "ProjectController.h"
 
+#include <wabcut/audio/dsp/DynamicsProcessing.h>
+#include <wabcut/command/ExecutionContext.h>
 #include <wabcut/model/Animations.h>
+#include <wabcut/model/Blend.h>
 #include <wabcut/model/ChangeSet.h>
 #include <wabcut/model/Clipboard.h>
 #include <wabcut/model/EditOps.h>
+#include <wabcut/model/FrameScaling.h>
 #include <wabcut/model/GraphicOps.h>
 #include <wabcut/model/GraphicResolve.h>
+#include <wabcut/model/KeyPins.h>
 #include <wabcut/model/MasterClipEffects.h>
+#include <wabcut/model/MotionOps.h>
+#include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/TitleOps.h>
 
 #include <QColor>
 #include <QCoreApplication>
 #include <QFontDatabase>
+#include <QHash>
 #include <QRandomGenerator>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <tuple>
 
 namespace wabcut::app {
@@ -114,6 +127,16 @@ const EffectDescriptor* descriptor(std::string_view id) {
     return EffectRegistry::builtin().find(id);
 }
 
+/// 0.7: what an effect this computer cannot run is called: the name an OpenFX plug-in was saved with (the missing-plug-in
+/// badge's), else its id.
+QString unknownEffectTitle(const EffectInstance& instance) {
+    if (instance.effect.starts_with("plugin.ofx.")) {
+        if (const EffectData* saved = instance.findData("plugin.name"); saved && saved->text() && !saved->text()->empty())
+            return QString::fromStdString(*saved->text());
+    }
+    return QString::fromStdString(instance.effect);
+}
+
 /// The Essential Sound panel's record of a clip (audio::edit::kEssentialSoundEffect): it does nothing to the sound.
 constexpr std::string_view kEssentialSoundRecord = "wabcut.audio.essentialSound";
 
@@ -186,6 +209,250 @@ Qt::KeyboardModifiers mods(int modifiers) {
     return Qt::KeyboardModifiers(modifiers);
 }
 
+// ---- 0.7 (card 044): Dynamics Processing ----------------------------------------------------------------------------
+
+constexpr std::string_view kDynamicsProcessing = "wabcut.audio.dynamicsProcessing";
+
+/// How many bands the effect shows at curve time `t` (its constant "bandCount").
+int dynamicsBandCount(const EffectInstance& instance, Ticks t) {
+    return std::clamp(static_cast<int>(std::lround(effectParameterAt(instance, "bandCount", t, 4.0))), 1, 4);
+}
+
+/// Whether a parameter of Dynamics Processing belongs to a band the effect does not use ("band3Ratio" with two bands, the
+/// third crossover with three): no row for it.
+bool hiddenDynamicsParam(std::string_view key, int bands) {
+    if (key.size() > 4 && key.starts_with("band") && key[4] >= '1' && key[4] <= '4')
+        return key[4] - '0' > bands;
+    if (key.size() == 10 && key.starts_with("crossover"))
+        return key[9] - '0' >= bands;
+    return false;
+}
+
+// ---- 0.7 (card #130): Warp Stabilizer's Gyro (camera metadata) method ----------------------------------------------------
+
+constexpr long kGyroMethodValue = 4; ///< the Method menu's value for Gyro (camera metadata)
+
+/// What Effect Controls knows of a Warp Stabilizer's gyro: whether its Method is Gyro and what the clip's file has.
+struct GyroUi {
+    bool applies = false; ///< a Warp Stabilizer
+    bool uses = false;    ///< its Method is Gyro
+    std::optional<editor::GyroProbe> probe; ///< nullopt while the file is being looked at
+    /// Whether the Method menu lists Gyro: for footage that has gyro data, or a stabilizer that already uses it.
+    bool offered() const { return uses || (probe && probe->state == editor::GyroProbe::State::Readable); }
+};
+
+/// The Gyro settings (Sync, Offset, Field of View, Read-out) show only while the Method is Gyro.
+bool isGyroParam(std::string_view key) { return key.starts_with("gyro"); }
+
+/// The fields of the effect's data entry "gyro" ("key=value;key=value", written by the analysis).
+QHash<QString, QString> gyroFields(const EffectInstance& effect) {
+    QHash<QString, QString> out;
+    const EffectData* data = effect.findData("gyro");
+    if (!data || !data->text()) {
+        return out;
+    }
+    for (const QString& part : QString::fromStdString(*data->text()).split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+        const qsizetype at = part.indexOf(QLatin1Char('='));
+        if (at > 0) {
+            out.insert(part.left(at), part.mid(at + 1));
+        }
+    }
+    return out;
+}
+
+/// The line under a Warp Stabilizer's header about the camera's gyro: what the file has, and - once analysed with the
+/// Gyro method - how it was synced. Empty when there is nothing to say.
+QString gyroNote(const GyroUi& g, const EffectInstance& effect) {
+    if (!g.applies) {
+        return {};
+    }
+    if (!g.probe) {
+        return g.uses ? tx("Reading the camera data of this file...") : QString();
+    }
+    const editor::GyroProbe& probe = *g.probe;
+    if (probe.state != editor::GyroProbe::State::Readable) {
+        const QString reason = QString::fromStdString(probe.reason);
+        if (g.uses) {
+            return tx("No usable gyro data: %1.").arg(reason);
+        }
+        // A file that has camera data Wabcut does not read says why (DJI, RED, Blackmagic RAW, Insta360); one with none is quiet.
+        return probe.state == editor::GyroProbe::State::Unreadable
+                   ? tx("No gyro for this clip: %1. The picture-based methods work as usual.").arg(reason)
+                   : QString();
+    }
+    const QString camera = QString::fromStdString(probe.make + (probe.model.empty() ? std::string() : " " + probe.model));
+    const QString rate = tx("%1 readings per second").arg(std::lround(probe.rateHz));
+    if (!g.uses) {
+        return tx("This clip has gyro data (%1, %2). Choose Method: Gyro (camera metadata) to use it.").arg(camera, rate);
+    }
+    const QHash<QString, QString> f = gyroFields(effect);
+    if (f.isEmpty()) {
+        return tx("Gyro data: %1, %2. Analyze to sync it with the picture and steady the shot.").arg(camera, rate);
+    }
+    const QString offset = QString::asprintf("%+.0f", f.value(QStringLiteral("offsetMs")).toDouble());
+    const QString fov = QString::asprintf("%.0f", f.value(QStringLiteral("fov")).toDouble());
+    const QString from = f.value(QStringLiteral("fovFrom"));
+    const QString lens = from == QLatin1String("set")    ? tx("set by you")
+                         : from == QLatin1String("file") ? tx("from the lens data")
+                         : from == QLatin1String("picture") ? tx("measured")
+                                                          : tx("the camera's usual");
+    const QString sync = f.value(QStringLiteral("sync"));
+    QString text = tx("Gyro data: %1, %2.").arg(camera, rate);
+    if (sync == QLatin1String("picture")) {
+        text += QLatin1Char(' ') + tx("Synced to the picture: gyro %1 ms, lens %2 degrees (%3), %4% match.")
+                                       .arg(offset, fov, lens, QString::number(std::lround(f.value(QStringLiteral("match")).toDouble() * 100.0)));
+    } else if (sync == QLatin1String("weak")) {
+        text += QLatin1Char(' ') + tx("It matches the picture only weakly (is the camera's own stabilization on?), so its own timing is used: "
+                                      "offset %1 ms, lens %2 degrees (%3).").arg(offset, fov, lens);
+    } else if (sync == QLatin1String("none")) {
+        text += QLatin1Char(' ') + tx("The picture hardly moves, so there was nothing to sync it with: offset %1 ms, lens %2 degrees (%3).").arg(offset, fov, lens);
+    } else {
+        text += QLatin1Char(' ') + tx("Auto-sync is off: offset %1 ms, lens %2 degrees (%3).").arg(offset, fov, lens);
+    }
+    if (f.value(QStringLiteral("readoutMs")).toDouble() > 0.0) {
+        text += QLatin1Char(' ') + tx("Rolling shutter: %1 ms of read-out taken out.").arg(f.value(QStringLiteral("readoutMs")));
+    }
+    const QString axes = f.value(QStringLiteral("axes"));
+    if (!axes.isEmpty() && axes != QLatin1String("as recorded")) {
+        text += QLatin1Char(' ') + tx("Axes turned: %1.").arg(axes);
+    }
+    if (f.value(QStringLiteral("axesChecked")) == QLatin1String("0") && sync != QLatin1String("picture")) {
+        text += QLatin1Char(' ') + tx("This camera family's axis order is not checked against footage: leave Auto-sync on.");
+    }
+    return text;
+}
+
+/// Everything the graph draws, at curve time `t` (the keys of DynamicsGraph.qml's `state`).
+QVariantMap dynamicsGraphState(const EffectInstance& instance, Ticks t) {
+    const auto v = [&](const std::string& key) { return effectParameterAt(instance, key, t); };
+    QVariantMap g;
+    g.insert(QStringLiteral("instance"), QVariant::fromValue<qulonglong>(instance.id.value));
+    g.insert(QStringLiteral("bands"), dynamicsBandCount(instance, t));
+    QVariantList crossovers;
+    for (int i = 1; i <= 3; ++i)
+        crossovers.append(v("crossover" + std::to_string(i)));
+    g.insert(QStringLiteral("crossovers"), crossovers);
+    static constexpr std::array<std::pair<const char*, const char*>, 10> kBandKeys{{
+        {"mode", "Mode"}, {"threshold", "Threshold"}, {"ratio", "Ratio"}, {"range", "Range"}, {"attack", "Attack"},
+        {"release", "Release"}, {"knee", "Knee"}, {"makeup", "Makeup"}, {"bypass", "Bypass"}, {"solo", "Solo"}}};
+    QVariantList bands;
+    for (int b = 1; b <= 4; ++b) {
+        QVariantMap band;
+        for (const auto& [name, suffix] : kBandKeys)
+            band.insert(QString::fromLatin1(name), v("band" + std::to_string(b) + suffix));
+        bands.append(band);
+    }
+    g.insert(QStringLiteral("band"), bands);
+    for (const char* key : {"inputGain", "outputGain", "mix", "limiterEnable", "limiterCeiling", "autoGate", "autoGateThreshold"})
+        g.insert(QString::fromLatin1(key), v(key));
+    g.insert(QStringLiteral("limiter"), v("limiterEnable"));
+    g.insert(QStringLiteral("gate"), v("autoGate"));
+    return g;
+}
+
+/// A preset of the band settings (the crossovers, the bands, the limiter and the Auto Gate; Input, Output and Mix stay as
+/// they are): the parameters it sets, every other one of those goes back to its default.
+struct DynamicsPresetValue {
+    std::string key;
+    double value;
+};
+struct DynamicsPreset {
+    const char* name;
+    std::vector<DynamicsPresetValue> values;
+};
+
+/// Band `b` set to a mode (0 compress, 1 expand, 2 gate, 3 limit) and the usual controls.
+void bandPreset(std::vector<DynamicsPresetValue>& out, int b, double mode, double threshold, double ratio, double attack,
+                double release, double knee, double makeup, double range = 40.0) {
+    const std::string prefix = "band" + std::to_string(b);
+    out.push_back({prefix + "Mode", mode});
+    out.push_back({prefix + "Threshold", threshold});
+    out.push_back({prefix + "Ratio", ratio});
+    out.push_back({prefix + "Attack", attack});
+    out.push_back({prefix + "Release", release});
+    out.push_back({prefix + "Knee", knee});
+    out.push_back({prefix + "Makeup", makeup});
+    out.push_back({prefix + "Range", range});
+}
+
+const std::vector<DynamicsPreset>& dynamicsPresetTable() {
+    static const std::vector<DynamicsPreset> table = [] {
+        std::vector<DynamicsPreset> p;
+        const auto set = [](std::vector<DynamicsPresetValue>& v, const char* key, double value) { v.push_back({key, value}); };
+        {
+            std::vector<DynamicsPresetValue> v;
+            set(v, "bandCount", 4);
+            for (int b = 1; b <= 4; ++b)
+                bandPreset(v, b, 0, 0, 1, 10, 100, 6, 0);
+            p.push_back({"Neutral (nothing acts)", std::move(v)});
+        }
+        {
+            std::vector<DynamicsPresetValue> v;
+            set(v, "bandCount", 3);
+            set(v, "crossover1", 150);
+            set(v, "crossover2", 4000);
+            bandPreset(v, 1, 0, -30, 2.0, 20, 180, 8, 1);
+            bandPreset(v, 2, 0, -26, 3.0, 8, 120, 8, 3);
+            bandPreset(v, 3, 0, -32, 2.0, 5, 90, 8, 1);
+            set(v, "limiterEnable", 1);
+            set(v, "limiterCeiling", -1);
+            p.push_back({"Voice Leveler", std::move(v)});
+        }
+        {
+            std::vector<DynamicsPresetValue> v;
+            set(v, "bandCount", 2);
+            set(v, "crossover1", 5500);
+            bandPreset(v, 1, 0, 0, 1, 10, 100, 6, 0);
+            bandPreset(v, 2, 0, -32, 5.0, 1, 40, 4, 0);
+            p.push_back({"De-esser", std::move(v)});
+        }
+        {
+            std::vector<DynamicsPresetValue> v;
+            set(v, "bandCount", 1);
+            bandPreset(v, 1, 2, -46, 2, 2, 140, 3, 0, 30);
+            p.push_back({"Noise Gate", std::move(v)});
+        }
+        {
+            std::vector<DynamicsPresetValue> v;
+            set(v, "bandCount", 2);
+            set(v, "crossover1", 110);
+            bandPreset(v, 1, 0, -22, 4.0, 25, 140, 6, 0);
+            bandPreset(v, 2, 0, 0, 1, 10, 100, 6, 0);
+            p.push_back({"Bass Tamer", std::move(v)});
+        }
+        {
+            std::vector<DynamicsPresetValue> v;
+            set(v, "bandCount", 3);
+            set(v, "crossover1", 200);
+            set(v, "crossover2", 3000);
+            for (int b = 1; b <= 3; ++b)
+                bandPreset(v, b, 0, -24, 2.0, 20, 200, 10, 2);
+            p.push_back({"Podcast Glue", std::move(v)});
+        }
+        {
+            std::vector<DynamicsPresetValue> v;
+            set(v, "bandCount", 4);
+            set(v, "crossover1", 120);
+            set(v, "crossover2", 1500);
+            set(v, "crossover3", 6000);
+            bandPreset(v, 1, 3, -10, 1, 1, 90, 2, 0);
+            bandPreset(v, 2, 3, -12, 1, 1, 80, 2, 0);
+            bandPreset(v, 3, 3, -14, 1, 1, 70, 2, 0);
+            bandPreset(v, 4, 3, -16, 1, 1, 60, 2, 0);
+            set(v, "limiterEnable", 1);
+            set(v, "limiterCeiling", -1);
+            p.push_back({"Broadcast Limiter", std::move(v)});
+        }
+        return p;
+    }();
+    return table;
+}
+
+/// The parameters a preset leaves alone.
+bool presetKeepsParameter(std::string_view key) {
+    return key == "inputGain" || key == "outputGain" || key == "mix";
+}
+
 } // namespace
 
 bool isListedEffect(const EffectDescriptor& d) {
@@ -226,11 +493,14 @@ EffectControlsModel::EffectControlsModel(ProjectController* controller)
     connect(controller, &ProjectController::selectionChanged, this, &EffectControlsModel::refresh);
     connect(controller, &ProjectController::selectedTransitionChanged, this, &EffectControlsModel::refresh);
     connect(controller, &ProjectController::playheadChanged, this, &EffectControlsModel::refresh);
+    // 0.7 (card #130): the background look into a clip's file for gyro data has an answer: the Method menu and the note update.
+    connect(&GyroAvailability::instance(), &GyroAvailability::changed, this, &EffectControlsModel::refresh);
     // 0.4: a clip copy after an effects copy is the newest copy: Paste pastes clips again.
     connect(controller, &ProjectController::clipboardChanged, this, [this] {
         setEffectsPending(false);
         setKeysPending(false); // 0.6: the newest copy wins
     });
+    m_graph = new KeyframeGraph(this); // 0.7: the Graph Editor
 }
 
 int EffectControlsModel::rowCount(const QModelIndex& parent) const {
@@ -356,7 +626,13 @@ int EffectControlsModel::stackIndexForRow(int index, const QString& stackKind) c
 
 const EffectControlsModel::Row* EffectControlsModel::findRow(const QString& key) const {
     const int i = rowOf(key);
-    return i < 0 ? nullptr : &m_rows[static_cast<std::size_t>(i)];
+    if (i >= 0)
+        return &m_rows[static_cast<std::size_t>(i)];
+    for (const Row& r : m_uncollapsedRows) { // 0.7: a collapsed section's rows, while the Graph Editor is open
+        if (r.key == key)
+            return &r;
+    }
+    return nullptr;
 }
 
 const Clip* EffectControlsModel::clipOf(const Row& row) const {
@@ -636,21 +912,111 @@ void EffectControlsModel::addClipSections(std::vector<Row>& rows, const Clip& cl
     const auto intrinsic = [&](const QString& section, PropertyRole role) {
         if (m_collapsed.contains(section))
             return;
+        // 0.7 (card #12): Scale Width shows only with Uniform Scale off, and then Scale is the Scale Height (Premiere's rows).
+        const bool uniform = clip.properties().uniformScale();
         for (const UiParameter& p : uiParameters()) {
             const ParameterInfo& info = parameterInfo(p.id);
-            if (info.role != role)
+            if (info.role != role || (p.id == ParamId::ScaleWidth && uniform))
                 continue;
+            QString label = QCoreApplication::translate("wabcut::app::ParameterUi", p.label);
+            if (p.id == ParamId::Scale && !uniform)
+                label = tx("Scale Height");
             addParamRow(rows, clip, QStringLiteral("p:") + QLatin1String(p.key), section, QStringLiteral("intrinsic"),
-                        edit::ParamRef::of(p.id), QCoreApplication::translate("wabcut::app::ParameterUi", p.label),
-                        QLatin1String(p.icon), p.range, info.defaultValue, true, true, p.undoLabel);
+                        edit::ParamRef::of(p.id), label, QLatin1String(p.icon), p.range, info.defaultValue,
+                        info.animatable, true, p.undoLabel);
         }
+    };
+    // 0.7 (cards #98, #136): the clip's own flags as rows of the Transform and Opacity sections (not keyframable): Nearest
+    // Neighbor Scaling (Clip > Video Options) and the Blend Mode (clip.setBlendMode). Their values are the clip's; setValue
+    // routes them (textProp "nearestNeighbor" / "blendMode") to the clip attribute edits. The Blend Mode's options are the
+    // modes in Premiere's menu order, their values the menu index (as the other menu rows).
+    const auto flagRow = [&](const QString& key, const QString& section, const QString& kind, const QString& title,
+                             const QString& icon, const QString& prop, std::string undoLabel) -> Row& {
+        Row r;
+        r.key = key;
+        r.kind = kind;
+        r.section = section;
+        r.sectionKind = QStringLiteral("intrinsic");
+        r.title = title;
+        r.icon = icon;
+        r.clip = clip.id;
+        r.textProp = prop;
+        r.resettable = true;
+        r.effectEnabled = true;
+        r.frame = m_controller->propertyFrame(clip);
+        r.undoLabel = std::move(undoLabel);
+        rows.push_back(std::move(r));
+        return rows.back();
+    };
+    // 0.7 (card #130): a Warp Stabilizer's gyro: its Method, and what the clip's file has (looked at in the background).
+    const auto gyroUiOf = [&](const EffectInstance& instance) {
+        GyroUi g;
+        g.applies = video && instance.effect == kWarpStabilizerEffect;
+        if (!g.applies) {
+            return g;
+        }
+        g.uses = std::lround(effectParameterAt(instance, "method", Ticks{}, 3.0)) >= kGyroMethodValue;
+        const ProjectSnapshot snapshot = m_controller->snapshot();
+        const MediaItem* item = snapshot && clip.media.isValid() && !clip.isNested() ? snapshot->findMedia(clip.media) : nullptr;
+        if (item) {
+            g.probe = GyroAvailability::instance().lookup(*item, m_controller->projectFile());
+        }
+        return g;
+    };
+    const auto gyroNoteRow = [&](const QString& section, const GyroUi& g, const EffectInstance& instance, bool enabled) {
+        const QString note = gyroNote(g, instance);
+        if (note.isEmpty()) {
+            return;
+        }
+        Row r;
+        r.key = section + QStringLiteral(":gyroNote");
+        r.kind = QStringLiteral("note");
+        r.section = section;
+        r.sectionKind = QStringLiteral("effect");
+        r.text = note;
+        r.clip = clip.id;
+        r.effectEnabled = enabled;
+        rows.push_back(std::move(r));
     };
     if (video) {
         addTextSections(rows, clip); // 0.6: a graphic's text layers, above its Transform
         header(QStringLiteral("motion"), QStringLiteral("intrinsic"), tx("Transform"), QStringLiteral("scaling"));
         intrinsic(QStringLiteral("motion"), PropertyRole::Motion);
+        if (!m_collapsed.contains(QStringLiteral("motion"))) {
+            Row& r = flagRow(QStringLiteral("p:nearestNeighbor"), QStringLiteral("motion"), QStringLiteral("toggle"),
+                             tx("Nearest Neighbor Scaling"), QStringLiteral("scaling"), QStringLiteral("nearestNeighbor"),
+                             "Nearest Neighbor Scaling");
+            r.from = 0.0;
+            r.to = 1.0;
+            r.step = 1.0;
+            r.range.to = 1.0;
+            r.range.toggle = true;
+            r.value = clip.content().nearestNeighbor ? 1.0 : 0.0;
+            r.defaultValue = 0.0;
+            r.description = tx("Scales the picture without smoothing: pixels stay hard-edged (pixel art, screen recordings).");
+        }
         header(QStringLiteral("opacity"), QStringLiteral("intrinsic"), tx("Opacity"), QStringLiteral("blend"));
         intrinsic(QStringLiteral("opacity"), PropertyRole::Opacity);
+        if (!m_collapsed.contains(QStringLiteral("opacity"))) {
+            Row& r = flagRow(QStringLiteral("p:blendMode"), QStringLiteral("opacity"), QStringLiteral("choice"), tx("Blend Mode"),
+                             QStringLiteral("blend"), QStringLiteral("blendMode"), "Blend Mode");
+            const std::span<const BlendMode> modes = blendModesInMenuOrder();
+            int current = 0;
+            for (std::size_t i = 0; i < modes.size(); ++i) {
+                if (modes[i] == clip.blendMode())
+                    current = static_cast<int>(i);
+                r.options.append(QVariantMap{{QStringLiteral("value"), QString::number(i)},
+                                             {QStringLiteral("label"), tx(std::string(displayName(modes[i])).c_str())}});
+            }
+            r.from = 0.0;
+            r.to = static_cast<double>(modes.size() - 1);
+            r.step = 1.0;
+            r.range.to = r.to;
+            r.value = current;
+            r.defaultValue = 0.0; // Normal leads the menu
+            r.text = QString::number(current);
+            r.description = tx("How this clip combines with the picture below it. Cycle with the Blend Mode shortcuts.");
+        }
     } else {
         header(QStringLiteral("audio"), QStringLiteral("intrinsic"), tx("Audio"), QStringLiteral("volume-2"));
         intrinsic(QStringLiteral("audio"), PropertyRole::Audio);
@@ -682,7 +1048,7 @@ void EffectControlsModel::addClipSections(std::vector<Row>& rows, const Clip& cl
                 const EffectInstance& instance = master[i];
                 const EffectDescriptor* d = descriptor(instance.effect);
                 const QString section = effectKey(instance.id);
-                Row& h = header(section, QStringLiteral("effect"), d ? tx(d->displayName.data()) : QString::fromStdString(instance.effect),
+                Row& h = header(section, QStringLiteral("effect"), d ? tx(d->displayName.data()) : unknownEffectTitle(instance),
                                 d ? categoryIcon(d->category, d->kind) : QStringLiteral("sparkles"));
                 h.effectEnabled = instance.enabled && !off;
                 h.removable = true;
@@ -694,13 +1060,25 @@ void EffectControlsModel::addClipSections(std::vector<Row>& rows, const Clip& cl
                 h.description = tx("Master clip effect: every clip of %1 has it.").arg(QString::fromStdString(masterItem->name));
                 if (!d || m_collapsed.contains(section))
                     continue;
+                const bool dynamics = instance.effect == kDynamicsProcessing; // 0.7 (card 044)
+                const int dynamicsBands = dynamics ? dynamicsBandCount(instance, m_controller->curveTimeAtPlayhead(clip)) : 4;
+                if (dynamics)
+                    addDynamicsGraph(rows, clip, instance, section, instance.enabled && !off);
+                const GyroUi gyroUi = gyroUiOf(instance);
+                gyroNoteRow(section, gyroUi, instance, instance.enabled && !off);
                 for (const EffectParamInfo& p : d->params) {
+                    if (dynamics && hiddenDynamicsParam(p.key, dynamicsBands))
+                        continue;
+                    if (gyroUi.applies && isGyroParam(p.key) && !gyroUi.uses)
+                        continue;
                     addParamRow(rows, clip, section + QLatin1Char(':') + fromView(p.key), section, QStringLiteral("effect"),
                                 edit::ParamRef::ofEffect(instance.id, std::string(p.key)), tx(p.displayName.data()), QString(),
                                 uiRange(p), p.defaultValue, p.animatable, instance.enabled && !off,
                                 std::string("Master Clip: ") + std::string(d->displayName) + ": " + std::string(p.displayName));
                     if (p.isChoice())
                         makeChoice(rows.back(), p);
+                    if (gyroUi.applies && p.key == "method" && !gyroUi.offered() && !rows.back().options.isEmpty())
+                        rows.back().options.removeLast(); // Gyro (camera metadata) is the menu's last entry
                 }
             }
         }
@@ -717,7 +1095,7 @@ void EffectControlsModel::addClipSections(std::vector<Row>& rows, const Clip& cl
         Row& h = header(section, QStringLiteral("effect"),
                         titleStyle ? tx("Text (%1)").arg(QString::fromStdString(clip.name()))
                         : d        ? tx(d->displayName.data())
-                                   : QString::fromStdString(instance.effect),
+                                   : unknownEffectTitle(instance),
                         titleStyle ? QStringLiteral("type") : d ? categoryIcon(d->category, d->kind) : QStringLiteral("sparkles"));
         h.effectEnabled = instance.enabled;
         h.removable = !titleStyle; // the title's look: without it the text would draw in the default style
@@ -726,7 +1104,10 @@ void EffectControlsModel::addClipSections(std::vector<Row>& rows, const Clip& cl
         h.stackIndex = static_cast<int>(i);
         h.stackKind = video ? QStringLiteral("video") : QStringLiteral("audio");
         h.known = isEvaluable(instance, kind);
-        h.description = d ? fromView(d->description) : tx("This effect is not available in this version; it is kept as it is.");
+        h.description = d ? fromView(d->description)
+                        : instance.effect.starts_with("plugin.ofx.")
+                            ? tx("This OpenFX plug-in is not on this computer. The effect is kept as it is and works again once the plug-in is installed.")
+                            : tx("This effect is not available in this version; it is kept as it is.");
         if (!d || m_collapsed.contains(section))
             continue;
         if (titleStyle) {
@@ -734,13 +1115,25 @@ void EffectControlsModel::addClipSections(std::vector<Row>& rows, const Clip& cl
             continue;
         }
         const bool enabled = instance.enabled;
+        const bool dynamics = instance.effect == kDynamicsProcessing; // 0.7 (card 044): its graph, then the bands in use
+        const int dynamicsBands = dynamics ? dynamicsBandCount(instance, m_controller->curveTimeAtPlayhead(clip)) : 4;
+        if (dynamics)
+            addDynamicsGraph(rows, clip, instance, section, enabled);
+        const GyroUi gyroUi = gyroUiOf(instance);
+        gyroNoteRow(section, gyroUi, instance, enabled);
         for (const EffectParamInfo& p : d->params) {
+            if (dynamics && hiddenDynamicsParam(p.key, dynamicsBands))
+                continue;
+            if (gyroUi.applies && isGyroParam(p.key) && !gyroUi.uses)
+                continue;
             addParamRow(rows, clip, section + QLatin1Char(':') + fromView(p.key), section, QStringLiteral("effect"),
                         edit::ParamRef::ofEffect(instance.id, std::string(p.key)), tx(p.displayName.data()), QString(),
                         uiRange(p), p.defaultValue, p.animatable, enabled,
                         std::string(d->displayName) + ": " + std::string(p.displayName));
             if (p.isChoice())
                 makeChoice(rows.back(), p);
+            if (gyroUi.applies && p.key == "method" && !gyroUi.offered() && !rows.back().options.isEmpty())
+                rows.back().options.removeLast(); // Gyro (camera metadata) is the menu's last entry
         }
         if (instance.effect == "wabcut.video.simpleText") {
             // 0.2: Simple Text's text is effect data (not keyframable), edited in a text row.
@@ -757,8 +1150,214 @@ void EffectControlsModel::addClipSections(std::vector<Row>& rows, const Clip& cl
             t.undoLabel = "Simple Text: Text";
             rows.push_back(std::move(t));
         }
+        // 0.7: the string parameters of an OpenFX plug-in are text rows too (effect data, not keyframable).
+        for (const EffectTextInfo& setting : d->texts) {
+            Row t;
+            t.key = section + QStringLiteral(":data:") + fromView(setting.key);
+            t.kind = QStringLiteral("text");
+            t.section = section;
+            t.sectionKind = QStringLiteral("effect");
+            t.title = fromView(setting.displayName);
+            const EffectData* data = instance.findData(setting.key);
+            t.text = data && data->text() ? QString::fromStdString(*data->text()) : fromView(setting.defaultValue);
+            t.clip = clip.id;
+            t.ref.key = std::string(setting.key);
+            t.undoLabel = std::string(d->displayName) + ": " + std::string(setting.displayName);
+            rows.push_back(std::move(t));
+        }
+    }
+    addPinnedSections(rows, clip, video); // 0.7 (card #57)
+}
+
+// ---- 0.7 (card 044): Dynamics Processing ----
+
+void EffectControlsModel::addDynamicsGraph(std::vector<Row>& rows, const Clip& clip, const EffectInstance& instance,
+                                           const QString& section, bool enabled) {
+    Row g;
+    g.key = section + QStringLiteral(":graph");
+    g.kind = QStringLiteral("dynamics");
+    g.section = section;
+    g.sectionKind = QStringLiteral("effect");
+    g.title = tx("Dynamics Processing graph");
+    g.clip = clip.id;
+    g.effectEnabled = enabled;
+    g.graph = dynamicsGraphState(instance, m_controller->curveTimeAtPlayhead(clip));
+    rows.push_back(std::move(g));
+}
+
+QVariantMap dynamicsMeterReading(std::uint64_t instance, std::uint64_t& seenBlocks) {
+    QVariantMap out{{QStringLiteral("active"), false},
+                    {QStringLiteral("inputDb"), -90.0},
+                    {QStringLiteral("outputDb"), -90.0},
+                    {QStringLiteral("reduction"), QVariantList{0.0, 0.0, 0.0, 0.0}}};
+    const auto meters = audio::dsp::findDynamicsMeters(instance);
+    if (!meters)
+        return out;
+    const audio::dsp::DynamicsMeters::Snapshot snap = meters->take();
+    const bool active = snap.blocks != seenBlocks; // audio went through the effect since the last look
+    seenBlocks = snap.blocks;
+    const auto dB = [](double peak) { return peak > 3e-5 ? 20.0 * std::log10(peak) : -90.0; };
+    QVariantList reduction;
+    for (const float r : snap.reductionDb)
+        reduction.append(static_cast<double>(r));
+    out.insert(QStringLiteral("active"), active);
+    out.insert(QStringLiteral("inputDb"), dB(snap.inputPeak));
+    out.insert(QStringLiteral("outputDb"), dB(snap.outputPeak));
+    out.insert(QStringLiteral("reduction"), reduction);
+    return out;
+}
+
+QVariantList dynamicsCurvePoints(int mode, double threshold, double ratio, double range, double knee, double makeup, double fromDb,
+                                 double toDb, int points) {
+    audio::dsp::DynamicsBand band;
+    band.mode = static_cast<audio::dsp::DynamicsMode>(std::clamp(mode, 0, 3));
+    band.thresholdDb = threshold;
+    band.ratio = ratio;
+    band.rangeDb = range;
+    band.kneeDb = knee;
+    band.makeupDb = makeup;
+    QVariantList out;
+    points = std::clamp(points, 2, 1000);
+    for (int i = 0; i < points; ++i) {
+        const double in = fromDb + (toDb - fromDb) * i / (points - 1);
+        out.append(audio::dsp::dynamicsCurveDb(in, band));
+    }
+    return out;
+}
+
+QVariantMap EffectControlsModel::dynamicsMeters(const QString& section) {
+    const auto id = parseEffectKey(section);
+    if (!id)
+        return dynamicsMeterReading(0, m_meterBlocks[0]);
+    return dynamicsMeterReading(id->value, m_meterBlocks[id->value]);
+}
+
+QVariantList EffectControlsModel::dynamicsCurve(int mode, double threshold, double ratio, double range, double knee, double makeup,
+                                                double fromDb, double toDb, int points) const {
+    return dynamicsCurvePoints(mode, threshold, ratio, range, knee, makeup, fromDb, toDb, points);
+}
+
+QStringList EffectControlsModel::dynamicsPresets() const {
+    QStringList names;
+    for (const DynamicsPreset& p : dynamicsPresetTable())
+        names.append(tx(p.name));
+    return names;
+}
+
+bool EffectControlsModel::applyDynamicsPreset(const QString& section, const QString& name) {
+    const Row* h = findRow(QStringLiteral("h:") + section);
+    const auto effect = parseEffectKey(section);
+    const SequencePtr sequence = m_controller ? m_controller->currentSequence() : nullptr;
+    const DynamicsPreset* preset = nullptr;
+    for (const DynamicsPreset& p : dynamicsPresetTable()) {
+        if (tx(p.name) == name || QString::fromLatin1(p.name) == name)
+            preset = &p;
+    }
+    if (!h || !h->clip || !effect || !sequence || !preset)
+        return false;
+    const auto loc = sequence->findClip(h->clip);
+    if (!loc)
+        return false;
+    EffectStack stack = loc->clip().effects();
+    if (const ProjectSnapshot snapshot = m_controller->snapshot()) {
+        for (const EffectInstance& e : masterEffectsOf(*snapshot, loc->clip().media))
+            stack.push_back(e);
+    }
+    const auto it = std::find_if(stack.begin(), stack.end(), [&](const EffectInstance& e) { return e.id == *effect; });
+    if (it == stack.end() || it->effect != kDynamicsProcessing)
+        return false;
+    const EffectDescriptor* d = descriptor(it->effect);
+    if (!d)
+        return false;
+    // Every band parameter goes to the preset's value, or back to its default where the preset says nothing.
+    const SequenceId seq = m_controller->currentSequenceId();
+    const ClipId clip = h->clip;
+    const EffectInstanceId id = *effect;
+    std::vector<std::function<edit::EditOutcome(const ProjectState&)>> steps;
+    for (const EffectParamInfo& p : d->params) {
+        if (presetKeepsParameter(p.key))
+            continue;
+        double value = p.defaultValue;
+        for (const DynamicsPresetValue& v : preset->values) {
+            if (v.key == p.key)
+                value = std::clamp(v.value, p.minValue, p.maxValue);
+        }
+        const edit::ParamRef ref = edit::ParamRef::ofEffect(id, std::string(p.key));
+        steps.push_back([=](const ProjectState& state) { return edit::setParameter(state, seq, clip, ref, ParamValue(value)); });
+    }
+    const std::string label = "Dynamics Processing: " + std::string(preset->name);
+    const bool ok = m_controller->applyEditFn(label.c_str(), [&](const ProjectState& state) { return chain(state, steps); });
+    if (ok)
+        setNotice(tx("Dynamics Processing: %1").arg(tx(preset->name)));
+    return ok;
+}
+
+const std::vector<std::string>& EffectControlsModel::pinnedEffects() {
+    const std::shared_ptr<command::EffectLibraryServices> library = sharedEffectLibrary();
+    const std::uint64_t revision = library ? library->revision() : 0;
+    if (!m_pinnedLoaded || revision != m_pinnedRevision) {
+        m_pinned.clear();
+        if (library) {
+            const EffectsLibrary all = library->library(); // a copy: held for the loop (GCC 14 does not extend a member's temporary)
+            for (const std::string& ref : all.favorites) {
+                if (ref.starts_with("effect:"))
+                    m_pinned.push_back(ref.substr(7));
+            }
+        }
+        m_pinnedRevision = revision;
+        m_pinnedLoaded = true;
+    }
+    return m_pinned;
+}
+
+void EffectControlsModel::addPinnedSections(std::vector<Row>& rows, const Clip& clip, bool video) {
+    const EffectKind kind = video ? EffectKind::Video : EffectKind::Audio;
+    for (const std::string& id : pinnedEffects()) {
+        const EffectDescriptor* d = descriptor(id);
+        if (!d || d->kind != kind || !isListedEffect(*d) || d->id.starts_with(kPluginEffectPrefix))
+            continue;
+        const EffectStack& stack = clip.effects();
+        if (std::any_of(stack.begin(), stack.end(), [&](const EffectInstance& e) { return e.effect == id; }))
+            continue; // it has the effect: its own section is the one to use
+        Row h;
+        h.key = QStringLiteral("h:pin:") + QString::fromStdString(id);
+        h.kind = QStringLiteral("header");
+        h.section = QStringLiteral("pin:") + QString::fromStdString(id);
+        h.sectionKind = QStringLiteral("pinned");
+        h.title = tx(d->displayName.data());
+        h.icon = QStringLiteral("bookmark");
+        h.description = tx("A favourite effect: Add puts it on this clip, ready to use.");
+        h.clip = clip.id;
+        h.effectEnabled = true;
+        h.collapsed = true;
+        rows.push_back(std::move(h));
     }
 }
+
+QString EffectControlsModel::addPinned(const QString& section) {
+    if (!section.startsWith(QLatin1String("pin:")))
+        return tx("Not a pinned effect");
+    const QString error = addEffect(section.mid(4));
+    setNotice(error);
+    return error;
+}
+
+QString EffectControlsModel::effectIdOfSection(const QString& section) const {
+    if (section.startsWith(QLatin1String("pin:")))
+        return section.mid(4);
+    const auto id = parseEffectKey(section);
+    const Row* h = findRow(QStringLiteral("h:") + section);
+    const Clip* clip = h ? clipOf(*h) : nullptr;
+    if (!id || !clip)
+        return {};
+    for (const EffectInstance& e : clip->effects()) {
+        if (e.id == *id)
+            return QString::fromStdString(e.effect);
+    }
+    return {};
+}
+
+void EffectControlsModel::refreshPinned() { refresh(); }
 
 void EffectControlsModel::addTransitionRows(std::vector<Row>& rows, const Track& track, const Transition& transition) {
     const EffectDescriptor* d = descriptor(transition.effect);
@@ -1064,6 +1663,15 @@ void EffectControlsModel::refresh() {
     m_refreshing = true;
     m_shownKeys.clear();
     std::vector<Row> rows = buildRows();
+    // 0.7: the Graph Editor lists the animated parameters of collapsed sections too (a collapsed section shows no rows here):
+    // the rows with every section open, for it and for the key selection below.
+    m_uncollapsedRows.clear();
+    if (m_graph && m_graph->active() && !m_collapsed.empty()) {
+        const std::set<QString> collapsed = std::move(m_collapsed);
+        m_collapsed.clear();
+        m_uncollapsedRows = buildRows();
+        m_collapsed = collapsed;
+    }
     // Selected keys that are no longer shown (deleted, another clip, collapsed) are dropped.
     std::set<KeyRef> kept;
     for (const KeyRef& s : m_selectedKeys) {
@@ -1098,6 +1706,21 @@ void EffectControlsModel::refresh() {
         emit keySelectionChanged();
     if (sectionsChanged)
         emit sectionSelectionChanged();
+    if (m_graph)
+        m_graph->onRowsRefreshed(); // 0.7: the Graph Editor follows (nothing happens while its panel is closed)
+}
+
+ParamValue EffectControlsModel::rowValue(const Row& row) const {
+    const Clip* clip = clipOf(row);
+    return clip ? paramValueOf(m_controller, *clip, row.ref) : ParamValue();
+}
+
+bool EffectControlsModel::applyChainedEdit(const char* label,
+                                           const std::vector<std::function<edit::EditOutcome(const ProjectState&)>>& steps,
+                                           std::string_view mergeKey) {
+    if (!m_controller || steps.empty())
+        return false;
+    return m_controller->applyEditFn(label, [&](const ProjectState& state) { return chain(state, steps); }, mergeKey);
 }
 
 void EffectControlsModel::setNotice(const QString& notice) {
@@ -1146,6 +1769,10 @@ void EffectControlsModel::setValue(const QString& rowKey, double value) {
         setLayerParamAtPlayhead(*r, model, mergeKey);
         return;
     }
+    if (r->layer == 0 && (r->textProp == QLatin1String("nearestNeighbor") || r->textProp == QLatin1String("blendMode"))) {
+        setClipFlag(*r, value); // 0.7 (cards #98, #136): the clip's own flags
+        return;
+    }
     if (!r->textProp.isEmpty()) { // 0.6: a text property that is not keyframable
         setTextProperty(*r, model, mergeKey);
         return;
@@ -1157,6 +1784,67 @@ void EffectControlsModel::setValue(const QString& rowKey, double value) {
 void EffectControlsModel::endEdit() {
     if (m_controller)
         m_controller->endPropertyGesture();
+}
+
+void EffectControlsModel::setClipFlag(const Row& row, double value) {
+    const Clip* clip = clipOf(row);
+    if (!clip || !m_controller || !std::isfinite(value))
+        return;
+    const SequenceId seq = m_controller->currentSequenceId();
+    const ClipId id = clip->id;
+    const std::span<const ClipId> ids(&id, 1);
+    if (row.textProp == QLatin1String("nearestNeighbor")) {
+        const bool on = value >= 0.5;
+        if (on == clip->content().nearestNeighbor)
+            return;
+        m_controller->applyEditFn(LABEL("Nearest Neighbor Scaling"), [&](const ProjectState& state) {
+            return edit::setNearestNeighbor(state, seq, ids, on);
+        });
+        return;
+    }
+    const std::span<const BlendMode> modes = blendModesInMenuOrder();
+    const auto index = static_cast<std::size_t>(std::clamp<long>(std::lround(value), 0, static_cast<long>(modes.size()) - 1));
+    if (modes[index] == clip->blendMode())
+        return;
+    edit::ClipAttributeChange change;
+    change.blendMode = modes[index];
+    m_controller->applyEditFn(LABEL("Blend Mode"), [&](const ProjectState& state) {
+        return edit::setClipAttributes(state, seq, ids, change);
+    });
+}
+
+bool EffectControlsModel::stepBlendMode(int step) {
+    if (!m_controller || (m_mode != QLatin1String("clip") && m_mode != QLatin1String("multi")))
+        return false;
+    const std::optional<ClipId> target = m_controller->propertyTarget(StreamKind::Video);
+    const SequencePtr seq = m_controller->currentSequence();
+    const auto loc = target && seq ? seq->findClip(*target) : std::nullopt;
+    if (!loc)
+        return false;
+    const std::span<const BlendMode> modes = blendModesInMenuOrder();
+    const auto count = static_cast<long>(modes.size());
+    long current = 0;
+    for (long i = 0; i < count; ++i)
+        current = modes[static_cast<std::size_t>(i)] == loc->clip().blendMode() ? i : current;
+    const long next = ((current + step) % count + count) % count; // wraps both ways
+    // Every selected video clip takes the next mode of the primary clip (one undo step), as the picker does for it alone.
+    std::vector<ClipId> ids;
+    for (const ClipId selected : m_controller->selection()) {
+        const auto sel = seq->findClip(selected);
+        if (sel && sel->clip().stream.kind == StreamKind::Video)
+            ids.push_back(selected);
+    }
+    if (ids.empty())
+        ids.push_back(*target);
+    edit::ClipAttributeChange change;
+    change.blendMode = modes[static_cast<std::size_t>(next)];
+    const SequenceId id = m_controller->currentSequenceId();
+    const bool ok = m_controller->applyEditFn(LABEL("Blend Mode"), [&](const ProjectState& state) {
+        return edit::setClipAttributes(state, id, ids, change);
+    });
+    if (ok)
+        setNotice(tx("Blend mode: %1").arg(tx(std::string(displayName(modes[static_cast<std::size_t>(next)])).c_str())));
+    return ok;
 }
 
 void EffectControlsModel::setEffectText(const QString& rowKey, const QString& text) {
@@ -1232,7 +1920,9 @@ void EffectControlsModel::setEffectText(const QString& rowKey, const QString& te
     const ClipId clip = r->clip;
     edit::EffectChange change;
     change.data = {EffectData{r->ref.key, utf8.toStdString()}};
-    m_controller->applyEditFn(LABEL("Simple Text: Text"), [&](const ProjectState& state) {
+    // Simple Text keeps its translated name; an OpenFX plug-in's text names its own setting ("<plug-in>: <setting>").
+    const char* label = r->undoLabel.empty() || r->undoLabel == "Simple Text: Text" ? LABEL("Simple Text: Text") : r->undoLabel.c_str();
+    m_controller->applyEditFn(label, [&](const ProjectState& state) {
         return edit::setEffect(state, seq, clip, *effect, change);
     });
 }
@@ -1332,6 +2022,15 @@ void EffectControlsModel::setEffectEnabled(const QString& section, bool enabled)
         return;
     const SequenceId seq = m_controller->currentSequenceId();
     const ClipId clip = h->clip;
+    if (enabled) {
+        // 0.7: turning an OpenFX effect back on tries its plug-in again (a crashed or hung one is badged until then).
+        if (const Clip* c = clipOf(*h)) {
+            for (const EffectInstance& e : c->effects()) {
+                if (e.id == *effect)
+                    OfxUi::instance().retry(e);
+            }
+        }
+    }
     edit::EffectChange change;
     change.enabled = enabled;
     m_controller->applyEditFn(enabled ? LABEL("Enable Effect") : LABEL("Disable Effect"), [&](const ProjectState& state) {
@@ -1385,6 +2084,26 @@ void addFixedResetSteps(std::vector<EditStep>& steps, SequenceId seq, ClipId cli
     }
 }
 
+/// 0.7 (cards #98, #136): Reset on Transform also turns Nearest Neighbor Scaling off, and on Opacity puts the Blend Mode
+/// back to Normal (only when they are set, so a plain reset stays one quiet step).
+void addFlagResetSteps(std::vector<EditStep>& steps, SequenceId seq, ClipId clip, PropertyRole role, const Clip* current) {
+    if (!current || current->stream.kind != StreamKind::Video)
+        return;
+    if (role == PropertyRole::Motion && current->content().nearestNeighbor) {
+        steps.push_back([=](const ProjectState& state) {
+            const ClipId ids[1] = {clip};
+            return edit::setNearestNeighbor(state, seq, ids, false);
+        });
+    } else if (role == PropertyRole::Opacity && current->blendMode() != BlendMode::Normal) {
+        steps.push_back([=](const ProjectState& state) {
+            const ClipId ids[1] = {clip};
+            edit::ClipAttributeChange change;
+            change.blendMode = BlendMode::Normal;
+            return edit::setClipAttributes(state, seq, ids, change);
+        });
+    }
+}
+
 } // namespace
 
 void EffectControlsModel::resetSection(const QString& section) {
@@ -1410,6 +2129,8 @@ void EffectControlsModel::resetSection(const QString& section) {
     std::vector<EditStep> steps;
     if (const auto role = fixedSectionRole(section)) {
         addFixedResetSteps(steps, seq, clip, *role);
+        const auto shown = sequence->findClip(clip);
+        addFlagResetSteps(steps, seq, clip, *role, shown ? &shown->clip() : nullptr);
     } else if (const auto effect = parseEffectKey(section)) {
         const auto loc = sequence->findClip(clip);
         if (!loc)
@@ -1548,6 +2269,10 @@ EffectControlsModel::removeSteps(const QStringList& sections, int* removed, int*
             if (const auto role = fixedSectionRole(section)) {
                 // Reset from the registry (not the rows), so a collapsed section resets too; keys are deleted.
                 addFixedResetSteps(steps, seq, clip, *role);
+                if (const SequencePtr sequence = m_controller->currentSequence()) {
+                    const auto shown = sequence->findClip(clip);
+                    addFlagResetSteps(steps, seq, clip, *role, shown ? &shown->clip() : nullptr);
+                }
                 ++resetCount;
             } else if (const auto effect = parseEffectKey(section)) {
                 const EffectInstanceId id = *effect;
@@ -1771,12 +2496,19 @@ void EffectControlsModel::moveSectionBy(const QString& section, int delta) {
 }
 
 bool EffectControlsModel::handlesCommand(const QString& id) {
-    return id == QLatin1String("effectControls.removeSelectedEffect");
+    return id == QLatin1String("effectControls.removeSelectedEffect") || id == QLatin1String("effectControls.nextBlendMode") ||
+           id == QLatin1String("effectControls.previousBlendMode");
 }
 
 bool EffectControlsModel::runCommand(const QString& commandId) {
     if (!m_controller)
         return false;
+    // 0.7 (card #136): the Blend Mode shortcuts step the shown clip's mode through Premiere's menu order, wrapping.
+    if (commandId == QLatin1String("effectControls.nextBlendMode") || commandId == QLatin1String("effectControls.previousBlendMode")) {
+        if (!stepBlendMode(commandId == QLatin1String("effectControls.nextBlendMode") ? 1 : -1))
+            setNotice(tx("Select a video clip first"));
+        return true;
+    }
     const bool sections = !m_selectedSections.isEmpty();
     if (commandId == QLatin1String("effectControls.removeSelectedEffect")) {
         // Selected keys win (as the panel's Delete claim), then sections, then a shown transition.
@@ -2211,6 +2943,28 @@ QString EffectControlsModel::selectedKeyInterpolation() const {
     return common ? interpolationName(*common) : QString();
 }
 
+QString EffectControlsModel::selectedKeyPin() const {
+    if (m_selectedKeys.empty() || !m_controller)
+        return {};
+    std::optional<KeyPin> common;
+    for (const KeyRef& k : m_selectedKeys) {
+        const Row* r = findRow(k.row);
+        const Clip* clip = r ? clipOf(*r) : nullptr;
+        if (!clip)
+            continue;
+        const ParamValue value = paramValueOf(m_controller, *clip, r->ref);
+        const Curve* curve = value.curve();
+        const auto at = curve ? curve->keyAt(Ticks{k.curveTime}) : std::nullopt;
+        if (!at)
+            continue;
+        const KeyPin pin = curve->keys[*at].pin;
+        if (common && *common != pin)
+            return {};
+        common = pin;
+    }
+    return common ? QString::fromLatin1(toString(*common).data(), static_cast<qsizetype>(toString(*common).size())) : QString();
+}
+
 bool EffectControlsModel::pressKey(const QString& rowKey, double x, double tolerance, int modifiers) {
     const Row* r = findRow(rowKey);
     const Clip* clip = r ? clipOf(*r) : nullptr;
@@ -2462,6 +3216,59 @@ void EffectControlsModel::setKeyInterpolation(const QString& interpolation) {
         m_controller->applyEditFn(LABEL("Keyframe Interpolation"), [&](const ProjectState& state) { return chain(state, steps); });
 }
 
+void EffectControlsModel::setKeyPin(const QString& pin) {
+    const auto value = keyPinFromString(pin.toStdString());
+    if (!value || m_selectedKeys.empty() || !m_controller)
+        return;
+    const SequenceId seq = m_controller->currentSequenceId();
+    std::vector<std::function<edit::EditOutcome(const ProjectState&)>> steps;
+    for (const KeyRef& k : m_selectedKeys) {
+        const Row* r = findRow(k.row);
+        const Clip* clip = r ? clipOf(*r) : nullptr;
+        if (!clip)
+            continue;
+        const ClipId id = clip->id;
+        const edit::ParamRef ref = r->ref;
+        const Ticks time{k.curveTime};
+        const KeyPin wanted = *value;
+        // The key is found by its time in the state the earlier steps left: a pin that moves a key changes the indices.
+        steps.push_back([=](const ProjectState& state) -> edit::EditOutcome {
+            const Sequence* s = state.findSequence(seq);
+            const auto loc = s ? s->findClip(id) : std::nullopt;
+            const ParamValue current = loc ? ProjectController::parameterValue(loc->clip(), ref) : ParamValue();
+            const Curve* curve = current.curve();
+            const auto at = curve ? curve->keyAt(time) : std::nullopt;
+            if (!at) {
+                edit::EditResult same;
+                same.state = state;
+                return same;
+            }
+            return edit::setKeyframePin(state, seq, id, ref, *at, wanted);
+        });
+    }
+    if (steps.empty())
+        return;
+    const std::set<KeyRef> selectedBefore = m_selectedKeys; // the edit refreshes the lane and drops keys it cannot find
+    if (!m_controller->applyEditFn(LABEL("Pin Keyframes"), [&](const ProjectState& state) { return chain(state, steps); }))
+        return;
+    // The keys now sit on the clip end (pinned) or where they were (unpinned): they stay selected there.
+    std::set<KeyRef> moved;
+    for (const KeyRef& k : selectedBefore) {
+        if (*value == KeyPin::None) {
+            moved.insert(k);
+            continue;
+        }
+        const Row* r = findRow(k.row);
+        const Clip* clip = r ? clipOf(*r) : nullptr;
+        if (!clip)
+            continue;
+        moved.insert(KeyRef{k.row, (*value == KeyPin::ClipEnd ? clip->endCurveTime() : clip->startCurveTime()).value});
+    }
+    m_selectedKeys = std::move(moved);
+    refresh();
+    emit keySelectionChanged();
+}
+
 void EffectControlsModel::deleteSelectedKeys() {
     deleteKeys(LABEL("Delete Keyframes"));
 }
@@ -2604,7 +3411,7 @@ bool EffectControlsModel::pressHandle(const QString& rowKey, double x, double y,
     return false;
 }
 
-void EffectControlsModel::dragHandle(double x, double y, bool broken) {
+void EffectControlsModel::dragHandle(double x, double y, bool broken, bool flat) {
     if (!m_handleDrag.active || !m_controller)
         return;
     const Row* r = findRow(m_handleDrag.row);
@@ -2623,7 +3430,8 @@ void EffectControlsModel::dragHandle(double x, double y, bool broken) {
     const double laneLength = static_cast<double>(std::max<std::int64_t>(1, m_lane.duration.value));
     const Ticks t{m_lane.start.value + static_cast<std::int64_t>(std::llround(x * laneLength))};
     const Ticks curveTime = rowCurveTime(*r, *clip, std::clamp(t, clip->start(), clip->end()));
-    const double v = r->range.toModel(m_handleDrag.max - y * (m_handleDrag.max - m_handleDrag.min), r->frame);
+    // 0.7 (card #79): Shift pins the handle level with its key (the pointer's height is ignored): a flat ease.
+    const double v = flat ? k.value : r->range.toModel(m_handleDrag.max - y * (m_handleDrag.max - m_handleDrag.min), r->frame);
     // The handle's time along its segment is the influence (at least 1 %), its height over that time the slope.
     const double segment = out ? (curve->keys[i + 1].time - k.time).toSeconds() : (k.time - curve->keys[i - 1].time).toSeconds();
     if (segment <= 0)
@@ -2977,6 +3785,14 @@ void EffectControlsModel::addTextSections(std::vector<Row>& rows, const Clip& cl
             plain(QStringLiteral("shadow.softness"), tx("Shadow Blur"), uiOf(0.0, 500.0, 0.5, 1, "px"), sh.softness, 8.0);
         }
 
+        // ---- Typography (0.7, card #138): Optical kerning and the common OpenType features (Essential Graphics' Text panel has the
+        // whole list). After the rows above, so Source Text, Fill and the strokes keep their places. ----
+        group(QStringLiteral("typographyGroup"), tx("Typography"));
+        toggle(QStringLiteral("opticalKerning"), tx("Optical Kerning"), style.opticalKerning);
+        toggle(QStringLiteral("feat_liga"), tx("Ligatures"), fontFeatureOn(style.features, "liga"));
+        toggle(QStringLiteral("feat_calt"), tx("Contextual Alternates"), fontFeatureOn(style.features, "calt"));
+        toggle(QStringLiteral("feat_dlig"), tx("Discretionary Ligatures"), fontFeatureOn(style.features, "dlig"));
+
         // ---- Transform (the layer's, in the graphic's pixels) ----
         group(QStringLiteral("transformGroup"), tx("Transform"));
         number(QStringLiteral("x"), "transform.x", tx("Position X"), uiOf(-10000.0, 10000.0, 1.0, 0, "px", true), LABEL("Position"));
@@ -3186,6 +4002,14 @@ void EffectControlsModel::setTextProperty(const Row& row, double value, const st
     };
     if (p == QLatin1String("kerning")) {
         runs(LABEL("Kerning"), [&](TextStyle& s) { s.kerning = on; });
+    } else if (p == QLatin1String("opticalKerning")) {
+        runs(LABEL("Optical Kerning"), [&](TextStyle& s) { s.opticalKerning = on; });
+    } else if (p.startsWith(QLatin1String("feat_"))) {
+        const std::string tag = p.mid(5).toStdString();
+        runs(LABEL("OpenType Feature"), [&](TextStyle& s) {
+            if (const auto next = withFontFeature(s.features, tag, on))
+                s.features = *next;
+        });
     } else if (p == QLatin1String("caps")) {
         runs(LABEL("Capitals"), [&](TextStyle& s) { s.caps = static_cast<TextCaps>(std::clamp(index, 0, 2)); });
     } else if (p == QLatin1String("fauxBold")) {
@@ -3389,8 +4213,8 @@ void EffectControlsModel::addMultiRows(std::vector<Row>& rows) {
             return;
         for (const UiParameter& p : uiParameters()) {
             const ParameterInfo& info = parameterInfo(p.id);
-            if (info.role != role)
-                continue;
+            if (info.role != role || (p.id == ParamId::ScaleWidth && of.front()->properties().uniformScale()))
+                continue; // 0.7 (card #12): Scale Width shows with Uniform Scale off
             addParamRow(rows, *of.front(), QStringLiteral("m:") + QLatin1String(p.key), key, QStringLiteral("multi"),
                         edit::ParamRef::of(p.id), QCoreApplication::translate("wabcut::app::ParameterUi", p.label),
                         QLatin1String(p.icon), p.range, info.defaultValue, false, true, p.undoLabel);

@@ -58,6 +58,8 @@ public:
     void registerEmbedder(std::string api, AdapterFactory<IEmbedder> factory);
     void registerSpeechSynth(std::string api, AdapterFactory<ISpeechSynth> factory);
     void registerMediaGenerator(std::string api, AdapterFactory<IMediaGenerator> factory);
+    /// r07: dedicated translation APIs (DeepL, Google Cloud Translation). Chat models translate through LlmTranslator.
+    void registerTranslator(std::string api, AdapterFactory<ITranslator> factory);
     bool hasAdapter(std::string_view api, Capability capability) const;
 
     /// The base URL used for a provider: the user's override (configurable providers only) or the registry's.
@@ -101,6 +103,8 @@ public:
                                                                             IHttpTransport& transport) const;
     std::expected<std::unique_ptr<IMediaGenerator>, AiError>
     createMediaGenerator(const Candidate& candidate, Secret key, IHttpTransport& transport) const;
+    std::expected<std::unique_ptr<ITranslator>, AiError> createTranslator(const Candidate& candidate, Secret key,
+                                                                          IHttpTransport& transport) const;
 
 private:
     template <typename Interface>
@@ -115,6 +119,7 @@ private:
     std::map<std::string, AdapterFactory<IEmbedder>, std::less<>> m_embedders;
     std::map<std::string, AdapterFactory<ISpeechSynth>, std::less<>> m_speech;
     std::map<std::string, AdapterFactory<IMediaGenerator>, std::less<>> m_generators;
+    std::map<std::string, AdapterFactory<ITranslator>, std::less<>> m_translators; // r07
     std::map<std::string, std::string, std::less<>> m_baseUrls;
     std::map<Capability, std::vector<std::string>> m_preferences;
 };
@@ -171,6 +176,11 @@ public:
     /// cap and refused above `options.maxCost` when one is set; settled at the reported usage, at the estimate when
     /// the provider failed after receiving the text.
     std::expected<std::unique_ptr<ISpeechSynth>, AiError> speech(std::string_view modelId, CallOptions options = {});
+    /// r07: a dedicated translation API (a model whose api has a registered translator: DeepL, Google Cloud
+    /// Translation): consent for Translate, the estimate (characters x perThousandChars) reserved against the monthly
+    /// cap and refused above `options.maxCost`, settled at the characters sent. Unsupported for chat models: callers
+    /// translate with those through LlmTranslator over chat() (ai/translate/CaptionTranslation.h).
+    std::expected<std::unique_ptr<ITranslator>, AiError> translator(std::string_view modelId, CallOptions options = {});
 
     /// Runs a whole generation job (create, poll, fetch into `directory`) as ONE guarded call (AI-10): the locks and
     /// consent are checked before every request (submit, each poll, the download), the estimate is reserved against

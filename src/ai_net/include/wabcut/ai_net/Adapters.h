@@ -14,6 +14,19 @@
 //   elevenlabs-stt         ITranscriber  POST /v1/speech-to-text (multipart), words in seconds
 //   assemblyai             ITranscriber  upload -> submit -> poll, words in milliseconds
 //   elevenlabs-sound-generation  IMediaGenerator  POST /v1/sound-generation -> MP3 (0.2: sound effects)
+//   r07 (docs/ai.md "Providers"):
+//   openai-transcriptions  ITranscriber  POST /audio/transcriptions (multipart; verbose_json words / diarized_json):
+//                                        OpenAI, Groq, Mistral, Together, Fireworks, DeepInfra, custom providers
+//   speechmatics           ITranscriber  POST /v2/jobs (multipart config) -> poll -> /v2/jobs/{id}/transcript (json-v2)
+//   gladia                 ITranscriber  POST /v2/upload -> /v2/pre-recorded -> poll
+//   deepgram-speak         ISpeechSynth  POST /v1/speak?model=aura-2-<voice> -> WAV
+//   cartesia-tts           ISpeechSynth  POST /tts/bytes -> WAV
+//   fish-tts               ISpeechSynth  POST /v1/tts (model header) -> WAV
+//   deepl, google-translate  ITranslator  POST /v2/translate, POST /language/translate/v2
+//   openai-images          IMediaGenerator  POST /images/generations (b64_json or url): OpenAI, xAI, Together, custom
+//   openai-videos          IMediaGenerator  POST /videos -> GET /videos/{id} -> GET /videos/{id}/content (Sora)
+//   xai-video              IMediaGenerator  POST /videos/generations -> GET /videos/{id}
+//   stability-image, bfl-flux, ideogram, fal-queue, replicate  IMediaGenerator  (see each file)
 //
 // Chat adapters always stream (SSE) and only call the event handler when one is given; the returned
 // ChatResponse is complete either way.
@@ -43,6 +56,9 @@ std::unique_ptr<IMediaGenerator> makeVeoGenerator(ProviderContext context);
 std::unique_ptr<IMediaGenerator> makeRunwayGenerator(ProviderContext context);
 /// 0.2: generated sound effects (elevenlabs-sound-generation: POST /v1/sound-generation, the MP3 in the answer).
 std::unique_ptr<IMediaGenerator> makeElevenLabsSoundEffects(ProviderContext context);
+/// r07 (QA-01): sound effects from an OpenAI-compatible server (sound-generation: the same JSON at the model's endpoint,
+/// LocalAI's /v1/sound-generation; the audio file in the answer, any signature-checked audio type).
+std::unique_ptr<IMediaGenerator> makeCompatibleSoundEffects(ProviderContext context);
 
 void registerCloudAdapters(ProviderRegistry& registry, AdapterOptions options = {});
 
@@ -57,5 +73,23 @@ std::unique_ptr<ISpeechSynth> makeElevenLabsSpeech(ProviderContext context);
 std::unique_ptr<ISpeechSynth> makeOpenAiSpeech(ProviderContext context);
 std::unique_ptr<ISpeechSynth> makeGeminiSpeech(ProviderContext context);
 std::unique_ptr<ITranscriber> makeAssemblyAiTranscriber(ProviderContext context, AdapterOptions options = {});
+
+// r07 adapters.
+std::unique_ptr<ITranscriber> makeOpenAiTranscriber(ProviderContext context);
+std::unique_ptr<ITranscriber> makeSpeechmaticsTranscriber(ProviderContext context, AdapterOptions options = {});
+std::unique_ptr<ITranscriber> makeGladiaTranscriber(ProviderContext context, AdapterOptions options = {});
+std::unique_ptr<ISpeechSynth> makeDeepgramSpeech(ProviderContext context);
+std::unique_ptr<ISpeechSynth> makeCartesiaSpeech(ProviderContext context);
+std::unique_ptr<ISpeechSynth> makeFishSpeech(ProviderContext context);
+std::unique_ptr<ITranslator> makeDeepLTranslator(ProviderContext context);
+std::unique_ptr<ITranslator> makeGoogleTranslator(ProviderContext context);
+std::unique_ptr<IMediaGenerator> makeOpenAiImages(ProviderContext context);
+std::unique_ptr<IMediaGenerator> makeOpenAiVideos(ProviderContext context);
+std::unique_ptr<IMediaGenerator> makeStabilityImages(ProviderContext context);
+std::unique_ptr<IMediaGenerator> makeBflImages(ProviderContext context);
+std::unique_ptr<IMediaGenerator> makeIdeogramImages(ProviderContext context);
+std::unique_ptr<IMediaGenerator> makeXaiVideo(ProviderContext context);
+std::unique_ptr<IMediaGenerator> makeFalGenerator(ProviderContext context);
+std::unique_ptr<IMediaGenerator> makeReplicateGenerator(ProviderContext context);
 
 } // namespace wabcut::ai::net

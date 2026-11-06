@@ -12,6 +12,8 @@ add_library(wabcut_editor STATIC
     src/Capsule.cpp
     src/ColorFrames.cpp
     src/Export.cpp
+    src/Gyro.cpp
+    src/IdleRender.cpp
     src/MediaFormats.cpp
     src/MediaImport.cpp
     src/PathSafety.cpp
@@ -21,6 +23,7 @@ add_library(wabcut_editor STATIC
     src/PreviewRender.cpp
     src/ProjectDocument.cpp
     src/Production.cpp
+    src/ProductionSearch.cpp # 0.7 (card 094): search across all projects of a production
     src/ProxyManager.cpp
     src/Recovery.cpp
     src/SourceEdit.cpp
@@ -29,7 +32,7 @@ add_library(wabcut_editor STATIC
 )
 target_include_directories(wabcut_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(wabcut_editor
-    PUBLIC wabcut_model wabcut_interchange wabcut_audio wabcut_playback wabcut_export wabcut_masks
+    PUBLIC wabcut_model wabcut_interchange wabcut_audio wabcut_playback wabcut_export wabcut_masks wabcut_gyro
     PRIVATE wabcut_media nlohmann_json::nlohmann_json)
 wabcut_target_defaults(wabcut_editor)
 # 0.2 graphics: the system spell checker (SystemSpellChecker.h) is Windows' Spelling Checking API, a COM API.

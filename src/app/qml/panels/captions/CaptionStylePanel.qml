@@ -1,30 +1,53 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 
 // ● CAPTION STYLE (M5m, the Captions workspace's side panel; C.7): the shown caption track's CaptionStyle, which the
 // model stores and the program monitor draws live. Every control is one Captions.setStyle(key, value); a slider drag is
-// one undo step. Presets: the five built in and the project's own (save the track's look as one, delete one).
+// one undo step. Presets: the built-in gallery and the project's own (save the track's look as one, delete one); card 074:
+// the gallery's tiles play their look when hovered or focused (Word Pop, Highlighter, Bounce, Typewriter,
+// Zoom, Hype beside the first five), the Animation menu has the per-word looks with their speed and curve, and key words
+// can take an emphasis colour (card 074); Text rules lowercases or capitalises the captions and drops punctuation and
+// accents (card 114), drawn and exported the same way. 0.7 (card 115): My looks - a look kept for the user, outside any
+// project, shows in the gallery of every project (applying one copies it into the project); looks are imported and
+// exported as files.
 Panel {
     id: root
     objectName: "captionStylePanel"
 
     readonly property var style: Captions.style
     readonly property bool hasTrack: Captions.track !== ""
-    readonly property var fonts: [
-        { id: "", name: qsTr("Default (sans-serif)") }, { id: "Segoe UI", name: "Segoe UI" }, { id: "Arial", name: "Arial" },
-        { id: "Inter", name: "Inter" }, { id: "Georgia", name: "Georgia" }, { id: "Noto Sans Thai", name: "Noto Sans Thai" },
-        { id: "Cascadia Mono", name: "Cascadia Mono" }
-    ]
+    readonly property var fonts: [{ id: "", name: qsTr("Default (sans-serif)") }]
     readonly property var weights: [
         { id: "400", name: qsTr("Regular") }, { id: "500", name: qsTr("Medium") }, { id: "600", name: qsTr("Semibold") },
         { id: "700", name: qsTr("Bold") }, { id: "900", name: qsTr("Black") }
     ]
     readonly property var animations: [
         { id: "none", name: qsTr("None") }, { id: "pop", name: qsTr("Pop") }, { id: "fade", name: qsTr("Fade") },
-        { id: "wordByWord", name: qsTr("Word by word") }
+        { id: "wordByWord", name: qsTr("Word by word") }, { id: "wordPop", name: qsTr("Word pop") },
+        { id: "bounce", name: qsTr("Bounce") }, { id: "highlightBar", name: qsTr("Highlight bar") },
+        { id: "typewriter", name: qsTr("Typewriter") }, { id: "zoom", name: qsTr("Zoom") }
     ]
+    readonly property var eases: [
+        { id: "smooth", name: qsTr("Smooth") }, { id: "overshoot", name: qsTr("Overshoot") }, { id: "linear", name: qsTr("Linear") }
+    ]
+    readonly property var emphases: [
+        { id: "none", name: qsTr("None") }, { id: "keywords", name: qsTr("My key words") },
+        { id: "auto", name: qsTr("Auto: numbers, CAPS and shouts") }
+    ]
+    readonly property var textCases: [
+        { id: "asWritten", name: qsTr("As written") }, { id: "lower", name: qsTr("lowercase") },
+        { id: "upper", name: qsTr("Uppercase") }
+    ]
+    function nameIn(list, id, fallback) {
+        for (let i = 0; i < list.length; ++i) {
+            if (list[i].id === id)
+                return list[i].name
+        }
+        return fallback
+    }
 
     function weightName(w) {
         for (let i = 0; i < weights.length; ++i) {
@@ -194,7 +217,14 @@ Panel {
                         id: chip
                         required property var modelData
                         objectName: "captionPreset_" + modelData.name
-                        implicitWidth: Theme.space(20)
+                        /// Delete: a look of My looks that the project lacks leaves My looks, a project look leaves the project.
+                        function remove() {
+                            if (chip.modelData.libraryOnly)
+                                Captions.setInLibrary(chip.modelData.name, false)
+                            else
+                                Captions.removePreset(chip.modelData.name)
+                        }
+                        implicitWidth: Theme.space(26)
                         implicitHeight: card.height + nameText.implicitHeight + Theme.space(1)
                         activeFocusOnTab: true
                         // The chip's keys are its own while it has focus (Space would otherwise play).
@@ -205,36 +235,23 @@ Panel {
                         Keys.onEnterPressed: presetChips.applyFromKeys(chip.modelData.name)
                         Keys.onDeletePressed: {
                             if (!chip.modelData.builtin)
-                                Captions.removePreset(chip.modelData.name)
+                                chip.remove()
                         }
                         Rectangle {
                             id: card
                             width: parent.width
-                            height: Theme.space(11)
+                            height: Theme.space(14)
                             radius: Theme.radiusField
                             color: Theme.videoBlack
                             border.width: chip.modelData.current ? Theme.focusRingWidth : Theme.hairline
                             border.color: chip.modelData.current ? Theme.accentStroke : chipHover.hovered ? Theme.borderStrong : Theme.border
-                            Rectangle {
-                                anchors.centerIn: parent
-                                width: sample.implicitWidth + Theme.space(2)
-                                height: sample.implicitHeight + Theme.space(1)
-                                radius: Theme.radiusBadge
-                                visible: chip.modelData.box
-                                color: chip.modelData.boxColor
-                                opacity: 0.85
-                            }
-                            Text {
-                                id: sample
-                                anchors.centerIn: parent
-                                //: Sample letters showing a caption preset's look
-                                text: qsTr("Aa")
-                                color: chip.modelData.fill
-                                style: chip.modelData.outlineWidth > 0 ? Text.Outline : Text.Normal
-                                styleColor: Theme.contentInk
-                                font.family: Theme.fontSans
-                                font.pixelSize: Theme.textMd
-                                font.weight: chip.modelData.fontWeight >= 700 ? Font.Bold : Font.DemiBold
+                            // card 074: the look, moving while the tile is hovered or has the focus.
+                            CaptionPresetTile {
+                                objectName: "captionPresetSample_" + chip.modelData.name
+                                anchors.fill: parent
+                                anchors.margins: Theme.space(1)
+                                preset: chip.modelData
+                                animate: chipHover.hovered || chip.activeFocus
                             }
                             IconButton {
                                 anchors.top: parent.top
@@ -243,8 +260,25 @@ Panel {
                                 compact: true
                                 iconName: "x"
                                 iconSize: Theme.iconXs
-                                tooltip: qsTr("Delete the preset “%1”").arg(chip.modelData.name)
-                                onClicked: Captions.removePreset(chip.modelData.name)
+                                tooltip: chip.modelData.libraryOnly ? qsTr("Remove “%1” from My looks").arg(chip.modelData.name)
+                                                                      : qsTr("Delete the preset “%1”").arg(chip.modelData.name)
+                                onClicked: chip.remove()
+                            }
+                            // 0.7 (card 115): My looks - lit while the look is kept there; a click keeps it or lets it go.
+                            IconButton {
+                                objectName: "captionPresetLibrary_" + chip.modelData.name
+                                anchors.top: parent.top
+                                anchors.left: parent.left
+                                visible: !chip.modelData.builtin && (chip.modelData.inLibrary || chipHover.hovered || activeFocus)
+                                compact: true
+                                iconName: "bookmark"
+                                iconSize: Theme.iconXs
+                                iconColor: chip.modelData.inLibrary ? Theme.accentStroke : Theme.textTertiary
+                                tooltip: chip.modelData.inLibrary ? qsTr("In My looks: every project can use it. Click to remove it from My looks")
+                                                                 : qsTr("Add “%1” to My looks so every project can use it").arg(chip.modelData.name)
+                                Accessible.name: chip.modelData.inLibrary ? qsTr("Remove %1 from My looks").arg(chip.modelData.name)
+                                                                          : qsTr("Add %1 to My looks").arg(chip.modelData.name)
+                                onClicked: Captions.setInLibrary(chip.modelData.name, !chip.modelData.inLibrary)
                             }
                             TapHandler {
                                 onTapped: Captions.applyPreset(chip.modelData.name)
@@ -298,9 +332,52 @@ Panel {
                     text: qsTr("Save preset")
                     enabled: presetName.text.trim() !== ""
                     onClicked: {
-                        if (Captions.savePreset(presetName.text) === "")
+                        const name = presetName.text.trim()
+                        if (Captions.savePreset(name) === "") {
                             presetName.text = ""
+                            if (keepInLibrary.checked)
+                                Captions.setInLibrary(name, true)
+                        }
                     }
+                }
+            }
+            // 0.7 (card 115): My looks.
+            Toggle {
+                id: keepInLibrary
+                objectName: "captionSaveToLibrary"
+                Layout.fillWidth: true
+                text: qsTr("Also keep it in My looks")
+                tooltip: qsTr("My looks are kept for you, outside the project: every project can use them")
+                checked: true
+            }
+            Flow {
+                Layout.fillWidth: true
+                spacing: Theme.space(1)
+                PillButton {
+                    objectName: "captionImportLooks"
+                    compact: true
+                    variant: "ghost"
+                    iconName: "folder-open"
+                    text: qsTr("Import looks…")
+                    tooltip: qsTr("Add the looks of a caption presets file to My looks")
+                    onClicked: importLooksDialog.open()
+                }
+                PillButton {
+                    objectName: "captionExportLooks"
+                    compact: true
+                    variant: "ghost"
+                    iconName: "upload"
+                    text: qsTr("Export looks…")
+                    tooltip: qsTr("Write My looks and this project's looks to a file to share or use elsewhere")
+                    onClicked: exportLooksDialog.open()
+                }
+                Text {
+                    objectName: "captionLibraryCount"
+                    visible: Captions.libraryCount > 0
+                    text: qsTr("%n look(s) in My looks", "", Captions.libraryCount)
+                    color: Theme.textTertiary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textXs
                 }
             }
 
@@ -334,11 +411,14 @@ Panel {
             GroupLabel { text: qsTr("Text") }
             Row2 {
                 label: qsTr("Font")
-                ChoicePill {
+                // card 053: the shared font picker; the language filter starts on the track's script.
+                FontChoicePill {
                     objectName: "captionFont"
-                    text: root.fontText()
-                    options: root.fontOptions
+                    family: root.style.fontFamily ?? ""
+                    extras: root.fontOptions
+                    language: Captions.trackInfo.language ?? ""
                     current: root.brandFont !== "" ? "brand:" + root.brandFont : (root.style.fontFamily ?? "")
+                    placeholder: root.fontText()
                     onChosen: id => {
                         if (id.startsWith("brand:"))
                             Captions.setStyle("brandFont", id.slice(6))
@@ -352,6 +432,22 @@ Panel {
                     options: root.weights
                     current: String(root.style.fontWeight)
                     onChosen: id => Captions.setStyle("fontWeight", Number(id))
+                }
+            }
+            // 0.7 (card #138): OpenType features for the shaper (Persian and Arabic joining forms and contextual alternates are
+            // on already): calt, -liga, ss01, salt=2.
+            FieldInput {
+                objectName: "captionFeatures"
+                Layout.fillWidth: true
+                text: root.style.features ?? ""
+                placeholderText: qsTr("OpenType features: calt, -liga, ss01")
+                Accessible.name: qsTr("OpenType features")
+                Accessible.description: qsTr("Four-letter OpenType feature tags separated by commas; - turns a feature off, =2 picks an alternate.")
+                onEditingFinished: {
+                    if (text !== (root.style.features ?? "")) {
+                        Captions.setStyle("features", text)
+                        Captions.endStyleEdit()
+                    }
                 }
             }
             PropSlider {
@@ -417,6 +513,41 @@ Panel {
                 onPicked: c => Captions.setStyle("fill", c)
                 brandRef: root.style.brandFill ?? ""
                 onPickedBrand: name => Captions.setStyle("brandFill", name)
+            }
+
+            // ---- Text rules (card 114): applied when the captions are drawn and exported ----
+            GroupLabel { text: qsTr("Text rules") }
+            Row2 {
+                label: qsTr("Letters")
+                ChoicePill {
+                    objectName: "captionTextCase"
+                    text: root.nameIn(root.textCases, root.style.textCase ?? "asWritten", qsTr("As written"))
+                    options: root.textCases
+                    current: root.style.textCase ?? "asWritten"
+                    Accessible.name: qsTr("Letter case: %1").arg(text)
+                    onChosen: id => Captions.setStyle("textCase", id)
+                }
+            }
+            Row2 {
+                label: qsTr("No punctuation")
+                Toggle {
+                    objectName: "captionStripPunctuation"
+                    tooltip: qsTr("Leave out commas, full stops, question and exclamation marks and quotes (apostrophes and hyphens inside words stay)")
+                    checked: root.style.stripPunctuation === true
+                    onToggled: Captions.setStyle("stripPunctuation", checked)
+                }
+            }
+            Row2 {
+                label: qsTr("No accents")
+                Toggle {
+                    objectName: "captionStripAccents"
+                    tooltip: qsTr("Draw é as e and ł as l (Thai marks and Japanese voiced marks stay)")
+                    checked: root.style.stripAccents === true
+                    onToggled: Captions.setStyle("stripAccents", checked)
+                }
+            }
+            Hint {
+                text: qsTr("The cues keep their words as written: the monitor, burned-in captions, caption files and soft subtitles show these rules.")
             }
 
             // ---- Outline ----
@@ -666,8 +797,87 @@ Panel {
                     onChosen: id => Captions.setStyle("animation", id)
                 }
             }
+            // card 074: how fast a word's motion is and the curve it follows.
+            PropSlider {
+                objectName: "captionAnimationSpeed"
+                Layout.fillWidth: true
+                visible: (root.style.animation ?? "none") !== "none"
+                label: qsTr("Speed")
+                unit: qsTr("s")
+                from: 0.05
+                to: 0.6
+                stepSize: 0.01
+                decimals: 2
+                value: root.style.animationSpeed ?? 0.15
+                defaultValue: 0.15
+                onValueModified: v => Captions.setStyle("animationSpeed", v)
+                onGestureEnded: Captions.endStyleEdit()
+            }
+            Row2 {
+                visible: (root.style.animation ?? "none") !== "none"
+                label: qsTr("Curve")
+                ChoicePill {
+                    objectName: "captionAnimationEase"
+                    text: root.nameIn(root.eases, root.style.animationEase ?? "overshoot", qsTr("Overshoot"))
+                    options: root.eases
+                    current: root.style.animationEase ?? "overshoot"
+                    Accessible.name: qsTr("Animation curve: %1").arg(text)
+                    onChosen: id => Captions.setStyle("animationEase", id)
+                }
+            }
             Hint {
-                text: qsTr("Saved with the track: the program monitor and burned-in exports draw it the same way.")
+                text: qsTr("Saved with the track: the program monitor and burned-in exports draw it the same way. The word looks follow the words' times in the transcript.")
+            }
+
+            // ---- Emphasis (card 074): key words in their own colour and a little larger ----
+            GroupLabel { text: qsTr("Emphasis") }
+            Row2 {
+                label: qsTr("Key words")
+                ChoicePill {
+                    objectName: "captionEmphasis"
+                    text: root.nameIn(root.emphases, root.style.emphasis ?? "none", qsTr("None"))
+                    options: root.emphases
+                    current: root.style.emphasis ?? "none"
+                    Accessible.name: qsTr("Emphasis: %1").arg(text)
+                    onChosen: id => Captions.setStyle("emphasis", id)
+                }
+            }
+            FieldInput {
+                objectName: "captionEmphasisWords"
+                Layout.fillWidth: true
+                visible: (root.style.emphasis ?? "none") !== "none"
+                text: root.style.emphasisWordsText ?? ""
+                placeholderText: qsTr("Key words, separated by commas")
+                Accessible.name: qsTr("Key words to emphasise")
+                onEditingFinished: {
+                    if (text !== (root.style.emphasisWordsText ?? ""))
+                        Captions.setStyle("emphasisWords", text)
+                }
+            }
+            CaptionColorRow {
+                Layout.fillWidth: true
+                visible: (root.style.emphasis ?? "none") !== "none"
+                key: "emphasisColor"
+                label: qsTr("Emphasis colour")
+                value: root.style.emphasisColor ?? Theme.captionHighlight
+                onPicked: c => Captions.setStyle("emphasisColor", c)
+            }
+            PropSlider {
+                objectName: "captionEmphasisScale"
+                Layout.fillWidth: true
+                visible: (root.style.emphasis ?? "none") !== "none"
+                label: qsTr("Emphasis size")
+                unit: "%"
+                from: 100
+                to: 150
+                value: (root.style.emphasisScale ?? 1.12) * 100
+                defaultValue: 112
+                onValueModified: v => Captions.setStyle("emphasisScale", v / 100)
+                onGestureEnded: Captions.endStyleEdit()
+            }
+            Hint {
+                visible: (root.style.emphasis ?? "none") !== "none"
+                text: qsTr("Auto also picks out numbers, words in capitals and words followed by an exclamation mark.")
             }
             Text {
                 Layout.fillWidth: true
@@ -680,5 +890,24 @@ Panel {
             }
             Item { Layout.preferredHeight: Theme.space(2) }
         }
+    }
+
+    // 0.7 (card 115): the files looks are imported from and exported to.
+    FileDialog {
+        id: importLooksDialog
+        objectName: "captionImportLooksDialog"
+        title: qsTr("Import caption looks")
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("Caption presets (*.wabcut-caption-presets.json *.json)"), qsTr("All files (*)")]
+        onAccepted: Captions.importPresets(selectedFile)
+    }
+    FileDialog {
+        id: exportLooksDialog
+        objectName: "captionExportLooksDialog"
+        title: qsTr("Export caption looks")
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "json"
+        nameFilters: [qsTr("Caption presets (*.wabcut-caption-presets.json)")]
+        onAccepted: Captions.exportPresets(selectedFile)
     }
 }

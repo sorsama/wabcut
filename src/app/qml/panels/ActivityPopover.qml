@@ -9,7 +9,7 @@ import QtQuick.Layouts
 //      buttons (pause / resume / start, cancel, Open, Show), and Start Queue (held exports), Clear Finished, Export
 //      Queue… (the queue in the Export workspace: exportQueueRequested).
 //   2. The other background work, one row each with its progress and a stop: Render In to Out, proxies (Settings…),
-//      transcription, Highlights, Shorts, Collect Files, an extension's AI command.
+//      transcription, Highlights, Shorts, Collect Files, Reload Footage, an extension's AI command.
 //   3. "Nothing is running." when none of that runs.
 //   4. Recent messages (MessageLog, newest first): tone dot, time, the text (two lines; a click on a longer one shows
 //      all of it) and its action, if it had one (runs it and closes the popover); Clear. Opening the popover marks the
@@ -26,9 +26,9 @@ Popover {
 
     readonly property ExportJobModel jobs: ExportController.jobs
     readonly property var longCommand: Extensions.longCommand
-    readonly property bool othersRunning: MediaReadiness.rendering || MediaReadiness.working
+    readonly property bool othersRunning: MediaReadiness.rendering || MediaReadiness.working || MediaReadiness.backgroundActive
                                           || Transcript.jobStatus === "running" || Highlights.busy || Shorts.busy
-                                          || Collect.running || root.longCommand.running === true
+                                          || Collect.running || Editing.reloading || root.longCommand.running === true
     readonly property bool nothingRuns: (root.jobs === null || root.jobs.count === 0) && !root.othersRunning
 
     onOpened: MessageLog.markSeen()
@@ -227,6 +227,17 @@ Popover {
             actionText: qsTr("Stop")
             onActionClicked: MediaReadiness.cancelRender()
         }
+        // 0.7: the render the editor starts by itself while idle; Stop holds it until your next edit.
+        JobRow {
+            objectName: "activityBackgroundRender"
+            visible: MediaReadiness.backgroundActive
+            iconName: "film"
+            label: qsTr("Background rendering")
+            detail: MediaReadiness.backgroundDetail
+            progress: MediaReadiness.backgroundState === "rendering" ? MediaReadiness.backgroundProgress : -1
+            actionText: qsTr("Stop")
+            onActionClicked: MediaReadiness.stopBackgroundRender()
+        }
         JobRow {
             objectName: "activityProxies"
             visible: MediaReadiness.working
@@ -278,6 +289,17 @@ Popover {
             progress: Collect.progress
             actionText: qsTr("Cancel")
             onActionClicked: Collect.cancel()
+        }
+        // 0.7 (card 143): Reload Footage reads the files on a worker thread; Cancel leaves the project as it is.
+        JobRow {
+            objectName: "activityReloadFootage"
+            visible: Editing.reloading
+            iconName: "rotate-cw"
+            label: qsTr("Reloading footage")
+            detail: Editing.reloadPhase
+            progress: Editing.reloadProgress
+            actionText: qsTr("Cancel")
+            onActionClicked: Editing.cancelReload()
         }
         JobRow {
             objectName: "activityExtension"

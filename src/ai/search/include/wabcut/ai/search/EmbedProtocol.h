@@ -26,6 +26,12 @@
 //                     (prompt: clicks (1 positive, 0 negative) and a box (2 top-left, 3 bottom-right) in the picture's
 //                      pixels start a new object; track: the next frame of it, from its memory; the matte, 8-bit
 //                      alpha at width x height, rows top-down, is written to "output")
+//   {"type":"load","id":"13","pictures":[{"key":"drunet-color","path":"...drunet_color.onnx"}]}   (0.7: AI video effects)
+//   {"type":"process_picture","id":"14","model":"drunet-color","input":{"path":"...in.rgb16","width":1920,"height":1080},
+//    "output":"...out.rgb16","scale":1,"tile":256,"pad":16,"sigma":0.06}
+//                     (one picture through one image-to-image model, in overlapping tiles: a raw file of width x height
+//                      pixels, 3 x 16-bit little-endian RGB, rows top-down; the answer is written to "output" at
+//                      scale x the size; "sigma" is the noise level (sigma / 255) for models that take a noise map)
 //   {"type":"shutdown"}
 // Responses (helper -> parent), each with the id of the request it answers:
 //   {"type":"hello","protocol":1,"engine":"onnxruntime","engineVersion":"1.24.4","providers":["DmlExecutionProvider",
@@ -38,6 +44,7 @@
 //   {"type":"translations","id":"10","texts":["..."],"tokens":12,"ms":95.0,"device":"CPU"}
 //   {"type":"segmented","id":"12","iou":0.93,"objectScore":8.2,"present":true,"width":512,"height":288,"ms":48.0,
 //    "device":"DirectML"}
+//   {"type":"picture","id":"14","width":1920,"height":1080,"tiles":40,"ms":420.0,"device":"DirectML"}
 //   {"type":"error","id":"2","code":"inference","message":"..."}
 // "device": "auto" tries the GPU provider (DirectML on Windows) and falls back to the CPU; "cpu" never touches the
 // GPU. Pictures travel as one raw file of `count` frames of width x height x 3 bytes (RGB, rows top-down), already
@@ -48,6 +55,7 @@
 #include <wabcut/ai/search/Embedding.h>
 #include <wabcut/model/Error.h>
 
+#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <span>
@@ -73,10 +81,21 @@ inline constexpr int kMaxAudioOutputs = 8;          ///< stems of one separation
 inline constexpr int kMaxTranslationTokens = 512;   ///< generated per text (OPUS-MT's max_length)
 inline constexpr int kMaxSegmentPoints = 64;        ///< prompt points (clicks and a box's corners) per frame
 inline constexpr int kMaxMatteSide = 4096;          ///< a segmentation matte's width and height
+inline constexpr int kMaxPictureSide = 16384;       ///< a picture of the AI video effects (input or output side)
+inline constexpr std::int64_t kMaxPicturePixels = std::int64_t{100} * 1000 * 1000; ///< input or output area
+inline constexpr int kMaxPictureModels = 4;         ///< models named by one load
+inline constexpr int kMinTile = 64;                 ///< a tile's core size, a multiple of 8
+inline constexpr int kMaxTile = 1024;
+inline constexpr int kMaxTilePad = 64;
 
 // ---- Requests ----
 struct Hello {
     int protocol = kProtocolVersion;
+};
+/// An image-to-image model of the AI video effects: the key the requests name it by, and its file.
+struct PictureModelFile {
+    std::string key;
+    std::filesystem::path path;
 };
 struct Load {
     std::string id;
@@ -95,6 +114,9 @@ struct Load {
     /// AI-14: SAM 2.1's video tracker directory: vision_encoder.onnx, mask_decoder.onnx, memory_attention.onnx,
     /// memory_encoder.onnx, pointer_tpos.onnx, constants.json.
     std::filesystem::path segmentation;
+    /// 0.7: image-to-image models of the AI video effects (key -> .onnx), loaded when the first picture needs them; a few
+    /// stay loaded (the least recently used is released).
+    std::vector<PictureModelFile> pictures;
 };
 struct ImageBatch {
     std::filesystem::path path;
@@ -176,7 +198,34 @@ struct SegmentFrame {
     int height = 0;
 };
 
-using Request = std::variant<Hello, Load, EmbedImages, EmbedText, Shutdown, Detect, EnhanceAudio, SeparateAudio, TranslateText, SegmentFrame>;
+/// 0.7: a picture file of the AI video effects: width x height pixels of 3 x uint16 (little-endian) RGB, rows top-down.
+struct PictureFile {
+    std::filesystem::path path;
+    int width = 0;
+    int height = 0;
+};
+/// One picture through one image-to-image model (the model must be loaded), in tiles of `tile` x `tile` pixels each
+/// with `pad` pixels of context on every side (reflected at the picture's edges), the pads cropped away, so memory stays
+/// bounded and the picture's size does not matter. The output (written to `output`) is `scale` times the input size.
+/// `sigma` (0..1, the noise level over 255) feeds the models that take a noise map (DRUNet); others ignore it.
+struct ProcessPicture {
+    std::string id;
+    std::string model;
+    PictureFile input;
+    std::filesystem::path output;
+    int scale = 1;
+    int tile = 256;
+    int pad = 16;
+    double sigma = 0.0;
+    /// 0.7: a second picture of the same size for the models that take two (frame interpolation: `input` is the earlier
+    /// frame, this the later one); its path is empty for the others. `timestep` (0..1) is where between them the answer lies.
+    /// Interpolation and depth models run on the whole picture (no tiles): `tile` and `pad` are ignored for them.
+    PictureFile input2;
+    double timestep = 0.5;
+};
+
+using Request = std::variant<Hello, Load, EmbedImages, EmbedText, Shutdown, Detect, EnhanceAudio, SeparateAudio, TranslateText, SegmentFrame,
+                             ProcessPicture>;
 
 // ---- Responses ----
 struct HelloReply {
@@ -242,7 +291,17 @@ struct Segmented {
     std::string device;
 };
 
-using Response = std::variant<HelloReply, Loaded, Embeddings, Failure, Detections, AudioDone, Translations, Segmented>;
+/// A process_picture request done: the picture is in its output file.
+struct PictureDone {
+    std::string id;
+    int width = 0;  ///< of the output
+    int height = 0;
+    int tiles = 0;
+    double milliseconds = 0.0;
+    std::string device;
+};
+
+using Response = std::variant<HelloReply, Loaded, Embeddings, Failure, Detections, AudioDone, Translations, Segmented, PictureDone>;
 
 std::string encode(const Request& request);
 std::string encode(const Response& response);
@@ -253,6 +312,13 @@ std::expected<Response, Error> decodeResponse(std::string_view line);
 
 /// The request id a response answers ("" for HelloReply).
 const std::string& responseId(const Response& response);
+
+/// Writes a picture of the AI video effects as a PictureFile (interleaved 16-bit RGB). Errors: InvalidArgument (out of
+/// bounds, size mismatch), IoError.
+std::expected<PictureFile, Error> writePictureFile(const std::filesystem::path& path, int width, int height,
+                                                   std::span<const std::uint16_t> rgb);
+/// Reads one back. Errors: InvalidArgument (out of bounds), IoError (missing or short file).
+std::expected<std::vector<std::uint16_t>, Error> readPictureFile(const PictureFile& file);
 
 /// Writes pictures of one size as an ImageBatch file. Errors: InvalidArgument (mixed sizes, invalid pictures, out
 /// of bounds), IoError.

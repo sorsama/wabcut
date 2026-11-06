@@ -36,6 +36,10 @@ struct Session {
     int softwareThreads = 0;
     VideoDecoderStats counted{}; ///< The decoder's stats already added to DecoderPoolStats
 
+    /// Set by DecoderPool::closePath on a session that was busy: no request is given to it any more and it closes as soon
+    /// as it is idle (its file changed on disk).
+    bool retired = false;
+
     bool isOpen() const { return video || audioDecoder; }
 };
 
@@ -110,7 +114,7 @@ struct DecoderPool::State {
     }
 
     bool matches(const Session& s, const Pending& p) const {
-        if (s.audio != p.audio) {
+        if (s.audio != p.audio || s.retired) {
             return false;
         }
         if (p.audio) {
@@ -237,6 +241,17 @@ struct DecoderPool::State {
             Session* session = nullptr;
             std::unique_ptr<Session> closed;
             std::vector<Pending> dropped;
+            // Sessions closePath() found busy close as soon as they are idle (destroyed outside the lock below).
+            std::vector<std::unique_ptr<Session>> retiredSessions;
+            for (auto it = sessions.begin(); it != sessions.end();) {
+                if ((*it)->retired && !(*it)->busy) {
+                    retiredSessions.push_back(std::move(*it));
+                    it = sessions.erase(it);
+                    ++stats.sessionsClosed;
+                } else {
+                    ++it;
+                }
+            }
             if (!paused) {
                 // Highest priority first, then submission order.
                 std::vector<std::size_t> order(queue.size());
@@ -276,6 +291,7 @@ struct DecoderPool::State {
                     p.cancel();
                 }
                 closed.reset();
+                retiredSessions.clear();
                 lock.lock();
                 if (dropped.empty()) {
                     wake.wait(lock, [&] { return stopping || changes != seen; });
@@ -294,6 +310,7 @@ struct DecoderPool::State {
                 p.cancel();
             }
             closed.reset(); // close the evicted decoder outside the lock
+            retiredSessions.clear();
             execute(*job, *session);
             lock.lock();
         }
@@ -536,6 +553,29 @@ void DecoderPool::closeIdleSessions() {
                 it = sessions.erase(it);
                 ++m_state->stats.sessionsClosed;
             } else {
+                ++it;
+            }
+        }
+        m_state->refreshCounts();
+        m_state->signal();
+    }
+    closed.clear(); // decoders are destroyed outside the lock
+}
+
+void DecoderPool::closePath(const std::string& path) {
+    std::vector<std::unique_ptr<Session>> closed;
+    {
+        std::lock_guard lock(m_state->mutex);
+        auto& sessions = m_state->sessions;
+        for (auto it = sessions.begin(); it != sessions.end();) {
+            if ((*it)->path != path) {
+                ++it;
+            } else if (!(*it)->busy) {
+                closed.push_back(std::move(*it));
+                it = sessions.erase(it);
+                ++m_state->stats.sessionsClosed;
+            } else {
+                (*it)->retired = true; // closes when its request is done; no new request is given to it
                 ++it;
             }
         }

@@ -34,6 +34,7 @@
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -43,6 +44,8 @@ class QJSEngine;
 class QQmlEngine;
 
 namespace wabcut::app {
+
+class CommandJob;
 
 class LibraryBridge;
 class ProjectController;
@@ -71,10 +74,22 @@ class EditingBridge : public QObject {
     Q_PROPERTY(QVariantList historySteps READ historySteps NOTIFY historyChanged FINAL)
     /// What the last action reported ("" after success; why it could not run otherwise).
     Q_PROPERTY(QString message READ message NOTIFY messageChanged FINAL)
+    /// 0.7 (card 143): Reload Footage reads the files on a worker thread (a probe opens each file: a network drive can take
+    /// seconds). Whether it runs, what it reads ("Reading clip.mp4"), 0..1 (-1 while unknown); cancelReload() stops it
+    /// and leaves the project as it is.
+    Q_PROPERTY(bool reloading READ reloading NOTIFY reloadChanged FINAL)
+    Q_PROPERTY(QString reloadPhase READ reloadPhase NOTIFY reloadChanged FINAL)
+    Q_PROPERTY(double reloadProgress READ reloadProgress NOTIFY reloadChanged FINAL)
 
 public:
     explicit EditingBridge(QObject* parent = nullptr);
+    ~EditingBridge() override;
     static EditingBridge* create(QQmlEngine* qmlEngine, QJSEngine* jsEngine);
+    /// Tests: run Reload Footage on the calling thread.
+    void setSynchronous(bool synchronous);
+    bool reloading() const { return m_reloading; }
+    QString reloadPhase() const { return m_reloadPhase; }
+    double reloadProgress() const { return m_reloadProgress; }
     void setController(ProjectController* controller);
     void setLibrary(LibraryBridge* library);
     void setSourceMonitor(SourceMonitorBridge* source);
@@ -117,11 +132,13 @@ public:
     command::CommandResult run(const std::string& name, command::Json params);
 
     // ---- Clip > Video Options ----
-    /// What the clip menu shows for a clip: { video (it or a linked partner is a video clip), scaleToFrame, frozen,
+    /// What the clip menu shows for a clip: { video (it or a linked partner is a video clip), scaleToFrame, nearestNeighbor, frozen,
     /// throughEdit (it meets a clip it continues: Join Through Edits applies) }.
     Q_INVOKABLE QVariantMap clipVideoInfo(const QString& key) const;
     /// Scale to Frame Size on or off for the selection (or `key` when it is not selected). Returns "" or why not.
     Q_INVOKABLE QString scaleToFrameSize(const QString& key, bool enabled);
+    /// Nearest Neighbor Scaling (0.7, card #98) on or off for the selection (or `key`). Returns "" or why not.
+    Q_INVOKABLE QString nearestNeighborScaling(const QString& key, bool enabled);
     Q_INVOKABLE QString setToFrameSize(const QString& key);
     Q_INVOKABLE QString setToFillFrame(const QString& key);
     /// Add Frame Hold / Insert Frame Hold Segment (2 seconds) at the playhead on the video clip `key`.
@@ -143,6 +160,10 @@ public:
     Q_INVOKABLE QString duplicate(const QStringList& keys);
     /// New Sequence From Clip: makes it and opens it in the timeline.
     Q_INVOKABLE QString newSequenceFromClip(const QString& key);
+    /// 0.7 (card 055): New Sequence From Clip for the media items among `keys`, in one undo step: one sequence per item
+    /// (`together` false), or ONE sequence matching the first with every item edited in after the one before it. The
+    /// first new sequence opens in the timeline. Returns "" or the message.
+    Q_INVOKABLE QString newSequencesFromClips(const QStringList& keys, bool together);
     /// The current sequence's key, or "".
     Q_INVOKABLE QString currentSequenceKey() const;
     /// Sequence Settings of `key` (sequence.settings: frameRate { num, den, fps }, width, height, pixelAspect, fields,
@@ -165,6 +186,12 @@ public:
     Q_INVOKABLE bool replaceModifierHeld(bool fromSourceMonitor) const;
     Q_INVOKABLE QString replaceFootage(const QString& mediaKey, const QUrl& file, bool rename);
     Q_INVOKABLE QString makeOffline(const QStringList& keys);
+    /// 0.7 (card 143): Reload Footage - the media items among `keys` (and the items that share their files) read their
+    /// files again in place: new length, streams and frames show up; one undo step. A toast text comes back through
+    /// message(): what was reloaded, left alone or could not be read.
+    Q_INVOKABLE QString reloadFootage(const QStringList& keys);
+    /// Stops a running Reload Footage at the next file; nothing is changed.
+    Q_INVOKABLE void cancelReload();
     /// Edit Original: the item's file in the system's default application. False when it has none.
     Q_INVOKABLE bool editOriginal(const QString& mediaKey);
     Q_INVOKABLE void openReplaceFootage(const QString& mediaKey);
@@ -174,10 +201,22 @@ public:
     Q_INVOKABLE QString makeSubsequence(bool fromInOut);
     /// Join Through Edits at `key`'s edges (empty: every one of the selection, else of the sequence).
     Q_INVOKABLE QString joinThroughEdits(const QString& key);
-    /// Go to Gap: next / previous, in the sequence or in the targeted tracks; moves the playhead. False when none.
+    /// Go to Gap: next / previous, in the sequence or in the targeted tracks (every track when none is targeted); moves
+    /// the playhead. In a track it also selects the gap it lands on (Delete then ripple-deletes it). False when none.
     Q_INVOKABLE bool goToGap(bool next, bool inSequence);
     /// Close Gap on the selection (every gap when nothing is selected).
     Q_INVOKABLE QString closeGap();
+    /// Close Gap on the clips of one track ("t3", a track key: the gap menu's "Close Gaps on V1"): the empty time where
+    /// that track (and the tracks its clips' linked partners are on) has no material goes, as one undo step. The empty
+    /// string when done, else why nothing was closed (an empty or locked track, no gap, material on another sync-locked
+    /// track). A track with no clips is refused: no clips would mean every gap of the sequence.
+    Q_INVOKABLE QString closeGapsOnTrack(const QString& trackKey);
+    /// 0.7 (card 123), Sequence > Remove Transitions / Remove All Transitions: the transitions on the selected clips, or
+    /// (`wholeSequence`) every transition of the unlocked tracks, one undo step; the empty string when done, else why not.
+    Q_INVOKABLE QString removeTransitions(bool wholeSequence);
+    /// 0.7 (card 122), Sequence > Remove Disabled Clips: every disabled clip of the unlocked tracks, leaving gaps (select
+    /// them with Edit > Select All Disabled Clips and Ripple Delete to close the gaps); one undo step.
+    Q_INVOKABLE QString removeDisabledClips();
 
     // ---- Merge Clips, Interpret Footage, Timecode ----
     Q_INVOKABLE QString mergeClips(const QStringList& mediaKeys, const QString& sync, bool removeCameraAudio,
@@ -244,6 +283,7 @@ public:
 signals:
     void preferencesChanged();
     void messageChanged();
+    void reloadChanged();
     void historyChanged();
     /// QML (EditingHost): open a dialog or panel.
     void preferencesRequested(const QString& page);
@@ -273,12 +313,22 @@ private:
     std::vector<MediaId> rawMediaOf(const QStringList& keys) const;
     QString result(const command::CommandResult& result);
     void setMessage(const QString& message);
+    void setReload(bool running, const QString& phase, double progress);
+    /// The toast text of a finished Reload Footage (message()).
+    void finishReload(const command::CommandResult& result);
+    /// Go to Gap in Track: selects the gap the playhead landed on (`at`) on the targeted tracks (all when none).
+    void selectGapAtPlayhead(Ticks at, const std::vector<TrackId>& targeted);
 
     QPointer<ProjectController> m_controller;
     QPointer<LibraryBridge> m_library;
     QPointer<SourceMonitorBridge> m_source;
     QPointer<SequenceTabsBridge> m_tabs;
     QString m_message;
+    std::unique_ptr<CommandJob> m_reloadJob;
+    bool m_reloading = false;
+    QString m_reloadPhase;
+    double m_reloadProgress = -1;
+    QString m_reloadFailure; ///< why the last Reload Footage failed ("" when it did not)
 };
 
 struct EditingBridgeForeign {

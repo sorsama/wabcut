@@ -19,9 +19,24 @@ struct LaunchPlan {
     /// --device, so a machine with an integrated GPU and a discrete one (or two cards) runs on the card that was checked.
     std::string gpuName;
     std::uint64_t gpuFreeBytes = 0;
+    /// r07: layers offloaded to the GPU (--gpu-layers); -1 = all on a GPU plan, none on the CPU.
+    int gpuLayers = -1;
+    /// r07: the vision projector (mmproj) of a library model, passed with --mmproj; empty = none.
+    std::filesystem::path projector;
 };
 /// The launch plan for an admission (Tiers.h admit()) that fits.
 LaunchPlan launchPlanFor(const Admission& admission);
+/// The advanced launch settings of one model (Settings > AI > Local models > Advanced, r07); 0 / -1 = automatic.
+struct LaunchOverrides {
+    int context = 0;    ///< --ctx-size; 0 = the tier's (8192 for other models)
+    int gpuLayers = -1; ///< --gpu-layers; -1 = all on the GPU when it fits, 0 = CPU only
+    int threads = 0;    ///< --threads; 0 = the plan's
+    bool operator==(const LaunchOverrides&) const = default;
+};
+/// Process-wide, thread-safe; planLaunch() applies them. Out-of-range values are clamped (context 512..131072,
+/// layers -1..999, threads 0..256).
+void setLaunchOverrides(const std::string& modelId, LaunchOverrides overrides);
+LaunchOverrides launchOverrides(std::string_view modelId);
 /// The llama.cpp device for `gpuName` in `llama-server --list-devices` output ("  Vulkan1: NVIDIA GeForce RTX 3060
 /// (12329 MiB, 11551 MiB free)"): the device whose description is that adapter's name (case, "(R)" and "(TM)" and
 /// spacing aside); among identical cards the one whose free memory is nearest `gpuFreeBytes`. nullopt when none matches

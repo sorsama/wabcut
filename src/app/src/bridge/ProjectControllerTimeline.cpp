@@ -380,17 +380,35 @@ QVariantMap ProjectController::trackInfo(const QString& trackId) const {
     const auto emptyAudio = emptyTracksToDelete(*seq, TrackKind::Audio).size();
     const QString custom = QString::fromStdString(track->name);
     const int number = static_cast<int>(position->index) + 1;
+    // 0.7 (card 124): the group the track is in, the groups it could join, and how many targeted tracks of its kind are in none.
+    const TrackGroup* group = seq->trackGroupOf(track->id);
+    QVariantList joinable;
+    for (const TrackGroup& g : seq->trackGroups) {
+        if (g.kind == track->kind && (!group || g.id != group->id))
+            joinable << QVariantMap{{QStringLiteral("id"), trackGroupKey(g.id)}, {QStringLiteral("name"), QString::fromStdString(g.name)}};
+    }
+    int targetedFree = 0;
+    for (const TrackPtr& t : seq->tracks(track->kind)) {
+        if (t->targeted && !seq->trackGroupOf(t->id))
+            ++targetedFree;
+    }
     return {
+        {QStringLiteral("groupId"), group ? trackGroupKey(group->id) : QString()},
+        {QStringLiteral("groupName"), group ? QString::fromStdString(group->name) : QString()},
+        {QStringLiteral("groups"), joinable},
+        {QStringLiteral("targetedFree"), targetedFree},
         {QStringLiteral("id"), trackKey(track->id)},
         {QStringLiteral("kind"), video ? QStringLiteral("video") : QStringLiteral("audio")},
         {QStringLiteral("shortName"), shortText},
         {QStringLiteral("name"), !custom.isEmpty() ? custom : video ? tr("Video %1").arg(number) : tr("Audio %1").arg(number)},
         {QStringLiteral("customName"), custom},
         {QStringLiteral("index"), static_cast<int>(position->index)},
+        {QStringLiteral("kindCount"), static_cast<int>(seq->tracks(position->kind).size())}, // 0.7: tracks of this kind
         {QStringLiteral("clipCount"), static_cast<int>(track->clips.size())},
         {QStringLiteral("locked"), track->locked},
         {QStringLiteral("syncLocked"), track->syncLocked},
         {QStringLiteral("targeted"), track->targeted},
+        {QStringLiteral("colorIndex"), track->colorIndex}, // 0.7: the track's label colour, -1 = none
         {QStringLiteral("canDelete"), reason.isEmpty()},
         {QStringLiteral("deleteReason"), reason},
         {QStringLiteral("emptyTracks"), static_cast<int>(emptyVideo + emptyAudio)},
@@ -414,6 +432,25 @@ bool ProjectController::renameTrack(const QString& trackId, const QString& name)
     const SequenceId seqId = m_sequence;
     const TrackId track = *id;
     return applyEditFn(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Rename Track"),
+                       [&](const ProjectState& state) { return edit::setTrackState(state, seqId, track, change); });
+}
+
+bool ProjectController::setTrackColor(const QString& trackId, int colorIndex) {
+    const auto id = parseTrackKey(trackId);
+    const SequencePtr seq = currentSequence();
+    if (!id || !seq || !seq->trackPosition(*id))
+        return false;
+    if (colorIndex < -1 || colorIndex > 15) {
+        setError(tr("A track's label colour is one of the 16 labels"));
+        return false;
+    }
+    if (seq->findTrack(*id) && seq->findTrack(*id)->colorIndex == colorIndex)
+        return true; // already that colour: no empty undo step
+    edit::TrackStateChange change;
+    change.colorIndex = colorIndex;
+    const SequenceId seqId = m_sequence;
+    const TrackId track = *id;
+    return applyEditFn(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Track Color"),
                        [&](const ProjectState& state) { return edit::setTrackState(state, seqId, track, change); });
 }
 
@@ -531,6 +568,27 @@ bool ProjectController::deleteTrack(const QString& trackId) {
     const TrackId track = *parseTrackKey(trackId);
     return applyEditFn(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Delete Track"),
                        [&](const ProjectState& state) { return edit::removeTrack(state, seq, track); });
+}
+
+bool ProjectController::moveTrack(const QString& trackId, int position) {
+    const std::optional<TrackId> track = parseTrackKey(trackId);
+    if (!track || trackInfo(trackId).isEmpty()) {
+        setError(tr("Choose a video or audio track to move"));
+        return false;
+    }
+    const SequenceId seq = m_sequence;
+    const std::size_t to = static_cast<std::size_t>(std::max(1, position));
+    return applyEditFn(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Move Track"),
+                       [&](const ProjectState& state) { return edit::moveTrack(state, seq, *track, to); });
+}
+
+bool ProjectController::moveTrackBy(const QString& trackId, int steps) {
+    const QVariantMap info = trackInfo(trackId);
+    if (info.isEmpty()) {
+        setError(tr("Choose a video or audio track to move"));
+        return false;
+    }
+    return moveTrack(trackId, info.value(QStringLiteral("index")).toInt() + 1 + steps);
 }
 
 int ProjectController::deleteEmptyTracks(const QString& kind) {

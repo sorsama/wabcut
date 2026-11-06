@@ -1,11 +1,13 @@
 {
   "schemaVersion": 1,
-  "updated": "2026-10-12",
+  "updated": "2026-11-03",
   "comment": "Wabcut model registry (docs/ai.md). Prices are USD per 1M tokens / per audio minute. 'verified' means id, endpoint and prices were checked against the vendor documentation in 'source' on the 'updated' date. Cache prices are omitted on purpose: estimates then bill cached tokens at the input rate, which errs on the safe side for spend caps.",
   "providers": [
     {
       "id": "local-llm",
       "name": "Local assistant",
+      "description": "Wabcut's own assistant on this computer (llama.cpp): private and free.",
+      "website": "https://github.com/ggml-org/llama.cpp",
       "api": "managed-llama",
       "baseUrl": "http://127.0.0.1:1/v1",
       "auth": "bearer",
@@ -18,6 +20,8 @@
     {
       "id": "runway",
       "name": "Runway",
+      "description": "Gen-4.5 video and Gen-4 images from a prompt or a start frame.",
+      "website": "https://runwayml.com",
       "api": "runway-generation",
       "baseUrl": "https://api.dev.runwayml.com",
       "auth": "bearer",
@@ -38,6 +42,8 @@
     {
       "id": "anthropic",
       "name": "Anthropic",
+      "description": "Claude models: careful, capable assistants with strong tool use.",
+      "website": "https://www.anthropic.com",
       "api": "anthropic-messages",
       "baseUrl": "https://api.anthropic.com",
       "auth": "x-api-key",
@@ -53,6 +59,8 @@
     {
       "id": "openai",
       "name": "OpenAI",
+      "description": "GPT models for the assistant, plus voices.",
+      "website": "https://openai.com",
       "api": "openai-responses",
       "baseUrl": "https://api.openai.com/v1",
       "auth": "bearer",
@@ -67,6 +75,8 @@
     {
       "id": "gemini",
       "name": "Google Gemini",
+      "description": "Gemini models that watch video natively, plus Veo video and voices.",
+      "website": "https://ai.google.dev",
       "api": "gemini-interactions",
       "baseUrl": "https://generativelanguage.googleapis.com",
       "auth": "x-goog-api-key",
@@ -82,6 +92,8 @@
     {
       "id": "deepgram",
       "name": "Deepgram",
+      "description": "Fast, accurate speech-to-text with word timings and speakers.",
+      "website": "https://deepgram.com",
       "api": "deepgram-listen",
       "baseUrl": "https://api.deepgram.com",
       "auth": "token",
@@ -96,6 +108,8 @@
     {
       "id": "elevenlabs",
       "name": "ElevenLabs",
+      "description": "Natural voices for dubbing and narration, plus transcription and sound effects.",
+      "website": "https://elevenlabs.io",
       "api": "elevenlabs-stt",
       "baseUrl": "https://api.elevenlabs.io",
       "auth": "xi-api-key",
@@ -111,6 +125,8 @@
     {
       "id": "assemblyai",
       "name": "AssemblyAI",
+      "description": "Speech-to-text with speaker labels in many languages.",
+      "website": "https://www.assemblyai.com",
       "api": "assemblyai",
       "baseUrl": "https://api.assemblyai.com",
       "auth": "raw",
@@ -125,6 +141,8 @@
     {
       "id": "mistral",
       "name": "Mistral AI",
+      "description": "European models: Mistral Large and Small for the assistant, Voxtral for transcription.",
+      "website": "https://mistral.ai",
       "api": "chat-completions",
       "baseUrl": "https://api.mistral.ai/v1",
       "auth": "bearer",
@@ -139,6 +157,8 @@
     {
       "id": "openrouter",
       "name": "OpenRouter",
+      "description": "One key for hundreds of models from many providers: add the model ids you want.",
+      "website": "https://openrouter.ai",
       "api": "chat-completions",
       "baseUrl": "https://openrouter.ai/api/v1",
       "auth": "bearer",
@@ -154,6 +174,8 @@
     {
       "id": "groq",
       "name": "Groq",
+      "description": "Very fast inference of open models on Groq's own chips.",
+      "website": "https://groq.com",
       "api": "chat-completions",
       "baseUrl": "https://api.groq.com/openai/v1",
       "auth": "bearer",
@@ -168,6 +190,8 @@
     {
       "id": "ollama",
       "name": "Ollama (this computer)",
+      "description": "Runs open models on this computer: add the models you pulled.",
+      "website": "https://ollama.com",
       "api": "chat-completions",
       "baseUrl": "http://localhost:11434/v1",
       "auth": "bearer",
@@ -184,6 +208,8 @@
     {
       "id": "lmstudio",
       "name": "LM Studio (this computer)",
+      "description": "Desktop app that serves the models you downloaded on this computer.",
+      "website": "https://lmstudio.ai",
       "api": "chat-completions",
       "baseUrl": "http://localhost:1234/v1",
       "auth": "bearer",
@@ -200,6 +226,8 @@
     {
       "id": "llama-server",
       "name": "llama.cpp server (this computer)",
+      "description": "The llama.cpp server running on this computer: add the model it serves.",
+      "website": "https://github.com/ggml-org/llama.cpp",
       "api": "chat-completions",
       "baseUrl": "http://127.0.0.1:9931/v1",
       "auth": "bearer",
@@ -212,6 +240,695 @@
       "verified": true,
       "source": "https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md",
       "notes": "Default port 9931 since build b11521 (2026-10-09); older builds listen on 8080."
+    },
+    {
+      "id": "xai",
+      "name": "xAI (Grok)",
+      "api": "chat-completions",
+      "baseUrl": "https://api.x.ai/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_XAI_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "consoleUrl": "https://console.x.ai",
+      "termsUrl": "https://docs.x.ai/developers/faq/security",
+      "dataPolicy": "Not used for training without permission; kept encrypted for 30 days for abuse checks (zero retention can be enabled).",
+      "description": "Grok models with strong tool use and a very long context.",
+      "website": "https://x.ai",
+      "verified": true,
+      "source": "https://docs.x.ai/developers/rest-api-reference/inference"
+    },
+    {
+      "id": "deepseek",
+      "name": "DeepSeek",
+      "api": "chat-completions",
+      "baseUrl": "https://api.deepseek.com",
+      "auth": "bearer",
+      "envVar": "WABCUT_DEEPSEEK_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "consoleUrl": "https://platform.deepseek.com/api_keys",
+      "termsUrl": "https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html",
+      "dataPolicy": "Inputs may be used to improve DeepSeek models, and data is stored in the People's Republic of China.",
+      "description": "Low-cost reasoning models with a 1M-token context.",
+      "website": "https://www.deepseek.com",
+      "verified": true,
+      "source": "https://api-docs.deepseek.com/quick_start/pricing"
+    },
+    {
+      "id": "together",
+      "name": "Together AI",
+      "api": "chat-completions",
+      "baseUrl": "https://api.together.ai/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_TOGETHER_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "consoleUrl": "https://api.together.ai/settings/projects/~current/api-keys",
+      "termsUrl": "https://docs.together.ai/docs/zero-data-retention",
+      "dataPolicy": "Prompts and answers are stored unless you turn off prompt storage (then zero retention); training needs a separate opt-in.",
+      "description": "A large catalogue of open models: gpt-oss, DeepSeek, Kimi, GLM and Qwen.",
+      "website": "https://www.together.ai",
+      "verified": true,
+      "source": "https://docs.together.ai/docs/openai-api-compatibility"
+    },
+    {
+      "id": "fireworks",
+      "name": "Fireworks AI",
+      "api": "chat-completions",
+      "baseUrl": "https://api.fireworks.ai/inference/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_FIREWORKS_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "consoleUrl": "https://app.fireworks.ai/settings/users/api-keys",
+      "termsUrl": "https://docs.fireworks.ai/guides/security_compliance/data_handling",
+      "dataPolicy": "Prompts and answers to open models are not stored by default (zero data retention) unless you opt in.",
+      "description": "Fast, production-grade serverless inference of open models.",
+      "website": "https://fireworks.ai",
+      "verified": true,
+      "source": "https://docs.fireworks.ai/tools-sdks/openai-compatibility"
+    },
+    {
+      "id": "cerebras",
+      "name": "Cerebras",
+      "api": "chat-completions",
+      "baseUrl": "https://api.cerebras.ai/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_CEREBRAS_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "consoleUrl": "https://cloud.cerebras.ai",
+      "termsUrl": "https://www.cerebras.ai/privacy-policy",
+      "dataPolicy": "Cerebras says it does not retain the inputs and outputs of its inference service.",
+      "description": "Extremely fast inference of open models on wafer-scale chips.",
+      "website": "https://www.cerebras.ai",
+      "verified": true,
+      "source": "https://inference-docs.cerebras.ai/models/overview"
+    },
+    {
+      "id": "cohere",
+      "name": "Cohere",
+      "api": "chat-completions",
+      "baseUrl": "https://api.cohere.ai/compatibility/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_COHERE_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "consoleUrl": "https://dashboard.cohere.com/api-keys",
+      "termsUrl": "https://cohere.com/data-usage-policy",
+      "dataPolicy": "Prompts and answers may train Cohere models unless you switch off Data Controls; logs are deleted after 30 days.",
+      "description": "Command models for tool use, retrieval and many languages.",
+      "website": "https://cohere.com",
+      "verified": true,
+      "source": "https://docs.cohere.com/docs/compatibility-api",
+      "notes": "GET /models on the compatibility API is not documented but answers 401 to a bad key (checked 2026-11-03)."
+    },
+    {
+      "id": "azure-openai",
+      "name": "Azure OpenAI (Foundry)",
+      "api": "chat-completions",
+      "baseUrl": "https://{resource}.openai.azure.com/openai/v1",
+      "auth": "header",
+      "envVar": "WABCUT_AZURE_OPENAI_API_KEY",
+      "authHeader": "api-key",
+      "configurableBaseUrl": true,
+      "consoleUrl": "https://ai.azure.com",
+      "termsUrl": "https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy",
+      "dataPolicy": "Not used to train models or shared with model providers; abuse-monitoring data may be kept unless Microsoft approves an opt-out.",
+      "description": "OpenAI and partner models deployed in your own Azure resource: set your resource address, then add your deployment names as models.",
+      "website": "https://azure.microsoft.com/products/ai-foundry",
+      "verified": true,
+      "source": "https://learn.microsoft.com/en-us/azure/ai-foundry/openai/api-version-lifecycle",
+      "notes": "v1 API: no api-version needed; the model is your deployment name. No documented free key check, so keys are saved unchecked."
+    },
+    {
+      "id": "bedrock",
+      "name": "Amazon Bedrock",
+      "api": "chat-completions",
+      "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_BEDROCK_API_KEY",
+      "configurableBaseUrl": true,
+      "consoleUrl": "https://console.aws.amazon.com/bedrock/home#/api-keys",
+      "termsUrl": "https://docs.aws.amazon.com/bedrock/latest/userguide/data-protection.html",
+      "dataPolicy": "Model providers have no access to your prompts and answers: Bedrock runs the models in AWS-operated accounts.",
+      "description": "Models of many vendors inside your AWS account, with a Bedrock API key (change the region in the address).",
+      "website": "https://aws.amazon.com/bedrock",
+      "verified": true,
+      "source": "https://docs.aws.amazon.com/bedrock/latest/userguide/inference-chat-completions.html",
+      "notes": "bedrock-runtime has no GET /models, so keys are saved unchecked. Region us-east-1 by default."
+    },
+    {
+      "id": "moonshot",
+      "name": "Moonshot AI (Kimi)",
+      "api": "chat-completions",
+      "baseUrl": "https://api.moonshot.ai/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_MOONSHOT_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "consoleUrl": "https://platform.kimi.ai/console/api-keys",
+      "termsUrl": "https://www.kimi.com/en/help/kimi-api/api-data-security",
+      "dataPolicy": "Moonshot says API inputs and outputs are used only to answer the request and not for training.",
+      "description": "Kimi long-context models for agents and coding.",
+      "website": "https://platform.kimi.ai",
+      "verified": true,
+      "source": "https://platform.kimi.ai/docs/guide/start-using-kimi-api"
+    },
+    {
+      "id": "alibaba",
+      "name": "Alibaba Cloud Model Studio (Qwen)",
+      "api": "chat-completions",
+      "baseUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_ALIBABA_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "configurableBaseUrl": true,
+      "consoleUrl": "https://modelstudio.console.alibabacloud.com",
+      "termsUrl": "https://www.alibabacloud.com/help/en/legal/latest/alibaba-cloud-international-website-product-terms-of-service",
+      "dataPolicy": "Alibaba says Model Studio does not use customer data for training; check its terms for retention.",
+      "description": "Qwen models (Max, Plus, Flash) with 1M-token inputs, served from Singapore.",
+      "website": "https://www.alibabacloud.com/en/product/modelstudio",
+      "verified": true,
+      "source": "https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope",
+      "notes": "Keys are tied to the Singapore region; a workspace address (https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1) also works."
+    },
+    {
+      "id": "zai",
+      "name": "Z.ai (GLM)",
+      "api": "chat-completions",
+      "baseUrl": "https://api.z.ai/api/paas/v4",
+      "auth": "bearer",
+      "envVar": "WABCUT_ZAI_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "consoleUrl": "https://z.ai/manage-apikey/apikey-list",
+      "termsUrl": "https://docs.z.ai/legal-agreement/privacy-policy",
+      "dataPolicy": "Z.ai says it processes content in real time without storing it, and API content is not used for training.",
+      "description": "GLM models with a 1M context, strong at coding and agents.",
+      "website": "https://z.ai",
+      "verified": true,
+      "source": "https://docs.z.ai/api-reference/llm/chat-completion",
+      "notes": "Pay-as-you-go keys only work on /api/paas/v4 (not the coding-plan address)."
+    },
+    {
+      "id": "minimax",
+      "name": "MiniMax",
+      "api": "chat-completions",
+      "baseUrl": "https://api.minimax.io/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_MINIMAX_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "consoleUrl": "https://platform.minimax.io/user-center/basic-information/interface-key",
+      "termsUrl": "https://platform.minimax.io/protocol/terms-of-service",
+      "dataPolicy": "No official statement on API data use was found; check MiniMax's terms before sending private material.",
+      "description": "MiniMax M3 models: multimodal, 1M context, very low prices.",
+      "website": "https://www.minimax.io",
+      "verified": true,
+      "source": "https://platform.minimax.io/docs/api-reference/text-openai-api"
+    },
+    {
+      "id": "nvidia",
+      "name": "NVIDIA NIM (API catalog)",
+      "api": "chat-completions",
+      "baseUrl": "https://integrate.api.nvidia.com/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_NVIDIA_API_KEY",
+      "consoleUrl": "https://build.nvidia.com/settings/api-key",
+      "termsUrl": "https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf",
+      "dataPolicy": "Hosted trial endpoints are for evaluation; the trial terms may allow NVIDIA to use content to improve its products.",
+      "description": "Free-credit hosted Nemotron and partner models for trying things out (not for production).",
+      "website": "https://build.nvidia.com",
+      "verified": false,
+      "source": "https://docs.api.nvidia.com/nim/reference/llm-apis",
+      "notes": "GET /v1/models is public, so it cannot check a key: keys are saved unchecked. Bearer auth (nvapi-...) is the common form; the docs do not state it."
+    },
+    {
+      "id": "huggingface",
+      "name": "Hugging Face (Inference Providers)",
+      "api": "chat-completions",
+      "baseUrl": "https://router.huggingface.co/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_HUGGINGFACE_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "https://huggingface.co/api/whoami-v2"
+      },
+      "consoleUrl": "https://huggingface.co/settings/tokens/new?tokenType=fineGrained",
+      "termsUrl": "https://huggingface.co/docs/inference-providers/security",
+      "dataPolicy": "Hugging Face does not train on your data or keep request bodies (debug logs up to 30 days); each serving provider's own policy applies.",
+      "description": "One token for many inference providers at their own prices; the same token downloads gated local models.",
+      "website": "https://huggingface.co/inference/models",
+      "verified": true,
+      "source": "https://huggingface.co/docs/inference-providers/index",
+      "notes": "Use a fine-grained token with \"Make calls to Inference Providers\". Model ids may end in :fastest, :cheapest or :<provider>."
+    },
+    {
+      "id": "sambanova",
+      "name": "SambaNova Cloud",
+      "api": "chat-completions",
+      "baseUrl": "https://api.sambanova.ai/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_SAMBANOVA_API_KEY",
+      "consoleUrl": "https://cloud.sambanova.ai/apis",
+      "termsUrl": "https://community.sambanova.ai/t/data-handling-and-retention/1314",
+      "dataPolicy": "SambaNova staff say prompts are not stored or used for training by default; no formal API policy page was found.",
+      "description": "Very fast open-model inference on SambaNova's own chips.",
+      "website": "https://sambanova.ai",
+      "verified": true,
+      "source": "https://docs.sambanova.ai/docs/en/get-started/api-keys-urls",
+      "notes": "GET /v1/models is public, so keys are saved unchecked."
+    },
+    {
+      "id": "deepinfra",
+      "name": "DeepInfra",
+      "api": "chat-completions",
+      "baseUrl": "https://api.deepinfra.com/v1/openai",
+      "auth": "bearer",
+      "envVar": "WABCUT_DEEPINFRA_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "consoleUrl": "https://deepinfra.com/dash/api_keys",
+      "termsUrl": "https://deepinfra.com/privacy",
+      "dataPolicy": "DeepInfra says it does not store, sell or train on your data without your consent.",
+      "description": "Low-priced pay-per-token inference for a large catalogue of open models.",
+      "website": "https://deepinfra.com",
+      "verified": true,
+      "source": "https://docs.deepinfra.com/chat/overview"
+    },
+    {
+      "id": "nebius",
+      "name": "Nebius Token Factory",
+      "api": "chat-completions",
+      "baseUrl": "https://api.tokenfactory.nebius.com/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_NEBIUS_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "consoleUrl": "https://tokenfactory.nebius.com",
+      "termsUrl": "https://docs.tokenfactory.nebius.com/legal/legal-quick-guide",
+      "dataPolicy": "With Zero Data Retention on, nothing is stored or used for training; without it, inputs and outputs may be kept to train smaller models.",
+      "description": "Open models in EU and US data centres (formerly Nebius AI Studio); add the model ids you use.",
+      "website": "https://tokenfactory.nebius.com",
+      "verified": false,
+      "source": "https://docs.tokenfactory.nebius.com/",
+      "notes": "Base URL and auth confirmed 2026-11-03; the model list needs a key, so add model ids yourself (or use Fetch models)."
+    },
+    {
+      "id": "novita",
+      "name": "Novita AI",
+      "api": "chat-completions",
+      "baseUrl": "https://api.novita.ai/openai/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_NOVITA_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "https://api.novita.ai/v3/user"
+      },
+      "consoleUrl": "https://novita.ai/settings/key-management",
+      "termsUrl": "https://novita.ai/legal/terms-of-service",
+      "dataPolicy": "No official statement on API data use was found; check Novita's terms before sending private material.",
+      "description": "Cheap serverless inference of many open models, including new releases soon after launch.",
+      "website": "https://novita.ai",
+      "verified": true,
+      "source": "https://docs.novita.ai/guides/llm-api",
+      "notes": "GET /openai/v1/models is public; the key check uses /v3/user (answers 403 to a bad key)."
+    },
+    {
+      "id": "cloudflare",
+      "name": "Cloudflare Workers AI",
+      "api": "chat-completions",
+      "baseUrl": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_CLOUDFLARE_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "https://api.cloudflare.com/client/v4/user/tokens/verify"
+      },
+      "configurableBaseUrl": true,
+      "consoleUrl": "https://dash.cloudflare.com/profile/api-tokens",
+      "termsUrl": "https://developers.cloudflare.com/workers-ai/platform/data-usage/",
+      "dataPolicy": "Workers AI does not train on your content and does not keep inputs or outputs after a standard request.",
+      "description": "Serverless open models with a free daily allowance: put your account id in the address.",
+      "website": "https://developers.cloudflare.com/workers-ai/",
+      "verified": false,
+      "source": "https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/",
+      "notes": "There is no models list; the key check is Cloudflare's token verify (user API tokens). Billed in neurons: no price is booked here."
+    },
+    {
+      "id": "vllm",
+      "name": "vLLM server",
+      "api": "chat-completions",
+      "baseUrl": "http://localhost:8000/v1",
+      "auth": "bearer",
+      "keyRequired": false,
+      "envVar": "WABCUT_VLLM_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "local": true,
+      "configurableBaseUrl": true,
+      "dataPolicy": "Runs on this computer; nothing is uploaded.",
+      "description": "High-throughput open-source inference server; add the model you serve.",
+      "website": "https://docs.vllm.ai",
+      "verified": true,
+      "source": "https://docs.vllm.ai/en/latest/serving/online_serving/",
+      "notes": "Default port 8000 (vllm serve --port). A key is only needed when the server was started with --api-key."
+    },
+    {
+      "id": "litellm",
+      "name": "LiteLLM proxy",
+      "api": "chat-completions",
+      "baseUrl": "http://localhost:4000/v1",
+      "auth": "bearer",
+      "keyRequired": false,
+      "envVar": "WABCUT_LITELLM_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "local": true,
+      "configurableBaseUrl": true,
+      "dataPolicy": "Runs on your machine; requests go on to the upstream providers you configured in LiteLLM.",
+      "description": "Self-hosted gateway that puts 100+ providers behind one API; save its master or virtual key.",
+      "website": "https://docs.litellm.ai",
+      "verified": false,
+      "source": "https://docs.litellm.ai/docs/proxy/virtual_keys",
+      "notes": "Port 4000 as in every doc example; the proxy also answers without /v1."
+    },
+    {
+      "id": "localai",
+      "name": "LocalAI",
+      "api": "chat-completions",
+      "baseUrl": "http://localhost:8080/v1",
+      "auth": "bearer",
+      "keyRequired": false,
+      "envVar": "WABCUT_LOCALAI_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "local": true,
+      "configurableBaseUrl": true,
+      "dataPolicy": "Runs on this computer; nothing is uploaded.",
+      "description": "Self-hosted OpenAI-compatible server for open models on CPU or GPU.",
+      "website": "https://localai.io",
+      "verified": true,
+      "source": "https://localai.io/docs/basics/getting_started/"
+    },
+    {
+      "id": "jan",
+      "name": "Jan (this computer)",
+      "api": "chat-completions",
+      "baseUrl": "http://127.0.0.1:1337/v1",
+      "auth": "bearer",
+      "keyRequired": false,
+      "envVar": "WABCUT_JAN_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/models"
+      },
+      "local": true,
+      "configurableBaseUrl": true,
+      "dataPolicy": "Runs on this computer; nothing is uploaded.",
+      "description": "Desktop app with a local API server for the models you downloaded in it.",
+      "website": "https://jan.ai",
+      "verified": true,
+      "source": "https://docs.jan.ai/desktop/api-server",
+      "notes": "Default 127.0.0.1:1337 with the /v1 prefix; set an API key in Jan if you turned that on."
+    },
+    {
+      "id": "deepl",
+      "name": "DeepL API Pro",
+      "api": "deepl",
+      "baseUrl": "https://api.deepl.com",
+      "auth": "header",
+      "authHeader": "Authorization",
+      "authPrefix": "DeepL-Auth-Key ",
+      "envVar": "WABCUT_DEEPL_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/v2/usage"
+      },
+      "consoleUrl": "https://www.deepl.com/your-account/keys",
+      "termsUrl": "https://www.deepl.com/pro-license",
+      "dataPolicy": "Caption text is sent to DeepL for translation; the DeepL API terms govern how long it is kept.",
+      "description": "Caption translation with DeepL's translation models (paid API plans).",
+      "website": "https://www.deepl.com/pro-api",
+      "verified": true,
+      "source": "https://developers.deepl.com/docs/getting-started/auth",
+      "notes": "Checked 2026-11-03: Authorization: DeepL-Auth-Key, POST /v2/translate, GET /v2/usage, 128 KiB per request, 456 = quota used up. Keys ending in ':fx' belong to DeepL API Free (its own provider)."
+    },
+    {
+      "id": "deepl-free",
+      "name": "DeepL API Free",
+      "api": "deepl",
+      "baseUrl": "https://api-free.deepl.com",
+      "auth": "header",
+      "authHeader": "Authorization",
+      "authPrefix": "DeepL-Auth-Key ",
+      "envVar": "WABCUT_DEEPL_FREE_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/v2/usage"
+      },
+      "consoleUrl": "https://www.deepl.com/your-account/keys",
+      "termsUrl": "https://www.deepl.com/pro-license",
+      "dataPolicy": "Caption text is sent to DeepL for translation; on the free plan DeepL may use it to improve its models (see its terms).",
+      "description": "Caption translation with an existing DeepL API Free key (keys ending in :fx).",
+      "website": "https://www.deepl.com/pro-api",
+      "verified": true,
+      "source": "https://developers.deepl.com/docs/getting-started/auth",
+      "notes": "Checked 2026-11-03: free keys end in ':fx' and use api-free.deepl.com. DeepL no longer sells the legacy API Free plan; existing keys keep working."
+    },
+    {
+      "id": "google-translate",
+      "name": "Google Cloud Translation",
+      "api": "google-translate",
+      "baseUrl": "https://translation.googleapis.com",
+      "auth": "x-goog-api-key",
+      "envVar": "WABCUT_GOOGLE_TRANSLATE_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/language/translate/v2/languages?target=en"
+      },
+      "consoleUrl": "https://console.cloud.google.com/apis/credentials",
+      "termsUrl": "https://cloud.google.com/translate/data-usage",
+      "dataPolicy": "Caption text is sent to Google Cloud Translation; Google's Cloud terms govern its use.",
+      "description": "Caption translation into 100+ languages (Cloud Translation Basic, an API key from a Google Cloud project).",
+      "website": "https://cloud.google.com/translate",
+      "verified": true,
+      "source": "https://docs.cloud.google.com/translate/docs/reference/rest/v2/translate",
+      "notes": "Checked 2026-11-03: POST /language/translate/v2 with q[] (at most 128), $20 per 1M characters after the first 500k a month. The key goes in the x-goog-api-key header, Google Cloud's documented way to send API keys (docs.cloud.google.com/docs/authentication/api-keys-use); the v2 reference itself shows ?key=."
+    },
+    {
+      "id": "speechmatics",
+      "name": "Speechmatics",
+      "api": "speechmatics",
+      "baseUrl": "https://eu1.asr.api.speechmatics.com/v2",
+      "auth": "bearer",
+      "configurableBaseUrl": true,
+      "envVar": "WABCUT_SPEECHMATICS_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/jobs"
+      },
+      "consoleUrl": "https://portal.speechmatics.com/settings/api-keys",
+      "termsUrl": "https://www.speechmatics.com/terms-and-conditions",
+      "dataPolicy": "Audio is uploaded to Speechmatics for transcription; Wabcut deletes the job (audio and transcript) as soon as the transcript is read.",
+      "description": "Accurate transcription in 50+ languages with speakers; EU, US or AU processing (set the region in the base URL).",
+      "website": "https://www.speechmatics.com",
+      "verified": true,
+      "source": "https://docs.speechmatics.com/api-ref/batch/create-a-new-job",
+      "notes": "Checked 2026-11-03: regions eu1 (default here), us1, au1: https://<region>.asr.api.speechmatics.com/v2. Uploads under 1 GB; jobs kept 7 days unless deleted."
+    },
+    {
+      "id": "gladia",
+      "name": "Gladia",
+      "api": "gladia",
+      "baseUrl": "https://api.gladia.io",
+      "auth": "header",
+      "authHeader": "x-gladia-key",
+      "envVar": "WABCUT_GLADIA_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/v2/pre-recorded?limit=1"
+      },
+      "consoleUrl": "https://app.gladia.io/apikeys",
+      "termsUrl": "https://www.gladia.io/terms-and-conditions",
+      "dataPolicy": "Audio is uploaded to Gladia for transcription; Wabcut deletes the job (audio and transcript) as soon as the transcript is read.",
+      "description": "Multilingual transcription with speakers and automatic language detection.",
+      "website": "https://www.gladia.io",
+      "verified": true,
+      "source": "https://docs.gladia.io/api-reference/v2/pre-recorded/init",
+      "notes": "Checked 2026-11-03: x-gladia-key; /v2/upload, /v2/pre-recorded, poll, DELETE. 135 minutes and 1000 MB per file. The key check lists one pre-recorded job (GET /v2/pre-recorded?limit=1, read-only, 401 for a bad key; docs.gladia.io/api-reference/v2/pre-recorded/list)."
+    },
+    {
+      "id": "cartesia",
+      "name": "Cartesia",
+      "api": "cartesia-tts",
+      "baseUrl": "https://api.cartesia.ai",
+      "auth": "bearer",
+      "headers": {
+        "Cartesia-Version": "2026-08-14"
+      },
+      "envVar": "WABCUT_CARTESIA_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/voices?limit=1"
+      },
+      "consoleUrl": "https://play.cartesia.ai/keys",
+      "termsUrl": "https://cartesia.ai/legal/terms",
+      "dataPolicy": "Narration text is sent to Cartesia to make the voice-over; Cartesia's terms govern its use.",
+      "description": "Fast, natural voices (Sonic) for narration and dubbing.",
+      "website": "https://cartesia.ai",
+      "verified": true,
+      "source": "https://docs.cartesia.ai/api-reference/tts/bytes",
+      "notes": "Checked 2026-11-03: POST /tts/bytes, Authorization: Bearer, Cartesia-Version 2026-08-14 (the only accepted value), voices by UUID; GET /voices for a key check."
+    },
+    {
+      "id": "fish-audio",
+      "name": "Fish Audio",
+      "api": "fish-tts",
+      "baseUrl": "https://api.fish.audio",
+      "auth": "bearer",
+      "envVar": "WABCUT_FISH_AUDIO_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/wallet/self/api-credit"
+      },
+      "consoleUrl": "https://fish.audio/app/api-keys",
+      "termsUrl": "https://fish.audio/terms",
+      "dataPolicy": "Narration text is sent to Fish Audio to make the voice-over; Fish Audio's terms govern its use.",
+      "description": "Expressive voices and a large public voice library for narration and dubbing.",
+      "website": "https://fish.audio",
+      "verified": true,
+      "source": "https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech",
+      "notes": "Checked 2026-11-03: POST /v1/tts with a 'model' header, Bearer auth; billed per UTF-8 byte."
+    },
+    {
+      "id": "stability",
+      "name": "Stability AI",
+      "api": "stability-image",
+      "baseUrl": "https://api.stability.ai",
+      "auth": "bearer",
+      "envVar": "WABCUT_STABILITY_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/v1/user/balance"
+      },
+      "consoleUrl": "https://platform.stability.ai/account/keys",
+      "termsUrl": "https://stability.ai/terms-of-use",
+      "dataPolicy": "Prompts are sent to Stability AI; review its terms before consenting.",
+      "description": "Stable Image Ultra, Core and Stable Diffusion 3.5 stills (thumbnails, title cards, B-roll stills).",
+      "website": "https://stability.ai",
+      "verified": true,
+      "source": "https://docs.stability.ai/api-reference",
+      "notes": "Checked 2026-11-03: POST /v2beta/stable-image/generate/{ultra,core,sd3}, multipart, Accept: image/*; 1 credit = $0.01."
+    },
+    {
+      "id": "bfl",
+      "name": "Black Forest Labs",
+      "api": "bfl-flux",
+      "baseUrl": "https://api.bfl.ai",
+      "auth": "header",
+      "authHeader": "x-key",
+      "envVar": "WABCUT_BFL_API_KEY",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/v1/credits"
+      },
+      "consoleUrl": "https://dashboard.bfl.ai",
+      "termsUrl": "https://bfl.ai/legal/terms-of-service",
+      "dataPolicy": "Prompts and reference images are sent to Black Forest Labs; review its terms before consenting.",
+      "description": "FLUX image generation from the makers of FLUX.",
+      "website": "https://bfl.ai",
+      "verified": true,
+      "source": "https://docs.bfl.ai/api_integration/integration_guidelines",
+      "notes": "Checked 2026-11-03: x-key; submit returns polling_url (api.bfl.ai / api.eu.bfl.ai / api.us.bfl.ai), results on delivery.*.bfl.ai for 10 minutes."
+    },
+    {
+      "id": "ideogram",
+      "name": "Ideogram",
+      "api": "ideogram",
+      "baseUrl": "https://api.ideogram.ai",
+      "auth": "header",
+      "authHeader": "Api-Key",
+      "envVar": "WABCUT_IDEOGRAM_API_KEY",
+      "consoleUrl": "https://ideogram.ai/manage-api",
+      "termsUrl": "https://ideogram.ai/legal/api-tos",
+      "dataPolicy": "Prompts are sent to Ideogram; review its terms before consenting.",
+      "description": "Images with legible text: thumbnails, title cards, posters.",
+      "website": "https://ideogram.ai",
+      "verified": true,
+      "source": "https://developer.ideogram.ai/v2/api-reference/images/generate/ideogram-3",
+      "notes": "Checked 2026-11-03: POST /v2/image/generate/ideogram-3, Api-Key header; images on ideogram.ai, expiring. The model prices come from a summary of ideogram.ai/api-pricing (the page renders them with script), so the models stay unverified. No key-check call works for every key (checked 2026-11-03: the v2 account endpoints answer 404 to keys of non-admin members), so the key is checked on first use."
+    },
+    {
+      "id": "fal",
+      "name": "fal.ai",
+      "api": "fal-queue",
+      "baseUrl": "https://queue.fal.run",
+      "auth": "header",
+      "authHeader": "Authorization",
+      "authPrefix": "Key ",
+      "envVar": "WABCUT_FAL_KEY",
+      "consoleUrl": "https://fal.ai/dashboard/keys",
+      "termsUrl": "https://fal.ai/terms",
+      "dataPolicy": "Prompts and start images are sent to fal.ai and the model's host; outputs stay on fal's CDN for the time your account sets.",
+      "description": "One key for many image, video and sound-effect models (FLUX, Kling, ElevenLabs, MMAudio).",
+      "website": "https://fal.ai",
+      "verified": true,
+      "source": "https://fal.ai/docs/model-apis/model-endpoints/queue",
+      "notes": "Checked 2026-11-03: Authorization: Key; queue submit/status/result/cancel on queue.fal.run; outputs on fal.media, v3.fal.media, v3b.fal.media. No free key-check call: the key is checked on first use. Any fal model id can be added; models other than the listed families get the common inputs (prompt, image_url, duration, aspect_ratio)."
+    },
+    {
+      "id": "replicate",
+      "name": "Replicate",
+      "api": "replicate",
+      "baseUrl": "https://api.replicate.com/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_REPLICATE_API_TOKEN",
+      "keyCheck": {
+        "method": "GET",
+        "path": "/account"
+      },
+      "consoleUrl": "https://replicate.com/account/api-tokens",
+      "termsUrl": "https://replicate.com/terms",
+      "dataPolicy": "Prompts are sent to Replicate and the model's author; API outputs are deleted after an hour.",
+      "description": "Run open and official image models (FLUX) with one token.",
+      "website": "https://replicate.com",
+      "verified": true,
+      "source": "https://replicate.com/docs/reference/http",
+      "notes": "Checked 2026-11-03: POST /models/{owner}/{name}/predictions, GET /predictions/{id}, POST .../cancel; outputs on replicate.delivery fetched with the token, deleted after 1 hour. Video models are not listed: Replicate publishes no price for them, so a spend cap could not be kept."
     }
   ],
   "models": [
@@ -767,6 +1484,1887 @@
       "verified": true,
       "source": "https://ai.google.dev/gemini-api/docs/pricing",
       "notes": "Checked 2026-10-12: $0.50 per 1M text tokens and $9.00 per 1M audio tokens at 25 tokens a second (= $0.0135 per minute) through 2026-12-31, double from 2027-01-01. GA 2026-09-22."
+    },
+    {
+      "id": "grok-4.7",
+      "provider": "xai",
+      "name": "Grok 4.7",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "vision": true,
+        "toolsOnChat": true,
+        "forcedToolChoice": false
+      },
+      "contextTokens": 500000,
+      "prices": [
+        {
+          "inputPerMTok": 2.0,
+          "outputPerMTok": 6.0
+        },
+        {
+          "aboveInputTokens": 200000,
+          "inputPerMTok": 4.0,
+          "outputPerMTok": 12.0
+        }
+      ],
+      "verified": true,
+      "source": "https://docs.x.ai/developers/models/grok-4.7",
+      "notes": "Checked 2026-11-03: $2 / $6 per 1M tokens, double above 200K input tokens."
+    },
+    {
+      "id": "deepseek-flash",
+      "provider": "deepseek",
+      "name": "DeepSeek V4.1 Flash",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "contextTokens": 1000000,
+      "prices": [
+        {
+          "inputPerMTok": 0.3,
+          "outputPerMTok": 1.2
+        }
+      ],
+      "verified": true,
+      "source": "https://api-docs.deepseek.com/quick_start/pricing",
+      "notes": "Checked 2026-11-03: peak-hour prices (off-peak is half). Tool support not confirmed on the pricing page."
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "provider": "deepseek",
+      "name": "DeepSeek V4 Pro",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "contextTokens": 1000000,
+      "prices": [
+        {
+          "inputPerMTok": 1.32,
+          "outputPerMTok": 3.96
+        }
+      ],
+      "verified": true,
+      "source": "https://api-docs.deepseek.com/quick_start/pricing",
+      "notes": "Checked 2026-11-03: peak-hour prices (off-peak is half)."
+    },
+    {
+      "id": "together:openai/gpt-oss-120b",
+      "provider": "together",
+      "name": "GPT-OSS 120B",
+      "apiId": "openai/gpt-oss-120b",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "toolsOnChat": true,
+        "forcedToolChoice": false
+      },
+      "contextTokens": 131072,
+      "prices": [
+        {
+          "inputPerMTok": 0.15,
+          "outputPerMTok": 0.6
+        }
+      ],
+      "verified": true,
+      "source": "https://docs.together.ai/docs/serverless/models"
+    },
+    {
+      "id": "together:deepseek-ai/DeepSeek-V4.1-Flash",
+      "provider": "together",
+      "name": "DeepSeek V4.1 Flash",
+      "apiId": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "toolsOnChat": true,
+        "forcedToolChoice": false
+      },
+      "contextTokens": 1000000,
+      "prices": [
+        {
+          "inputPerMTok": 0.3,
+          "outputPerMTok": 1.2
+        }
+      ],
+      "verified": true,
+      "source": "https://docs.together.ai/docs/serverless/models"
+    },
+    {
+      "id": "together:moonshotai/Kimi-K3",
+      "provider": "together",
+      "name": "Kimi K3",
+      "apiId": "moonshotai/Kimi-K3",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "vision": true,
+        "toolsOnChat": true,
+        "forcedToolChoice": false
+      },
+      "contextTokens": 1048576,
+      "prices": [
+        {
+          "inputPerMTok": 3.0,
+          "outputPerMTok": 15.0
+        }
+      ],
+      "verified": true,
+      "source": "https://docs.together.ai/docs/serverless/models"
+    },
+    {
+      "id": "together:zai-org/GLM-5.3",
+      "provider": "together",
+      "name": "GLM-5.3",
+      "apiId": "zai-org/GLM-5.3",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "toolsOnChat": true,
+        "forcedToolChoice": false
+      },
+      "contextTokens": 1048575,
+      "prices": [
+        {
+          "inputPerMTok": 1.4,
+          "outputPerMTok": 4.4
+        }
+      ],
+      "verified": true,
+      "source": "https://docs.together.ai/docs/serverless/models"
+    },
+    {
+      "id": "accounts/fireworks/models/gpt-oss-120b",
+      "provider": "fireworks",
+      "name": "GPT-OSS 120B",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "prices": [
+        {
+          "inputPerMTok": 0.15,
+          "outputPerMTok": 0.6
+        }
+      ],
+      "verified": false,
+      "source": "https://docs.fireworks.ai/serverless/pricing",
+      "notes": "The pricing page lists the slug; the accounts/fireworks/models/ prefix is the documented id format."
+    },
+    {
+      "id": "accounts/fireworks/models/deepseek-v4p1-flash",
+      "provider": "fireworks",
+      "name": "DeepSeek V4.1 Flash",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "prices": [
+        {
+          "inputPerMTok": 0.3,
+          "outputPerMTok": 1.2
+        }
+      ],
+      "verified": false,
+      "source": "https://docs.fireworks.ai/serverless/pricing",
+      "notes": "The pricing page lists the slug; the accounts/fireworks/models/ prefix is the documented id format."
+    },
+    {
+      "id": "accounts/fireworks/models/kimi-k3",
+      "provider": "fireworks",
+      "name": "Kimi K3",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "prices": [
+        {
+          "inputPerMTok": 3.0,
+          "outputPerMTok": 15.0
+        }
+      ],
+      "verified": false,
+      "source": "https://docs.fireworks.ai/serverless/pricing",
+      "notes": "The pricing page lists the slug; the accounts/fireworks/models/ prefix is the documented id format."
+    },
+    {
+      "id": "accounts/fireworks/models/glm-5p3",
+      "provider": "fireworks",
+      "name": "GLM-5.3",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "prices": [
+        {
+          "inputPerMTok": 1.4,
+          "outputPerMTok": 4.4
+        }
+      ],
+      "verified": false,
+      "source": "https://docs.fireworks.ai/serverless/pricing",
+      "notes": "The pricing page lists the slug; the accounts/fireworks/models/ prefix is the documented id format."
+    },
+    {
+      "id": "cerebras:gpt-oss-120b",
+      "provider": "cerebras",
+      "name": "GPT-OSS 120B",
+      "apiId": "gpt-oss-120b",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "toolsOnChat": true,
+        "forcedToolChoice": false
+      },
+      "contextTokens": 131072,
+      "prices": [
+        {
+          "inputPerMTok": 0.35,
+          "outputPerMTok": 0.75
+        }
+      ],
+      "verified": true,
+      "source": "https://inference-docs.cerebras.ai/models/openai-oss"
+    },
+    {
+      "id": "cerebras:qwen-3.8-27b",
+      "provider": "cerebras",
+      "name": "Qwen 3.8 27B",
+      "apiId": "qwen-3.8-27b",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "vision": true,
+        "toolsOnChat": true,
+        "forcedToolChoice": false
+      },
+      "contextTokens": 131072,
+      "prices": [
+        {
+          "inputPerMTok": 0.99,
+          "outputPerMTok": 1.49
+        }
+      ],
+      "verified": true,
+      "source": "https://inference-docs.cerebras.ai/models/qwen-3.8-27b"
+    },
+    {
+      "id": "command-a-plus-05-2026",
+      "provider": "cohere",
+      "name": "Command A+",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "vision": true,
+        "toolsOnChat": true,
+        "forcedToolChoice": false
+      },
+      "contextTokens": 128000,
+      "verified": true,
+      "source": "https://docs.cohere.com/docs/models",
+      "notes": "No current price was published on the pages checked."
+    },
+    {
+      "id": "command-a-03-2025",
+      "provider": "cohere",
+      "name": "Command A",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "toolsOnChat": true,
+        "forcedToolChoice": false
+      },
+      "contextTokens": 256000,
+      "verified": true,
+      "source": "https://docs.cohere.com/docs/models",
+      "notes": "No current price was published on the pages checked."
+    },
+    {
+      "id": "openai.gpt-oss-120b-1:0",
+      "provider": "bedrock",
+      "name": "GPT-OSS 120B",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "verified": true,
+      "source": "https://docs.aws.amazon.com/bedrock/latest/userguide/inference-chat-completions.html",
+      "notes": "Bedrock prices vary by region; none is booked here."
+    },
+    {
+      "id": "openai.gpt-oss-20b-1:0",
+      "provider": "bedrock",
+      "name": "GPT-OSS 20B",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "verified": true,
+      "source": "https://docs.aws.amazon.com/bedrock/latest/userguide/inference-chat-completions.html",
+      "notes": "Bedrock prices vary by region; none is booked here."
+    },
+    {
+      "id": "kimi-k3.1-pro",
+      "provider": "moonshot",
+      "name": "Kimi K3.1 Pro",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "contextTokens": 1048576,
+      "verified": true,
+      "source": "https://platform.kimi.ai/docs/pricing/chat",
+      "notes": "Price table not readable on 2026-11-03; none is booked here."
+    },
+    {
+      "id": "kimi-k3",
+      "provider": "moonshot",
+      "name": "Kimi K3",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "contextTokens": 1048576,
+      "verified": true,
+      "source": "https://platform.kimi.ai/docs/pricing/chat",
+      "notes": "Price table not readable on 2026-11-03; none is booked here."
+    },
+    {
+      "id": "qwen3.8-max",
+      "provider": "alibaba",
+      "name": "Qwen3.8 Max",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "vision": true
+      },
+      "prices": [
+        {
+          "inputPerMTok": 2.0,
+          "outputPerMTok": 6.0
+        }
+      ],
+      "verified": true,
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing"
+    },
+    {
+      "id": "qwen3.7-plus",
+      "provider": "alibaba",
+      "name": "Qwen3.7 Plus",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "vision": true
+      },
+      "prices": [
+        {
+          "inputPerMTok": 0.4,
+          "outputPerMTok": 1.6
+        },
+        {
+          "aboveInputTokens": 256000,
+          "inputPerMTok": 1.2,
+          "outputPerMTok": 4.8
+        }
+      ],
+      "verified": true,
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing"
+    },
+    {
+      "id": "qwen3.8-flash",
+      "provider": "alibaba",
+      "name": "Qwen3.8 Flash",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "prices": [
+        {
+          "inputPerMTok": 0.15,
+          "outputPerMTok": 0.47
+        }
+      ],
+      "verified": true,
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing"
+    },
+    {
+      "id": "glm-5.3",
+      "provider": "zai",
+      "name": "GLM-5.3",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "toolsOnChat": true,
+        "forcedToolChoice": false
+      },
+      "contextTokens": 1000000,
+      "prices": [
+        {
+          "inputPerMTok": 1.4,
+          "outputPerMTok": 4.4
+        }
+      ],
+      "verified": true,
+      "source": "https://docs.z.ai/guides/llm/glm-5.3"
+    },
+    {
+      "id": "glm-5.3-flash",
+      "provider": "zai",
+      "name": "GLM-5.3 Flash",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "vision": true
+      },
+      "prices": [
+        {
+          "inputPerMTok": 0.15,
+          "outputPerMTok": 0.5
+        }
+      ],
+      "verified": true,
+      "source": "https://docs.z.ai/guides/overview/pricing"
+    },
+    {
+      "id": "MiniMax-M3",
+      "provider": "minimax",
+      "name": "MiniMax M3",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "vision": true
+      },
+      "contextTokens": 1000000,
+      "prices": [
+        {
+          "inputPerMTok": 0.3,
+          "outputPerMTok": 1.2
+        },
+        {
+          "aboveInputTokens": 512000,
+          "inputPerMTok": 0.6,
+          "outputPerMTok": 2.4
+        }
+      ],
+      "verified": true,
+      "source": "https://platform.minimax.io/docs/guides/pricing-paygo",
+      "notes": "Multi-turn tool use needs reasoning_content sent back, which this adapter does not do yet."
+    },
+    {
+      "id": "MiniMax-M3.1-Flash",
+      "provider": "minimax",
+      "name": "MiniMax M3.1 Flash",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "vision": true
+      },
+      "contextTokens": 1000000,
+      "prices": [
+        {
+          "inputPerMTok": 0.15,
+          "outputPerMTok": 0.6
+        }
+      ],
+      "verified": true,
+      "source": "https://platform.minimax.io/docs/api-reference/text-openai-api",
+      "notes": "Multi-turn tool use needs reasoning_content sent back, which this adapter does not do yet."
+    },
+    {
+      "id": "nvidia/nemotron-3-ultra-550b-a55b",
+      "provider": "nvidia",
+      "name": "Nemotron 3 Ultra",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "contextTokens": 1000000,
+      "verified": false,
+      "source": "https://build.nvidia.com/models"
+    },
+    {
+      "id": "nvidia:deepseek-ai/deepseek-v4.1-flash",
+      "provider": "nvidia",
+      "name": "DeepSeek V4.1 Flash",
+      "apiId": "deepseek-ai/deepseek-v4.1-flash",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "vision": true
+      },
+      "verified": false,
+      "source": "https://build.nvidia.com/models"
+    },
+    {
+      "id": "huggingface:openai/gpt-oss-120b",
+      "provider": "huggingface",
+      "name": "GPT-OSS 120B",
+      "apiId": "openai/gpt-oss-120b",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "verified": true,
+      "source": "https://router.huggingface.co/v1/models"
+    },
+    {
+      "id": "huggingface:moonshotai/Kimi-K3",
+      "provider": "huggingface",
+      "name": "Kimi K3",
+      "apiId": "moonshotai/Kimi-K3",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "vision": true
+      },
+      "verified": true,
+      "source": "https://router.huggingface.co/v1/models"
+    },
+    {
+      "id": "huggingface:zai-org/GLM-5.3",
+      "provider": "huggingface",
+      "name": "GLM-5.3",
+      "apiId": "zai-org/GLM-5.3",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "verified": true,
+      "source": "https://router.huggingface.co/v1/models"
+    },
+    {
+      "id": "sambanova:gpt-oss-120b",
+      "provider": "sambanova",
+      "name": "GPT-OSS 120B",
+      "apiId": "gpt-oss-120b",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "contextTokens": 131072,
+      "prices": [
+        {
+          "inputPerMTok": 0.22,
+          "outputPerMTok": 0.59
+        }
+      ],
+      "verified": true,
+      "source": "https://api.sambanova.ai/v1/models"
+    },
+    {
+      "id": "sambanova:gemma-4-31B-it",
+      "provider": "sambanova",
+      "name": "Gemma 4 31B",
+      "apiId": "gemma-4-31B-it",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "contextTokens": 262144,
+      "prices": [
+        {
+          "inputPerMTok": 0.38,
+          "outputPerMTok": 1.15
+        }
+      ],
+      "verified": true,
+      "source": "https://api.sambanova.ai/v1/models"
+    },
+    {
+      "id": "deepinfra:deepseek-ai/DeepSeek-V4.1-Flash",
+      "provider": "deepinfra",
+      "name": "DeepSeek V4.1 Flash",
+      "apiId": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "vision": true
+      },
+      "contextTokens": 1048576,
+      "prices": [
+        {
+          "inputPerMTok": 0.2,
+          "outputPerMTok": 0.6
+        }
+      ],
+      "verified": true,
+      "source": "https://deepinfra.com/models"
+    },
+    {
+      "id": "deepinfra:moonshotai/Kimi-K3",
+      "provider": "deepinfra",
+      "name": "Kimi K3",
+      "apiId": "moonshotai/Kimi-K3",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "vision": true
+      },
+      "contextTokens": 1048576,
+      "prices": [
+        {
+          "inputPerMTok": 2.85,
+          "outputPerMTok": 14.25
+        }
+      ],
+      "verified": true,
+      "source": "https://deepinfra.com/models"
+    },
+    {
+      "id": "deepinfra:zai-org/GLM-5.3",
+      "provider": "deepinfra",
+      "name": "GLM-5.3",
+      "apiId": "zai-org/GLM-5.3",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "contextTokens": 1048576,
+      "prices": [
+        {
+          "inputPerMTok": 0.9,
+          "outputPerMTok": 4.0
+        }
+      ],
+      "verified": true,
+      "source": "https://deepinfra.com/models"
+    },
+    {
+      "id": "deepinfra:openai/gpt-oss-120b",
+      "provider": "deepinfra",
+      "name": "GPT-OSS 120B",
+      "apiId": "openai/gpt-oss-120b",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "contextTokens": 131072,
+      "prices": [
+        {
+          "inputPerMTok": 0.037,
+          "outputPerMTok": 0.17
+        }
+      ],
+      "verified": true,
+      "source": "https://deepinfra.com/models"
+    },
+    {
+      "id": "novita:deepseek/deepseek-v4.1-flash",
+      "provider": "novita",
+      "name": "DeepSeek V4.1 Flash",
+      "apiId": "deepseek/deepseek-v4.1-flash",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "vision": true,
+        "toolsOnChat": true,
+        "forcedToolChoice": false
+      },
+      "contextTokens": 1048576,
+      "prices": [
+        {
+          "inputPerMTok": 0.3,
+          "outputPerMTok": 1.2
+        }
+      ],
+      "verified": true,
+      "source": "https://api.novita.ai/openai/v1/models"
+    },
+    {
+      "id": "novita:moonshotai/kimi-k3",
+      "provider": "novita",
+      "name": "Kimi K3",
+      "apiId": "moonshotai/kimi-k3",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "vision": true,
+        "toolsOnChat": true,
+        "forcedToolChoice": false
+      },
+      "contextTokens": 1048576,
+      "prices": [
+        {
+          "inputPerMTok": 3.0,
+          "outputPerMTok": 15.0
+        }
+      ],
+      "verified": true,
+      "source": "https://api.novita.ai/openai/v1/models"
+    },
+    {
+      "id": "novita:zai-org/glm-5.3",
+      "provider": "novita",
+      "name": "GLM-5.3",
+      "apiId": "zai-org/glm-5.3",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "toolsOnChat": true,
+        "forcedToolChoice": false
+      },
+      "contextTokens": 1048576,
+      "prices": [
+        {
+          "inputPerMTok": 1.4,
+          "outputPerMTok": 4.4
+        }
+      ],
+      "verified": true,
+      "source": "https://api.novita.ai/openai/v1/models"
+    },
+    {
+      "id": "@cf/openai/gpt-oss-120b",
+      "provider": "cloudflare",
+      "name": "GPT-OSS 120B",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "verified": true,
+      "source": "https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/"
+    },
+    {
+      "id": "@cf/meta/llama-3.1-8b-instruct",
+      "provider": "cloudflare",
+      "name": "Llama 3.1 8B Instruct",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "verified": true,
+      "source": "https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/"
+    },
+    {
+      "id": "mistral-large-latest",
+      "provider": "mistral",
+      "name": "Mistral Large 4",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "vision": true,
+        "toolsOnChat": true,
+        "forcedToolChoice": false
+      },
+      "contextTokens": 1000000,
+      "prices": [
+        {
+          "inputPerMTok": 0.7,
+          "outputPerMTok": 2.1
+        }
+      ],
+      "verified": false,
+      "source": "https://docs.mistral.ai/models/mistral-large-4-0",
+      "notes": "The -latest alias follows Mistral's convention; the page names the model Large 4 without the alias."
+    },
+    {
+      "id": "mistral-small-2603",
+      "provider": "mistral",
+      "name": "Mistral Small 4",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true,
+        "toolsOnChat": true,
+        "forcedToolChoice": false
+      },
+      "contextTokens": 256000,
+      "prices": [
+        {
+          "inputPerMTok": 0.15,
+          "outputPerMTok": 0.6
+        }
+      ],
+      "verified": true,
+      "source": "https://docs.mistral.ai/models/mistral-small-4-0-26-03"
+    },
+    {
+      "id": "codestral-latest",
+      "provider": "mistral",
+      "name": "Codestral",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "translate": true
+      },
+      "prices": [
+        {
+          "inputPerMTok": 0.3,
+          "outputPerMTok": 0.9
+        }
+      ],
+      "verified": false,
+      "source": "https://docs.mistral.ai/inference/pricing",
+      "notes": "The -latest alias follows Mistral's convention."
+    },
+    {
+      "id": "whisper-1",
+      "provider": "openai",
+      "name": "OpenAI Whisper",
+      "api": "openai-transcriptions",
+      "endpoint": "/audio/transcriptions",
+      "capabilities": {
+        "transcribe": true,
+        "wordTimestamps": true,
+        "diarization": false,
+        "streaming": false
+      },
+      "maxUploadBytes": 26214400,
+      "prices": [
+        {
+          "perAudioMinute": 0.006
+        }
+      ],
+      "deprecation": "2027-02-26",
+      "retirement": "2027-02-26",
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://developers.openai.com/api/docs/guides/speech-to-text",
+      "notes": "Checked 2026-11-03: the only OpenAI model with word timestamps (verbose_json); 25 MB per file; shut down on 2027-02-26."
+    },
+    {
+      "id": "gpt-4o-transcribe-diarize",
+      "provider": "openai",
+      "name": "OpenAI GPT-4o Transcribe (speakers)",
+      "api": "openai-transcriptions",
+      "endpoint": "/audio/transcriptions",
+      "capabilities": {
+        "transcribe": true,
+        "wordTimestamps": false,
+        "diarization": true,
+        "streaming": false
+      },
+      "maxUploadBytes": 26214400,
+      "prices": [
+        {
+          "perAudioMinute": 0.006
+        }
+      ],
+      "deprecation": "2027-02-26",
+      "retirement": "2027-02-26",
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create",
+      "notes": "Checked 2026-11-03: diarized_json segments with speakers (no word times: words are spread over each segment); chunking_strategy=auto; 25 MB; shut down on 2027-02-26."
+    },
+    {
+      "id": "whisper-large-v3-turbo",
+      "provider": "groq",
+      "name": "Groq Whisper Large v3 Turbo",
+      "api": "openai-transcriptions",
+      "endpoint": "/audio/transcriptions",
+      "capabilities": {
+        "transcribe": true,
+        "wordTimestamps": true,
+        "diarization": false,
+        "streaming": false
+      },
+      "maxUploadBytes": 26214400,
+      "prices": [
+        {
+          "perAudioMinute": 0.000667
+        }
+      ],
+      "license": "MIT",
+      "verified": true,
+      "source": "https://console.groq.com/docs/speech-to-text",
+      "notes": "Checked 2026-11-03: $0.04 per hour of audio, 10 s minimum per request; 25 MB on the free tier (100 MB on dev)."
+    },
+    {
+      "id": "whisper-large-v3",
+      "provider": "groq",
+      "name": "Groq Whisper Large v3",
+      "api": "openai-transcriptions",
+      "endpoint": "/audio/transcriptions",
+      "capabilities": {
+        "transcribe": true,
+        "wordTimestamps": true,
+        "diarization": false,
+        "streaming": false
+      },
+      "maxUploadBytes": 26214400,
+      "prices": [
+        {
+          "perAudioMinute": 0.00185
+        }
+      ],
+      "license": "MIT",
+      "verified": true,
+      "source": "https://console.groq.com/docs/speech-to-text",
+      "notes": "Checked 2026-11-03: $0.111 per hour of audio, 10 s minimum per request."
+    },
+    {
+      "id": "voxtral-mini-transcribe-3",
+      "provider": "mistral",
+      "name": "Mistral Voxtral Mini Transcribe 3",
+      "api": "openai-transcriptions",
+      "endpoint": "/audio/transcriptions",
+      "capabilities": {
+        "transcribe": true,
+        "wordTimestamps": false,
+        "diarization": true,
+        "streaming": false
+      },
+      "prices": [
+        {
+          "perAudioMinute": 0.0035
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://docs.mistral.ai/studio/audio/speech-to-text/transcribe-files",
+      "notes": "Checked 2026-11-03: segment timestamps only (word granularity is refused), diarize=true with segment granularity; $0.0035 per minute (docs.mistral.ai/models/voxtral-mini-transcribe-3-0)."
+    },
+    {
+      "id": "speechmatics:enhanced",
+      "apiId": "enhanced",
+      "provider": "speechmatics",
+      "name": "Speechmatics Enhanced",
+      "endpoint": "/jobs",
+      "capabilities": {
+        "transcribe": true,
+        "wordTimestamps": true,
+        "diarization": true,
+        "streaming": false
+      },
+      "maxUploadBytes": 1073741824,
+      "prices": [
+        {
+          "perAudioMinute": 0.0125
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://www.speechmatics.com/pricing",
+      "notes": "Checked 2026-11-03: $0.75 per hour pay-as-you-go; language 'auto' detects the language."
+    },
+    {
+      "id": "speechmatics:standard",
+      "apiId": "standard",
+      "provider": "speechmatics",
+      "name": "Speechmatics Standard",
+      "endpoint": "/jobs",
+      "capabilities": {
+        "transcribe": true,
+        "wordTimestamps": true,
+        "diarization": true,
+        "streaming": false
+      },
+      "maxUploadBytes": 1073741824,
+      "prices": [
+        {
+          "perAudioMinute": 0.0075
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://www.speechmatics.com/pricing",
+      "notes": "Checked 2026-11-03: $0.45 per hour pay-as-you-go."
+    },
+    {
+      "id": "gladia:solaria-1",
+      "apiId": "solaria-1",
+      "provider": "gladia",
+      "name": "Gladia Solaria",
+      "endpoint": "/v2/pre-recorded",
+      "capabilities": {
+        "transcribe": true,
+        "wordTimestamps": true,
+        "diarization": true,
+        "streaming": false
+      },
+      "maxUploadBytes": 1048576000,
+      "maxAudioSeconds": 8100,
+      "prices": [
+        {
+          "perAudioMinute": 0.0055
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://www.gladia.io/pricing",
+      "notes": "Checked 2026-11-03: EUR 0.27 per hour self-serve (Solaria-1), converted to about $0.0055 per minute and rounded up; the API picks its model (none is sent)."
+    },
+    {
+      "id": "aura-2",
+      "provider": "deepgram",
+      "name": "Deepgram Aura-2",
+      "api": "deepgram-speak",
+      "endpoint": "/v1/speak",
+      "capabilities": {
+        "speak": true
+      },
+      "prices": [
+        {
+          "perThousandChars": 0.03
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://developers.deepgram.com/reference/text-to-speech/speak-request",
+      "notes": "Checked 2026-11-03: $0.030 per 1,000 characters pay-as-you-go (deepgram.com/pricing); 2,000 characters per request; a voice per language (aura-2-<voice>-<lang>)."
+    },
+    {
+      "id": "sonic-3.6",
+      "provider": "cartesia",
+      "name": "Cartesia Sonic 3.6",
+      "api": "cartesia-tts",
+      "endpoint": "/tts/bytes",
+      "capabilities": {
+        "speak": true
+      },
+      "prices": [
+        {
+          "perThousandChars": 0.065
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://cartesia.ai/pricing",
+      "notes": "Checked 2026-11-03: 1 credit per character; plans from $5 a month, priced here at the Pro plan's overage of $65 per 1M credits (a ceiling for spend caps)."
+    },
+    {
+      "id": "s2.1-pro",
+      "provider": "fish-audio",
+      "name": "Fish Audio S2.1 Pro",
+      "api": "fish-tts",
+      "endpoint": "/v1/tts",
+      "capabilities": {
+        "speak": true
+      },
+      "prices": [
+        {
+          "perThousandChars": 0.015
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://docs.fish.audio/developer-guide/models-pricing/pricing-and-rate-limits",
+      "notes": "Checked 2026-11-03: $15 per 1M UTF-8 bytes (the adapter reports bytes, so non-Latin text is billed at its real size)."
+    },
+    {
+      "id": "deepl-pro",
+      "provider": "deepl",
+      "name": "DeepL (Pro)",
+      "endpoint": "/v2/translate",
+      "capabilities": {
+        "translate": true,
+        "streaming": false
+      },
+      "prices": [
+        {
+          "perThousandChars": 0.025
+        }
+      ],
+      "license": "proprietary",
+      "verified": false,
+      "source": "https://developers.deepl.com/api-reference/translate",
+      "notes": "API checked 2026-11-03. DeepL's current plans (Developer, Growth) publish no per-character price; $25 per 1M characters is the legacy API Pro rate, used as an estimate (hence unverified)."
+    },
+    {
+      "id": "deepl-free",
+      "provider": "deepl-free",
+      "name": "DeepL (Free)",
+      "endpoint": "/v2/translate",
+      "capabilities": {
+        "translate": true,
+        "streaming": false
+      },
+      "prices": [
+        {
+          "perThousandChars": 0.0
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://developers.deepl.com/docs/getting-started/auth",
+      "notes": "Checked 2026-11-03: free within the plan's 500,000 characters a month; past that DeepL answers 456 (quota used up)."
+    },
+    {
+      "id": "google-nmt",
+      "provider": "google-translate",
+      "name": "Google Translation (NMT)",
+      "endpoint": "/language/translate/v2",
+      "capabilities": {
+        "translate": true,
+        "streaming": false
+      },
+      "prices": [
+        {
+          "perThousandChars": 0.02
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://cloud.google.com/translate/pricing",
+      "notes": "Checked 2026-11-03: $20 per 1M characters (the first 500,000 a month are covered by a $10 credit, not counted here)."
+    },
+    {
+      "id": "gpt-image-2",
+      "provider": "openai",
+      "name": "OpenAI GPT Image 2",
+      "api": "openai-images",
+      "endpoint": "/images/generations",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "image": true,
+        "aspectRatios": [
+          "1:1",
+          "16:9",
+          "9:16"
+        ],
+        "maxPromptChars": 32000
+      },
+      "prices": [
+        {
+          "perImage": 0.053
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "notes": "Checked 2026-11-03: medium quality, $0.053 at 1024x1024 and $0.041 at 1536x1024 / 1024x1536 (priced at the larger); output is base64 PNG."
+    },
+    {
+      "id": "gpt-image-1-mini",
+      "provider": "openai",
+      "name": "OpenAI GPT Image 1 mini",
+      "api": "openai-images",
+      "endpoint": "/images/generations",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "image": true,
+        "aspectRatios": [
+          "1:1",
+          "16:9",
+          "9:16"
+        ],
+        "maxPromptChars": 32000
+      },
+      "prices": [
+        {
+          "perImage": 0.015
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "notes": "Checked 2026-11-03: medium quality, $0.011 at 1024x1024 and $0.015 at 1536x1024 / 1024x1536 (priced at the larger)."
+    },
+    {
+      "id": "stable-image-ultra",
+      "provider": "stability",
+      "name": "Stable Image Ultra",
+      "endpoint": "/v2beta/stable-image/generate/ultra",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "image": true,
+        "aspectRatios": [
+          "21:9",
+          "16:9",
+          "3:2",
+          "5:4",
+          "1:1",
+          "4:5",
+          "2:3",
+          "9:16",
+          "9:21"
+        ],
+        "maxPromptChars": 10000
+      },
+      "prices": [
+        {
+          "perImage": 0.08
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://docs.stability.ai/pricing",
+      "notes": "Checked 2026-11-03: 8 credits ($0.08) per image."
+    },
+    {
+      "id": "stable-image-core",
+      "provider": "stability",
+      "name": "Stable Image Core",
+      "endpoint": "/v2beta/stable-image/generate/core",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "image": true,
+        "aspectRatios": [
+          "21:9",
+          "16:9",
+          "3:2",
+          "5:4",
+          "1:1",
+          "4:5",
+          "2:3",
+          "9:16",
+          "9:21"
+        ],
+        "maxPromptChars": 10000
+      },
+      "prices": [
+        {
+          "perImage": 0.03
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://docs.stability.ai/pricing",
+      "notes": "Checked 2026-11-03: 3 credits ($0.03) per image."
+    },
+    {
+      "id": "sd3.5-large",
+      "provider": "stability",
+      "name": "Stable Diffusion 3.5 Large",
+      "endpoint": "/v2beta/stable-image/generate/sd3",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "image": true,
+        "aspectRatios": [
+          "21:9",
+          "16:9",
+          "3:2",
+          "5:4",
+          "1:1",
+          "4:5",
+          "2:3",
+          "9:16",
+          "9:21"
+        ],
+        "maxPromptChars": 10000
+      },
+      "prices": [
+        {
+          "perImage": 0.065
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://docs.stability.ai/pricing",
+      "notes": "Checked 2026-11-03: 6.5 credits ($0.065) per image."
+    },
+    {
+      "id": "flux-3-image",
+      "provider": "bfl",
+      "name": "FLUX 3",
+      "endpoint": "/v1/flux-3-image",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "image": true,
+        "firstFrame": true,
+        "aspectRatios": [
+          "21:9",
+          "16:9",
+          "4:3",
+          "1:1",
+          "3:4",
+          "9:16",
+          "9:21"
+        ]
+      },
+      "prices": [
+        {
+          "perImage": 0.048
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://bfl.ai/pricing",
+      "notes": "Checked 2026-11-03: $0.048 per image at the 1K resolution Wabcut asks for; an optional reference image (the start image)."
+    },
+    {
+      "id": "ideogram-3-turbo",
+      "provider": "ideogram",
+      "name": "Ideogram 3.0 Turbo",
+      "endpoint": "/v2/image/generate/ideogram-3",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "image": true,
+        "aspectRatios": [
+          "1:1",
+          "16:9",
+          "9:16",
+          "4:3",
+          "3:4"
+        ],
+        "maxPromptChars": 10000
+      },
+      "prices": [
+        {
+          "perImage": 0.03
+        }
+      ],
+      "license": "proprietary",
+      "verified": false,
+      "source": "https://ideogram.ai/api-pricing/",
+      "notes": "Price from a summary of the pricing page (rendered by script): Turbo $0.03."
+    },
+    {
+      "id": "ideogram-3",
+      "provider": "ideogram",
+      "name": "Ideogram 3.0",
+      "endpoint": "/v2/image/generate/ideogram-3",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "image": true,
+        "aspectRatios": [
+          "1:1",
+          "16:9",
+          "9:16",
+          "4:3",
+          "3:4"
+        ],
+        "maxPromptChars": 10000
+      },
+      "prices": [
+        {
+          "perImage": 0.06
+        }
+      ],
+      "license": "proprietary",
+      "verified": false,
+      "source": "https://ideogram.ai/api-pricing/",
+      "notes": "Price from a summary of the pricing page (rendered by script): Default $0.06."
+    },
+    {
+      "id": "ideogram-3-quality",
+      "provider": "ideogram",
+      "name": "Ideogram 3.0 Quality",
+      "endpoint": "/v2/image/generate/ideogram-3",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "image": true,
+        "aspectRatios": [
+          "1:1",
+          "16:9",
+          "9:16",
+          "4:3",
+          "3:4"
+        ],
+        "maxPromptChars": 10000
+      },
+      "prices": [
+        {
+          "perImage": 0.09
+        }
+      ],
+      "license": "proprietary",
+      "verified": false,
+      "source": "https://ideogram.ai/api-pricing/",
+      "notes": "Price from a summary of the pricing page (rendered by script): Quality $0.09."
+    },
+    {
+      "id": "fal-ai/flux/dev",
+      "provider": "fal",
+      "name": "FLUX.1 [dev] on fal",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "image": true,
+        "aspectRatios": [
+          "1:1",
+          "16:9",
+          "9:16",
+          "4:3",
+          "3:4"
+        ],
+        "cancel": true
+      },
+      "prices": [
+        {
+          "perImage": 0.025
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://fal.ai/models/fal-ai/flux/dev/api",
+      "notes": "Checked 2026-11-03: $0.025 per megapixel; Wabcut's sizes are at most 1 MP (square_hd, landscape/portrait 16:9 and 4:3)."
+    },
+    {
+      "id": "fal-ai/kling-video/v3/pro/text-to-video",
+      "provider": "fal",
+      "name": "Kling 3 Pro on fal",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "video": true,
+        "audio": true,
+        "cancel": true,
+        "durations": [
+          3,
+          5,
+          10,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ]
+      },
+      "prices": [
+        {
+          "perVideoSecond": 0.112
+        },
+        {
+          "tier": "720p+audio",
+          "perVideoSecond": 0.168
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://fal.ai/models/fal-ai/kling-video/v3/pro/text-to-video/llms.txt",
+      "notes": "Checked 2026-11-03: $0.112 per second without sound, $0.168 with generated sound; 3 to 15 seconds."
+    },
+    {
+      "id": "fal-ai/kling-video/v3/pro/image-to-video",
+      "provider": "fal",
+      "name": "Kling 3 Pro image-to-video on fal",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "video": true,
+        "textInput": false,
+        "firstFrame": true,
+        "lastFrame": true,
+        "audio": true,
+        "cancel": true,
+        "durations": [
+          3,
+          5,
+          10,
+          15
+        ]
+      },
+      "prices": [
+        {
+          "perVideoSecond": 0.112
+        },
+        {
+          "tier": "720p+audio",
+          "perVideoSecond": 0.168
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://fal.ai/models/fal-ai/kling-video/v3/pro/image-to-video/llms.txt",
+      "notes": "Checked 2026-11-03: needs a start image (optional end image); $0.112 per second without sound, $0.168 with it."
+    },
+    {
+      "id": "fal-ai/elevenlabs/sound-effects/v2",
+      "provider": "fal",
+      "name": "ElevenLabs Sound Effects on fal",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "soundEffect": true,
+        "loop": true,
+        "minSeconds": 0.5,
+        "maxSeconds": 22,
+        "cancel": true
+      },
+      "prices": [
+        {
+          "perAudioMinute": 0.12
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://fal.ai/models/fal-ai/elevenlabs/sound-effects/v2/llms.txt",
+      "notes": "Checked 2026-11-03: $0.002 per second of sound; 0.5 to 22 seconds or automatic (estimated at 22 s)."
+    },
+    {
+      "id": "fal-ai/mmaudio-v2/text-to-audio",
+      "provider": "fal",
+      "name": "MMAudio V2 on fal",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "soundEffect": true,
+        "minSeconds": 1,
+        "maxSeconds": 30,
+        "cancel": true
+      },
+      "prices": [
+        {
+          "perAudioMinute": 0.06
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://fal.ai/models/fal-ai/mmaudio-v2/text-to-audio/llms.txt",
+      "notes": "Checked 2026-11-03: $0.001 per second of sound; 1 to 30 seconds (8 by default, here the longest when none is asked for)."
+    },
+    {
+      "id": "black-forest-labs/flux-schnell",
+      "provider": "replicate",
+      "name": "FLUX.1 [schnell] on Replicate",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "image": true,
+        "aspectRatios": [
+          "1:1",
+          "16:9",
+          "9:16",
+          "4:3",
+          "3:4",
+          "21:9"
+        ],
+        "cancel": true
+      },
+      "prices": [
+        {
+          "perImage": 0.003
+        }
+      ],
+      "license": "Apache-2.0",
+      "verified": true,
+      "source": "https://replicate.com/pricing",
+      "notes": "Checked 2026-11-03: $3.00 per 1,000 output images."
+    },
+    {
+      "id": "black-forest-labs/flux-1.1-pro",
+      "provider": "replicate",
+      "name": "FLUX1.1 [pro] on Replicate",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "image": true,
+        "aspectRatios": [
+          "1:1",
+          "16:9",
+          "9:16",
+          "4:3",
+          "3:4",
+          "21:9"
+        ],
+        "cancel": true
+      },
+      "prices": [
+        {
+          "perImage": 0.04
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://replicate.com/pricing",
+      "notes": "Checked 2026-11-03: $0.04 per image; one image per run."
+    },
+    {
+      "id": "together:openai/whisper-large-v3",
+      "apiId": "openai/whisper-large-v3",
+      "provider": "together",
+      "name": "Whisper Large v3 on Together",
+      "api": "openai-transcriptions",
+      "endpoint": "/audio/transcriptions",
+      "capabilities": {
+        "transcribe": true,
+        "wordTimestamps": true,
+        "diarization": true,
+        "streaming": false
+      },
+      "maxUploadBytes": 83886080,
+      "maxAudioSeconds": 14400,
+      "prices": [
+        {
+          "perAudioMinute": 0.0015
+        }
+      ],
+      "license": "MIT",
+      "verified": true,
+      "source": "https://docs.together.ai/reference/audio-transcriptions",
+      "notes": "Checked 2026-11-03: verbose_json words with speaker_id when diarize=true; 80 MB upload, 4 hours of audio; $0.0015 per minute (together.ai/pricing)."
+    },
+    {
+      "id": "deepinfra:openai/whisper-large-v3-turbo",
+      "apiId": "openai/whisper-large-v3-turbo",
+      "provider": "deepinfra",
+      "name": "Whisper Large v3 Turbo on DeepInfra",
+      "api": "openai-transcriptions",
+      "endpoint": "https://api.deepinfra.com/v1/audio/transcriptions",
+      "capabilities": {
+        "transcribe": true,
+        "wordTimestamps": true,
+        "diarization": false,
+        "streaming": false
+      },
+      "prices": [
+        {
+          "perAudioMinute": 0.0002
+        }
+      ],
+      "license": "MIT",
+      "verified": true,
+      "source": "https://docs.deepinfra.com/api-reference/audio/openai-audio-transcriptions.md",
+      "notes": "Checked 2026-11-03: POST https://api.deepinfra.com/v1/audio/transcriptions (the transcription path is not under the /v1/openai chat base), verbose_json with word and segment timestamps; $0.0002 per minute (deepinfra.com/openai/whisper-large-v3-turbo). The response schema is not documented: the adapter reads words as 'word' or 'text'."
+    },
+    {
+      "id": "together:black-forest-labs/FLUX.2-pro",
+      "apiId": "black-forest-labs/FLUX.2-pro",
+      "provider": "together",
+      "name": "FLUX.2 [pro] on Together",
+      "api": "openai-images",
+      "endpoint": "/images/generations",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "image": true,
+        "aspectRatios": [
+          "1:1",
+          "16:9",
+          "9:16",
+          "4:3",
+          "3:4"
+        ]
+      },
+      "prices": [
+        {
+          "perImage": 0.03
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://www.together.ai/pricing",
+      "notes": "Checked 2026-11-03: $0.03 per image at up to 1 MP (Wabcut asks for 1024 on the long side); base64 PNG answer."
+    },
+    {
+      "id": "grok-imagine-image-2.0",
+      "provider": "xai",
+      "name": "Grok Imagine Image 2.0",
+      "api": "openai-images",
+      "endpoint": "/images/generations",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "image": true,
+        "aspectRatios": [
+          "1:1",
+          "16:9",
+          "9:16",
+          "4:3",
+          "3:4",
+          "3:2",
+          "2:3",
+          "21:9"
+        ]
+      },
+      "prices": [
+        {
+          "perImage": 0.04
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://docs.x.ai/developers/model-capabilities/images/generation",
+      "notes": "Checked 2026-11-03: $0.04 per image (docs.x.ai/developers/pricing); response_format b64_json, JPEG."
+    },
+    {
+      "id": "grok-imagine-image",
+      "provider": "xai",
+      "name": "Grok Imagine Image",
+      "api": "openai-images",
+      "endpoint": "/images/generations",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "image": true,
+        "aspectRatios": [
+          "1:1",
+          "16:9",
+          "9:16",
+          "4:3",
+          "3:4",
+          "3:2",
+          "2:3",
+          "21:9"
+        ]
+      },
+      "prices": [
+        {
+          "perImage": 0.02
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://docs.x.ai/developers/model-capabilities/images/generation",
+      "notes": "Checked 2026-11-03: $0.02 per image (docs.x.ai/developers/pricing)."
+    },
+    {
+      "id": "grok-imagine-video-1.5",
+      "provider": "xai",
+      "name": "Grok Imagine Video 1.5",
+      "api": "xai-video",
+      "endpoint": "/videos/generations",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "video": true,
+        "audio": true,
+        "durations": [
+          5,
+          8,
+          10,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1",
+          "4:3",
+          "3:4",
+          "21:9"
+        ],
+        "resolutions": [
+          "480p",
+          "720p",
+          "1080p"
+        ]
+      },
+      "prices": [
+        {
+          "tier": "480p",
+          "perVideoSecond": 0.08
+        },
+        {
+          "tier": "720p",
+          "perVideoSecond": 0.14
+        },
+        {
+          "tier": "1080p",
+          "perVideoSecond": 0.25
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://docs.x.ai/developers/model-capabilities/video/generation",
+      "notes": "Checked 2026-11-03: per second of video at 480p $0.08, 720p $0.14, 1080p $0.25 (docs.x.ai/developers/pricing); 1 to 15 s; generated sound at no extra price; results on vidgen.x.ai. Start images are not offered yet (whether data URLs are accepted is not documented)."
+    },
+    {
+      "id": "grok-imagine-video-1.5-lite",
+      "provider": "xai",
+      "name": "Grok Imagine Video 1.5 Lite",
+      "api": "xai-video",
+      "endpoint": "/videos/generations",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "video": true,
+        "audio": true,
+        "durations": [
+          5,
+          8,
+          10,
+          15
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1",
+          "4:3",
+          "3:4",
+          "21:9"
+        ],
+        "resolutions": [
+          "480p",
+          "720p",
+          "1080p"
+        ]
+      },
+      "prices": [
+        {
+          "tier": "480p",
+          "perVideoSecond": 0.02
+        },
+        {
+          "tier": "720p",
+          "perVideoSecond": 0.03
+        },
+        {
+          "tier": "1080p",
+          "perVideoSecond": 0.14
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://docs.x.ai/developers/model-capabilities/video/generation",
+      "notes": "Checked 2026-11-03: per second of video at 480p $0.02, 720p $0.03, 1080p $0.14 (docs.x.ai/developers/pricing)."
     }
   ]
 }

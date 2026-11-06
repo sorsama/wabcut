@@ -16,6 +16,9 @@ layout(std140, binding = 0) uniform OutputParams {
     mat4 conformIn; // 0.6 (#72) SDR Conform: working -> Rec.2020
     vec4 conform0;  // x = paper white / target peak, y = the source peak in those units, z = operator, w = gamut mapping
     vec4 conform1;  // x = legal range, y = target peak (nits), z = a split preview's before kind (-1: none), w = the split
+    vec4 vr0;       // 0.7 (VR / 360 video), the viewer: yaw, pitch, roll (degrees), tan(fov / 2)
+    vec4 vr1;       // x = the view's aspect, y = the canvas' projection (0: no viewer, 1: 360, 2: 180), z = its stereo
+                    // layout (0 mono, 1 top-bottom, 2 side-by-side), w = the eye
 } p;
 
 layout(binding = 1) uniform sampler2D canvasTex;
@@ -329,9 +332,54 @@ vec3 encodeOutput(vec3 l, int t, out int flags)
     return encodeAny(l, t);
 }
 
+// ---- 0.7 (VR / 360 video): the viewer (vr::viewUv in model/Vr.h is its CPU twin) ----
+// The canvas is an equirectangular sphere; every pixel of the view looks along a ray from the middle of it: x to the right,
+// y up, the plane at distance 1, turned by yaw * pitch * roll (degrees).
+
+const float PI = 3.14159265358979;
+
+vec4 vrSample()
+{
+    float yaw = radians(p.vr0.x);
+    float pitch = radians(p.vr0.y);
+    float roll = radians(p.vr0.z);
+    float tanH = p.vr0.w;
+    vec3 ray = vec3((v_uv.x - 0.5) * 2.0 * tanH, (0.5 - v_uv.y) * 2.0 * tanH / max(p.vr1.x, 1e-4), 1.0);
+    float cy = cos(yaw);
+    float sy = sin(yaw);
+    float cp = cos(pitch);
+    float sp = sin(pitch);
+    float cr = cos(roll);
+    float sr = sin(roll);
+    // GLSL matrices are column-major: transpose(mat3(row0, row1, row2)) is the matrix with those rows.
+    mat3 rot = transpose(mat3(cy, 0.0, sy, 0.0, 1.0, 0.0, -sy, 0.0, cy)) *
+               transpose(mat3(1.0, 0.0, 0.0, 0.0, cp, sp, 0.0, -sp, cp)) *
+               transpose(mat3(cr, sr, 0.0, -sr, cr, 0.0, 0.0, 0.0, 1.0));
+    vec3 d = normalize(rot * ray);
+    float lon = atan(d.x, d.z);
+    float lat = asin(clamp(d.y, -1.0, 1.0));
+    bool half180 = p.vr1.y > 1.5;
+    vec2 e = vec2(0.0, 0.5 - lat / PI);
+    if (half180) {
+        e.x = lon / PI + 0.5;
+        if (abs(lon) > PI * 0.5)
+            return vec4(0.0);
+    } else {
+        e.x = lon / (2.0 * PI) + 0.5;
+        e.x -= floor(e.x);
+    }
+    int stereo = int(p.vr1.z + 0.5);
+    vec4 rect = vec4(0.0, 0.0, 1.0, 1.0);
+    if (stereo == 1)
+        rect = p.vr1.w < 0.5 ? vec4(0.0, 0.0, 1.0, 0.5) : vec4(0.0, 0.5, 1.0, 1.0);
+    else if (stereo == 2)
+        rect = p.vr1.w < 0.5 ? vec4(0.0, 0.0, 0.5, 1.0) : vec4(0.5, 0.0, 1.0, 1.0);
+    return textureLod(canvasTex, rect.xy + e * (rect.zw - rect.xy), 0.0);
+}
+
 void main()
 {
-    vec4 c = texture(canvasTex, v_uv); // linear, premultiplied
+    vec4 c = p.vr1.y > 0.5 ? vrSample() : texture(canvasTex, v_uv); // linear, premultiplied
     // One encodeOutput call (F3P, 0.6: see encodeOutput): opaque encodes the premultiplied colour over black, the
     // alpha modes the straight colour.
     bool opaque = p.mode.y == ALPHA_OPAQUE;

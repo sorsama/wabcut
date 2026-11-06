@@ -7,6 +7,7 @@
 #include <wabcut/model/Clipboard.h>
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/GraphicOps.h>
 #include <wabcut/model/Nesting.h>
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/Resolve.h>
@@ -15,6 +16,7 @@
 
 #include <algorithm>
 #include <map>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -580,4 +582,290 @@ TEST_CASE("Clipboard: a nested clip never lands inside the sequence it plays, no
     REQUIRE(elsewhere);
     CHECK(elsewhere->report.pasted.size() == 1);
     CHECK(noted(*elsewhere, "not the sequence that was copied"));
+}
+
+// 0.7 (card #93): ids in a graphic's image layers and in a grade's LUT reference belong to the copied project.
+namespace {
+
+MediaId addStill(ProjectState& state, const std::string& name, const std::string& path) {
+    MediaItem item;
+    item.name = name;
+    item.locator.path = path;
+    VideoStreamInfo v;
+    v.index = 0;
+    v.width = 256;
+    v.height = 128;
+    v.frameRate = kRate;
+    v.duration = f(50);
+    item.info.video.push_back(v);
+    item.info.duration = f(50);
+    item.info.isStillImage = true;
+    auto added = edit::addMedia(state, std::move(item));
+    REQUIRE(added);
+    state = std::move(added->state);
+    return added->id;
+}
+
+AssetId addLut(ProjectState& state, const std::string& name, const std::string& path) {
+    ProjectAsset lut{{}, std::string(kAssetKindLut), name, {}};
+    lut.locator.path = path;
+    auto added = edit::addAsset(state, std::move(lut));
+    REQUIRE(added);
+    state = std::move(added->state);
+    return added->id;
+}
+
+/// The logo layer's media of a graphic clip of `seq`, and the LUT a video clip's grade names.
+struct PastedRefs {
+    MediaId logo;
+    AssetId lut;
+};
+
+PastedRefs refsOf(const ProjectState& state, SequenceId seq, const std::vector<ClipId>& pasted) {
+    PastedRefs out;
+    bool sawGraphic = false;
+    bool sawGrade = false;
+    for (const ClipId id : pasted) {
+        const Clip& clip = state.findSequence(seq)->findClip(id)->clip();
+        if (const Graphic* g = clip.graphic()) {
+            sawGraphic = true;
+            for (const GraphicLayer& l : g->layers) {
+                if (l.kind == LayerKind::Image) {
+                    out.logo = l.image.media;
+                }
+            }
+        }
+        if (clip.effects().size() == 1) {
+            const EffectData* look = clip.effects().front().findData("creative.look");
+            REQUIRE(look);
+            REQUIRE(look->text());
+            out.lut = assetOfReference(*look->text());
+            sawGrade = true;
+        }
+    }
+    REQUIRE(sawGraphic);
+    REQUIRE(sawGrade);
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("Clipboard: a graphic picture and a grade LUT come along and are mapped into another project (0.7 #93)",
+          "[model][clipboard]") {
+    Timeline tl(R"(
+        V2     |..........|
+        V1 tgt |Aaaaaaaaaa|
+    )");
+    ProjectState source = tl.state;
+    const MediaId logo = addStill(source, "logo", "D:/brand/logo.png");
+    const AssetId lut = addLut(source, "Look.cube", "C:/luts/Look.cube");
+    // A lower third with the logo on V2, and the LUT on the footage clip on V1.
+    Graphic lowerThird;
+    lowerThird.name = "Lower third";
+    GraphicLayer layer;
+    layer.id = 1;
+    layer.kind = LayerKind::Image;
+    layer.image.media = logo;
+    lowerThird.layers = {layer};
+    const auto placed = edit::addGraphic(source, tl.seq, tl.track("V2"), f(0), f(5), lowerThird);
+    REQUIRE(placed);
+    source = placed->state;
+    const ClipId graphicClip = placed->placed.at(0);
+    const ClipId footage = tl.clip("V1@0");
+    auto graded = edit::addEffect(source, tl.seq, std::span(&footage, 1), "wabcut.color.grade");
+    REQUIRE(graded);
+    edit::EffectChange look;
+    look.data = {EffectData{"creative.look", assetReference(lut)}};
+    source = ok(edit::setEffect(graded->state, tl.seq, footage, graded->createdEffects.at(0), look)).state;
+    requireValid(source);
+
+    const std::vector<ClipId> both{graphicClip, footage};
+    CopyOptions options;
+    options.links = edit::LinkMode::IgnoreLinks;
+    auto copied = copyClips(source, tl.seq, both, options);
+    REQUIRE(copied);
+    CHECK(copied->content.findMedia(logo) != nullptr); // the picture travels with the lower third
+    REQUIRE(copied->content.assets.size() == 1);       // and so does the LUT
+    CHECK(copied->content.assets.front().locator.path == "C:/luts/Look.cube");
+
+    SECTION("into the same project the ids stay and nothing is added") {
+        edit::SequenceSettings settings;
+        settings.frameRate = kRate;
+        settings.videoTracks = 2;
+        settings.audioTracks = 1;
+        auto second = edit::addSequence(source, settings);
+        REQUIRE(second);
+        const auto same = pasteClips(second->state, second->id, *copied, f(0));
+        REQUIRE(same);
+        CHECK(same->report.mediaAdded.empty());
+        CHECK(same->report.assetsAdded.empty());
+        REQUIRE(same->report.pasted.size() == 2);
+        const PastedRefs refs = refsOf(same->edit.state, second->id, same->report.pasted);
+        CHECK(refs.logo == logo);
+        CHECK(refs.lut == lut);
+        requireValid(same->edit.state);
+    }
+
+    SECTION("into another project, through the clipboard text: its own ids are used") {
+        const auto text = clipboardToJson(*copied);
+        REQUIRE(text);
+        const auto read = clipboardFromJson(*text);
+        REQUIRE(read);
+        Timeline other(R"(
+            V2     |..........|
+            V1 tgt |Zzzzzzzzzz|
+        )");
+        ProjectState target = other.state;
+        // In that project the same ids belong to other files: unrelated media where the logo id is, another LUT where
+        // the look id is.
+        while (!target.findMedia(logo)) {
+            addStill(target, "filler" + std::to_string(target.ids.next), "D:/filler/" + std::to_string(target.ids.next) + ".png");
+        }
+        AssetId otherLut = addLut(target, "Other.cube", "C:/luts/Other.cube");
+        while (otherLut.value < lut.value) {
+            otherLut = addLut(target, "Other" + std::to_string(target.ids.next) + ".cube",
+                              "C:/luts/Other" + std::to_string(target.ids.next) + ".cube");
+        }
+        REQUIRE(target.findMedia(logo));
+        CHECK(target.findMedia(logo)->name != "logo");
+        REQUIRE(target.findAsset(lut));
+        CHECK(target.findAsset(lut)->name != "Look.cube");
+
+        const auto cross = pasteClips(target, other.seq, *read, f(0));
+        REQUIRE(cross);
+        requireValid(cross->edit.state);
+        REQUIRE(cross->report.pasted.size() == 2);
+        CHECK(cross->report.mediaAdded.size() >= 1);
+        REQUIRE(cross->report.assetsAdded.size() == 1);
+        const PastedRefs refs = refsOf(cross->edit.state, other.seq, cross->report.pasted);
+        // The graphic shows the logo file, not whatever had the old id here.
+        const MediaItem* shown = cross->edit.state.findMedia(refs.logo);
+        REQUIRE(shown);
+        CHECK(shown->locator.path == "D:/brand/logo.png");
+        CHECK(refs.logo != logo);
+        // The grade uses the LUT file, added to this project.
+        const ProjectAsset* used = cross->edit.state.findAsset(refs.lut);
+        REQUIRE(used);
+        CHECK(used->locator.path == "C:/luts/Look.cube");
+        CHECK(used->kind == kAssetKindLut);
+        CHECK(refs.lut == cross->report.assetsAdded.front());
+
+        // Pasting again finds what the first paste added: nothing new, the same references.
+        const auto again = pasteClips(cross->edit.state, other.seq, *read, f(20));
+        REQUIRE(again);
+        CHECK(again->report.assetsAdded.empty());
+        for (const MediaId added : again->report.mediaAdded) { // (a graphic's canvas item is generated: pasted anew each time)
+            CHECK(again->edit.state.findMedia(added)->locator.path != "D:/brand/logo.png");
+        }
+        const PastedRefs second = refsOf(again->edit.state, other.seq, again->report.pasted);
+        CHECK(second.logo == refs.logo);
+        CHECK(second.lut == refs.lut);
+    }
+
+    SECTION("the destination has its own copy of the LUT file: found by its path") {
+        Timeline other(R"(
+            V2     |..........|
+            V1 tgt |Zzzzzzzzzz|
+        )");
+        ProjectState target = other.state;
+        const AssetId mine = addLut(target, "My copy.cube", "C:/luts/Look.cube");
+        const auto cross = pasteClips(target, other.seq, *copied, f(0));
+        REQUIRE(cross);
+        CHECK(cross->report.assetsAdded.empty());
+        const PastedRefs refs = refsOf(cross->edit.state, other.seq, cross->report.pasted);
+        CHECK(refs.lut == mine);
+    }
+}
+
+TEST_CASE("Clipboard: media with Master Clip Effects pastes into another project with effect ids of its own (review-1 M4)",
+          "[model][clipboard]") {
+    // The source project is "old": its ids are large. The destination is young: its id generator is below them, so carried
+    // effect ids would fail the structure check (the paste refused) or be handed out a second time.
+    Timeline tl(R"(
+        V1 tgt |AaaaBbbb....|
+    )");
+    ProjectState source = tl.state;
+    source.ids.next += 500;
+    const MediaId a = tl.media('A');
+    // A's path is its own: the destination cannot match it by id, fingerprint or path, so the item is added there.
+    for (MediaPtr& m : source.media) {
+        if (m->id == a) {
+            auto copy = std::make_shared<MediaItem>(*m);
+            copy->locator.path = "D:/source-only/A.mov";
+            m = std::move(copy);
+        }
+    }
+    const MediaId matte = addStill(source, "matte", "D:/source-only/matte.png");
+    auto blur = edit::addEffect(source, tl.seq, edit::EffectTarget::ofMedia(a), "wabcut.blur.gaussian", {EffectParam{"radius", ParamValue(12.0)}});
+    REQUIRE(blur);
+    auto keyed = edit::addEffect(blur->state, tl.seq, edit::EffectTarget::ofMedia(a), "wabcut.key.imageMatte");
+    REQUIRE(keyed);
+    source = keyed->state;
+    edit::EffectChange change;
+    change.data = {EffectData{"image", "media:" + std::to_string(matte.value)}};
+    source = ok(edit::setEffect(source, tl.seq, edit::EffectTarget::ofMedia(a), keyed->createdEffects.at(0), change)).state;
+    const EffectInstanceId sourceBlur = blur->createdEffects.at(0);
+    const EffectInstanceId sourceKey = keyed->createdEffects.at(0);
+    REQUIRE(sourceBlur.value >= 500);
+    REQUIRE(source.findMedia(a)->masterEffects.size() == 2);
+    requireValid(source);
+
+    const std::vector<ClipId> ids{tl.clip("V1@0")};
+    auto copied = copyClips(source, tl.seq, ids);
+    REQUIRE(copied);
+    CHECK(copied->content.findMedia(matte) != nullptr); // the matte picture travels with the media that uses it
+    // Through the clipboard text, as it crosses between two Wabcut windows.
+    const auto text = clipboardToJson(*copied);
+    REQUIRE(text);
+    const auto read = clipboardFromJson(*text);
+    REQUIRE(read);
+
+    Timeline other(R"(
+        V1 tgt |Zzzzzzzzzz|
+    )");
+    // Give that project's ids a matte-sized shift so the carried matte lands on another id than in the source.
+    ProjectState target = other.state;
+    REQUIRE(target.ids.next < sourceBlur.value);
+    const auto cross = pasteClips(target, other.seq, *read, f(0));
+    INFO((cross ? std::string("pasted") : cross.error().message));
+    REQUIRE(cross); // before the fix: "master clip effects: effect N ... id that is not below the id generator"
+    requireValid(cross->edit.state);
+
+    const MediaId pastedMedia = clipIn(cross->edit.state, other.seq, "V1@0").media;
+    const MediaItem* item = cross->edit.state.findMedia(pastedMedia);
+    REQUIRE(item);
+    CHECK(item->name == "A");
+    REQUIRE(item->masterEffects.size() == 2);
+    EffectStack copiedStack = item->masterEffects;
+    // Effect ids belong to this project: below its generator, distinct from each other and from the source's.
+    for (const EffectInstance& e : copiedStack) {
+        CHECK(e.id.value < cross->edit.state.ids.next);
+        CHECK(e.id != sourceBlur);
+        CHECK(e.id != sourceKey);
+    }
+    CHECK(copiedStack[0].id != copiedStack[1].id);
+    CHECK(copiedStack[0].effect == "wabcut.blur.gaussian"); // order and settings kept
+    CHECK(copiedStack[1].effect == "wabcut.key.imageMatte");
+    // The Image Matte Key names the matte picture's place in THIS project, not whatever has the source's id here.
+    const std::string* image = nullptr;
+    for (const EffectData& d : copiedStack[1].data) {
+        if (d.key == "image") {
+            image = d.text();
+        }
+    }
+    REQUIRE(image != nullptr);
+    REQUIRE(image->starts_with("media:"));
+    const MediaId mapped{std::stoull(image->substr(6))};
+    const MediaItem* matteHere = cross->edit.state.findMedia(mapped);
+    REQUIRE(matteHere);
+    CHECK(matteHere->locator.path == "D:/source-only/matte.png");
+    // Ids that follow never repeat a carried one (the generator is past them).
+    const ClipId pasted = cross->report.pasted.at(0);
+    auto more = edit::addEffect(cross->edit.state, other.seq, std::span(&pasted, 1), "wabcut.color.tint");
+    REQUIRE(more);
+    for (const EffectInstance& e : copiedStack) {
+        CHECK(more->createdEffects.at(0) != e.id);
+    }
+    // The source project is untouched.
+    CHECK(source.findMedia(a)->masterEffects.at(0).id == sourceBlur);
 }

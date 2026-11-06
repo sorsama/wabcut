@@ -1,6 +1,7 @@
 #include <wabcut/ai/dub/DubCommands.h>
 
 #include <wabcut/ai/TranscriptRedaction.h>
+#include <wabcut/ai/dub/AudioDescription.h>
 #include <wabcut/ai/dub/Dub.h>
 #include <wabcut/ai/dub/Voices.h>
 #include <wabcut/ai/edit/TranscriptCommands.h>
@@ -151,12 +152,13 @@ ErrorCode commandCode(AiErrorCode code) {
 
 std::expected<DubPlan, PlanError> planDub(const ProjectState& state, SequenceId sequenceId, const DubRequest& request,
                                       const ModelRegistry& registry, const ai::edit::TranscriptProvider* transcripts,
-                                      std::chrono::year_month_day today) {
+                                      std::chrono::year_month_day today,
+                                      const std::function<bool(const ModelSpec&)>& onThisComputer) {
     const Sequence* sequence = state.findSequence(sequenceId);
     if (sequence == nullptr) {
         return refuse(ErrorCode::NotFound, "no sequence " + std::to_string(sequenceId.value));
     }
-    if (state.aiNoCloud) {
+    if (state.aiNoCloud && !onThisComputer) {
         return refuse(ErrorCode::PermissionDenied, "this project is no-cloud: voice-over needs the user's cloud voice provider (no local "
                                                    "voice model has a licence Wabcut can ship)");
     }
@@ -181,6 +183,10 @@ std::expected<DubPlan, PlanError> planDub(const ProjectState& state, SequenceId 
         }
     }
     plan.model.api = api;
+    if (state.aiNoCloud && !onThisComputer(plan.model)) { // QA-07: a voice model on this computer is not the cloud
+        return refuse(ErrorCode::PermissionDenied, "this project is no-cloud: voice-over needs a voice model on this computer (a custom "
+                                                   "provider on localhost) or the user's cloud voice provider");
+    }
     if (request.cloneVoice) {
         if (api != "elevenlabs-tts") {
             return refuse(ErrorCode::InvalidParams, "voices can only be cloned with ElevenLabs models");
@@ -199,8 +205,9 @@ std::expected<DubPlan, PlanError> planDub(const ProjectState& state, SequenceId 
         plan.clone = std::move(*clone);
         plan.voice = "(cloned)";
     } else {
-        plan.voice = request.voice.empty() ? defaultVoice(api) : request.voice;
-        if (!isValidVoice(api, plan.voice)) {
+        // QA-02: a server that copies OpenAI's speech API names its own voices (any id); OpenAI keeps its 13.
+        plan.voice = request.voice.empty() ? defaultVoice(api, plan.model.provider) : request.voice;
+        if (!isValidVoice(api, plan.voice, plan.model.provider)) {
             return refuse(ErrorCode::InvalidParams, "\"" + plan.voice + "\" is not a voice of " + plan.model.name);
         }
     }
@@ -513,8 +520,14 @@ CommandOutput dubCommand(ExecutionContext& c, DubKind kind) {
         request.model = services->defaultModel(request.language);
     }
     auto* transcripts = command::findService<ai::edit::TranscriptServices>(c.services());
-    auto plan = planDub(c.state(), c.sequenceId(), request, ModelRegistry::builtin(), transcripts ? transcripts->transcripts.get() : nullptr,
-                        todayUtc());
+    // QA-02: the host's live registry (models the user added, custom providers), else the shipped file.
+    const std::shared_ptr<const ModelRegistry> live = services != nullptr ? services->registry() : nullptr;
+    std::function<bool(const ModelSpec&)> local;
+    if (services != nullptr) {
+        local = [services](const ModelSpec& model) { return services->onThisComputer(model); };
+    }
+    auto plan = planDub(c.state(), c.sequenceId(), request, live ? *live : ModelRegistry::builtin(),
+                        transcripts ? transcripts->transcripts.get() : nullptr, todayUtc(), local);
     if (!plan) {
         fail(plan.error().code, plan.error().message);
     }
@@ -603,6 +616,7 @@ void registerDubCommands(command::CommandRegistry& registry) {
          "\"maxCost\" and the app's approval.",
          command::Capability::EditProject, std::move(narrationParams), Json{{"text", "Welcome to Chiang Mai."}, {"estimate", true}}, {},
          [](ExecutionContext& c) { return dubCommand(c, DubKind::Narration); }}));
+    registerAudioDescriptionCommands(registry); // 0.7 (card 175)
 }
 
 } // namespace wabcut::ai::dub

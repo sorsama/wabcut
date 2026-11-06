@@ -13,16 +13,21 @@
 #include <wabcut/model/FieldOptionsOps.h>
 #include <wabcut/model/FrameScaling.h>
 #include <wabcut/model/GraphicOps.h>
+#include <wabcut/model/KeyPins.h>
 #include <wabcut/model/MotionOps.h>
+#include <wabcut/model/ProjectDowngrade.h>
 #include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/ProjectOps.h>
+#include <wabcut/model/RenderReplace.h>
 #include <wabcut/model/SequenceSettings.h>
 #include <wabcut/model/SubmixOps.h>
 #include <wabcut/model/Synthetic.h>
+#include <wabcut/model/TrackGroups.h>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -94,6 +99,7 @@ ProjectState richProject() {
                ChromaLocation::TopLeft};
     v.alpha = AlphaMode::Premultiplied;
     v.rotationDegrees = 90;
+    v.mirrored = true; // card 154: the container flags the picture as flipped
     v.duration = item.info.duration;
     v.frameCount = 1'078'920;
     item.info.video.push_back(v);
@@ -707,12 +713,76 @@ TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2
     s = ok(edit::setMasterFormat(s, seq, ChannelFormat::Surround51)).state;
     s = ok(edit::setSequenceStartTimecode(s, seq, Ticks::fromSeconds(3600))).state; // X.1, schema 14
     {
+        // 0.7 (card #12): a clip with Uniform Scale off writes its switch and Scale Width, only then (older builds ignore
+        // neither: a project that never stretches a clip is unchanged).
+        const ClipId stretched = s.findSequence(seq)->videoTracks.at(0)->clips.front().id;
+        s = ok(edit::setParameter(s, seq, stretched, edit::ParamRef::of(ParamId::UniformScale), ParamValue(0.0))).state;
+        s = ok(edit::setParameter(s, seq, stretched, edit::ParamRef::of(ParamId::ScaleWidth), ParamValue(0.5))).state;
+        // 0.7 (card 061): the transcription's custom words, an optional key written only when set.
+        auto words = edit::setCustomWords(s, {"Malenia", "Elden Ring"});
+        REQUIRE(words);
+        s = *words;
+    }
+    {
+        // 0.7 (card 045): an EQ Match - a Graphic Equalizer marked in its effect data and carrying the two spectra it was
+        // learned from. Optional effect data, written only on such an effect, so the schema line below stays as it is.
+        const auto added = ok(edit::addEffect(s, seq, std::span(&audio, 1), "wabcut.audio.graphicEq30"));
+        edit::EffectChange marker;
+        marker.data = {EffectData{"eqMatch", std::string("v1")},
+                       EffectData{"eqMatchReference", std::vector<EffectPoint>{{100.0, -60.0}, {1000.0, -58.0}}},
+                       EffectData{"eqMatchTarget", std::vector<EffectPoint>{{100.0, -61.0}, {1000.0, -59.5}}}};
+        s = ok(edit::setEffect(added.state, seq, audio, added.createdEffects.front(), marker)).state;
+    }
+    {
         edit::SequenceSettingsChange label; // 0.2, schema 18: a sequence's label colour
         label.colorIndex = 4;
         // 0.4: Ripple Sequence Markers off, the only way "rippleMarkers" is written. An optional field the lead kept in
         // schema 18 (an older build ignores it and never rippled markers), so the schema line below stays 18.
         label.rippleMarkers = false;
         s = ok(edit::setSequenceSettings(s, seq, label)).state;
+    }
+    // 0.7 (card 177): a source marker - a claim with its citation, written only when set (optional, schema 19 stays).
+    {
+        Marker source;
+        source.start = Ticks::fromSeconds(2);
+        source.duration = Ticks::fromSeconds(3);
+        source.name = "Unemployment fell 4 percent in 2023";
+        source.type = MarkerType::Source;
+        source.url = "https://example.org/report";
+        MarkerCitation citation;
+        citation.title = "Labour Market Report";
+        citation.author = "A. Author";
+        citation.publisher = "Example Statistics";
+        citation.date = "2024-02-01";
+        citation.archive = "https://web.archive.org/web/2024/https://example.org/report";
+        citation.screenshot = "sources/report.png";
+        citation.needed = true;
+        source.citation = citation;
+        s = ok(edit::addMarker(s, seq, source)).state;
+    }
+    // 0.7 (card 38): VR / 360 video - a sequence's, an item's interpretation and a stream's format, each written only when
+    // VR (optional, schema 19 stays).
+    {
+        edit::SequenceSettingsChange vrChange;
+        vrChange.vr = VrFormat{VrProjection::Equirectangular360, StereoLayout::TopBottom};
+        s = ok(edit::setSequenceSettings(s, seq, vrChange)).state;
+        MediaInterpretation vrInterpretation;
+        vrInterpretation.vr = VrFormat{VrProjection::Equirectangular180, StereoLayout::SideBySide};
+        const MediaId vrMedia = s.media.front()->id;
+        s = ok(edit::interpretFootage(s, std::span(&vrMedia, 1), vrInterpretation)).state;
+        for (MediaPtr& m : s.media) {
+            if (m->id == vrMedia && m->info.hasVideo()) {
+                auto item = std::make_shared<MediaItem>(*m);
+                item->info.video.front().vr = VrFormat{VrProjection::Equirectangular360, StereoLayout::Mono};
+                m = item;
+            }
+        }
+    }
+    // 0.7 (card 112): the bin nested sequences are filed in, written only when set (optional, schema 19 stays).
+    {
+        auto nest = edit::setNestBin(s, s.bins.front().id, true);
+        REQUIRE(nest);
+        s = std::move(*nest);
     }
     // A.8 and A.9's fields that are written only when set: a record-armed track with a moved 5.1 panner, a take.
     const TrackId a1 = s.findSequence(seq)->audioTracks.at(0)->id;
@@ -727,6 +797,10 @@ TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2
         if (!take.info.video.empty()) {
             take.info.video.front().logColorSpace = "s-log3-cine"; // 0.2, schema 17: the camera log its metadata names
             take.info.video.front().fieldOrder = FieldOrder::UpperFirst; // 0.2 media, schema 18: interlaced footage
+            // 0.7: the Dolby Vision configuration the container declares and HDR10+ seen in the first frames, optional keys
+            // written only when set (an older build ignores them; schema 19 stays).
+            take.info.video.front().dolbyVision = DolbyVisionInfo{8, 6, 4, true, false, true};
+            take.info.video.front().hdr10Plus = true;
         }
         s.media.front() = std::make_shared<const MediaItem>(std::move(take));
     }
@@ -744,6 +818,8 @@ TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2
         style.caps = TextCaps::AllCaps;
         style.fauxBold = true;
         style.fauxItalic = true;
+        style.opticalKerning = true;       // 0.7 (card #138), written only when set
+        style.features = "calt, -liga, ss01";
         title.text.verticalAlign = TextVerticalAlign::Center;
         TextStroke stroke;
         stroke.enabled = false;
@@ -767,6 +843,7 @@ TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2
     s = ok(edit::setBrandKit(s, kit)).state;
     auto tmpl = edit::makeTemplate(g, "title", "Title", {TemplateField{"text", "Text", FieldKind::Text, 1, "text", {}}});
     REQUIRE(tmpl);
+    tmpl->folder = "Titles/Lower thirds"; // 0.7 (card #87): the browser folder a template is filed under, written only when set
     s = ok(edit::saveProjectTemplate(s, *tmpl)).state;
     // C.15 (schema 15): a clip blend mode, a synthetic item with parameters and an adjustment layer.
     const ClipId video = s.findSequence(seq)->videoTracks.at(0)->clips.front().id;
@@ -828,6 +905,8 @@ TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2
     auto merged = edit::mergeClips(s, merge);
     REQUIRE(merged);
     s = merged->state;
+    // 0.7 (card 009): an angle nudged by hand keeps the offset its sync measured ("autoOffset", written only then).
+    s = ok(edit::setMulticamSync(s, merged->id, 1, f(2))).state;
     // p02 audio (schema 17): a submix track, a track assigned to it and a pre-fader, muted send with a level and pan.
     s = ok(edit::addSubmixTrack(s, seq, ChannelFormat::Stereo, "Voices")).state;
     const TrackId submix = s.findSequence(seq)->submixTracks.at(0)->id;
@@ -870,6 +949,12 @@ TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2
         REQUIRE(captions);
         s = *edit::saveCaptionPreset(captions->state, CaptionPreset{"Channel look", CaptionStyle{}});
         s = ok(edit::setCaptionTrackStyle(s, seq, s.findSequence(seq)->captionTracks.back().id, "Channel look")).state;
+        {
+            // 0.7 (card 116): a caption track drawn together with the main one, written only when set (schema 19 stays).
+            edit::CaptionTrackChange together;
+            together.showTogether = true;
+            s = ok(edit::setCaptionTrackInfo(s, seq, s.findSequence(seq)->captionTracks.back().id, together)).state;
+        }
     }
     // 0.2 P.3 (schema 18): clip metadata, a search bin with every field and a Freeform view with a saved layout.
     {
@@ -985,6 +1070,101 @@ TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2
         requireValid(s);
     }
 
+    // 0.7: the rights and clearance record of A (card 179) and the channel names of its audio stream (card 062).
+    {
+        const MediaId a = (*named("A"))->id;
+        edit::MediaRightsChange rights;
+        rights.source = "Newsreel Archive";
+        rights.licence = "Worldwide, all media, 10 years";
+        rights.reference = "INV-1042";
+        rights.territory = "Worldwide";
+        rights.expiry = "2030-06-30";
+        rights.costMinor = std::optional<std::int64_t>(125000);
+        rights.currency = "GBP";
+        rights.creditLine = "Archive footage courtesy of Newsreel Archive";
+        rights.notes = "Cleared for the festival cut only.";
+        rights.status = ClearanceStatus::Cleared;
+        auto withRights = edit::setMediaRights(s, std::vector<MediaId>{a}, rights);
+        REQUIRE(withRights);
+        s = *withRights;
+        for (MediaPtr& m : s.media) {
+            if (m->id == a) {
+                auto item = std::make_shared<MediaItem>(*m);
+                if (item->info.audio.empty()) {
+                    item->info.audio.push_back(AudioStreamInfo{});
+                    item->info.audio.back().channels = 2;
+                }
+                item->info.audio.front().channelNames = {"Boom", "Lav A"};
+                m = item;
+            }
+        }
+        requireValid(s);
+    }
+
+    // 0.7 (batch A7): a clip's note (card 125), a keyframe pinned to a clip end and Ripple Track Keyframes (card 120): optional
+    // keys written only when set, so builds before them open the file and ignore them.
+    {
+        edit::ClipAttributeChange note;
+        note.note = "Cut the cough";
+        s = ok(edit::setClipAttributes(s, seq, std::span(&video, 1), note)).state;
+        s = ok(edit::addKeyframe(s, seq, video, edit::ParamRef::of(ParamId::Opacity), Keyframe{f(1), 0.5})).state;
+        s = ok(edit::setKeyframePin(s, seq, video, edit::ParamRef::of(ParamId::Opacity), 0, KeyPin::ClipStart)).state;
+        edit::SequenceSettingsChange ripple;
+        ripple.rippleTrackKeyframes = true;
+        s = ok(edit::setSequenceSettings(s, seq, ripple)).state;
+        requireValid(s);
+    }
+
+    // 0.7 (batch A8, card 069): a nested clip rendered to a file and replaced keeps the way back ("renderedFrom": the
+    // nested sequence and where the file starts in it); written only on such a clip.
+    {
+        edit::SequenceSettings innerSettings;
+        innerSettings.name = "Inner";
+        innerSettings.frameRate = s.findSequence(seq)->frameRate;
+        innerSettings.videoTracks = 1;
+        innerSettings.audioTracks = 0;
+        auto inner = edit::addSequence(s, innerSettings);
+        REQUIRE(inner);
+        s = inner->state;
+        edit::SequenceSettings hostSettings = innerSettings;
+        hostSettings.name = "Host";
+        auto host = edit::addSequence(s, hostSettings);
+        REQUIRE(host);
+        s = host->state;
+        const MediaId a = (*named("A"))->id;
+        const edit::SourceClip picture{
+            a, TimeRange{f(0), f(4)}, {edit::SourcePatch{StreamRef{StreamKind::Video, 0}, s.findSequence(inner->id)->videoTracks.front()->id, {}}}};
+        s = ok(edit::overwriteEdit(s, inner->id, picture, f(0))).state;
+        edit::SourceClip nest;
+        nest.sequence = inner->id;
+        nest.sourceRange = TimeRange{f(1), f(3)};
+        nest.patches = {edit::SourcePatch{StreamRef{StreamKind::Video, 0}, s.findSequence(host->id)->videoTracks.front()->id, {}}};
+        const edit::EditResult nested = ok(edit::overwriteEdit(s, host->id, nest, f(0)));
+        REQUIRE(nested.placed.size() == 1);
+        MediaItem baked = **named("A");
+        baked.name = "Baked";
+        s = ok(edit::renderAndReplace(nested.state, host->id, std::span(&nested.placed.front(), 1), baked, f(1))).state;
+        requireValid(s);
+    }
+
+    // 0.7 (batch A9, card 124): a coloured, collapsed track group - "trackGroups", "members" and "collapsed" are optional keys
+    // written only on a sequence that has groups, so builds before them open the file and show the tracks ungrouped.
+    {
+        const std::array<TrackId, 1> grouped{a1};
+        const edit::EditResult made = ok(edit::createTrackGroup(s, seq, grouped, "Dialogue", 3));
+        edit::TrackGroupChange fold;
+        fold.collapsed = true;
+        s = ok(edit::setTrackGroup(made.state, seq, made.createdTrackGroup, fold)).state;
+        requireValid(s);
+    }
+
+
+    {
+        // 0.7 (card 133): AI Frame Interpolation is saved as Optical Flow plus "aiInterpolation": true (older builds read it as
+        // Optical Flow); the key is written only for such a clip.
+        const ClipId retimed = s.findSequence(seq)->videoTracks.at(0)->clips.front().id;
+        s = ok(edit::setTimeInterpolation(s, seq, std::span(&retimed, 1), TimeInterpolation::AiInterpolation)).state;
+    }
     const auto text = io::toJson(s);
     REQUIRE(text);
     const std::set<std::string> keys = collectKeys(*text);
@@ -1002,6 +1182,167 @@ TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2
     INFO("project file keys changed: bump kSchemaVersion and update " << pathToUtf8(golden) << " (the new list is in "
                                                                        << WABCUT_TEST_OUTPUT_DIR << ")");
     CHECK(current == expected);
+
+    // 0.7 (card 059): saving for an older release. Whatever the downgrade leaves in the file must be a key that release
+    // knew (tests/data/project-file-keys-0.2.txt and -0.6.txt are the lists of those releases), so a field added to the
+    // project file without a rule in ProjectDowngrade.cpp fails here instead of reaching an older build.
+    const auto keysOfRelease = [&](const char* name) {
+        std::set<std::string> known;
+        std::istringstream in(readFile(fs::path(WABCUT_TEST_DATA_DIR) / name));
+        for (std::string line; std::getline(in, line);) {
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            if (!line.empty() && line.rfind("schema ", 0) != 0) {
+                known.insert(line);
+            }
+        }
+        return known;
+    };
+    struct Release {
+        const char* id;
+        const char* keyFile;
+        // Keys that release reads although its own key-list fixture never wrote them.
+        std::set<std::string> alsoKnown;
+    };
+    const Release releases[] = {
+        // Both read a marker's "url" (web links since Markers 2.0), though their fixtures never wrote one.
+        {"0.6", "project-file-keys-0.6.txt", {"url"}},
+        // 0.2's list predates a text shadow (0.2 graphics have one) and the 0.4 sequence setting "rippleMarkers", which 0.2
+        // and 0.3 ignore.
+        {"0.5", "project-file-keys-0.2.txt", {"shadow", "rippleMarkers", "url"}},
+    };
+    for (const Release& release : releases) {
+        INFO("release " << release.id);
+        const auto down = io::toJsonForRelease(s, release.id);
+        REQUIRE(down);
+        std::set<std::string> known = keysOfRelease(release.keyFile);
+        known.insert(release.alsoKnown.begin(), release.alsoKnown.end());
+        std::string unknown;
+        for (const std::string& k : collectKeys(down->json)) {
+            if (!known.contains(k)) {
+                unknown += " " + k;
+            }
+        }
+        INFO("keys Wabcut " << release.id << " does not know, left in the file:" << unknown
+                           << " - add a rule to ProjectDowngrade.cpp (or list the key in this test when that release read it)");
+        CHECK(unknown.empty());
+        CHECK(down->json.find("\"schemaVersion\": " + std::to_string(down->schema)) != std::string::npos);
+        // A file the current build reads back (it migrates up like any older file).
+        CHECK(io::fromJson(down->json));
+        // The rich project has these 0.7 fields: all are reported.
+        std::set<std::string> lost;
+        for (const io::DowngradeLoss& loss : down->losses) {
+            lost.insert(loss.id);
+            CHECK(loss.count > 0);
+        }
+        for (const char* id : {"eqMatch", "customWords", "nestBin", "bilingualCaptions", "trackGroups", "keyframePins",
+                               "rippleTrackKeyframes", "clipNotes", "renderedNests"}) {
+            CHECK(lost.contains(id));
+        }
+        if (std::string(release.id) == "0.5") {
+            for (const char* id : {"auditions", "masterClipEffects", "colorOutput", "textStyling", "textLayout"}) {
+                CHECK(lost.contains(id));
+            }
+        } else {
+            CHECK_FALSE(lost.contains("auditions")); // 0.6 has them
+        }
+    }
+}
+
+TEST_CASE("A stream the container flags as mirrored is saved and loads back; others write nothing (card 154)",
+          "[model][io]") {
+    Timeline tl(R"(
+        V1 tgt |Aaaa|
+    )");
+    // No flag: the key is not written (every older file stays as it was).
+    const auto plain = io::toJson(tl.state);
+    REQUIRE(plain);
+    CHECK(plain->find("\"mirrored\"") == std::string::npos);
+    const auto plainLoaded = io::fromJson(*plain);
+    REQUIRE(plainLoaded);
+    CHECK_FALSE(plainLoaded->findMedia(tl.media('A'))->info.video.front().mirrored);
+
+    // Flagged: "mirrored": true on the video stream, with its rotation.
+    ProjectState flagged = tl.state;
+    for (MediaPtr& m : flagged.media) {
+        if (m->id == tl.media('A')) {
+            auto item = std::make_shared<MediaItem>(*m);
+            item->info.video.front().rotationDegrees = 90;
+            item->info.video.front().mirrored = true;
+            m = item;
+        }
+    }
+    const auto json = io::toJson(flagged);
+    REQUIRE(json);
+    CHECK(json->find("\"mirrored\": true") != std::string::npos);
+    const auto loaded = io::fromJson(*json);
+    REQUIRE(loaded);
+    const VideoStreamInfo& stream = loaded->findMedia(tl.media('A'))->info.video.front();
+    CHECK(stream.mirrored);
+    CHECK(stream.rotationDegrees == 90);
+    CHECK(*loaded == flagged);
+    // A wrong type is an error, not a guess.
+    std::string bad = *json;
+    const std::string flag = "\"mirrored\": true";
+    const auto at = bad.find(flag);
+    REQUIRE(at != std::string::npos);
+    bad.replace(at, flag.size(), "\"mirrored\": \"yes\"");
+    CHECK_FALSE(io::fromJson(bad).has_value());
+}
+
+TEST_CASE("A stream's Dolby Vision configuration and HDR10+ flag are saved only when set and load back (card 051)",
+          "[model][io][hdr]") {
+    Timeline tl(R"(
+        V1 tgt |Aaaa|
+    )");
+    const auto plain = io::toJson(tl.state);
+    REQUIRE(plain);
+    CHECK(plain->find("dolbyVision") == std::string::npos);
+    CHECK(plain->find("hdr10Plus") == std::string::npos);
+
+    ProjectState hdr = tl.state;
+    for (MediaPtr& m : hdr.media) {
+        if (m->id == tl.media('A')) {
+            auto item = std::make_shared<MediaItem>(*m);
+            item->info.video.front().dolbyVision = DolbyVisionInfo{8, 6, 4, true, false, true};
+            item->info.video.front().hdr10Plus = true;
+            m = item;
+        }
+    }
+    const auto json = io::toJson(hdr);
+    REQUIRE(json);
+    CHECK(json->find("\"hdr10Plus\": true") != std::string::npos);
+    const auto loaded = io::fromJson(*json);
+    REQUIRE(loaded);
+    const VideoStreamInfo& stream = loaded->findMedia(tl.media('A'))->info.video.front();
+    REQUIRE(stream.dolbyVision.has_value());
+    CHECK(stream.dolbyVision->profile == 8);
+    CHECK(stream.dolbyVision->level == 6);
+    CHECK(stream.dolbyVision->blCompatibilityId == 4);
+    CHECK(stream.dolbyVision->name() == "8.4");
+    CHECK(stream.dolbyVision->rpuPresent);
+    CHECK_FALSE(stream.dolbyVision->elPresent);
+    CHECK(stream.hdr10Plus);
+    CHECK(*loaded == hdr);
+
+    // The names Dolby uses: 8.1 is an HDR10 base, 5 has none.
+    CHECK(DolbyVisionInfo{8, 6, 1, true, false, true}.name() == "8.1");
+    CHECK(DolbyVisionInfo{5, 6, 0, true, false, true}.name() == "5");
+
+    // Untrusted numbers are bounded: a profile of 4000 or a compatibility id of 99 is a damaged file.
+    std::string bad = *json;
+    const std::string profile = "\"dvProfile\": 8";
+    const auto at = bad.find(profile);
+    REQUIRE(at != std::string::npos);
+    bad.replace(at, profile.size(), "\"dvProfile\": 4000");
+    CHECK_FALSE(io::fromJson(bad).has_value());
+    std::string worse = *json;
+    const std::string compat = "\"blCompatibilityId\": 4";
+    const auto at2 = worse.find(compat);
+    REQUIRE(at2 != std::string::npos);
+    worse.replace(at2, compat.size(), "\"blCompatibilityId\": 99");
+    CHECK_FALSE(io::fromJson(worse).has_value());
 }
 
 TEST_CASE("Ripple Sequence Markers is saved only when off and loads back", "[model][io][markers]") {
@@ -1035,4 +1376,25 @@ TEST_CASE("Ripple Sequence Markers is saved only when off and loads back", "[mod
     const auto olderLoaded = io::fromJson(older);
     REQUIRE(olderLoaded);
     CHECK(olderLoaded->findSequence(tl.seq)->rippleMarkers);
+}
+
+TEST_CASE("A text that is not UTF-8 never makes a project unsavable; effect data must be text (camera names)",
+          "[model][io]") {
+    // Effect data is validated where it enters: a camera model read from a damaged file is refused there.
+    CHECK_FALSE(effectDataProblem(EffectData{"gyro", std::string("camera=HERO12")}).has_value());
+    CHECK(effectDataProblem(EffectData{"gyro", std::string("camera=\xFF\xFE\xFD")}).has_value());
+    CHECK(effectDataProblem(EffectData{std::string("k\xC3"), std::string("fine")}).has_value());
+    // And the writer does not throw on whatever got past: the bytes become replacement characters.
+    Timeline tl(R"(
+        V1 tgt |Aaaa|
+    )");
+    ProjectState s = tl.state;
+    for (MediaPtr& m : s.media) {
+        auto item = std::make_shared<MediaItem>(*m);
+        item->name = std::string("cam\xFF\xFE.mp4");
+        m = item;
+    }
+    const auto text = io::toJson(s);
+    REQUIRE(text);
+    CHECK(io::fromJson(*text));
 }

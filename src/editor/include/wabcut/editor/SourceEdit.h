@@ -44,6 +44,10 @@ struct MediaDrop {
     /// 0.2 UX (a drag from the Project panel, Premiere): without a `sourceRange`, the media's Source Monitor marks
     /// (edit::storedSourceMarks) choose it - In (else the start) to Out (else the end). Off: the whole media.
     bool useSourceMarks = false;
+    /// 0.7 (card 182): may the drop make tracks the sequence lacks (a recording's stream with a name and no track to go
+    /// to gets a new one)? Off, those streams are left out, and the drop fails when none is left (Settings > Timeline &
+    /// editing > Add tracks when editing clips in).
+    bool addTracks = true;
 };
 
 /// The patches a drop of `media` on `track` uses (see the file comment). Locked tracks are skipped. `landing`: where

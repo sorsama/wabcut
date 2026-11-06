@@ -24,6 +24,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <wabcut/model/EditOps.h>
+#include <wabcut/model/FinishingOps.h>
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QKeyEvent>
@@ -33,7 +36,10 @@
 #include <QMouseEvent>
 #include <QSettings>
 
+#include <algorithm>
 #include <string>
+#include <tuple>
+#include <vector>
 
 using namespace wabcut;
 using namespace wabcut::app;
@@ -187,6 +193,9 @@ TEST_CASE("Menus: the Editing and routed rows grey out with the reason until the
         {"clip.modifyTimecode", "Select clips in the Library"},
         {"clip.replaceFootage", "Select a clip in the Library"},
         {"file.newSequenceFromClip", "Select a clip in the Library"},
+        {"file.newSequencesFromClips", "Select two or more clips in the Library"},       // 0.7 (card 055)
+        {"file.newSequenceFromClipsTogether", "Select two or more clips in the Library"}, // 0.7 (card 055)
+        {"clip.reloadFootage", "Select clips in the Library to reload"},                 // 0.7 (card 143)
         {"clip.mergeClips", "Select a video clip and the audio clips to merge with it"},
         {"edit.editOriginal", "Select a clip of a media file"},
         {"clip.revealInProject", "Select a clip first"},
@@ -240,13 +249,16 @@ TEST_CASE("Menus: the Editing and routed rows grey out with the reason until the
                            "clip.replaceFootage", "file.newSequenceFromClip", "edit.editOriginal", "clip.revealInProject",
                            "sequence.makeSubsequenceFromInToOut", "sequence.replaceFromBin",
                            "sequence.replaceFromSourceMonitor", "sequence.lift", "sequence.extract", "clip.insert",
-                           "clip.speedDuration", "clip.audioGain"}) {
+                           "clip.speedDuration", "clip.audioGain", "clip.reloadFootage"}) {
         INFO(id << ": " << s.reason(id).toStdString());
         CHECK(s.enabled(id));
     }
-    // Two items: Merge Clips can run. An edit: Step Backward can, Step Forward still cannot.
+    CHECK_FALSE(s.enabled("file.newSequencesFromClips")); // one clip is New Sequence From Clip
+    // Two items: Merge Clips can run, and so can New Sequence per Clip. An edit: Step Backward can, Step Forward still cannot.
     library->select(mediaKey(tl.media('B')), LibraryBridge::Toggle);
     CHECK(s.enabled("clip.mergeClips"));
+    CHECK(s.enabled("file.newSequencesFromClips"));
+    CHECK(s.enabled("file.newSequenceFromClipsTogether"));
     REQUIRE(editing->scaleToFrameSize({}, true).isEmpty());
     CHECK(s.enabled("history.stepBackward"));
     CHECK_FALSE(s.enabled("history.stepForward"));
@@ -258,6 +270,139 @@ TEST_CASE("Menus: the Editing and routed rows grey out with the reason until the
     CHECK(s.reason("sequence.closeGap") == QStringLiteral("There is no gap to close"));
     CHECK(editing->runCommand(QStringLiteral("sequence.closeGap")));
     CHECK_FALSE(editing->message().isEmpty());
+    resetSettings();
+}
+
+TEST_CASE("Clean-up rows: Remove Transitions, Remove All Transitions, Remove Disabled Clips and Select All Disabled Clips (0.7)",
+          "[app][menubar][cleanup]") {
+    resetSettings();
+    clearMessages();
+    P1Shell s;
+    auto* editing = s.shell.engine.singletonInstance<EditingBridge*>("Wabcut", "Editing");
+    REQUIRE(editing != nullptr);
+    Timeline tl(R"(
+        V1 tgt |AaaaaaaaaaB5bbbbbbbbC5ccccccccc|
+        A1 tgt |AaaaaaaaaaB5bbbbbbbbC5ccccccccc|
+    )");
+    tl.linkMatching();
+    const auto reset = [&](const ProjectState& state) {
+        s.controller->resetProject(state, tl.seq);
+        s.controller->clearSelection();
+        spin(50);
+    };
+    reset(tl.state);
+
+    // The rows are in the menus.
+    QObject* editMenu = s.shell.object("editMenu");
+    QObject* sequenceMenu = s.shell.object("sequenceMenuBar");
+    REQUIRE(editMenu != nullptr);
+    REQUIRE(sequenceMenu != nullptr);
+    CHECK(editMenu->findChild<QObject*>(QStringLiteral("menuCommand_edit.selectDisabledClips")) != nullptr);
+    for (const char* id : {"sequence.removeTransitions", "sequence.removeAllTransitions", "sequence.removeDisabledClips"}) {
+        INFO(id);
+        CHECK(sequenceMenu->findChild<QObject*>(QStringLiteral("menuCommand_") + QString::fromLatin1(id)) != nullptr);
+    }
+
+    // Nothing to remove, nothing disabled: the rows grey out and say why.
+    const std::pair<const char*, const char*> greyed[] = {
+        {"sequence.removeTransitions", "Select clips first"},
+        {"sequence.removeAllTransitions", "The sequence has no transitions to remove"},
+        {"sequence.removeDisabledClips", "There are no disabled clips to remove"},
+        {"edit.selectDisabledClips", "There are no disabled clips"},
+    };
+    for (const auto& [id, why] : greyed) {
+        INFO(id);
+        CHECK_FALSE(s.enabled(id));
+        CHECK(s.reason(id) == QString::fromLatin1(why));
+    }
+    // Keys are not gated: run with nothing to do, the reason is the message and nothing changes.
+    const std::size_t steps = s.controller->session().undoCount();
+    CHECK(editing->runCommand(QStringLiteral("sequence.removeAllTransitions")));
+    CHECK_FALSE(editing->message().isEmpty());
+    CHECK(s.controller->session().undoCount() == steps);
+
+    // Two dissolves on V1 and a crossfade on A1.
+    ProjectState withTransitions = tl.state;
+    for (const auto& [track, from, to] : {std::tuple{"V1", "V1@0", "V1@10"}, std::tuple{"V1", "V1@10", "V1@20"},
+                                          std::tuple{"A1", "A1@0", "A1@10"}}) {
+        edit::TransitionSpec spec;
+        spec.outgoing = tl.clip(from);
+        spec.incoming = tl.clip(to);
+        spec.before = f(2);
+        spec.after = f(2);
+        spec.effect = std::string(track) == "V1" ? "crossDissolve" : "constantPower";
+        withTransitions = ok(edit::addTransition(withTransitions, tl.seq, tl.track(track), spec)).state;
+    }
+    reset(withTransitions);
+    const auto transitions = [&] {
+        std::size_t n = 0;
+        s.controller->currentSequence()->forEachTrack([&](const Track& t) { n += t.transitions.size(); });
+        return n;
+    };
+    REQUIRE(transitions() == 3);
+    CHECK(s.enabled("sequence.removeAllTransitions"));
+    CHECK_FALSE(s.enabled("sequence.removeTransitions")); // nothing selected
+
+    // The selected clips' transitions: B's picture (and its linked sound) touch the V1 dissolves and A1's crossfade.
+    s.controller->selectClip(clipKey(tl.clip("V1@10")));
+    CHECK(s.enabled("sequence.removeTransitions"));
+    // The Sequence menu with its new rows (screenshots, dark and light).
+    QObject* bar = s.shell.object("appMenuBar");
+    REQUIRE(bar != nullptr);
+    for (const bool dark : {true, false}) {
+        s.shell.setAppearance(dark, "ultraviolet");
+        spin(100);
+        REQUIRE(QMetaObject::invokeMethod(bar, "open", Q_ARG(int, 3), Q_ARG(bool, false)));
+        REQUIRE(waitFor([&] { return opened(sequenceMenu); }));
+        spin(100);
+        saveCrop(s.shell, QRectF(0, 0, 1000, 760),
+                 dark ? QStringLiteral("sequence-menu-cleanup.png") : QStringLiteral("sequence-menu-cleanup-light.png"));
+        REQUIRE(QMetaObject::invokeMethod(sequenceMenu, "close"));
+        REQUIRE(waitFor([&] { return !shown(sequenceMenu); }));
+    }
+    s.shell.setAppearance(true, "ultraviolet");
+    spin(100);
+    const std::size_t before = s.controller->session().undoCount();
+    REQUIRE(editing->removeTransitions(false).isEmpty());
+    CHECK(transitions() == 0);
+    CHECK(s.controller->session().undoCount() == before + 1);
+    CHECK(s.controller->undoText().contains(QStringLiteral("Remove Transitions")));
+    REQUIRE(s.controller->undo());
+    CHECK(transitions() == 3);
+    // The whole sequence, with the key's command.
+    CHECK(editing->runCommand(QStringLiteral("sequence.removeAllTransitions")));
+    CHECK(editing->message().isEmpty());
+    CHECK(transitions() == 0);
+    CHECK_FALSE(s.enabled("sequence.removeAllTransitions")); // none left
+    REQUIRE(s.controller->undo());
+
+    // Disabled clips: disable B (picture and sound, linked), find them, delete them.
+    s.controller->selectClip(clipKey(tl.clip("V1@10")));
+    REQUIRE(s.controller->runCommand(QStringLiteral("clip.enable")));
+    s.controller->clearSelection();
+    CHECK(s.enabled("edit.selectDisabledClips"));
+    CHECK(s.enabled("sequence.removeDisabledClips"));
+    REQUIRE(QMetaObject::invokeMethod(bar, "open", Q_ARG(int, 1), Q_ARG(bool, false)));
+    REQUIRE(waitFor([&] { return opened(editMenu); }));
+    spin(100);
+    saveCrop(s.shell, QRectF(0, 0, 1000, 760), QStringLiteral("edit-menu-select-disabled.png"));
+    REQUIRE(QMetaObject::invokeMethod(editMenu, "close"));
+    REQUIRE(waitFor([&] { return !shown(editMenu); }));
+    REQUIRE(s.controller->runCommand(QStringLiteral("edit.selectDisabledClips")));
+    std::vector<ClipId> selected = s.controller->selection();
+    std::ranges::sort(selected);
+    std::vector<ClipId> expected{tl.clip("V1@10"), tl.clip("A1@10")};
+    std::ranges::sort(expected);
+    CHECK(selected == expected);
+    const std::size_t beforeRemove = s.controller->session().undoCount();
+    REQUIRE(editing->removeDisabledClips().isEmpty());
+    CHECK(s.controller->session().undoCount() == beforeRemove + 1);
+    CHECK(s.controller->undoText().contains(QStringLiteral("Remove Disabled Clips")));
+    CHECK(s.controller->currentSequence()->videoTracks[0]->clips.size() == 2);
+    CHECK(s.controller->currentSequence()->audioTracks[0]->clips.size() == 2);
+    CHECK_FALSE(s.enabled("sequence.removeDisabledClips"));
+    CHECK_FALSE(s.enabled("edit.selectDisabledClips"));
+    CHECK_FALSE(s.controller->runCommand(QStringLiteral("no.such.command")));
     resetSettings();
 }
 
@@ -556,7 +701,7 @@ TEST_CASE("History: a docked panel whose Delete and Clear History ask first and 
     REQUIRE(confirm != nullptr);
     key(s.w, Qt::Key_Backspace);
     REQUIRE(waitFor([&] { return opened(confirm); }));
-    CHECK(confirm->property("title").toString() == QStringLiteral("Delete “Scale to Frame Size”?"));
+    CHECK(confirm->property("title").toString() == QStringLiteral("Delete “Auto Fit to Frame”?"));
     REQUIRE(QMetaObject::invokeMethod(confirm->findChild<QObject*>(QStringLiteral("menuConfirmCancel")), "clicked"));
     REQUIRE(waitFor([&] { return !shown(confirm); }));
     CHECK(s.controller->session().undoCount() == 2);

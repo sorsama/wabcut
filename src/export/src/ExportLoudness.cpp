@@ -68,7 +68,8 @@ std::string loudnessLogText(const LoudnessMeasurement& m, const LoudnessNormaliz
     text += std::format("Loudness standard: {} (ITU-R BS.1770-4 measurement)\n",
                         s.standard == LoudnessStandard::EbuR128   ? "EBU R 128"
                         : s.standard == LoudnessStandard::AtscA85 ? "ATSC A/85"
-                                                                  : "custom");
+                        : s.standard == LoudnessStandard::Streaming ? "Streaming platforms (-14 LUFS)"
+                                                                    : "custom");
     text += std::format("Target loudness: {:.1f} LUFS, tolerance {:.1f} LU, max true peak {:.1f} dBTP\n", s.effectiveTarget(),
                         s.toleranceLu, s.effectiveTruePeak());
     text += "Measured loudness: " + level(m.integratedLufs, "LUFS") + "\n";

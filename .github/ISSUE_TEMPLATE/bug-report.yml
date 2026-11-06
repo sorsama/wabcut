@@ -10,15 +10,16 @@ body:
     id: version
     attributes:
       label: Wabcut version and package
-      description: Help > About Wabcut, and MSI, portable ZIP, AppImage, tar.gz or DMG.
-      placeholder: 0.5.0, portable ZIP
+      description: Help > Report a Bug… fills in the version. Add how you installed it - MSI, portable ZIP, AppImage, tar.gz or DMG.
+      placeholder: 0.6.0, portable ZIP
     validations:
       required: true
   - type: textarea
     id: system
     attributes:
       label: System
-      description: Operating system, CPU, RAM and graphics card(s). Settings > Media & cache > "Performance check" shows what Wabcut uses.
+      description: Help > Report a Bug… > Open on GitHub fills this in (Copy System Info gives the same text to paste). Add the RAM, and the graphics card(s) if you use more than one. Settings > Media & cache > "Performance check" shows what Wabcut uses.
+      render: text
     validations:
       required: true
   - type: textarea

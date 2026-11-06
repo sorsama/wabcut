@@ -541,7 +541,9 @@ void VoiceOverBridge::finishPass() {
         setError(QString::fromStdString(committed.error().message));
         return;
     }
-    if (result->droppedFrames > 0)
+    if (result->reachedLimit) // card 161: a WAV file holds at most 4 GiB
+        setError(tx("The take reached the longest a WAV file can be (4 GiB) and ended there. Record the rest as a new take"));
+    else if (result->droppedFrames > 0)
         setError(tx("The computer fell behind while recording: the take has a gap"));
     emit takeRecorded(placed->placed.empty() ? QString() : clipKey(placed->placed.front()));
 }

@@ -6,6 +6,7 @@
 // that cannot carry what is asked are refused with the reason.
 
 #include "ExportTestUtil.h"
+#include "MxfDelivery.h"
 
 #include <wabcut/export/ClosedCaptions.h>
 #include <wabcut/export/ExportJob.h>
@@ -918,4 +919,17 @@ TEST_CASE("MXF and embedded caption settings round trip as JSON and through the 
     CHECK(o.video.pixelFormat == OutputPixelFormat::Yuv422p);
     CHECK_FALSE(applyOverrides(o, Json{{"cc708Service", 64}}).has_value());
     CHECK_FALSE(applyOverrides(o, Json{{"captionStandard", "609"}}).has_value());
+}
+
+TEST_CASE("MXF audio: the mix has as many channels as the master and the tracks take, 7.1 over eight (0.7)",
+          "[export][mxf][surround71]") {
+    // Eight tracks carry a 7.1 mix whole; six a 5.1 one (a 7.1 master downmixed to 5.1); fewer a stereo downmix or the mono mix.
+    CHECK(exporter::detail::mxfMixChannels(8, ChannelFormat::Surround71) == 8);
+    CHECK(exporter::detail::mxfMixChannels(6, ChannelFormat::Surround71) == 6);
+    CHECK(exporter::detail::mxfMixChannels(4, ChannelFormat::Surround71) == 2);
+    CHECK(exporter::detail::mxfMixChannels(2, ChannelFormat::Surround71) == 2);
+    CHECK(exporter::detail::mxfMixChannels(1, ChannelFormat::Surround71) == 1);
+    CHECK(exporter::detail::mxfMixChannels(8, ChannelFormat::Surround51) == 6);
+    CHECK(exporter::detail::mxfMixChannels(6, ChannelFormat::Surround51) == 6);
+    CHECK(exporter::detail::mxfMixChannels(8, ChannelFormat::Stereo) == 2);
 }

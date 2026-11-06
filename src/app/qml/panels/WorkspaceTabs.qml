@@ -9,7 +9,7 @@ import QtQuick.Layouts
 // 0.1.3 workspaces (Workspaces.qml): the tabs are the user's workspaces, in their order (none is built in). A tab's menu
 // (right-click, the Menu key, Shift+F10) renames, duplicates, moves, resets or deletes it; a double-click (or F2)
 // renames it in place; dragging a tab reorders the tabs. The "+" makes a new workspace from a preset (Edit, Color,
-// Audio, Captions, Export) or as a copy of the current one. Tabs that no longer fit scroll (the wheel) and the chevron
+// Audio, Captions, Export, Gaming) or as a copy of the current one. Tabs that no longer fit scroll (the wheel) and the chevron
 // lists them all.
 // P1 round (#32): a locked workspace's tab shows a lock before its name; the tab menu's window actions (Save Changes,
 // Save as New, Reset to Preset, Lock) come out as actionRequested (TopBar: Main.menuAction).

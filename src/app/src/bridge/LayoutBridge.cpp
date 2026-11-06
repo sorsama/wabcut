@@ -267,6 +267,48 @@ QString LayoutBridge::gameplay() const {
     return m_gameplay ? clipKey(m_gameplay->clip) : QString();
 }
 
+QVariantMap LayoutBridge::suggestedGameplay() const {
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!snap || !seq || m_gameplay)
+        return {};
+    const Ticks playhead = m_controller->playhead();
+    const Clip* best = nullptr;
+    Ticks bestDistance = Ticks::max();
+    bool under = false;
+    for (const TrackPtr& track : seq->videoTracks) { // the lowest track first, as the automatic choice does
+        for (const Clip& c : track->clips) {
+            if (!c.enabled || !pictureAspect(*snap, c))
+                continue;
+            const bool here = c.start() <= playhead && playhead < c.end();
+            const Ticks distance = here ? Ticks{} : (playhead < c.start() ? c.start() - playhead : playhead - c.end());
+            if (here && !under) {
+                best = &c;
+                under = true;
+                bestDistance = distance;
+            } else if (!under && distance < bestDistance) {
+                best = &c;
+                bestDistance = distance;
+            }
+        }
+    }
+    if (!best)
+        return {};
+    return QVariantMap{{QStringLiteral("key"), clipKey(best->id)},
+                       {QStringLiteral("name"), QString::fromStdString(best->name())},
+                       {QStringLiteral("underPlayhead"), under}};
+}
+
+bool LayoutBridge::useSuggestedGameplay() {
+    const QVariantMap suggestion = suggestedGameplay();
+    const auto id = parseClipKey(suggestion.value(QStringLiteral("key")).toString());
+    if (!id || !m_controller)
+        return false;
+    m_controller->selectClipById(*id, ProjectController::Replace, false); // the gameplay only, not its audio partner
+    refreshTargets();
+    return true;
+}
+
 QString LayoutBridge::facecam() const {
     return m_facecam ? clipKey(m_facecam->clip) : QString();
 }

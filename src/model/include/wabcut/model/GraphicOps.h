@@ -198,6 +198,26 @@ std::vector<std::uint32_t> textLayerIds(const Graphic& graphic);
 EditOutcome renameTextStyle(const ProjectState& state, std::string_view from, std::string to);
 /// Removes a text style: the layers keep their look and follow nothing. Errors: NotFound.
 EditOutcome removeTextStyle(const ProjectState& state, std::string_view name);
+/// 0.7 (card #81): moves a text style to place `index` of the project's list (0 = first; past the end = last), the order the
+/// styles are listed in (Library > Text). Errors: NotFound.
+EditOutcome moveTextStyle(const ProjectState& state, std::string_view name, std::size_t index);
+/// 0.7 (card #81): the text of `runs` set to `text`, keeping the run styles the text still has. The longest common start and
+/// end of the old and new text keep their runs (a run is split where the change falls inside it); the changed middle takes
+/// the style of the run it starts in (typing at a run's end continues that run; typing at the very start continues the
+/// first). Runs left empty go. With a single run this is "that run's style on the new text", what editing a plain text has
+/// always done; with no runs the new text gets a run of `fallback`'s style.
+std::vector<TextRun> retextRuns(const std::vector<TextRun>& runs, std::string_view text, const TextStyle& fallback = {});
+/// 0.7 (card #81): the characters [from, to) of the runs' joined text (Unicode code points; '\n' is one) take the run style
+/// `style`: runs are split at both ends and the ones inside restyled; neighbours with the same style join again. False
+/// (nothing changed) when the range is empty, outside the text, or the runs would pass kMaxTextRuns.
+bool styleRunsRange(std::vector<TextRun>& runs, std::size_t from, std::size_t to, const TextStyle& style);
+/// 0.7 (card #81): applies a project text style's look (its run style: font, weight, size, fill, italic, underline,
+/// tracking, leading, baseline shift, caps...) to the characters [from, to) of one text layer, the layer's own
+/// alignment, background and shadow staying as they are and the layer not following the style (Premiere's text styles can
+/// style part of a text). With Source Text keys it styles the version shown at graphic time `time`. Errors: NotFound
+/// (the style, the clip, the layer), InvalidArgument (not a text layer, an empty or out-of-text range).
+EditOutcome applyTextStyleToRange(const ProjectState& state, SequenceId sequence, ClipId clip, std::uint32_t layer, std::size_t from,
+                                  std::size_t to, std::string_view styleName, Ticks time = {});
 // ---- Templates --------------------------------------------------------------------------------------------------------
 
 /// The value `field` shows now in `graphic` (a clip duration field: `clipDuration`).
@@ -208,6 +228,10 @@ FieldValue currentFieldValue(const Graphic& graphic, const TemplateField& field,
 std::expected<GraphicTemplate, Error> makeTemplate(const Graphic& graphic, std::string id, std::string name,
                                                    std::vector<TemplateField> fields, Ticks duration = {},
                                                    std::string description = {});
+
+/// 0.7 (card #87): files a project template under `folder` ("" = no folder; Graphics.h templateFolderProblem): only the
+/// folder changes (the version stays, so instances keep matching it). Errors: NotFound, InvalidArgument (a bad folder).
+EditOutcome setProjectTemplateFolder(const ProjectState& state, std::string_view id, std::string folder);
 
 /// Adds `tmpl` to the project's library, or replaces the one with its id (its version then goes up by one).
 EditOutcome saveProjectTemplate(const ProjectState& state, GraphicTemplate tmpl);
@@ -227,6 +251,20 @@ EditOutcome instantiateTemplate(const ProjectState& state, SequenceId sequence, 
 /// Sets field values on a template instance clip: layers change, a "clip" duration field trims the clip's end. One edit.
 EditOutcome setTemplateFields(const ProjectState& state, SequenceId sequence, ClipId clip,
                               const std::vector<std::pair<std::string, FieldValue>>& values);
+
+/// 0.7 (card #71): puts a key on a template instance's field at graphic time `time` (the clip's curve time; design time
+/// with responsive time), replacing the one there: from that moment the field shows `value` (a Color field blends towards
+/// the next key when `interpolation` is Linear). The first key of a field starts its animation; its static value is kept
+/// for clearTemplateFieldKeys. One edit. Errors: NotFound (clip), InvalidArgument (not a template instance, no such
+/// field, a Duration field, a value that does not fit the field, a missing image media item, too many keys).
+EditOutcome setTemplateFieldKey(const ProjectState& state, SequenceId sequence, ClipId clip, std::string_view fieldId, Ticks time,
+                                const FieldValue& value, Interpolation interpolation = Interpolation::Linear);
+/// Removes key `index` of a field (the last one leaves the field animated by nothing: its static value shows).
+EditOutcome removeTemplateFieldKey(const ProjectState& state, SequenceId sequence, ClipId clip, std::string_view fieldId,
+                                   std::size_t index);
+/// Stops animating a field: its keys go and what it showed at graphic time `keepAt` becomes its value on its layer.
+EditOutcome clearTemplateFieldKeys(const ProjectState& state, SequenceId sequence, ClipId clip, std::string_view fieldId,
+                                   Ticks keepAt);
 
 // ---- Brand kit --------------------------------------------------------------------------------------------------------
 

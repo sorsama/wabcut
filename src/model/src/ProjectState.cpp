@@ -8,6 +8,7 @@
 #include <wabcut/model/SubmixOps.h>
 #include <wabcut/model/Synthetic.h>
 #include <wabcut/model/TitleOps.h>
+#include <wabcut/model/TrackGroups.h>
 
 #include <algorithm>
 #include <cctype>
@@ -120,6 +121,24 @@ std::optional<std::size_t> Sequence::submixIndex(TrackId trackId) const {
     return std::nullopt;
 }
 
+const TrackGroup* Sequence::findTrackGroup(TrackGroupId groupId) const {
+    for (const TrackGroup& g : trackGroups) {
+        if (g.id == groupId) {
+            return &g;
+        }
+    }
+    return nullptr;
+}
+
+const TrackGroup* Sequence::trackGroupOf(TrackId trackId) const {
+    for (const TrackGroup& g : trackGroups) {
+        if (std::find(g.members.begin(), g.members.end(), trackId) != g.members.end()) {
+            return &g;
+        }
+    }
+    return nullptr;
+}
+
 std::optional<Sequence::ClipLocation> Sequence::findClip(ClipId clipId) const {
     for (const auto* list : {&videoTracks, &audioTracks}) {
         for (const auto& t : *list) {
@@ -163,14 +182,15 @@ bool sameTracks(const std::vector<TrackPtr>& a, const std::vector<TrackPtr>& b) 
 bool Sequence::operator==(const Sequence& o) const {
     return id == o.id && bin == o.bin && name == o.name && frameRate == o.frameRate && width == o.width &&
            height == o.height && audioRate == o.audioRate && dropFrame == o.dropFrame &&
-           startTimecode == o.startTimecode && pixelAspect == o.pixelAspect && fields == o.fields &&
+           startTimecode == o.startTimecode && pixelAspect == o.pixelAspect && fields == o.fields && vr == o.vr &&
            previewFormat == o.previewFormat && videoDisplay == o.videoDisplay && audioDisplay == o.audioDisplay &&
-           colorIndex == o.colorIndex && rippleMarkers == o.rippleMarkers && markIn == o.markIn &&
+           colorIndex == o.colorIndex && rippleMarkers == o.rippleMarkers &&
+           rippleTrackKeyframes == o.rippleTrackKeyframes && markIn == o.markIn &&
            markOut == o.markOut && markers == o.markers && duration == o.duration && workArea == o.workArea &&
            effects == o.effects && audioEffects == o.audioEffects && captionTracks == o.captionTracks &&
            beatGrid == o.beatGrid && derivedFrom == o.derivedFrom && masterVolume == o.masterVolume &&
            masterFormat == o.masterFormat && multicam == o.multicam && importSource == o.importSource &&
-           sameTracks(videoTracks, o.videoTracks) &&
+           createdAt == o.createdAt && trackGroups == o.trackGroups && sameTracks(videoTracks, o.videoTracks) &&
            sameTracks(audioTracks, o.audioTracks) && sameTracks(submixTracks, o.submixTracks);
 }
 
@@ -257,6 +277,13 @@ bool equalValues(const std::vector<Ptr>& a, const std::vector<Ptr>& b) {
 
 } // namespace
 
+VrFormat mediaVr(const MediaItem& item) {
+    if (item.interpretation && item.interpretation->vr) {
+        return *item.interpretation->vr;
+    }
+    return item.info.hasVideo() ? item.info.video.front().vr : VrFormat{};
+}
+
 const MediaItem* ProjectState::findMedia(MediaId mediaId) const {
     const auto it = findById(media, mediaId);
     return it == media.end() ? nullptr : it->get();
@@ -295,7 +322,7 @@ bool ProjectState::operator==(const ProjectState& o) const {
            aiNoCloud == o.aiNoCloud && assets == o.assets && redactions == o.redactions && speakers == o.speakers &&
            transcriptEdits == o.transcriptEdits && captionPresets == o.captionPresets && reviewNotes == o.reviewNotes &&
            brandKit == o.brandKit && templates == o.templates && colorManagement == o.colorManagement &&
-           textStyles == o.textStyles && freeform == o.freeform;
+           textStyles == o.textStyles && freeform == o.freeform && customWords == o.customWords;
 }
 
 bool isSameRevision(const ProjectState& a, const ProjectState& b) {
@@ -304,7 +331,7 @@ bool isSameRevision(const ProjectState& a, const ProjectState& b) {
            a.aiNoCloud == b.aiNoCloud && a.assets == b.assets && a.redactions == b.redactions &&
            a.speakers == b.speakers && a.transcriptEdits == b.transcriptEdits && a.captionPresets == b.captionPresets &&
            a.reviewNotes == b.reviewNotes && a.brandKit == b.brandKit && a.templates == b.templates && a.colorManagement == b.colorManagement &&
-           a.textStyles == b.textStyles && a.freeform == b.freeform;
+           a.textStyles == b.textStyles && a.freeform == b.freeform && a.customWords == b.customWords;
 }
 
 const FreeformView* ProjectState::findFreeform(BinId bin) const {
@@ -385,6 +412,34 @@ const ReviewNote* ProjectState::findReviewNote(ReviewNoteId noteId) const {
 }
 
 // --- assets -------------------------------------------------------------------------------------------
+
+std::optional<std::string> assetFolderProblem(std::string_view folder) {
+    if (folder.empty()) {
+        return std::nullopt;
+    }
+    if (folder.size() > kMaxAssetFolderLength) {
+        return "a folder name is longer than " + std::to_string(kMaxAssetFolderLength) + " characters";
+    }
+    bool segmentStart = true;
+    for (const char ch : folder) {
+        const auto u = static_cast<unsigned char>(ch);
+        if (u < 0x20 || u == 0x7F) {
+            return std::string("a folder name has a control character");
+        }
+        if (ch == '/') {
+            if (segmentStart) {
+                return std::string("a folder name is empty (a leading or doubled '/')");
+            }
+            segmentStart = true;
+        } else {
+            segmentStart = false;
+        }
+    }
+    if (segmentStart) {
+        return std::string("a folder name ends with '/'");
+    }
+    return std::nullopt;
+}
 
 const ProjectAsset* ProjectState::findAsset(AssetId assetId) const {
     const auto it = std::lower_bound(assets.begin(), assets.end(), assetId,
@@ -737,6 +792,7 @@ public:
         checkRedactions();
         checkSpeakers();
         checkCaptionPresets();
+        checkCustomWords();
         checkGraphicsLibrary();
         checkSequences();
         checkColorManagement();
@@ -912,6 +968,19 @@ private:
             }
             checkMarkers(item->markers, what);
             checkLibraryMetadata(*item, what);
+            for (const AudioStreamInfo& stream : item->info.audio) { // 0.7 (card 062): a poly WAV's channel names
+                if (stream.channelNames.size() > kMaxChannelNames) {
+                    fail(what + " names more than " + std::to_string(kMaxChannelNames) + " channels");
+                    break;
+                }
+                for (const std::string& name : stream.channelNames) {
+                    if (name.size() > kMaxChannelNameLength || !edit::isValidUtf8(name)) {
+                        fail(what + " has a channel name that is not UTF-8 of at most " +
+                             std::to_string(kMaxChannelNameLength) + " bytes");
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -947,6 +1016,11 @@ private:
             fail(what + " has an import source path that is not UTF-8 of at most " +
                  std::to_string(ImportSource::kMaxPathBytes) + " bytes");
         }
+        if (item.rights) { // 0.7 (card 179): rights and clearance
+            if (const auto problem = rightsProblem(*item.rights)) {
+                fail(what + " has rights that cannot be kept: " + *problem);
+            }
+        }
         if (item.subclip) {
             const SubclipSpec& s = *item.subclip;
             if (s.range.start.value < 0 || s.range.duration.value <= 0) {
@@ -969,6 +1043,11 @@ private:
             if (in->pixelAspect && (!in->pixelAspect->isValid() || ratio(*in->pixelAspect) < 0.1 ||
                                     ratio(*in->pixelAspect) > 10.0)) {
                 fail(what + " is interpreted with a pixel aspect outside 0.1 to 10");
+            }
+            if (in->vr) {
+                if (const auto problem = vrFormatProblem(*in->vr)) {
+                    fail(what + " is interpreted as VR video wrongly: " + *problem);
+                }
             }
         }
         if (item.timecode) {
@@ -1055,6 +1134,9 @@ private:
             if (asset.locator.proxy) {
                 fail(what + " has a proxy");
             }
+            if (const auto problem = assetFolderProblem(asset.folder)) {
+                fail(what + ": " + *problem);
+            }
             if (asset.locator.fingerprint.size < -1) {
                 fail(what + " has an invalid fingerprint size");
             }
@@ -1077,6 +1159,12 @@ private:
             previous = r.id;
             if (const auto problem = redactionProblem(r)) {
                 fail(what + ": " + *problem);
+            }
+            if (r.sound.isValid()) { // 0.7: the sound that replaces the bleep (a missing file plays the tone)
+                const ProjectAsset* sound = m_state.findAsset(r.sound);
+                if (sound != nullptr && sound->kind != kAssetKindSound) {
+                    fail(what + ": its sound is not a sound file");
+                }
             }
         }
     }
@@ -1191,6 +1279,26 @@ private:
         }
     }
 
+    /// 0.7: the transcription's custom words: one line of UTF-8 each, trimmed, unique (case-insensitive), within bounds.
+    void checkCustomWords() {
+        const auto& words = m_state.customWords;
+        if (words.size() > kMaxCustomWords) {
+            fail("more than " + std::to_string(kMaxCustomWords) + " custom words");
+        }
+        for (std::size_t i = 0; i < words.size(); ++i) {
+            const std::string& w = words[i];
+            if (w.empty() || w.size() > kMaxCustomWordBytes || !isValidCaptionText(w) ||
+                w.find_first_of("\r\n") != std::string::npos || w.front() == ' ' || w.back() == ' ') {
+                fail("a custom word is one trimmed line of UTF-8 of 1.." + std::to_string(kMaxCustomWordBytes) + " bytes");
+            }
+            for (std::size_t k = 0; k < i; ++k) {
+                if (sameNameIgnoringCase(words[k], w)) {
+                    fail("custom word '" + w + "' appears twice");
+                }
+            }
+        }
+    }
+
     /// Caption presets (C.7): unique names (case-insensitive) that are not built-in, valid styles.
     void checkCaptionPresets() {
         if (m_state.captionPresets.size() > kMaxCaptionPresets) {
@@ -1204,7 +1312,7 @@ private:
                 fail("a caption preset needs a one-line UTF-8 name of 1.." + std::to_string(kMaxCaptionNameBytes) +
                      " bytes");
             }
-            if (findBuiltinCaptionPreset(p.name)) {
+            if (isOriginalBuiltinCaptionPreset(p.name)) { // the gallery's names (0.7) may already be a project's own
                 fail(what + " has the name of a built-in preset");
             }
             for (std::size_t k = 0; k < i; ++k) {
@@ -1398,7 +1506,7 @@ private:
             }
             GroupUse& use = m_groupCounts[clip.linkGroup];
             ++use.count;
-            use.onLockedTrack = track.locked;
+            use.onLockedTrack = use.onLockedTrack || track.locked || clip.locked; // 0.7: a locked clip keeps its group too
         }
         if (clip.group.isValid() && clip.group.value >= m_state.ids.next) {
             fail(what + " has a group id that is not below the id generator");
@@ -1503,6 +1611,9 @@ private:
         if (track->kind == TrackKind::Video && track->recordArmed) {
             fail("track " + trackName + " is a video track armed for recording");
         }
+        if (track->colorIndex < -1 || track->colorIndex > 15) { // 0.7: the track's label colour
+            fail("track " + trackName + "'s label colour is outside 0..15");
+        }
         if (track->kind == TrackKind::Video && (track->format != ChannelFormat::Stereo || !track->surround.isDefault())) {
             fail("track " + trackName + " is a video track with an audio channel format or 5.1 panner");
         }
@@ -1582,14 +1693,17 @@ private:
         if (!seq.pixelAspect.isValid() || seq.pixelAspect.toDouble() < 0.1 || seq.pixelAspect.toDouble() > 10.0) {
             fail(what + " has a pixel aspect outside 0.1 to 10");
         }
+        if (const auto problem = vrFormatProblem(seq.vr)) { // 0.7
+            fail(what + " has a VR format that does not fit: " + *problem);
+        }
         if (seq.previewFormat.size() > 32) {
             fail(what + " has a preview format name longer than 32 bytes");
         }
         if (seq.colorIndex < 0 || seq.colorIndex > 15) { // 0.2
             fail(what + " has a label colour outside 0 to 15");
         }
-        if (seq.masterFormat != ChannelFormat::Stereo && seq.masterFormat != ChannelFormat::Surround51) { // A.9
-            fail(what + " has a " + std::string(toString(seq.masterFormat)) + " master (stereo or 5.1)");
+        if (!isMasterFormat(seq.masterFormat)) { // A.9; 0.7: 7.1 too
+            fail(what + " has a " + std::string(toString(seq.masterFormat)) + " master (stereo, 5.1 or 7.1)");
         }
         if (const ParameterInfo& level = parameterInfo(ParamId::VolumeDb); !seq.masterVolume.isValid(level.minValue, level.maxValue)) {
             fail(what + " has a master volume outside its range, or a malformed curve"); // A.3
@@ -1608,6 +1722,9 @@ private:
                                  !edit::isValidUtf8(seq.importSource->project))) {
             fail(what + " has an import source path that is not UTF-8 of at most " +
                  std::to_string(ImportSource::kMaxPathBytes) + " bytes");
+        }
+        if (!seq.createdAt.empty() && !isIso8601Utc(seq.createdAt)) { // 0.7 (card 144)
+            fail(what + " has a creation time that is not ISO-8601 UTC");
         }
         if (seq.multicam) {
             if (const auto problem = multicamProblem(seq)) {
@@ -1659,6 +1776,12 @@ private:
         }
         if (const auto problem = audioRoutingProblem(seq)) { // p02 audio: outputs and sends
             fail(what + " audio routing: " + *problem);
+        }
+        for (const TrackGroup& group : seq.trackGroups) { // 0.7 (card 124): ids come from the project's generator
+            claim(group.id.value, what + " track group " + std::to_string(group.id.value));
+        }
+        if (const auto problem = edit::trackGroupsProblem(seq)) {
+            fail(what + " track groups: " + *problem);
         }
         if (seq.duration < m_contentEnd) {
             fail(what + " is shorter than its content");

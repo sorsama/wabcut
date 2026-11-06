@@ -381,6 +381,14 @@ constexpr std::array<EffectParamInfo, 11> kMagnifyParams{{
      "None|Normal|Add|Multiply|Screen|Overlay|Darken|Lighten|Difference"},
     {"resizeLayer", "Resize Layer", U::Amount, 0.0, 0.0, 1.0, false},
 }};
+// 0.7 (VR / 360 video): wabcut.vr.reorient turns the sphere of an equirectangular picture (render/EffectLibrary.cpp keys).
+constexpr std::array<EffectParamInfo, 5> kVrReorientParams{{
+    {"yaw", "Yaw", U::Degrees, 0.0, -3600.0, 3600.0},
+    {"pitch", "Pitch", U::Degrees, 0.0, -90.0, 90.0},
+    {"roll", "Roll", U::Degrees, 0.0, -3600.0, 3600.0},
+    {"projection", "Projection", U::Amount, 0.0, 0.0, 1.0, false, "Equirectangular 360|Equirectangular 180 (VR180)"},
+    {"stereo", "Stereoscopic Layout", U::Amount, 0.0, 0.0, 2.0, false, "Monoscopic|Top - Bottom|Side by Side"},
+}};
 constexpr std::array<EffectParamInfo, 3> kMirrorParams{{
     {"center.x", "Reflection Center X", U::Fraction, 0.5, -10.0, 10.0},
     {"center.y", "Reflection Center Y", U::Fraction, 0.5, -10.0, 10.0},
@@ -469,6 +477,18 @@ constexpr std::array<EffectParamInfo, 2> kDirectionalBlurParams{{
     {"length", "Blur Length", U::Pixels, 0.0, 0.0, 1000.0},
 }};
 constexpr std::array<EffectParamInfo, 1> kCameraBlurParams{{{"percent", "Percent Blur", U::Amount, 0.0, 0.0, 100.0}}};
+// Skin Smoothing (0.7, card #100): an edge-preserving smoothing limited to skin-toned pixels. Size is in sequence pixels; Skin
+// Tone is the angle of the colour on the vectorscope (BT.709 Cb/Cr, about 123 degrees for skin of every complexion), Tone Range
+// how far from it a colour still counts, Softness how gradually it stops counting.
+constexpr std::array<EffectParamInfo, 7> kSkinSmoothingParams{{
+    {"amount", "Amount", U::Amount, 40.0, 0.0, 100.0},
+    {"detail", "Keep Detail", U::Amount, 30.0, 0.0, 100.0},
+    {"size", "Size", U::Pixels, 6.0, 0.0, 60.0},
+    {"tone", "Skin Tone", U::Degrees, 123.0, 90.0, 160.0},
+    {"range", "Tone Range", U::Amount, 50.0, 0.0, 100.0},
+    {"softness", "Softness", U::Amount, 50.0, 0.0, 100.0},
+    {"view", "Show", U::Amount, 0.0, 0.0, 1.0, false, "Result|Skin Mask"},
+}};
 
 // Stylize, Blur & Sharpen, Keying, Perspective (neighbourhood; several passes).
 constexpr std::array<EffectParamInfo, 3> kUnsharpMaskParams{{
@@ -1124,6 +1144,11 @@ std::vector<EffectDescriptor> libraryVideoEffectDescriptors() {
          "Motion blur along Direction (0 degrees = vertical), Blur Length pixels long, equally on both sides."},
         {"wabcut.blur.camera", 1, "Camera Blur", "Blur & Sharpen", kV, false, kCameraBlurParams, kWarpOut,
          "Out-of-focus blur: an even disc of up to 40 pixels' radius by Percent Blur."},
+        // 0.7: Immersive Video (VR / 360).
+        {"wabcut.vr.reorient", 1, "VR Reorient", "Immersive Video", kV, false, kVrReorientParams, kWarp,
+         "Turns the sphere of an equirectangular 360 / VR180 picture by Yaw (to the right), Pitch (up) and Roll (a tilt to "
+         "the right), so a different part of the scene lands straight ahead; each eye of a stereoscopic picture turns "
+         "alike. Set Projection and Stereoscopic Layout to the picture's (Interpret Footage shows what the file says)."},
         // Distort.
         {"wabcut.distort.cornerPin", 1, "Corner Pin", "Distort", kV, false, kCornerPinParams, kWarpOut,
          "Pins the picture's four corners anywhere (a perspective warp); the points are fractions of the frame."},
@@ -1171,6 +1196,11 @@ std::vector<EffectDescriptor> libraryVideoEffectDescriptors() {
         // Blur & Sharpen.
         {"wabcut.blur.unsharpMask", 1, "Unsharp Mask", "Blur & Sharpen", kV, false, kUnsharpMaskParams, kWarp,
          "Sharpens by the difference from a blurred copy (Radius), by Amount, where it passes Threshold (0..255)."},
+        {"wabcut.retouch.skinSmoothing", 1, "Skin Smoothing", "Blur & Sharpen", kV, false, kSkinSmoothingParams, kWarp,
+         "Smooths skin and keeps the edges: only pixels in the skin-tone range (Skin Tone, Tone Range, Softness) are "
+         "smoothed, over Size pixels, by Amount; Keep Detail leaves part of the fine texture so the skin stays natural. Show "
+         "Skin Mask displays what the effect treats as skin. Works live in playback; for tracked, per-face retouching with "
+         "blemish, teeth and eye controls use AI Face Retouch."},
         // Stylize (neighbourhood).
         {"wabcut.stylize.alphaGlow", 1, "Alpha Glow", "Stylize", kV, false, kAlphaGlowParams, kWarpOut,
          "A glow around the layer's alpha edges: Glow (its reach), Brightness, a start colour fading to the end "

@@ -30,6 +30,7 @@
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/Effects.h>
 #include <wabcut/model/Error.h>
+#include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/ProjectState.h>
 #include <wabcut/model/Time.h>
 
@@ -183,6 +184,29 @@ struct PresetResult {
 /// Errors: NotFound, InvalidArgument (a clip on a locked track, nothing applied to any clip, effectPresetProblem).
 std::expected<PresetResult, Error> applyEffectPreset(const ProjectState& state, SequenceId sequence,
                                                      std::span<const ClipId> clips, const EffectPreset& preset);
+
+/// 0.7 (card 101): a preset of the effect chain of an audio track, a submix track or the audio master (Audio Track Mixer
+/// strips). `chain` is the stack as it is, `span` the length of the stretch it plays over (the track's end, or the
+/// sequence's content end): keyframes of a track effect are timeline times, so they are kept relative to the start and a
+/// preset's type times them on another chain as it does on clips. `indices` picks effects of the chain (empty: all).
+/// The preset's fixed effects are none (the fader and panner are not part of a chain). Errors as makeEffectPreset.
+std::expected<EffectPreset, Error> makeChainEffectPreset(const ProjectState& state, const EffectStack& chain, Ticks span,
+                                                         std::span<const std::size_t> indices, std::string name,
+                                                         EffectPresetType type, std::string description = {},
+                                                         std::string bin = {}, std::vector<std::string>* notes = nullptr);
+
+struct ChainPresetResult {
+    EditResult edit;
+    std::vector<std::string> applied; ///< effect names added to the chain ("Compressor")
+    std::vector<std::string> skipped; ///< with the reason ("Volume: set the track's fader instead")
+};
+/// Applies a preset to the effect chain of an audio track, submix track or the audio master: its stack effects are
+/// appended after the chain's own, keyframes timed by the preset's type against the stretch the chain plays over (the
+/// track's end, the sequence's content end; none yet: the preset's own length). Fixed effects (Motion, Volume, Panner)
+/// are skipped and reported. One undo step. Errors: NotFound, InvalidArgument (a locked track, a video preset, nothing
+/// to apply, effectPresetProblem).
+std::expected<ChainPresetResult, Error> applyEffectPresetToChain(const ProjectState& state, SequenceId sequence,
+                                                                 const EffectTarget& target, const EffectPreset& preset);
 
 } // namespace edit
 

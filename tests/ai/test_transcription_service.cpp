@@ -7,6 +7,7 @@
 #include <wabcut/ai/InferProtocol.h>
 #include <wabcut/ai/Sha256.h>
 #include <wabcut/ai/Text.h>
+#include <wabcut/ai/TranscriptJson.h>
 #include <wabcut/ai/TranscriptionService.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -375,4 +376,146 @@ TEST_CASE("Jobs run concurrently and report results through the Job handle", "[a
     CHECK(ja.wait()->words.size() == 6);
     CHECK(jb.wait()->source.path == "C:/b.mov");
     CHECK(ja.progress() == 1.0f);
+}
+
+// ---- 0.7 (card 111): a recording that switches language -------------------------------------------------------------
+
+namespace {
+
+/// 30 s of 16 kHz PCM with tone bursts at [1, 5), [12, 16) and [22, 26) s. With the fake helper's
+/// --alternate-languages a request that begins in 0-10 s or 20-30 s is heard as English, one in 10-20 s as Thai: the
+/// mixed-languages chunks begin 0.25 s before each burst, so the three stretches are English, Thai, English.
+std::vector<float> threeStretches() {
+    std::vector<float> pcm(static_cast<std::size_t>(30 * kS), 0.0f);
+    for (const auto [a, b] : {std::pair{1.0, 5.0}, {12.0, 16.0}, {22.0, 26.0}}) {
+        for (auto i = static_cast<std::size_t>(a * kS); i < static_cast<std::size_t>(b * kS); ++i) {
+            pcm[i] = 0.5f * static_cast<float>(std::sin(2.0 * 3.14159265358979 * 300.0 * static_cast<double>(i) / kS));
+        }
+    }
+    return pcm;
+}
+
+} // namespace
+
+TEST_CASE("Mixed languages: every stretch of speech is transcribed in its own language", "[ai][service][mixed]") {
+    Fixture f("service-mixed", {"--alternate-languages"});
+    f.pcm = threeStretches();
+    TranscriptionService service(f.config);
+    TranscriptionRequest request = f.request();
+    request.options.mixedLanguages = true;
+    std::vector<std::string> partialLanguages;
+    request.onSegment = [&](const Transcript& sofar) { partialLanguages.push_back(sofar.segments.back().language); };
+    auto t = service.run(request);
+    REQUIRE(t);
+    REQUIRE(t->validate());
+
+    // Three chunks - one per stretch - each named by the helper: English, Thai, English.
+    REQUIRE(t->segments.size() == 3);
+    CHECK(t->segments[0].language == "en");
+    CHECK(t->segments[1].language == "th");
+    CHECK(t->segments[2].language == "en");
+    CHECK(partialLanguages == std::vector<std::string>{"en", "th", "en"}); // named as they stream in
+    CHECK(wordTexts(*t).front() == "w1");
+    // The Thai stretch's words are Thai units (split by the Thai rule), the English ones are the fake's "w<second>".
+    for (std::size_t i = t->segments[1].firstWord; i < t->segments[1].firstWord + t->segments[1].wordCount; ++i) {
+        INFO(t->words[i].text);
+        CHECK(static_cast<unsigned char>(t->words[i].text.front()) >= 0x80);
+    }
+    CHECK(t->words[t->segments[2].firstWord].text == "w22");
+    CHECK(t->words[t->segments[1].firstWord].t0 >= ms(11900));
+    // The transcript's own language is the one most words are in; the shares add up to every word.
+    const std::vector<LanguageShare> shares = languageShares(*t);
+    REQUIRE(shares.size() == 2);
+    CHECK(t->language == shares.front().language);
+    CHECK(shares[0].words + shares[1].words == t->words.size());
+    CHECK(t->wordLanguage(0) == "en");
+    CHECK(t->wordLanguage(t->segments[1].firstWord) == "th");
+    CHECK(t->provenance.params.at("mixed") == "languages");
+
+    // The JSON keeps each segment's language; it is read back the same.
+    auto again = transcriptFromJson(toJson(*t));
+    REQUIRE(again);
+    CHECK(*again == *t);
+}
+
+// Review: a segment that arrives without a language used to be labelled with the language of the segment decoded before it
+// (the Thai stretch below became English). It is the language its own chunk was heard in.
+TEST_CASE("Mixed languages: a segment that arrives without a language is not labelled with the one before it",
+          "[ai][service][mixed]") {
+    Fixture f("service-mixed-unnamed", {"--alternate-languages", "--unnamed-thai"});
+    f.pcm = threeStretches();
+    TranscriptionService service(f.config);
+    TranscriptionRequest request = f.request();
+    request.options.mixedLanguages = true;
+    auto t = service.run(request);
+    REQUIRE(t);
+    REQUIRE(t->validate());
+    REQUIRE(t->segments.size() == 3);
+    CHECK(t->segments[0].language == "en");
+    CHECK(t->segments[1].language == "th"); // the helper named the segment in no message but the chunk's result
+    CHECK(t->segments[2].language == "en");
+    CHECK(t->wordLanguage(t->segments[1].firstWord) == "th");
+}
+
+TEST_CASE("Mixed languages off: one language for the whole file as before and a cache entry of its own", "[ai][service][mixed]") {
+    Fixture f("service-mixed-off", {"--alternate-languages"});
+    f.pcm = threeStretches();
+    TranscriptionService service(f.config);
+
+    // Without the switch the stretches share one chunk, heard as one language, and no segment names its own.
+    TranscriptionRequest plain = f.request();
+    auto single = service.run(plain);
+    REQUIRE(single);
+    REQUIRE(single->segments.size() == 3);
+    CHECK(single->language == "en");
+    for (const TranscriptSegment& s : single->segments) {
+        CHECK(s.language.empty());
+    }
+    CHECK_FALSE(single->provenance.params.contains("mixed"));
+    CHECK(languageShares(*single).size() == 1);
+
+    // A named language (or translating) leaves the switch without effect.
+    TranscriptionRequest named = f.request();
+    named.options.language = "th";
+    named.options.mixedLanguages = true;
+    auto thai = service.run(named);
+    REQUIRE(thai);
+    CHECK(thai->language == "th");
+    CHECK_FALSE(thai->provenance.params.contains("mixed"));
+    for (const TranscriptSegment& s : thai->segments) {
+        CHECK(s.language.empty());
+    }
+
+    // Mixed languages is another entry in the analysis cache: not answered by the one above, then cached itself.
+    TranscriptionRequest mixed = f.request();
+    mixed.options.mixedLanguages = true;
+    TranscriptionStats stats;
+    mixed.onStats = [&](const TranscriptionStats& s) { stats = s; };
+    auto first = service.run(mixed);
+    REQUIRE(first);
+    CHECK_FALSE(stats.fromCache);
+    CHECK(first->segments[1].language == "th");
+    auto second = service.run(mixed);
+    REQUIRE(second);
+    CHECK(stats.fromCache);
+    CHECK(*second == *first);
+    auto plainAgain = service.run(plain);
+    REQUIRE(plainAgain);
+    CHECK(plainAgain->segments[1].language.empty()); // the single-language entry is still its own
+}
+
+TEST_CASE("Mixed languages needs a model that knows more than English", "[ai][service][mixed]") {
+    Fixture f("service-mixed-en", {"--alternate-languages"});
+    f.config.models.push_back(f.installed("fake-whisper.en", ModelKind::Whisper));
+    TranscriptionService service(f.config);
+    TranscriptionRequest request = f.request();
+    request.options.model = "fake-whisper.en";
+    request.options.mixedLanguages = true;
+    auto t = service.run(request);
+    REQUIRE_FALSE(t);
+    CHECK(t.error().code == ErrorCode::InvalidArgument);
+    CHECK(t.error().message.find("tell languages apart") != std::string::npos);
+    // Without the switch the English-only model transcribes as it always did.
+    request.options.mixedLanguages = false;
+    CHECK(service.run(request));
 }

@@ -464,37 +464,78 @@ std::expected<std::string, Error> ExtensionManager::install(const fs::path& fold
     }
     const std::string id = bundle->manifest.id;
     const fs::path target = m_paths.userExtensions / pathFromUtf8(id);
+    // Card 164: an update never takes the working version away before the new one is whole. The new files are written
+    // to "<id>.wabcut-new"; only then is the old folder renamed aside ("<id>.wabcut-old") and the new one renamed into
+    // place, and the old one deleted last. Whatever fails, the version that was installed is still there (renamed back),
+    // and the manager rescans on every way out, so what it lists is what is on disk.
+    const fs::path staging = m_paths.userExtensions / pathFromUtf8(id + std::string(kStagingSuffix));
+    const fs::path aside = m_paths.userExtensions / pathFromUtf8(id + std::string(kReplacedSuffix));
     std::error_code ec;
-    if (Entry* e = find(id); e && e->scope == ExtensionScope::User) {
-        stopEntry(*e);
-    }
-    if (fs::exists(fs::symlink_status(target, ec))) {
-        if (fs::symlink_status(target, ec).type() != fs::file_type::directory) {
-            return std::unexpected(Error{ErrorCode::InvalidArgument, pathToUtf8(target) + " is not a plain folder"});
+    const auto fail = [&](Error error) -> std::expected<std::string, Error> {
+        std::error_code ignored;
+        fs::remove_all(staging, ignored);
+        if (Entry* e = find(id)) {
+            e->lastStop.reset(); // a host stopped for the swap starts again when the old version is still there
         }
-        fs::remove_all(target, ec);
+        rescan();
+        return std::unexpected(std::move(error));
+    };
+    // What a crash in the middle of an earlier update left: the old version waiting aside is the installed one when the
+    // target is gone (put it back), else it is stale.
+    if (!fs::exists(fs::symlink_status(target, ec)) && fs::exists(fs::symlink_status(aside, ec))) {
+        fs::rename(aside, target, ec);
         if (ec) {
-            return std::unexpected(Error{ErrorCode::IoError, "cannot replace " + pathToUtf8(target) + ": " + ec.message()});
+            // The one copy of the installed version is the one waiting aside: it is not deleted below.
+            return fail(Error{ErrorCode::IoError, "cannot restore the installed version of " + id + ": " + ec.message()});
         }
+    }
+    fs::remove_all(staging, ec);
+    fs::remove_all(aside, ec);
+    const bool replacing = fs::exists(fs::symlink_status(target, ec));
+    if (replacing && fs::symlink_status(target, ec).type() != fs::file_type::directory) {
+        return fail(Error{ErrorCode::InvalidArgument, pathToUtf8(target) + " is not a plain folder"});
     }
     const auto write = [&](const std::string& relative, const std::string& bytes) -> std::expected<void, Error> {
-        const fs::path file = target / pathFromUtf8(relative);
+        const fs::path file = staging / pathFromUtf8(relative);
         fs::create_directories(file.parent_path(), ec);
         std::ofstream out(file, std::ios::binary);
         out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        out.close();
         if (!out) {
-            return std::unexpected(Error{ErrorCode::IoError, "cannot write " + pathToUtf8(file)});
+            return std::unexpected(Error{ErrorCode::IoError, "cannot write " + pathToUtf8(relative)});
         }
         return {};
     };
     // Exactly what was checked (not a second read of the source folder, and nothing it does not name).
     if (auto w = write(std::string(kManifestFileName), bundle->manifestText); !w) {
-        return std::unexpected(w.error());
+        return fail(w.error());
     }
     for (const ScriptSource& script : bundle->scripts) {
         if (auto w = write(script.path, script.source); !w) {
-            return std::unexpected(w.error());
+            return fail(w.error());
         }
+    }
+    // The swap. The running version stops only now that the new one is complete.
+    if (Entry* e = find(id); e && e->scope == ExtensionScope::User) {
+        stopEntry(*e);
+    }
+    if (replacing) {
+        fs::rename(target, aside, ec);
+        if (ec) {
+            return fail(Error{ErrorCode::IoError, "cannot replace " + pathToUtf8(target) + ": " + ec.message()});
+        }
+    }
+    fs::rename(staging, target, ec);
+    if (ec) {
+        const std::string why = ec.message();
+        if (replacing) {
+            std::error_code back;
+            fs::rename(aside, target, back); // the installed version stays
+        }
+        return fail(Error{ErrorCode::IoError, "cannot install " + pathToUtf8(target) + ": " + why});
+    }
+    if (replacing) {
+        fs::remove_all(aside, ec); // a leftover is cleaned up by the next install of the id and never listed
     }
     rescan();
     return id;

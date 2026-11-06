@@ -154,6 +154,15 @@ struct EffectParamInfo {
     std::vector<std::string_view> optionLabels() const;
 };
 
+/// 0.7: a text setting of an effect (a string parameter of an OpenFX plug-in): stored as EffectData text under `key`, edited
+/// in a text row, never keyframed.
+struct EffectTextInfo {
+    std::string_view key;
+    std::string_view displayName;
+    std::string_view defaultValue{};
+    bool multiline = false;
+};
+
 struct EffectDescriptor {
     std::string_view id;           ///< stable, never reused for another effect
     std::int32_t version = 1;      ///< bumped when parameters change meaning
@@ -165,6 +174,8 @@ struct EffectDescriptor {
     std::span<const EffectParamInfo> params;
     EffectCapabilities capabilities;
     std::string_view description;
+    /// 0.7: the effect's text settings (OpenFX string parameters); empty for the built-in effects.
+    std::span<const EffectTextInfo> texts{};
 
     const EffectParamInfo* param(std::string_view key) const;
 };
@@ -193,6 +204,10 @@ public:
 /// Installs the provider of plugin descriptors (null: none). Earlier providers stay alive, so descriptors they
 /// returned remain valid.
 void setEffectDescriptorProvider(std::shared_ptr<const EffectDescriptorProvider> provider);
+/// 0.7: installs a second provider (the OpenFX video plug-ins, "plugin.ofx.<id>") that is asked after the one
+/// setEffectDescriptorProvider installs; the two kinds of plugin ids never overlap. A later call replaces it (null: none).
+/// Earlier ones stay alive, so descriptors they returned remain valid.
+void setSecondaryEffectDescriptorProvider(std::shared_ptr<const EffectDescriptorProvider> provider);
 
 /// The effects and transitions Wabcut knows. Data only: implementations live in the renderer and the
 /// audio engine.

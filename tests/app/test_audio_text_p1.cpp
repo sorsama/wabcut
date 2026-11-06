@@ -236,6 +236,26 @@ std::shared_ptr<audio::edit::AudioServices> whereServices() {
     return std::make_shared<audio::edit::AudioServices>(std::make_shared<WhereLoudness>(), nullptr);
 }
 
+/// Card 166: a very clipped programme, measured with only the blocks above -0.5 dBTP kept (the floor rose from -6, past
+/// the mixer's -1 dBTP ceiling): an over of two blocks at 5.0 s and another at 8.0 s.
+class HotFloorLoudness final : public audio::edit::LoudnessAnalyzer {
+public:
+    std::expected<audio::edit::LoudnessStats, Error> measure(const ProjectState&, SequenceId, const audio::edit::LoudnessTarget&,
+                                                             std::optional<TimeRange>, command::ExecutionControl*) override {
+        audio::edit::LoudnessStats stats;
+        stats.integratedLufs = -9.0;
+        stats.truePeakDbtp = 0.3;
+        stats.maxMomentaryLufs = -6.0;
+        stats.maxShortTermLufs = -7.0;
+        stats.duration = ms(10000);
+        stats.truePeakAt = ms(5000);
+        stats.peakFloorDbtp = -0.5;
+        for (const auto& [at, db] : std::vector<std::pair<std::int64_t, double>>{{5000, 0.3}, {5100, -0.2}, {8000, 0.1}})
+            stats.peakBlocks.push_back({ms(at), ms(100), db});
+        return stats;
+    }
+};
+
 } // namespace
 
 // ---- #36 ----------------------------------------------------------------------------------------------------------
@@ -838,6 +858,75 @@ TEST_CASE("Loudness QC: the mix analysis says where, and Add markers for overs i
     REQUIRE(mixer.loudness().value(QStringLiteral("stale")).toBool());
     CHECK_FALSE(mixer.addOverMarkers().isEmpty());
     CHECK(controller.currentSequence()->markers.size() == before);
+}
+
+TEST_CASE("Loudness QC: a very clipped programme counts its overs above the ceiling the measurement kept and says so",
+          "[app][audio][qc]") {
+    Timeline tl{R"(
+        V1 tgt |Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+        A1 tgt |Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+    )"};
+    tl.linkMatching();
+    ProjectController controller;
+    controller.resetProject(tl.state, tl.seq);
+    AudioMixerBridge mixer;
+    mixer.setController(&controller);
+    mixer.setServices(std::make_shared<audio::edit::AudioServices>(std::make_shared<HotFloorLoudness>(), nullptr));
+    mixer.setSynchronous(true);
+    REQUIRE(mixer.analyze(QStringLiteral("mix")).isEmpty());
+    // The mixer's ceiling is -1 dBTP, below the kept floor (-0.5): counted above the floor, and flagged.
+    const QVariantMap l = mixer.loudness();
+    REQUIRE(l.value(QStringLiteral("valid")).toBool());
+    CHECK(l.value(QStringLiteral("oversTruncated")).toBool());
+    CHECK(l.value(QStringLiteral("oversAbove")).toDouble() == -0.5);
+    CHECK(l.value(QStringLiteral("overCount")).toInt() == 2); // 5.0-5.2 s and 8.0 s
+    REQUIRE(mixer.report().size() == 1);
+    CHECK(mixer.report()[0].toMap().value(QStringLiteral("oversTruncated")).toBool());
+    // A measurement kept down to -6 dBTP is exact: not flagged.
+    mixer.setServices(whereServices());
+    REQUIRE(mixer.analyze(QStringLiteral("mix")).isEmpty());
+    CHECK_FALSE(mixer.loudness().value(QStringLiteral("oversTruncated")).toBool());
+    CHECK(mixer.loudness().value(QStringLiteral("oversAbove")).toDouble() == -1.0);
+}
+
+TEST_CASE("Loudness QC in the Audio workspace: a very clipped programme shows its count with a plus; screenshots",
+          "[app][audio][qc][qml][screenshots]") {
+    for (const bool dark : {true, false}) {
+        DYNAMIC_SECTION((dark ? "dark" : "light")) {
+            resetSettings();
+            clearMessages();
+            Shell shell;
+            REQUIRE(shell.window);
+            shell.resize(kShotWidth, kShotHeight);
+            shell.theme->setProperty("reduceMotion", true);
+            shell.setAppearance(dark, "ultraviolet");
+            auto* mixer = shell.engine.singletonInstance<AudioMixerBridge*>("Wabcut", "AudioMixer");
+            REQUIRE(mixer);
+            mixer->setServices(std::make_shared<audio::edit::AudioServices>(std::make_shared<HotFloorLoudness>(), nullptr));
+            mixer->setSynchronous(true);
+            shell.window->setProperty("workspace", 1);
+            spin(400);
+            QQuickItem* tools = shell.item("audioToolsPanel");
+            REQUIRE(tools);
+            REQUIRE(mixer->analyze(QStringLiteral("tracks")).isEmpty());
+            spin(200);
+            QQuickItem* qc = findVisibleNamed(tools, QStringLiteral("toolsLoudnessQc"));
+            REQUIRE(qc);
+            QQuickItem* overCount = findNamed(qc, QStringLiteral("qcOverCount"));
+            REQUIRE(overCount);
+            CHECK(overCount->property("text").toString() == QStringLiteral("2 true-peak overs above -0.50 dBTP"));
+            QQuickItem* reportOvers = findNamed(tools, QStringLiteral("reportOvers_0"));
+            REQUIRE(reportOvers);
+            CHECK(reportOvers->property("text").toString() == QStringLiteral("2+"));
+            spin(150);
+            const QImage image = shell.grab();
+            saveItemShot(image, tools, dark ? QStringLiteral("audio-tools-loudness-qc-clipped.png")
+                                            : QStringLiteral("audio-tools-loudness-qc-clipped-light.png"));
+            const QStringList messages = takeMessages();
+            INFO(join(messages));
+            CHECK(messages.isEmpty());
+        }
+    }
 }
 
 TEST_CASE("Loudness QC in the Audio workspace: links move the playhead, the overs stepper and markers; screenshots",

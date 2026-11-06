@@ -23,6 +23,8 @@ MotionValues motionAt(const Clip& clip, Ticks curveTime) {
     v.rotation = p.value(ParamId::Rotation, curveTime);
     v.anchorX = p.value(ParamId::AnchorX, curveTime);
     v.anchorY = p.value(ParamId::AnchorY, curveTime);
+    v.uniformScale = p.uniformScale();
+    v.scaleWidth = p.scaleAt(curveTime).first;
     return v;
 }
 
@@ -50,16 +52,38 @@ EditOutcome setMotion(const ProjectState& state, SequenceId sequence, ClipId cli
     if (change.empty()) {
         return std::unexpected(Error{ErrorCode::InvalidArgument, "no Motion parameter to set"});
     }
-    const std::array<std::pair<ParamId, std::optional<double>>, 6> wanted{{
+    if (change.uniformScale.value_or(false) && change.scaleWidth) {
+        return std::unexpected(Error{ErrorCode::InvalidArgument, "Scale Width needs Uniform Scale off"});
+    }
+    const std::array<std::pair<ParamId, std::optional<double>>, 7> wanted{{
         {ParamId::PositionX, change.positionX},
         {ParamId::PositionY, change.positionY},
         {ParamId::Scale, change.scale},
         {ParamId::Rotation, change.rotation},
         {ParamId::AnchorX, change.anchorX},
         {ParamId::AnchorY, change.anchorY},
+        {ParamId::ScaleWidth, change.scaleWidth},
     }};
     ProjectState working = state;
     bool changed = false;
+    // 0.7 (card #12): the Uniform Scale switch first (it carries Scale Width along); a Scale Width turns it off.
+    {
+        const Sequence* seq = working.findSequence(sequence);
+        const auto located = seq ? seq->findClip(clip) : std::nullopt;
+        if (!located) {
+            return std::unexpected(Error{ErrorCode::NotFound, "no clip " + std::to_string(clip.value) + " in the sequence"});
+        }
+        const bool uniform = located->clip().properties().uniformScale();
+        const std::optional<bool> wantUniform = change.uniformScale ? change.uniformScale : change.scaleWidth ? std::optional<bool>(false) : std::nullopt;
+        if (wantUniform && *wantUniform != uniform) {
+            auto step = setParameter(working, sequence, clip, ParamRef::of(ParamId::UniformScale), ParamValue(*wantUniform ? 1.0 : 0.0));
+            if (!step) {
+                return std::unexpected(std::move(step.error()));
+            }
+            working = std::move(step->state);
+            changed = true;
+        }
+    }
     for (const auto& [id, value] : wanted) {
         if (!value) {
             continue;
@@ -94,7 +118,8 @@ EditOutcome setMotion(const ProjectState& state, SequenceId sequence, ClipId cli
         if (!located) {
             return std::unexpected(Error{ErrorCode::NotFound, "no clip " + std::to_string(clip.value) + " in the sequence"});
         }
-        auto check = setParameter(state, sequence, clip, ParamRef::of(first->first), located->clip().properties()[first->first]);
+        const ParamId checked = first != wanted.end() ? first->first : ParamId::UniformScale; // only the switch was given
+        auto check = setParameter(state, sequence, clip, ParamRef::of(checked), located->clip().properties()[checked]);
         if (!check) {
             return std::unexpected(std::move(check.error()));
         }

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Entitlements of the other executables in Wabcut.app/Contents/MacOS (finish_bundle.py, option entitlements-helper):
+     wabcut-cli, and the helper processes the app starts from its own folder - wabcut-embed (smart search on ONNX Runtime),
+     wabcut-infer (local transcription), wabcut-scripthost (extensions, run by Qt's QJSEngine) and wabcut-plughost (audio
+     plug-ins, the day it is built for macOS). Each is signed with the hardened runtime
+     (https://developer.apple.com/documentation/security/hardened_runtime) and one exception:
+
+     allow-jit        QJSEngine compiles JavaScript to machine code in MAP_JIT memory, and plug-ins and ONNX Runtime may
+                      generate code too. The helpers never record audio, so there is no audio-input entitlement here:
+                      only the app asks the microphone. -->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+</dict>
+</plist>

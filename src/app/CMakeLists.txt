@@ -18,6 +18,8 @@ qt_add_qml_module(wabcut_ui
     URI Wabcut
     VERSION 1.0
     SOURCES
+        src/EnglishPlurals.h
+        src/EnglishPlurals.cpp
         src/RhiPolicy.h
         src/RhiPolicy.cpp
         src/UiScale.h
@@ -44,6 +46,9 @@ qt_add_qml_module(wabcut_ui
         src/bridge/DemoProject.cpp
         src/bridge/EffectControls.h
         src/bridge/EffectControls.cpp
+        # 0.7 (card 96): the Graph Editor's engine (a second view of the same keyframes)
+        src/bridge/KeyframeGraph.h
+        src/bridge/KeyframeGraph.cpp
         src/bridge/HomeBridge.h
         src/bridge/HomeBridge.cpp
         src/bridge/MediaBridge.h
@@ -58,6 +63,8 @@ qt_add_qml_module(wabcut_ui
         src/bridge/ProjectController.cpp
         src/bridge/ProjectControllerEditing.cpp
         src/bridge/ProjectControllerTimeline.cpp
+        src/bridge/ProjectControllerTrackGroups.cpp
+        src/bridge/ProjectControllerTracks.cpp
         src/bridge/ProjectControllerFinishing.cpp
         src/bridge/RendererInfo.h
         src/bridge/RendererInfo.cpp
@@ -81,6 +88,13 @@ qt_add_qml_module(wabcut_ui
         src/bridge/NestedPictures.cpp
         src/bridge/MarkersBridge.h
         src/bridge/MarkersBridge.cpp
+        src/bridge/SourcesBridge.h
+        src/bridge/SourcesBridge.cpp
+        src/bridge/AudioDescriptionBridge.h
+        src/bridge/AudioDescriptionBridge.cpp
+        # 0.7 (card 180): the pacing heat strip (PacingMap in the model grades; the bridge measures off the GUI thread)
+        src/bridge/PacingBridge.h
+        src/bridge/PacingBridge.cpp
         # 0.6 (card #74): auditions - the Take Selector, the Program Monitor's take strip, Clip > Auditions
         src/bridge/AuditionsBridge.h
         src/bridge/AuditionsBridge.cpp
@@ -222,7 +236,6 @@ qt_add_qml_module(wabcut_ui
         qml/panels/ChoiceMenu.qml
         qml/panels/EffectControlsRow.qml
         qml/panels/EffectsPanel.qml
-        qml/panels/TitleStylePanel.qml
         qml/panels/ExportPanel.qml
         qml/panels/InspectorPanel.qml
         qml/panels/TimeRemapControls.qml
@@ -246,6 +259,7 @@ qt_add_qml_module(wabcut_ui
         qml/panels/MetadataPropertyMenu.qml
         qml/panels/ProductionPanel.qml
         qml/panels/ProductionProjectMenu.qml
+        qml/panels/ProductionSearch.qml
         qml/panels/MarkersPanel.qml
         qml/panels/MediaBrowserPanel.qml
         qml/panels/MarkerEditor.qml
@@ -280,6 +294,10 @@ qt_add_qml_module(wabcut_ui
         qml/panels/SourceMonitorPanel.qml
         qml/panels/PaletteOverlay.qml
         qml/panels/RenameClipPopover.qml
+        qml/panels/ClipNotePopover.qml
+        qml/panels/TimelinePacingStrip.qml
+        qml/panels/GraphEditorPanel.qml
+        qml/panels/GraphEditorPane.qml
         qml/panels/SpeedDurationDialog.qml
         qml/panels/TimelineLanes.qml
         qml/panels/TimelineMinimap.qml
@@ -585,6 +603,9 @@ wabcut_ui_qml_sources(
         qml/dialogs/ExportTimelineDialog.qml
         qml/dialogs/MediaCacheSettings.qml
         qml/dialogs/RecoveryDialog.qml
+        qml/dialogs/ReportBugDialog.qml
+        qml/dialogs/SaveVersionDialog.qml
+        qml/dialogs/SaveForOlderVersionDialog.qml
         qml/dialogs/RelinkDialog.qml
         qml/dialogs/PropertiesDialog.qml
         qml/dialogs/UnsavedChangesDialog.qml
@@ -600,6 +621,8 @@ target_sources(wabcut_ui PRIVATE
     src/bridge/ScopesBridge.cpp)
 wabcut_ui_qml_sources(
     QML_FILES
+        qml/panels/color/ChartMatchSection.qml
+        qml/panels/color/ColorChartOverlay.qml
         qml/panels/color/ColorCompareOverlay.qml
         qml/panels/color/ColorPanel.qml
         qml/panels/color/ColorWheel.qml
@@ -616,6 +639,8 @@ target_link_libraries(wabcut_ui PUBLIC wabcut_color)
 # under qml/panels/masks/ (Effect Controls' mask section, the program monitor's mask overlay, the Source Monitor's
 # redaction overlay and list).
 target_sources(wabcut_ui PRIVATE
+    src/bridge/FramePlacement.h
+    src/bridge/FramePlacement.cpp
     src/bridge/MaskBridge.h
     src/bridge/MaskBridge.cpp)
 wabcut_ui_qml_sources(
@@ -628,6 +653,30 @@ wabcut_ui_qml_sources(
     RESOURCES
         resources/icons/circle.svg)
 target_link_libraries(wabcut_ui PUBLIC wabcut_masks)
+# Track Motion (0.7, card #83, docs/masks.md "Track Motion"): the `TrackMotion` singleton (TrackMotionBridge) runs the
+# track.transform job from Effect Controls' Track Motion section (qml/panels/tracking/), with the subject box on the program
+# monitor: pin a graphic, title or censor bar to something that moves in the shot.
+target_sources(wabcut_ui PRIVATE src/bridge/TrackMotionBridge.h src/bridge/TrackMotionBridge.cpp)
+wabcut_ui_qml_sources(
+    QML_FILES
+        qml/panels/tracking/TrackMotionOverlay.qml
+        qml/panels/tracking/TrackMotionSection.qml)
+# Effects on a whole video track (0.7, card #139, docs/effects.md): the `TrackEffects` singleton (TrackEffectsBridge) and the
+# timeline track header's Video Track Effects... popover.
+target_sources(wabcut_ui PRIVATE src/bridge/TrackEffectsBridge.h src/bridge/TrackEffectsBridge.cpp)
+wabcut_ui_qml_sources(
+    QML_FILES
+        qml/panels/TrackEffectsPopover.qml
+        qml/panels/graphics/GraphicSortMenu.qml)
+# AI video effects (0.7, docs/ai.md "AI video effects"): the AiVideo singleton (AiVideoBridge) over wabcut_ai_video_media -
+# the Effect Controls header of AI Restore / AI Denoise (models after their licence card, Process with progress and Cancel),
+# the processed-picture cache for playback and export, the Program Monitor's "not processed" badge.
+target_sources(wabcut_ui PRIVATE src/bridge/AiVideoBridge.h src/bridge/AiVideoBridge.cpp)
+wabcut_ui_qml_sources(
+    QML_FILES
+        qml/panels/AiEffectStatus.qml
+        qml/panels/MorphFacesStatus.qml)
+target_link_libraries(wabcut_ui PUBLIC wabcut_ai_video_media)
 # AI Object Mask (owner: AI platform, AI-14, docs/masks.md "Object masks"): the ObjectMasks singleton (ObjectMaskBridge)
 # over wabcut_ai_segment_media - prompts on the program monitor, refine, tracking as a job, the matte preview
 # (image://wabcut-matte), AI-tracked redactions in the Source Monitor, the SAM 2.1 download, the compositor's matte
@@ -646,7 +695,8 @@ target_sources(wabcut_ui PRIVATE src/bridge/DiskSpace.h src/bridge/DiskSpace.cpp
 # P1 (#48, stream 3E): the app-wide media cache, AI cache and proxy folder settings.
 target_sources(wabcut_ui PRIVATE src/bridge/CacheFolders.h src/bridge/CacheFolders.cpp)
 # P1 round (2C): batch exports (#22 sequences, #26 ranges, #25 media usage) and the queue kept across restarts (#20).
-target_sources(wabcut_ui PRIVATE src/bridge/ExportInternal.h src/bridge/ExportBatches.cpp src/bridge/ExportQueueKeeper.cpp)
+target_sources(wabcut_ui PRIVATE src/bridge/ExportInternal.h src/bridge/ExportBatches.cpp src/bridge/ExportQueueKeeper.cpp
+               src/bridge/ExportHistory.cpp) # 0.7: export history (card 004), the pre-export check (card 176)
 wabcut_ui_qml_sources(
     QML_FILES
         qml/panels/export/ExportJobPill.qml
@@ -667,6 +717,8 @@ wabcut_ui_qml_sources(
         qml/panels/export/SequencesExportDialog.qml
         qml/panels/export/ExportRangesDialog.qml
         qml/panels/export/MediaUsageReportDialog.qml
+        # 0.7: the pre-export check (card 176).
+        qml/panels/export/PreExportCheckDialog.qml
 )
 target_link_libraries(wabcut_ui PUBLIC wabcut_export)
 
@@ -682,13 +734,35 @@ wabcut_ui_qml_sources(
     QML_FILES
         qml/panels/ai/AiBadge.qml
         qml/panels/ai/AiConsentDialog.qml
-        qml/panels/ai/AiModelsPage.qml
+        qml/panels/ai/AiCatalog.qml
+        qml/panels/ai/AiChip.qml
+        qml/panels/ai/AiChoiceButton.qml
+        qml/panels/ai/AiCustomProviderDialog.qml
+        qml/panels/ai/AiFeaturesPage.qml
+        qml/panels/ai/AiModelPicker.qml
+        qml/panels/ai/AiProviderDetail.qml
         qml/panels/ai/LocalLlmPage.qml
         qml/panels/ai/GeneratePanel.qml
         qml/panels/ai/AiPrivacyPage.qml
         qml/panels/ai/AiProvidersPage.qml
         qml/panels/ai/AiTextField.qml
         qml/panels/ai/AiUsagePage.qml)
+# r07 local model library (Local-AI engineer): the LocalModels singleton and the pages of Settings > AI > Local models
+# (LocalLlmPage.qml is their entry point).
+target_sources(wabcut_ui PRIVATE src/bridge/LocalModelsController.h src/bridge/LocalModelsController.cpp)
+wabcut_ui_qml_sources(
+    QML_FILES
+        qml/panels/ai/local/BenchmarkBars.qml
+        qml/panels/ai/local/LocalBrowse.qml
+        qml/panels/ai/local/LocalChips.qml
+        qml/panels/ai/local/LocalDownloads.qml
+        qml/panels/ai/local/LocalInstalled.qml
+        qml/panels/ai/local/LocalModelCard.qml
+        qml/panels/ai/local/LocalModelDetail.qml
+        qml/panels/ai/local/LocalOptionPicker.qml
+        qml/panels/ai/local/LocalRecommended.qml
+        qml/panels/ai/local/LocalTag.qml
+        qml/panels/ai/local/LocalTranscription.qml)
 target_link_libraries(wabcut_ui PUBLIC wabcut_ai_net)
 # Transcript panel (M5e, Timeline/UI): transcript-first editing and captions (wabcut_ai_edit + its media services),
 # and local transcription through TranscriptionService when the wabcut-infer helper is built.
@@ -701,6 +775,13 @@ if(TARGET wabcut_plugins)
     target_link_libraries(wabcut_ui PUBLIC wabcut_plugins)
     target_compile_definitions(wabcut_ui PUBLIC WABCUT_WITH_AUDIO_PLUGINS=1)
     add_dependencies(wabcut_ui wabcut-plughost)
+endif()
+# OpenFX video plug-ins (0.7, docs/plugins.md): the catalog, its background scan and the effects that run on a clip's frame;
+# the wabcut-ofxhost helper runs next to the app.
+if(TARGET wabcut_ofx)
+    target_link_libraries(wabcut_ui PUBLIC wabcut_ofx)
+    target_compile_definitions(wabcut_ui PUBLIC WABCUT_WITH_OPENFX=1)
+    add_dependencies(wabcut_ui wabcut-ofxhost)
 endif()
 if(WABCUT_WITH_CLOUD_AI)
     find_package(Qt6Keychain CONFIG REQUIRED)
@@ -819,6 +900,8 @@ target_sources(wabcut_ui PRIVATE
     src/bridge/ReviewBridge.cpp
     src/bridge/ReviewFrames.h
     src/bridge/ReviewFrames.cpp
+    src/bridge/OfxUi.h
+    src/bridge/OfxUi.cpp
     src/bridge/PluginBridge.h
     src/bridge/PluginBridge.cpp
     src/bridge/EssentialSoundBridge.h
@@ -890,6 +973,8 @@ wabcut_ui_qml_sources(
 # and Rolling Shutter Repair's Analyze (the `Stabilizer` singleton, StabilizerBridge), the Library's New Item submenu
 # (Bars and Tone, Universal Counting Leader, ...).
 target_sources(wabcut_ui PRIVATE
+    src/bridge/GyroAvailability.h
+    src/bridge/GyroAvailability.cpp
     src/bridge/StabilizerBridge.h
     src/bridge/StabilizerBridge.cpp)
 wabcut_ui_qml_sources(
@@ -1025,8 +1110,20 @@ target_sources(wabcut_ui PRIVATE
     src/LaunchSplash.cpp
     src/SingleInstance.h
     src/SingleInstance.cpp
+    # macOS: Finder's open events (double-click, Open With, Dock drops) reach the window like another launch's files
+    src/FileOpenRelay.h
+    src/FileOpenRelay.cpp
     src/WindowPlacement.h
     src/WindowPlacement.cpp
+    # 0.7 (card 017): Windows 11 Snap Layouts on the custom frame's maximize button, and the system menu
+    src/platform/WindowChromeFilter.h
+    src/platform/WindowChromeFilter.cpp
+    # 0.7 (batch A9, card 110): the video output to another display - what to show where (VideoOutput) and the display modes
+    # Match Refresh Rate switches (Windows)
+    src/bridge/VideoOutput.h
+    src/bridge/VideoOutput.cpp
+    src/platform/DisplayModes.h
+    src/platform/DisplayModes.cpp
 )
 target_link_libraries(wabcut_ui PRIVATE Qt6::Network)
 
@@ -1157,6 +1254,7 @@ wabcut_ui_qml_sources(
         qml/monitor/ProgramOutputWindow.qml
         qml/monitor/SourceSettingsMenu.qml
         qml/monitor/TransparencyGrid.qml
+        qml/monitor/VrViewOverlay.qml
     RESOURCES
         resources/monitor/transparency-grid.svg
 )
@@ -1167,6 +1265,8 @@ wabcut_ui_qml_sources(
 target_sources(wabcut_ui PRIVATE
     src/bridge/EffectPresetsBridge.h
     src/bridge/EffectPresetsBridge.cpp
+    src/bridge/EffectShortcutsBridge.h # 0.7 (card #82): keys for individual effects and presets (`EffectShortcuts`)
+    src/bridge/EffectShortcutsBridge.cpp
     src/bridge/EffectsTreeModel.h
     src/bridge/EffectsTreeModel.cpp
     src/bridge/GraphicToolsBridge.h
@@ -1227,6 +1327,8 @@ wabcut_ui_qml_sources(
         qml/panels/ActivityPopover.qml
         qml/panels/timeline/RulerContextMenu.qml
         qml/panels/PlatformSafeZoneOverlay.qml
+        qml/panels/CompositionOverlay.qml
+        qml/panels/MarkersImportMenu.qml
         qml/monitor/TransportOverflowButton.qml
 )
 
@@ -1314,6 +1416,115 @@ wabcut_ui_qml_sources(QML_FILES qml/panels/creator/AutopilotSheet.qml qml/panels
 # Beat Grid, Clip > Detect Beats...).
 target_sources(wabcut_ui PRIVATE src/bridge/BeatBridge.h src/bridge/BeatBridge.cpp)
 wabcut_ui_qml_sources(QML_FILES qml/dialogs/DetectBeatsDialog.qml qml/dialogs/CutToBeatsDialog.qml)
+
+# r07 (stream D): the Audio Track Mixer's effect settings - every parameter of a track, submix or master effect and the
+# Enhance Speech slot of a track's clips (AudioMixerEffects.cpp, the `AudioMixer` singleton) - and their popup.
+target_sources(wabcut_ui PRIVATE src/bridge/AudioMixerEffects.cpp)
+wabcut_ui_qml_sources(QML_FILES qml/audio/MixerEffectSettings.qml)
+
+# 0.7 (batch A5): settings backup and reset (SettingsBundle: export / import / reset of every setting and the user's
+# shortcut, preset and template files; its confirmation dialog in Settings > General), where autosaves and backups go
+# (BackupSettings) and the Windows taskbar jump list of recent and starred projects (JumpList).
+target_sources(wabcut_ui PRIVATE
+    src/SettingsBundle.h
+    src/SettingsBundle.cpp
+    src/JumpList.h
+    src/JumpList.cpp
+    src/bridge/BackupSettings.h
+    src/bridge/BackupSettings.cpp
+)
+if(WIN32)
+    target_link_libraries(wabcut_ui PRIVATE ole32 uuid shell32) # ICustomDestinationList, IShellLink: CoCreateInstance
+endif()
+wabcut_ui_qml_sources(QML_FILES qml/dialogs/SettingsBackupDialog.qml qml/panels/multicam/MulticamAngleMenu.qml)
+# 0.7 (card 179): the rights and clearance log - the `Rights` singleton (project.rightsLog, media.setRights,
+# sequence.creditsRoll) and its dialog (File > Rights and Clearance Log...).
+target_sources(wabcut_ui PRIVATE src/bridge/RightsBridge.h src/bridge/RightsBridge.cpp)
+wabcut_ui_qml_sources(QML_FILES qml/dialogs/RightsLogDialog.qml)
+# The shared font picker over the `Fonts` singleton (card 053: search by name, language or
+# script, filters, favourites; Effect Controls, Essential Graphics, the Brand Kit and the caption styles all use it), the
+# spoken-language picker of the Transcript tab (card 073) and the animated caption gallery's sample tiles (card 074).
+target_sources(wabcut_ui PRIVATE src/bridge/FontCatalog.h src/bridge/FontCatalog.cpp)
+wabcut_ui_qml_sources(QML_FILES qml/components/FontPicker.qml qml/components/FontChoicePill.qml
+    qml/panels/SpokenLanguageRow.qml qml/panels/captions/CaptionPresetTile.qml)
+
+# 0.7 (batch A6): Show Clip Keyframes - the menu a clip's fx badge opens and the property line it draws on the clip
+# (TimelineViewKeyframes.cpp, a block of TimelineView).
+target_sources(wabcut_ui PRIVATE src/bridge/TimelineKeyframes.h src/bridge/TimelineViewKeyframes.cpp)
+wabcut_ui_qml_sources(QML_FILES qml/panels/timeline/ClipKeyframesMenu.qml)
+# 0.7 (stream D, D5): the Audio Track Mixer's menu (Show/Hide Tracks, Meter Input(s) Only, Loop), the Loudness panel with the
+# Loudness Radar and the Audio Tools panel's Match tab (EQ Match, Level Match): AudioMixerMatch.cpp is the `AudioMixer`
+# singleton's third half.
+target_sources(wabcut_ui PRIVATE src/bridge/AudioMixerMatch.cpp)
+wabcut_ui_qml_sources(QML_FILES qml/audio/MixerPanelMenu.qml qml/audio/ShowHideTracksPopover.qml qml/audio/LoudnessRadar.qml
+    qml/audio/MatchSpectrum.qml qml/audio/MatchTab.qml qml/panels/LoudnessPanel.qml)
+
+# 0.7 (stream D, D6): the Sources panel (sources and citations for video essays) and the Audio Description dialog.
+wabcut_ui_qml_sources(QML_FILES qml/panels/SourcesPanel.qml qml/panels/SourceForm.qml qml/dialogs/AudioDescriptionDialog.qml)
+
+# 0.7 (batch A8, card 069): Render and Replace for nested sequences (Clip > Render and Replace…, Restore Unrendered): the bridge
+# (RenderReplace) over the export queue and its dialog.
+target_sources(wabcut_ui PRIVATE src/bridge/RenderReplaceBridge.h src/bridge/RenderReplaceBridge.cpp)
+wabcut_ui_qml_sources(QML_FILES qml/panels/RenderReplaceDialog.qml)
+
+# 0.7 (batch A9, card 124): track groups - a named set of tracks with a header row in the Tracks panel and its menu
+# (ProjectControllerTrackGroups.cpp; the model is TrackGroups.h).
+wabcut_ui_qml_sources(QML_FILES qml/panels/timeline/TrackGroupHeader.qml qml/panels/timeline/TrackGroupMenu.qml
+                                qml/audio/MixerGroupStrip.qml)
+
+# 0.7 (batch A9, card 110): the Video Output dialog (Program Monitor > Video Output Settings...): display, picture scaling, safe
+# margins, sync offset and Match Refresh Rate for the output window (VideoOutput.h, MonitorBridge).
+wabcut_ui_qml_sources(QML_FILES qml/monitor/VideoOutputDialog.qml)
+
+# 0.7 (stream D, D7): the Dynamics Processing graph (card 044) in Effect Controls.
+wabcut_ui_qml_sources(QML_FILES qml/audio/DynamicsGraph.qml)
+
+# 0.7 (stream D, D8): Spectral Repair (card 047): the Spectral tab of Audio Tools, the spectrogram item (drawn off the GUI
+# thread from the tiled analysis in wabcut_audio's dsp/Spectrogram.h) and the bridge that turns the selection tools into edits.
+target_sources(wabcut_ui PRIVATE
+    src/bridge/SpectralRepairBridge.h
+    src/bridge/SpectralRepairBridge.cpp
+    src/bridge/SpectrogramView.h
+    src/bridge/SpectrogramView.cpp)
+wabcut_ui_qml_sources(QML_FILES qml/audio/SpectralTab.qml)
+
+# 0.7 (card 050): Python scripts - File > Run Python Script... (docs/python.md). ScriptSupport reads a script's header,
+# remembers what the user allowed and finds a Python; ScriptRun runs one script against a scratch copy of the project over a
+# private local socket (the command server of `wabcut-cli mcp`), ScriptsBridge is the `Scripts` singleton and
+# ScriptsDialog the dialog. The `wabcut` package (python/wabcut) sits next to the executable, in the build tree too.
+target_sources(wabcut_ui PRIVATE
+    src/bridge/ScriptSupport.h
+    src/bridge/ScriptSupport.cpp
+    src/bridge/ScriptRun.h
+    src/bridge/ScriptRun.cpp
+    src/bridge/ScriptsBridge.h
+    src/bridge/ScriptsBridge.cpp
+)
+target_link_libraries(wabcut_ui PRIVATE wabcut_mcp)
+wabcut_ui_qml_sources(QML_FILES qml/dialogs/ScriptsDialog.qml)
+if(TARGET wabcut)
+    add_custom_command(TARGET wabcut POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/python/wabcut"
+                "$<TARGET_FILE_DIR:wabcut>/python/wabcut"
+        COMMENT "the wabcut Python package next to wabcut"
+        VERBATIM)
+endif()
+
+# 0.7 (card "Capture video from tape, capture card or camera"): File > Capture... - the `Capture` singleton over wabcut_capture
+# (the device layer, the recorder, the repair of an interrupted capture; docs/capture.md) and the panel with its choice pill.
+target_sources(wabcut_ui PRIVATE src/bridge/CaptureBridge.h src/bridge/CaptureBridge.cpp)
+target_link_libraries(wabcut_ui PUBLIC wabcut_capture)
+wabcut_ui_qml_sources(QML_FILES qml/dialogs/CaptureChoice.qml qml/dialogs/CaptureDialog.qml)
+
+# 0.7 (card 035): review links, cloud projects on the user's own storage and stock media (docs/cloud.md): the `Cloud` singleton (locations,
+# cloud project, review links) and the `Stock` singleton over wabcut_cloud, the Cloud dialog with its three pages and the Stock panel.
+target_sources(wabcut_ui PRIVATE
+    src/bridge/CloudBridge.h src/bridge/CloudBridge.cpp src/bridge/CloudBridgeInternal.h src/bridge/CloudBridgeReview.cpp
+    src/bridge/StockBridge.h src/bridge/StockBridge.cpp)
+target_link_libraries(wabcut_ui PUBLIC wabcut_cloud)
+wabcut_ui_qml_sources(QML_FILES
+    qml/dialogs/CloudDialog.qml qml/dialogs/CloudStoragePage.qml qml/dialogs/CloudProjectPage.qml qml/dialogs/ReviewLinksPage.qml
+    qml/panels/stock/StockPanel.qml qml/panels/stock/StockCard.qml)
 
 # Every block's QML files and resources (wabcut_ui_qml_sources above), in one call.
 get_property(wabcut_ui_qml_files GLOBAL PROPERTY WABCUT_UI_QML_FILES)

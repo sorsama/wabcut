@@ -181,6 +181,10 @@ struct Redaction {
     RedactionAudio audio = RedactionAudio::None;
     /// Audio: the media times bleeped or muted (transcript word ranges); empty = `source`.
     std::vector<TimeRange> audioRanges;
+    /// 0.7 (card 102), with `audio` Bleep: a sound file of the project's assets (kAssetKindSound) that plays in place of
+    /// the 1 kHz tone, from the start of each range and cut at its end (shorter than the range: then silence). Invalid:
+    /// the tone. A missing or unreadable file plays the tone too. Saved only when set.
+    AssetId sound;
     /// Clips it does not apply to. A clip an edit makes from one of them (a razor half) is redacted again until it is
     /// excepted too: the safe direction. Sorted, unique.
     std::vector<ClipId> exceptions;

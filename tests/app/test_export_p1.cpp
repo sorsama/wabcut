@@ -621,7 +621,7 @@ TEST_CASE("YouTube chapters: Copy to the clipboard from In to Out and chapter ma
     clipboard->clear();
     REQUIRE(markers.copyToClipboard(QStringLiteral("youtube"), QStringLiteral("inOut"), true));
     CHECK(clipboard->text() == QStringLiteral("0:00 Intro\n0:30 Part 2\n0:40 Ending\n"));
-    CHECK(markers.message() == QStringLiteral("Copied 3 chapter(s)"));
+    CHECK(markers.message() == QStringLiteral("Copied 3 chapters"));
     // The whole sequence: from its start, with YouTube's rule about 0:00 as a warning.
     REQUIRE(markers.copyToClipboard(QStringLiteral("youtube"), QString(), true));
     CHECK(clipboard->text().startsWith(QStringLiteral("0:10 Intro\n")));
@@ -1033,7 +1033,7 @@ TEST_CASE("Export Frame dialog: the sizes and the markers mode; Markers export m
                 ok = items.isEmpty() ? nullptr : items.front();
             }
             REQUIRE(ok);
-            CHECK(ok->property("text").toString() == QStringLiteral("Export 1 still(s)"));
+            CHECK(ok->property("text").toString() == QStringLiteral("Export 1 still"));
             spin(300);
             image = shell.grab();
             REQUIRE_FALSE(image.isNull());

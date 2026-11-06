@@ -61,6 +61,15 @@ ContextMenu {
         command: "sourceMonitor.transparencyGrid"
         onTriggered: Monitors.sourceTransparencyGrid = !Monitors.sourceTransparencyGrid
     }
+    // 0.7 (VR / 360 video): look around in a 360 item.
+    ContextMenuItem {
+        objectName: menu.namePrefix + "sourceVrViewItem"
+        text: qsTr("VR Video View")
+        checkable: true
+        checked: Monitors.sourceVrView
+        enabled: SourceMonitor.vrProjection !== "none"
+        onTriggered: Monitors.sourceVrView = !Monitors.sourceVrView
+    }
     ContextMenuItem {
         objectName: menu.namePrefix + "sourceSafeMarginsItem"
         text: qsTr("Safe Margins")

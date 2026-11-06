@@ -409,3 +409,68 @@ TEST_CASE("KeyDispatcher drives slow shuttle from Shift+J and Shift+L", "[keymap
         CHECK_FALSE(d.isGestureActive());
     }
 }
+
+// ---- 0.7 (card 063): H and Z held are momentary tools ----
+
+TEST_CASE("A held H or Z reports its release, a tap does not (card 063)", "[keymap][dispatcher][momentary]") {
+    const auto keymap = KeymapManager::withDefaults(Platform::Windows);
+    REQUIRE(keymap.has_value());
+    CHECK(keymap->registry().find("tool.hand")->momentary);
+    CHECK(keymap->registry().find("tool.zoom")->momentary);
+    CHECK_FALSE(keymap->registry().find("tool.razor")->momentary);
+
+    FakeClock clock;
+    KeyDispatcher d(*keymap, clock.fn());
+
+    // A tap: the tool is chosen by the press (as before), and the quick release leaves it chosen.
+    KeyResult press = d.keyPress(Scope::Timeline, {Key_H}, false);
+    CHECK(press.commands == Cmds{"tool.hand"});
+    clock.now = 120ms;
+    KeyResult tap = d.keyRelease({Key_H}, false);
+    CHECK(tap.handled);
+    CHECK(tap.released.empty());
+
+    // A hold past the threshold: the release is reported, so the app hands the old tool back.
+    clock.now = 1000ms;
+    CHECK(d.keyPress(Scope::Timeline, {Key_Z}, false).commands == Cmds{"tool.zoom"});
+    clock.now = 1400ms;
+    CHECK(d.keyRelease({Key_Z}, false).released == Cmds{"tool.zoom"});
+
+    // Key repeat is a hold even before the threshold; the repeats run nothing again (tool.* does not auto-repeat).
+    clock.now = 2000ms;
+    CHECK(d.keyPress(Scope::Timeline, {Key_H}, false).commands == Cmds{"tool.hand"});
+    clock.now = 2050ms;
+    const KeyResult repeat = d.keyPress(Scope::Timeline, {Key_H}, true);
+    CHECK(repeat.handled);
+    CHECK(repeat.commands.empty());
+    CHECK(d.keyRelease({Key_H}, true).released.empty()); // the synthetic release of a repeat is not the release
+    CHECK(d.keyRelease({Key_H}, false).released == Cmds{"tool.hand"});
+
+    // Commands that are not momentary never report a release, however long they are held.
+    clock.now = 3000ms;
+    CHECK(d.keyPress(Scope::Timeline, {Key_C}, false).commands == Cmds{"tool.razor"});
+    clock.now = 4000ms;
+    CHECK(d.keyRelease({Key_C}, false).released.empty());
+}
+
+TEST_CASE("The window losing focus hands back a held momentary tool (card 063)", "[keymap][dispatcher][momentary]") {
+    const auto keymap = KeymapManager::withDefaults(Platform::Windows);
+    REQUIRE(keymap.has_value());
+    FakeClock clock;
+    KeyDispatcher d(*keymap, clock.fn());
+    CHECK(d.heldMomentary().empty());
+    CHECK(d.keyPress(Scope::Timeline, {Key_H}, false).commands == Cmds{"tool.hand"});
+    clock.now = 100ms;
+    CHECK(d.heldMomentary().empty()); // still a tap as far as anyone knows
+    clock.now = 500ms;
+    CHECK(d.heldMomentary() == Cmds{"tool.hand"});
+    d.focusLost();
+    CHECK(d.heldMomentary().empty());
+    // A lost release: the key goes down again, the earlier hold is reported ended.
+    CHECK(d.keyPress(Scope::Timeline, {Key_Z}, false).commands == Cmds{"tool.zoom"});
+    clock.now = 700ms;
+    CHECK(d.keyPress(Scope::Timeline, {Key_Z}, true).handled);
+    const KeyResult again = d.keyPress(Scope::Timeline, {Key_Z}, false);
+    CHECK(again.released == Cmds{"tool.zoom"});
+    CHECK(again.commands == Cmds{"tool.zoom"});
+}

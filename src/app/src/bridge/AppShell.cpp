@@ -1,5 +1,8 @@
 #include "AppShell.h"
 
+#include "SettingsBundle.h"
+#include "../platform/WindowChromeFilter.h"
+
 #include <QCoreApplication>
 #include <QFileInfo>
 #include <QProcess>
@@ -29,6 +32,26 @@ bool AppShell::singleInstance() const {
     return g_singleInstance;
 }
 
+bool AppShell::systemMenuAvailable() const {
+    return chrome::systemMenuAvailable();
+}
+
+bool AppShell::snapLayoutsAvailable() const {
+    return chrome::snapLayoutsAvailable();
+}
+
+bool AppShell::showSystemMenu(QWindow* window, const QPointF& globalPos) {
+    return chrome::showSystemMenu(window, globalPos);
+}
+
+void AppShell::registerMaximizeButton(QQuickItem* button) {
+    chrome::WindowChromeFilter::instance().addMaximizeButton(button);
+}
+
+void AppShell::unregisterMaximizeButton(QQuickItem* button) {
+    chrome::WindowChromeFilter::instance().removeMaximizeButton(button);
+}
+
 void AppShell::requestOpen(const QList<QUrl>& files) {
     QList<QUrl> local;
     for (const QUrl& file : files) {
@@ -51,9 +74,13 @@ void AppShell::armRestart(const QString& project) {
 }
 
 void AppShell::cancelRestart() {
-    const std::lock_guard lock(g_restartMutex);
-    g_restartArmed = false;
-    g_restartProject.clear();
+    {
+        const std::lock_guard lock(g_restartMutex);
+        g_restartArmed = false;
+        g_restartProject.clear();
+    }
+    // 0.7 (card 028): a settings import or reset staged for this restart goes with it.
+    SettingsBundle().discardStaged();
 }
 
 bool AppShell::restartPending() {
@@ -69,8 +96,8 @@ QStringList AppShell::restartArguments(const QStringList& arguments, const QStri
             out << argument << arguments[++i]; // an option with its value
             continue;
         }
-        if (!argument.startsWith(QLatin1Char('-')) && argument.endsWith(QLatin1String(".wabcut"), Qt::CaseInsensitive))
-            continue; // the project it opened then; the one open now follows
+        if (!argument.startsWith(QLatin1Char('-')))
+            continue; // a project or a recording it was started with (0.7: media too): done then; the one open now follows
         out << argument;
     }
     if (!project.isEmpty())

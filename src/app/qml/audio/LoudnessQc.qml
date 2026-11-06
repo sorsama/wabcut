@@ -146,10 +146,13 @@ ColumnLayout {
         Layout.fillWidth: true
         Layout.topMargin: Theme.space(1)
         wrapMode: Text.Wrap
+        // A very hot programme keeps only its loudest blocks (card 166): the overs are then counted above the higher
+        // ceiling the measurement kept, which the text names.
+        readonly property var ceiling: root.loudness.oversTruncated === true ? Number(root.loudness.oversAbove).toFixed(2) : AudioMixer.targetTruePeak
         text: root.overCount > 0 ? (root.overCount === 1
-                                    ? qsTr("1 true-peak over above %1 dBTP").arg(AudioMixer.targetTruePeak)
-                                    : qsTr("%1 true-peak overs above %2 dBTP").arg(root.overCount).arg(AudioMixer.targetTruePeak))
-                                 : qsTr("No true-peak overs above %1 dBTP").arg(AudioMixer.targetTruePeak)
+                                    ? qsTr("1 true-peak over above %1 dBTP").arg(ceiling)
+                                    : qsTr("%1 true-peak overs above %2 dBTP").arg(root.overCount).arg(ceiling))
+                                 : qsTr("No true-peak overs above %1 dBTP").arg(ceiling)
         color: root.overCount > 0 ? Theme.dangerText : Theme.success
         font.family: Theme.fontSans
         font.pixelSize: Theme.textSm

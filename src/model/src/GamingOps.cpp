@@ -6,6 +6,7 @@
 #include <wabcut/model/ChangeSet.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/GraphicOps.h>
+#include <wabcut/model/Plural.h>
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/TimeRemap.h>
 
@@ -426,7 +427,7 @@ std::expected<ReplayResult, Error> instantReplay(const ProjectState& state, Sequ
         ed.placeNewClip(p.track, std::move(n), false);
     }
     if (remapFallbacks > 0) {
-        notes.push_back(std::to_string(remapFallbacks) + " video clip(s) replay at a constant speed (no ramp)");
+        notes.push_back(counted(static_cast<std::int64_t>(remapFallbacks), "video clip") + " replaying at a constant speed (no ramp)");
     }
     EditResult edited = ed.finish(b);
     ProjectState working = edited.state;
@@ -704,6 +705,8 @@ EditOutcome zoomPunch(const ProjectState& state, SequenceId sequenceId, ClipId c
     }
     zoom.push_back({t3, 1.0, easing});
     std::vector<Keyframe> scaleKeys;
+    std::vector<Keyframe> widthKeys; // 0.7 (card #12): a clip with Uniform Scale off zooms its width too
+    const bool stretched = !clip.properties().uniformScale();
     std::vector<Keyframe> xKeys;
     std::vector<Keyframe> yKeys;
     for (const ZoomKey& z : zoom) {
@@ -713,6 +716,9 @@ EditOutcome zoomPunch(const ProjectState& state, SequenceId sequenceId, ClipId c
         }
         const double base = clip.parameterAt(ParamId::Scale, z.time);
         scaleKeys.push_back(key(c, base * z.zoom, z.interpolation));
+        if (stretched) {
+            widthKeys.push_back(key(c, clip.parameterAt(ParamId::ScaleWidth, z.time) * z.zoom, z.interpolation));
+        }
         if (o.focus) {
             const double qx = ((*o.focus)[0] - 0.5) * seq.width;
             const double qy = ((*o.focus)[1] - 0.5) * seq.height;
@@ -728,6 +734,9 @@ EditOutcome zoomPunch(const ProjectState& state, SequenceId sequenceId, ClipId c
     const Ticks from = scaleKeys.front().time;
     const Ticks to = scaleKeys.back().time;
     std::vector<std::pair<ParamId, ParamValue>> values{{ParamId::Scale, withKeys(clip.properties()[ParamId::Scale], from, to, scaleKeys)}};
+    if (stretched) {
+        values.emplace_back(ParamId::ScaleWidth, withKeys(clip.properties()[ParamId::ScaleWidth], from, to, widthKeys));
+    }
     if (o.focus) {
         values.emplace_back(ParamId::PositionX, withKeys(clip.properties()[ParamId::PositionX], from, to, xKeys));
         values.emplace_back(ParamId::PositionY, withKeys(clip.properties()[ParamId::PositionY], from, to, yKeys));
@@ -766,6 +775,7 @@ EditOutcome shake(const ProjectState& state, SequenceId sequenceId, ClipId clipI
     std::vector<Keyframe> yKeys;
     std::vector<Keyframe> rKeys;
     std::vector<Keyframe> sKeys;
+    std::vector<Keyframe> wKeys;
     const double pi = std::acos(-1.0);
     for (std::size_t i = 0; i < pattern.size(); ++i) {
         const ShakeSample& sample = pattern[i];
@@ -789,6 +799,9 @@ EditOutcome shake(const ProjectState& state, SequenceId sequenceId, ClipId clipI
             const double decay = edge ? 0.0 : (1.0 - u) * (1.0 - u);
             const double cover = 1.0 + decay * (2.0 * o.intensity / minSide + std::sin(o.rotation * pi / 180.0) * maxSide / minSide);
             sKeys.push_back(key(c, clip.parameterAt(ParamId::Scale, t) * cover, Interpolation::Linear));
+            if (!clip.properties().uniformScale()) { // 0.7 (card #12)
+                wKeys.push_back(key(c, clip.parameterAt(ParamId::ScaleWidth, t) * cover, Interpolation::Linear));
+            }
         }
     }
     if (xKeys.size() < 2) {
@@ -804,6 +817,9 @@ EditOutcome shake(const ProjectState& state, SequenceId sequenceId, ClipId clipI
     }
     if (!sKeys.empty()) {
         values.emplace_back(ParamId::Scale, withKeys(clip.properties()[ParamId::Scale], from, to, sKeys));
+        if (!wKeys.empty()) {
+            values.emplace_back(ParamId::ScaleWidth, withKeys(clip.properties()[ParamId::ScaleWidth], from, to, wKeys));
+        }
     }
     return setParameters(state, sequenceId, clipId, values);
 }

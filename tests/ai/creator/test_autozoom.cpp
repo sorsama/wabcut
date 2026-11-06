@@ -9,6 +9,7 @@
 #include "ScreenRecording.h"
 
 #include <wabcut/ai/autozoom/AutoZoomCommands.h>
+#include <wabcut/model/MotionOps.h>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -310,4 +311,17 @@ TEST_CASE("Auto zoom analysis throughput on 1080p frames", "[ai][creator][autozo
     WARN(line);
     CHECK(detector.finish().events.size() > 0);
     CHECK(fps > 10.0); // 10 analysed frames per second of recording run faster than real time
+}
+
+TEST_CASE("Auto zoom asks for Uniform Scale on a stretched clip instead of zooming one axis (card 12)", "[ai][creator][autozoom]") {
+    ZoomStudio studio;
+    const ClipId clip = studio.tl.clip("V1@0");
+    REQUIRE(placementOf(studio.tl.state, studio.tl.seq, clip)); // a plain clip has a placement
+    edit::MotionChange stretch;
+    stretch.scaleWidth = 1.5;
+    const auto stretched = edit::setMotion(studio.tl.state, studio.tl.seq, clip, Ticks{}, stretch);
+    REQUIRE(stretched);
+    const auto placement = placementOf(stretched->state, studio.tl.seq, clip);
+    REQUIRE_FALSE(placement);
+    CHECK(placement.error().message.find("Uniform Scale") != std::string::npos);
 }

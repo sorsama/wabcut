@@ -298,7 +298,7 @@ struct Engine {
         params.n_threads = std::max(1, r.threads);
         params.language = r.language.empty() ? "auto" : r.language.c_str();
         params.detect_language = false;
-        params.translate = false;
+        params.translate = r.translate; // whisper's translate task: English text from any language (card 073)
         params.print_progress = false;
         params.print_realtime = false;
         params.print_timestamps = false;

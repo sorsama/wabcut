@@ -26,6 +26,7 @@
 // uniform buffer, cached shader resource bindings).
 
 #include <wabcut/model/Error.h>
+#include <wabcut/model/Vr.h>
 #include <wabcut/render/ColorPipeline.h>
 #include <wabcut/render/FrameImporter.h>
 #include <wabcut/render/PreparedComposite.h>
@@ -69,6 +70,20 @@ struct CompositorOptions {
     int maxTextureSets = 48;
 };
 
+/// 0.7 (VR / 360 video): the VR viewer - the canvas, an equirectangular picture, is drawn as the flat view a person
+/// standing in the middle of the sphere sees looking along yaw / pitch (degrees) with a horizontal field of view of `fov`
+/// (the monitor's drag to look around). The view fills the whole viewport (never letterboxed to the canvas' shape).
+/// CPU twin: vr::viewUv (model/Vr.h).
+struct VrView {
+    bool enabled = false;
+    VrFormat format{VrProjection::Equirectangular360, StereoLayout::Mono}; ///< what the canvas holds
+    float yaw = 0.0f;
+    float pitch = 0.0f;
+    float roll = 0.0f;
+    float fov = static_cast<float>(vr::kDefaultFov);
+    int eye = 0; ///< 0 = left, 1 = right eye of a stereoscopic canvas
+};
+
 struct CompositeOutput {
     QRhiRenderTarget* target = nullptr;
     /// Where the canvas goes, in target pixels with a top-left origin. Empty = letterbox into the whole
@@ -81,6 +96,8 @@ struct CompositeOutput {
     OutputAlpha alpha = OutputAlpha::Opaque;
     /// False: only clear the target to `surround` (e.g. a transparent monitor before the first frame).
     bool drawCanvas = true;
+    /// 0.7: the VR viewer (VrView); when enabled the canvas fills the viewport (the whole target when `viewport` is empty).
+    VrView vr;
 };
 
 struct CompositeStats {
@@ -293,8 +310,10 @@ private:
     std::array<std::unique_ptr<QRhiGraphicsPipeline>, kFxFamilies> m_fxFamilyPipelines;
     /// The pipeline of a family (0 = fx.frag), made when missing; null when its shader cannot be loaded or created.
     QRhiGraphicsPipeline* fxFamilyPipeline(int family);
-    // Blend-mode variants (C.15) of the three canvas-pass pipelines, by blendVariantOf() - 1, made on first use: Add.
-    static constexpr int kBlendVariants = 1;
+    // Blend-mode variants (C.15) of the three canvas-pass pipelines, by blendVariantOf() - 1, made on first use: Add, and
+    // (0.7, Motion Blur) the accumulation of a blurred layer's draws: colour and alpha both added.
+    static constexpr int kBlendVariants = 2;
+    static constexpr int kBlendAccumulate = 2;
     using BlendPipelines = std::array<std::unique_ptr<QRhiGraphicsPipeline>, kBlendVariants>;
     BlendPipelines m_layerBlendPipelines;
     BlendPipelines m_layerArrayBlendPipelines;
@@ -397,6 +416,9 @@ private:
         Affine2D toCanvas; ///< the layer's frame pixels -> canvas sequence pixels
         std::uint64_t clipId = 0;
         QRhiShaderResourceBindings* srb = nullptr; ///< set for a nested canvas (else by the importer's slot)
+        /// 0.7 Motion Blur: the uniform slots of the layer's draws at each instant of the shutter (CompositeLayer::blur); the
+        /// layer is drawn from these, accumulated, instead of from `uniformSlot`. Empty: drawn once.
+        std::vector<int> blurSlots;
     };
     std::vector<Placement> m_placements; // per-frame scratch, capacity kept
 

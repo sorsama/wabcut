@@ -16,7 +16,7 @@ namespace {
 
 std::vector<std::string> interpolationNames() {
     return {std::string(toString(TimeInterpolation::FrameSampling)), std::string(toString(TimeInterpolation::FrameBlending)),
-            std::string(toString(TimeInterpolation::OpticalFlow))};
+            std::string(toString(TimeInterpolation::OpticalFlow)), std::string(toString(TimeInterpolation::AiInterpolation))};
 }
 
 } // namespace
@@ -43,10 +43,12 @@ void registerMotionCommands(CommandRegistry& registry) {
          "frames (a speed other than 100 %, reverse, time remapping, Rate Stretch, or footage at another frame rate "
          "than the sequence's). \"frameSampling\" (the default) repeats or drops whole frames; \"frameBlending\" mixes "
          "the two frames around each moment; \"opticalFlow\" warps both along their motion and blends them (smoothest; "
-         "the render bar shows those sections red until rendered). Linked audio partners are left alone.",
+         "the render bar shows those sections red until rendered); \"aiInterpolation\" (0.7) has a neural model make the "
+         "frames (effect.processAi makes the pictures ahead of time; where they are missing the clip plays with Optical Flow "
+         "and an export makes them). Linked audio partners are left alone.",
          Capability::EditSequence,
          withSequence({{"clips", clipsParam("The video clips.")},
-                       {"method", timeInterpolationParam("Frame Sampling, Frame Blending or Optical Flow.")},
+                       {"method", timeInterpolationParam("Frame Sampling, Frame Blending, Optical Flow or AI Frame Interpolation.")},
                        {"linked", linkedParam(true)}},
                       {"clips", "method"}),
          Json{{"clips", Json::array({42})}, {"method", "opticalFlow"}}, {},

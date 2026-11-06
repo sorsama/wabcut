@@ -125,8 +125,11 @@ enum class LoudnessStandard : std::uint8_t {
     EbuR128, ///< EBU R 128: -23 LUFS, -1 dBTP
     AtscA85, ///< ATSC A/85: -24 LKFS, -2 dBTP
     Custom,  ///< ITU-R BS.1770 with the target and ceiling below (streaming: -14 / -16 LUFS, -1 dBTP)
+    /// 0.7 (card #2): the level YouTube, Shorts and Twitch play at: -14 LUFS, -1 dBTP (the Audio Mixer's YouTube target).
+    /// Added last, so the other values (and the presets that name them) keep their meaning.
+    Streaming,
 };
-std::string_view loudnessStandardName(LoudnessStandard standard); ///< "ebuR128", "atscA85", "custom"
+std::string_view loudnessStandardName(LoudnessStandard standard); ///< "ebuR128", "atscA85", "custom", "streaming"
 std::optional<LoudnessStandard> loudnessStandardFromName(std::string_view name);
 
 /// Loudness Normalization: the exported mix measured (ITU-R BS.1770-4 integrated loudness, gated), then a gain moves it

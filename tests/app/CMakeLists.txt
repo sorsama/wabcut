@@ -13,6 +13,14 @@ wabcut_add_test_suite(app
         test_autosave_background.cpp
         test_render_in_to_out.cpp # 0.1.1: Sequence > Render In to Out
         test_captions_workshop.cpp
+        test_d2_text_audio_ui.cpp # font picker, spoken language, caption gallery, auto-mix
+        test_d3_shell_ui.cpp # Window menu order, Gaming workspace, hidden tabs, read-only badge, window drops, presets, custom words
+        test_d4_shell_ui.cpp # Open with, Save Version, Report a Bug, system menu and Snap Layouts, mixed languages
+        test_d6_sources_ui.cpp # 0.7 (batch D6): Sources, Audio Description
+        test_d6_ui.cpp # 0.7 (batch D6): Save for an Older Version, bilingual captions, Sources, Audio Description
+        test_d5_audio_ui.cpp # 0.7: mixer menu (Show/Hide Tracks, Meter Input(s) Only, Loop), Match tab, Loudness panel and radar, captions to graphics
+        test_d7_audio_ui.cpp # 0.7: Dynamics Processing in Effect Controls, the 7.1 master in the mixer
+        test_d8_spectral_ui.cpp # 0.7: the Spectral tab of Audio Tools (card 047)
         test_clip_audio.cpp
         test_clipboard_ui.cpp
         test_brand_icons.cpp
@@ -30,6 +38,11 @@ wabcut_add_test_suite(app
         test_extensions_ui.cpp
         test_finishing_ui.cpp
         test_effect_controls_text.cpp # 0.6: Text sections, keyframe copy and paste, several clips at once
+        test_effect_controls_r08.cpp # 0.7: Nearest Neighbor Scaling and Blend Mode rows, the Blend Mode shortcuts, pinned favourites
+        test_ai_video_ui.cpp # 0.7: AI Restore / AI Denoise in the shell (header, Process, Delete, export notice, screenshots)
+        test_retouch_ui.cpp # 0.7: Skin Smoothing and AI Face Retouch in the shell (header, Process, undo, screenshots)
+        test_eye_contact_ui.cpp # 0.7: AI Eye Contact and the Morph Cut's face detector in the shell (headers, Process, undo, screenshots)
+        test_effect_shortcuts.cpp # 0.7: keys for individual effects and presets
         test_effect_presets_ui.cpp
         test_master_clip_effects_ui.cpp # 0.6 (#71): Master Clip Effects in Effect Controls and the Effects panel
         test_spelling_ui.cpp
@@ -44,10 +57,16 @@ wabcut_add_test_suite(app
         test_library_p1.cpp # 0.6 (1D): Move to Bin, Cut / Paste, bin drags, Link Media, proxies, sizes, Properties
         test_project_panel.cpp # 0.2 P.3: metadata, Search Bins, Freeform view, XMP, Productions
         test_masks_ui.cpp
+        test_track_motion_ui.cpp # 0.7 (card #83): Track Motion - the section, the monitor's box and the track job
+        test_track_effects_ui.cpp # 0.7 (card #139): effects on a whole video track - the bridge, the stack, the popover
+        test_vr_ui.cpp # 0.7 (card 38): VR / 360 video in the interface
+        test_graphics_r08.cpp # 0.7 (cards #71 #81 #87): keyed template fields, styling part of a text, template folders and sort
         test_media_bridge.cpp
         test_mixer_automation.cpp
+        test_mixer_effects.cpp # r07: the mixer's "+ Effect" menu, effect settings, the Enhance Speech slot
         test_monitor_docking.cpp # 0.1.3: the monitor in a shown window, panel docking
         test_motion_ui.cpp # P.2: Time Interpolation, Warp Stabilizer's Analyze, New Item
+        test_gyro_ui.cpp # 0.7 (card #130): Warp Stabilizer's Gyro (camera metadata) method
         test_mixer_routing.cpp
         test_clip_mixer.cpp
         test_take_recovery_ui.cpp
@@ -65,6 +84,7 @@ wabcut_add_test_suite(app
         test_rhi.cpp
         test_scope_view_hdr.cpp # I.9: the nits / HLG % waveform graticule
         test_color_management_ui.cpp # 0.2: the Color Management dialog and the Media color space menu
+        test_chart_match_ui.cpp # 0.7: the Color panel's Color Chart section and the monitor's corner handles
         test_screenshots.cpp
         test_settings.cpp # 0.1.3: the Settings window, theme files, the AI switch
         test_shell.cpp
@@ -109,6 +129,10 @@ target_compile_definitions(wabcut_app_tests PRIVATE WABCUT_APP_TEST_DIR="${CMAKE
 target_include_directories(wabcut_app_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests/model)
 # I.6: the mask UI tests track synthetic moving pictures (tests/masks/SyntheticMotion.h).
 target_include_directories(wabcut_app_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests/masks)
+# 0.7: the AI video effects' test doubles (a fake backend and frame source: tests/ai/video/VideoTestUtil.h).
+target_include_directories(wabcut_app_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests/ai)
+# 0.7: the colour-chart tests' synthetic ColorChecker picture (tests/color/ChartScene.h).
+target_include_directories(wabcut_app_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests/color)
 
 # M5i: the whole QML tree stays qmllint clean. This runs qmllint with the response file of Qt's generated
 # wabcut_ui_qmllint target (the module's files, import paths and resources), and any warning fails the test.
@@ -131,6 +155,16 @@ if(TARGET wabcut_plugins)
         WABCUT_PLUGHOST_PATH="$<TARGET_FILE:wabcut-plughost>")
     add_dependencies(wabcut_app_tests wabcut-plughost wabcut_test_clap_gain wabcut_test_clap_crash wabcut_test_clap_hang
                      wabcut_test_vst3_gain)
+endif()
+
+# 0.7: OpenFX video plug-ins in Effect Controls and the Effects panel: the test plug-ins (tests/ofxhost builds them into
+# <build>/test-ofx) with the real wabcut-ofxhost helper; no plug-in window exists to open.
+if(TARGET wabcut_ofx)
+    target_sources(wabcut_app_tests PRIVATE test_ofx_effect_controls.cpp)
+    target_compile_definitions(wabcut_app_tests PRIVATE
+        WABCUT_TEST_OFX_DIR="${CMAKE_BINARY_DIR}/test-ofx"
+        WABCUT_OFXHOST_PATH="$<TARGET_FILE:wabcut-ofxhost>")
+    add_dependencies(wabcut_app_tests wabcut-ofxhost wabcut_test_ofx_main wabcut_test_ofx_crash)
 endif()
 
 # I.7 crash safety (owner: Graphics/integration): a helper process that installs the crash handler like main() and then
@@ -204,6 +238,8 @@ target_sources(wabcut_app_tests PRIVATE test_gpu_choice_ui.cpp test_updates.cpp)
 target_sources(wabcut_app_tests PRIVATE test_p1_timeline.cpp)
 # 0.6 (card #74): auditions - the Take Selector, Clip > Auditions, the timeline badge and the Program Monitor's take strip.
 target_sources(wabcut_app_tests PRIVATE test_auditions_ui.cpp)
+# Platform round (macOS first-class): Finder's file-open events reach the window (FileOpenRelay).
+target_sources(wabcut_app_tests PRIVATE test_file_open_relay.cpp)
 find_package(Qt6 REQUIRED COMPONENTS Network)
 target_link_libraries(wabcut_app_tests PRIVATE Qt6::Network) # the fake update server (QTcpServer)
 if(WIN32)
@@ -264,3 +300,67 @@ target_sources(wabcut_app_tests PRIVATE test_render_files.cpp)
 # 0.6 (P1 round, task D9, #8): the beat tools - Sequence > Beat Grid and Clip > Detect Beats..., the Timeline Display
 # beat grid with its ruler ticks, the palette rows' reasons, and Detect / Snap / Cut / Clear each one undo step.
 target_sources(wabcut_app_tests PRIVATE test_beats_ui.cpp)
+# 0.7 (stream A, batch A2): middle-button pan and held H / Z, video solo and the track keys, Add Marker from In/Out,
+# the edit overlay keys, Snap to, clip duration and audio track names on clips, Add tracks when editing, Track Select Backward.
+target_sources(wabcut_app_tests PRIVATE test_timeline_a2.cpp)
+# 0.7 (batch A3): the Markers panel's Import and Copy Frame in the real shell (the rest of the batch's tests sit in
+# test_monitors.cpp, test_onboarding.cpp, test_shortcuts_ui.cpp, test_workspaces.cpp, test_i18n.cpp and the command / keymap suites).
+target_sources(wabcut_app_tests PRIVATE test_a3_ui.cpp)
+# 0.7 (C2): the Streaming loudness chip, the default export folder, masters of used subclips, the export queue folder
+# during progress, Collect Files' size estimate on a worker.
+target_sources(wabcut_app_tests PRIVATE test_r08_c2.cpp)
+# 0.7 (C3): Date created and column layouts, the nest bin, New Sequence per Clip, Reload Footage, the Library list
+# cells' Tab / Enter stepping, the Collect Files dialog's Handles and Sequences, Ingest > Copy and Create Proxies.
+target_sources(wabcut_app_tests PRIVATE test_r08_c3.cpp)
+# 0.7 (C4): the Library list's thumbnails, the export history, the pre-export check dialog, the newer codecs' notes.
+target_sources(wabcut_app_tests PRIVATE test_r08_c4.cpp)
+
+# 0.7 (C5): Consolidate Duplicates, the rights and clearance log, poly WAV channel names, Collect Files layout.
+target_sources(wabcut_app_tests PRIVATE test_r08_c5.cpp)
+# 0.7 (batch A4): Go to Gap in Track selecting the gap, Select Label Group and the named label menus, track label colours
+# (header bar, lane wash, menu), the Menu key / Shift+F10 on the timeline's menus, and slip with the trim tool.
+target_sources(wabcut_app_tests PRIVATE test_timeline_a4.cpp)
+# 0.7 (batch A5): the settings bundle (export / import / reset), where autosaves and backups go, the taskbar jump list, and the
+# Settings > General rows and dialogs for them; the trim-mode check carried over from A4 (Shift adds an edit point).
+target_sources(wabcut_app_tests PRIVATE test_a5.cpp test_timeline_a5.cpp)
+# 0.7 (batch A6): Alt-drag then Ctrl inserts the copy, the fx badge menu (Show Clip Keyframes), Lock Clip, dragging track headers
+# to reorder tracks, and Match Frame into a nest.
+target_sources(wabcut_app_tests PRIVATE test_timeline_a6.cpp)
+
+# 0.7 (card "Background rendering while idle", stream C, batch C6): the idle renderer in the app - the options and their
+# settings, Sequence > Background Rendering, the background tasks list with Stop, Delete Render Files holding it until the
+# next edit, and a manual render taking over (screenshots, dark and light).
+target_sources(wabcut_app_tests PRIVATE test_background_render.cpp)
+# 0.7 (card "Dolby Vision 8.4 and HDR10+ dynamic metadata"): the Export drawer's Dynamic metadata row (screenshots, dark and light).
+target_sources(wabcut_app_tests PRIVATE test_dynamic_metadata_ui.cpp)
+
+# 0.7 (card 094, stream C, batch C7): search across all projects of a production in the Production panel - typing, the type
+# and "search in" choices, Import and Browse on a result, the empty state, a narrow window (screenshots, dark and light).
+target_sources(wabcut_app_tests PRIVATE test_production_search.cpp)
+# 0.7 (batch A7): several markers at once (ruler, panel, bridge), clip notes, pinned keyframes in Effect Controls, Ripple Track Keyframes,
+# and the pacing strip.
+target_sources(wabcut_app_tests PRIVATE test_a7_ui.cpp)
+# 0.7 (batch A8): the Premiere keys that did nothing (card 024), Render and Replace for nested sequences (card 069).
+target_sources(wabcut_app_tests PRIVATE test_a8.cpp)
+# 0.7 (batch A9, card 124): track groups - the lanes' header rows and folding, the controller's group steps, the keys, the header rows, menus and
+# the Audio Track Mixer's group strip in the shell (dark and light screenshots).
+target_sources(wabcut_app_tests PRIVATE test_track_groups_ui.cpp)
+# 0.7 (batch A9, card 110): the video output to another display - the planner (picture placement, cadence, Match Refresh Rate), the
+# output following its display through plugging and unplugging, the sync offset, and the Video Output dialog and output window in the shell.
+target_sources(wabcut_app_tests PRIVATE test_video_output.cpp)
+# 0.7 (batch A10, card 96): the Graph Editor - its engine (curves, legend, the shared key selection, dragging keys and handles, numeric
+# entry, easing presets, adding keys, the views) and the panel in the shell (both themes, the speed graph, real pointer gestures).
+target_sources(wabcut_app_tests PRIVATE test_a10_ui.cpp)
+
+# 0.7 (card 050, stream C, batch C8): Python scripts - File > Run Python Script... (docs/python.md): the script header and the
+# remembered permissions, finding Python, a script run against the open project over the private local socket (one undo step,
+# nothing on failure or Stop), and the dialog (screenshots, dark and light).
+target_sources(wabcut_app_tests PRIVATE test_scripts.cpp)
+target_compile_definitions(wabcut_app_tests PRIVATE WABCUT_PYTHON_FOLDER="${CMAKE_SOURCE_DIR}/python")
+# 0.7 (card 078): File > Capture… - the Capture bridge and panel over the fake capture backend.
+target_sources(wabcut_app_tests PRIVATE test_capture_ui.cpp)
+target_link_libraries(wabcut_app_tests PRIVATE wabcut_capture)
+
+# 0.7 (card 035): cloud projects, review links and stock media over fake servers (no network): the bridges, the dialog and the panel.
+target_sources(wabcut_app_tests PRIVATE test_cloud_ui.cpp)
+target_link_libraries(wabcut_app_tests PRIVATE wabcut_cloud)

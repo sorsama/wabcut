@@ -8,14 +8,17 @@ in [building.md](building.md); this page starts where a green `win-msvc` build e
 | Platform | Build | Tests | Packages | Status |
 |---|---|---|---|---|
 | **Windows 10/11 x64** | `win-msvc` (MSVC 19.36+) | full suite, GPU and audio-device tests included | per-user MSI, portable ZIP | **Verified** on the development machine for every release candidate |
-| **Linux x64** (Ubuntu 24.04, GCC 14) | `linux-gcc` | `ctest --preset linux-gcc` (no GPU / audio-device tests) | AppImage, tar.gz | **Preview**: `unix-full.yml` builds and tests it, `release.yml` packages, installs and starts it; nobody has used it on a real machine |
-| **macOS 15+ arm64** (Homebrew LLVM 20) | `macos-clang` | `ctest --preset macos-clang` (no GPU / audio-device tests) | DMG (`Wabcut.app`) | **Preview**: as Linux |
+| **Windows 11 on ARM64** (Snapdragon X and similar) | `win-msvc-arm64` | `ctest --preset win-msvc-arm64` (no GPU / audio-device / perf tests) | per-user MSI, portable ZIP | **Preview** (0.7): `windows-arm64.yml` builds and tests it on GitHub's ARM64 Windows runner, `release.yml` packages, installs and runs it; nobody has used it on a real ARM64 PC. No local transcription or audio plug-ins; hardware decode only through D3D11VA; it does not install updates itself |
+| **Linux x64** (Ubuntu 24.04, GCC 14) | `linux-gcc` | `ctest --preset linux-gcc` (no GPU / audio-device tests, the [known gaps](building.md#platforms-and-their-test-status) apart) | AppImage, tar.gz | **Preview**: `core.yml` gates it on every pull request, `unix-full.yml` builds and tests the whole app (counts and every skip's reason in the job summary), `release.yml` packages it, unpacks and starts the AppImage and the tar.gz; nobody has used it on a real machine |
+| **macOS 15+ arm64** (Homebrew LLVM 20) | `macos-clang` | `ctest --preset macos-clang` (no GPU / audio-device tests, the known gaps apart) | DMG (`Wabcut.app`) | **Preview**: as Linux. Signed with a Developer ID and notarized when the repository has the secrets ([macOS signing and notarization](#macos-signing-and-notarization)); an unsigned preview without them |
 | Core (any OS, no Qt/FFmpeg) | `core` | `ctest --preset core` | — | Verified on Windows with MSVC and with clang-cl 21.1.8 (`/W4 /WX`, 678 tests); CI on all three |
 
 "Verified" means built, the whole test suite run and the packages installed and smoke-tested on that platform for the
 release. "Preview" means the CI workflows build, test, package and smoke-test it on GitHub's runners (no GPU, no
 audio device), but nobody has edited with it on a real machine; the [portability notes](#portability) list what is
-known to differ.
+known to differ, and [Platforms and their test status](building.md#platforms-and-their-test-status) what a CI run cannot
+show. A preview becomes "Verified" when someone has run the whole suite and edited a real project with it on a real
+machine; the release text says which platforms are which.
 
 ## Versioning
 
@@ -25,6 +28,8 @@ known to differ.
   (<commit>)`, `ProductName Wabcut`; `cmake/packaging/version.rc.in`). `<build>` is `WABCUT_BUILD_NUMBER` (CI passes its
   run number; 0 locally) and `<commit>` the short commit at configure time.
 - `wabcut-cli --version` prints it; crash reports and the diagnostic summary carry `x.y.z (<commit>)`.
+- The Python package that ships with the app ([python.md](python.md)) carries the release it belongs to in
+  `python/wabcut/_version.py`: bump it with the root `CMakeLists.txt` (a Python test fails when the package is behind).
 - The MSI's `ProductVersion` is `x.y.z`. Its `UpgradeCode` (`9D0324E6-4508-405F-B844-7C96EBEA28D6`) never changes: a newer
   MSI replaces an installed one (major upgrade), an older one refuses to downgrade.
 
@@ -36,6 +41,7 @@ known to differ.
 |---|---|
 | `wabcut-<version>-windows-x64.msi` | The installer: per user, no administrator rights |
 | `wabcut-<version>-windows-x64-portable.zip` | The same files in one folder: unzip anywhere and run `bin\wabcut.exe` |
+| `wabcut-<version>-windows-arm64.msi`, `...-windows-arm64-portable.zip` | The same two packages built natively for Windows on ARM64 (0.7, a preview; [Windows on ARM64](building.md#windows-on-arm64)). The MSI has the same `UpgradeCode` as the x64 one, so it upgrades an older x64 install in place; for the same version, uninstall the other architecture first |
 
 Both contain the install tree of `cmake --install` (building.md, "Install tree and ZIP"): the app, `wabcut-cli`, the AI
 helpers `wabcut-infer` (whisper.cpp, with its CPU and Vulkan compute modules and the Vulkan loader) and `wabcut-embed`
@@ -103,18 +109,20 @@ the portable ZIP and the `install.package` test reports the MSI part as skipped.
    | Platform | Build | Packages | Checked by |
    |---|---|---|---|
    | Windows x64 | `win-msvc` | MSI, portable ZIP | `PackageSmokeTest.ps1` (the `install.package` test): the ZIP unpacked and run, the MSI installed per user, run and uninstalled |
-   | Linux x64 | `linux-gcc` (local AI off) | AppImage, tar.gz | `InstallSmokeTest.cmake` (the `install.smoke` test); the AppImage started under Xvfb until it draws its first frame |
-   | macOS arm64 | `macos-clang` (local AI off) | DMG | `InstallSmokeTest.cmake`; `finish_bundle.py`'s check; the finished bundle run with Homebrew's LLVM moved away (CLI render; the app's start is best effort without a GPU) |
+   | Windows ARM64 | `win-msvc-arm64` (local AI and audio plug-ins off) | MSI, portable ZIP | the same `PackageSmokeTest.ps1`, on the ARM64 runner |
+   | Linux x64 | `linux-gcc` (local AI off) | AppImage, tar.gz | `InstallSmokeTest.cmake` (the `install.smoke` test); the AppImage and the unpacked tar.gz each started under Xvfb until the app draws its first frame (the tar.gz also renders the tiny project with its CLI and passes `desktop-file-validate`) |
+   | macOS arm64 | `macos-clang` (local AI off) | DMG | `InstallSmokeTest.cmake`; `finish_bundle.py`'s check; the finished bundle run with Homebrew's LLVM moved away (CLI render; the app's start is best effort without a GPU, but a signed app that crashes at start fails the run); with a Developer ID: notarization, `stapler validate` and `spctl --assess` on the app inside the mounted image and on the image |
 
 4. The publish job creates the release "Wabcut x.y.z", marked latest (not a pre-release, even at 0.x: the README's
-   Download link is `releases/latest`, which skips pre-releases), with the packages and `SHA256SUMS.txt`. Windows is required. A Linux or macOS package that failed its checks is left out, and the release
-   text says so. Running the workflow again for the same tag replaces the files.
+   Download link is `releases/latest`, which skips pre-releases), with the packages and `SHA256SUMS.txt`. Windows x64 is required. A Windows ARM64, Linux or macOS package that failed its checks is left out, and the release
+   text says so; the publish job waits for those jobs to finish and for nothing else. Running the workflow again for the same tag replaces the files.
 5. With the `WABCUT_UPDATE_SIGNING_KEY` secret set, the publish job also writes and signs `wabcut-update.json`, the
    version manifest the in-app update check reads ([Updates](#updates)), and checks it against the public key built
    into the app before it is attached.
 
 Without a tag (Run workflow with an empty tag, or a pull request that changes the packaging) the packages are built,
-checked and kept as workflow artifacts, and nothing is published; the `platforms` choice builds one platform only.
+checked and kept as workflow artifacts, and nothing is published; the `platforms` choice (`all`, `windows`, `windows-arm64`,
+`linux`, `macos`) builds one platform only.
 
 ### Code signing
 
@@ -167,8 +175,9 @@ warnings for a while, until downloads build its reputation; EV certificates star
   1.9.1 and the type 2 runtime 20251108, both pinned by SHA-256 in the workflow; the runtime needs no FUSE library.
 - **tar.gz** (`wabcut-<version>-linux-x64.tar.gz`): the same tree in a `wabcut-<version>-linux-x64/` folder: `bin/`
   (the app, `wabcut-cli`, the helpers, ONNX Runtime, `qt.conf`, the in-app docs), `lib/` (Qt and ICU), `plugins/`,
-  `qml/`, `share/applications/wabcut.desktop`, `share/icons/hicolor/*/apps/wabcut.png` and `share/doc/Wabcut/`
-  (license, notices, licenses).
+  `qml/`, `share/applications/wabcut.desktop`, `share/mime/packages/io.github.sorsama.wabcut.xml` (the `.wabcut` project
+  type, for distribution packages), `share/icons/hicolor/*/apps/wabcut.png` and `share/doc/Wabcut/` (license, notices,
+  licenses). The release workflow unpacks the tar.gz into a fresh folder and starts it there, as it does the AppImage.
 - Qt is deployed by `qt_deploy_qml_imports` and `qt_deploy_runtime_dependencies` (cmake/WabcutInstall.cmake). The
   distribution provides the rest: glibc 2.39 or newer (built on Ubuntu 24.04), X11/xcb, the GL and Vulkan loaders,
   libva, PulseAudio or ALSA, libsecret and fontconfig.
@@ -183,10 +192,72 @@ warnings for a while, until downloads build its reputation; EV certificates star
   `Contents/Resources` (QML modules, the in-app docs, the icon, `LICENSE.txt`, `THIRD-PARTY-NOTICES.txt`, `licenses/`).
   `Info.plist` (`cmake/packaging/macos/Info.plist.in`) has the bundle id `io.github.sorsama.wabcut` and the
   microphone reason for voice-over recording.
-- **Signed ad hoc, not notarized.** Apple silicon runs only signed code, so `finish_bundle.py` signs every file ad hoc.
-  Without a Developer ID signature and Apple's notarization, Gatekeeper refuses the first start of a downloaded copy
-  until the user allows it (System Settings > Privacy & Security > Open Anyway). Notarizing needs a paid Apple
-  Developer account; it is an open item of the [release checklist](#release-checklist).
+- **Signed ad hoc and not notarized, until the repository has an Apple Developer ID.** Apple silicon runs only signed
+  code, so `finish_bundle.py` signs every file; without a Developer ID it does so ad hoc, and Gatekeeper refuses the
+  first start of a downloaded copy until the user allows it (System Settings > Privacy & Security > Open Anyway). With
+  the secrets of [macOS signing and notarization](#macos-signing-and-notarization) the release workflow signs with the
+  Developer ID, has Apple notarize the app and the image, and the DMG opens like any other app.
+- **Finder.** `Info.plist` declares the `.wabcut` type (`io.github.sorsama.wabcut.project`) and offers Wabcut under Open
+  With for recordings, audio and pictures; the app receives Finder's open events (`FileOpenRelay`).
+
+### macOS signing and notarization
+
+Gatekeeper opens an app without a warning only when it is signed with a *Developer ID Application* certificate and
+Apple has notarized it, and notarizing needs an Apple Developer Program membership (99 USD a year). The release
+workflow's `macos` job does everything else, and does it only when the repository holds the secrets below. It reads
+them in its first step ("Code signing setup"), puts the certificate into a keychain of its own that lasts for the job,
+and fails at once, before the hours of building, when the certificate or the notary login is wrong. No secret is ever
+written to a file in the repository or to a log.
+
+**What the owner adds, once** (Settings > Secrets and variables > Actions of the GitHub repository):
+
+1. A **Developer ID Application** certificate (developer.apple.com > Certificates, or Xcode > Settings > Accounts >
+   Manage Certificates), exported with its private key from Keychain Access as a `.p12`:
+   - secret `WABCUT_MACOS_CERT_P12_BASE64`: the file in base64 (`base64 -i DeveloperID.p12 | pbcopy`);
+   - secret `WABCUT_MACOS_CERT_PASSWORD`: the password chosen when exporting.
+   An *Apple Development* or *Apple Distribution* certificate is refused (the job says so): Apple notarizes Developer
+   ID signatures only.
+2. One way to log in to Apple's notary service:
+   - **an App Store Connect API key** (App Store Connect > Users and Access > Integrations > Keys, role Developer or
+     higher): secret `WABCUT_NOTARY_KEY_P8_BASE64` (the `AuthKey_XXXX.p8` file in base64), secret `WABCUT_NOTARY_KEY_ID`
+     and secret `WABCUT_NOTARY_ISSUER_ID`; or
+   - **an Apple ID with an app-specific password** (appleid.apple.com > Sign-In and Security > App-Specific
+     Passwords): secrets `WABCUT_NOTARY_APPLE_ID` and `WABCUT_NOTARY_PASSWORD`. The team id is read from the certificate;
+     set the repository variable `WABCUT_MACOS_TEAM_ID` to override it.
+
+With only the certificate the DMG is signed (hardened runtime, secure timestamp) but not notarized, and the job warns.
+With neither, it is the unsigned preview of the earlier releases, and the summary says so. A fork or a pull request from a fork has no
+secrets and always gets the preview.
+
+**What the job does with them** (`cmake/packaging/macos/`):
+
+1. `finish_bundle.py --identity ...` signs every Mach-O file in the bundle, inside out, with the Developer ID, a secure
+   timestamp and the **hardened runtime**, then each framework and the app. The main executable gets
+   `entitlements-app.plist` (`com.apple.security.cs.allow-jit`, because Qt Quick compiles QML's JavaScript to machine code,
+   and `com.apple.security.device.audio-input`, for voice-over recording) and every other executable in `Contents/MacOS`
+   (`wabcut-cli` and whichever helpers the build has: `wabcut-embed` and `wabcut-scripthost` today, `wabcut-infer` and
+   `wabcut-plughost` once they are built for macOS) gets `entitlements-helper.plist` (`allow-jit` only). Nothing else is
+   requested: no sandbox, no library-validation exception (every library carries the same signature), no camera or
+   location. It then checks that each file has the runtime flag and a timestamp, which are what Apple's service
+   rejects for most often.
+2. The signed bundle is run as before (CLI render; the app's first frame, best effort on a runner without a display GPU).
+   A signed app that dies at start from a signal (a missing entitlement kills a hardened-runtime app that way) fails the
+   release instead of passing as a warning.
+3. `notarize.py` zips the app, submits it with `xcrun notarytool submit --wait`, prints Apple's log and fails when the
+   answer is not "Accepted", and staples the ticket into the app (`stapler staple`, `stapler validate`).
+4. The DMG is built from the stapled app, signed (`codesign --timestamp`), submitted, and stapled the same way, so the
+   image and the app inside it pass Gatekeeper offline.
+5. "Check the signatures like Gatekeeper" mounts the finished image and runs `codesign --verify --deep --strict`,
+   `stapler validate` and `spctl --assess --type execute` on the app inside, `spctl --assess --type open
+   --context context:primary-signature` on the image, and checks the runtime flag and the JIT entitlement.
+6. The temporary keychain is deleted. The release text says "signed and notarized" and drops the Gatekeeper
+   instructions only when the job reports `notarized`.
+
+**First notarized release.** The first time, a rejection is likely to be about something only Apple's service can see.
+The job prints its log (which file, which rule); a missing entitlement shows up as a crash at start (step 2). After it
+passes, open the DMG on a second Mac that has never had Wabcut and confirm there is no Gatekeeper dialog: CI runs the
+same assessment (`spctl`) but cannot be a second Mac. Rotating the certificate means exporting a new `.p12` into the same
+two secrets; nothing in the repository changes.
 
 ## Third-party notices
 
@@ -306,7 +377,10 @@ it.
 
 **Elsewhere.** The portable ZIP, Linux and macOS show the new version and open its release page (the ZIP cannot be
 upgraded by the MSI). On Linux and macOS nothing verifies the manifest yet, so the dialog shows only the version and
-links to the fixed release page of that version, never to an address from the manifest.
+links to the fixed release page of that version, never to an address from the manifest. The native Windows ARM64 build
+(0.7) does verify the manifest and shows its notes, but installs nothing from it: the manifest names the x64 installer,
+which would replace the ARM64 build with the x64 one running under emulation, so the dialog sends the user to the release
+page for the ARM64 installer. A manifest with an installer per architecture is the change that lifts that.
 
 **The keys (the owner, once).** The key pair was made with `tools/update-keys.py generate --out <file outside every
 repository>`; its public half is `WABCUT_UPDATE_PUBLIC_KEY`'s default in `src/app/CMakeLists.txt`. Put the private key
@@ -358,6 +432,11 @@ Code is written for all three platforms; only Windows is run. What is known (aud
 - Not available off Windows yet: the managed local assistant (llama-server builds are Windows x64 only), the CLI's model
   download (`wabcut-cli transcribe --download`; the app downloads through Qt), DirectML for smart search (CPU instead),
   Collect Files' font gathering.
+- Not available on Windows on ARM64 (0.7): local transcription and audio plug-ins (their vcpkg ports do not support
+  ARM64 Windows), NVENC / AMF / Quick Sync (x64 vendor libraries), the managed local assistant, Content Credentials
+  signing (the build links the x64 c2pa-rs library) and installing updates from the in-app check. Everything else builds
+  for ARM64 as it is: the code has no x86-only path without a fallback (the audio callback's denormal flush has an
+  AArch64 version, FPCR.FZ, next to the x86 MXCSR one, for Windows on ARM64 and Apple silicon alike).
 
 ## Release checklist
 
@@ -372,6 +451,8 @@ Code is written for all three platforms; only Windows is run. What is known (aud
    association ticked), export, uninstall, and confirm the projects and settings are still there.
 8. Check that the release run signed the Windows packages ([Code signing](#code-signing); needs the certificate
    set up) and that `wabcut-update.json` is attached ([Updates](#updates); needs `WABCUT_UPDATE_SIGNING_KEY`). Sign and
-   notarize the macOS bundle with a Developer ID (not yet available: needs an Apple Developer account).
+   notarize the macOS bundle with a Developer ID (the release workflow does it once the secrets of [macOS signing and
+   notarization](#macos-signing-and-notarization) are set; until then it is an unsigned preview). After the first signed
+   release, open the DMG on a second Mac and confirm Gatekeeper says nothing.
 9. Once `main`'s CI has saved its caches for the merge, tag `vX.Y.Z` and push the tag: the release workflow builds,
    checks and publishes every package ([Making a release](#making-a-release)).

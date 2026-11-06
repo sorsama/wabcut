@@ -1042,3 +1042,177 @@ TEST_CASE("Nested sequence tab in the shell: Nest from the clip menu, double-cli
     INFO(join(messages));
     CHECK(messages.isEmpty());
 }
+
+// ---- 0.7 (card 009): nudging an angle's sync ------------------------------------------------------------------------------
+
+namespace {
+
+/// The multicam source's angle `i` (0-based).
+const MulticamAngle& angleOf(const ProjectController& controller, SequenceId source, std::size_t i) {
+    return controller.snapshot()->findSequence(source)->multicam->angles[i];
+}
+
+constexpr std::int64_t kFrame25 = kTicksPerSecond / 25;
+
+} // namespace
+
+TEST_CASE("Nudging an angle's sync: one undo step, never before 0, the others follow, a badge says how far (card 009)",
+          "[app][multicam][sync][a5]") {
+    Timeline tl(emptyPicture());
+    const Cams cams = addTitledCams(tl.state, tl.seq, 3);
+    ProjectController controller;
+    controller.resetProject(cams.state, cams.main);
+    placeMulticam(controller, cams);
+    controller.setPlayhead(seconds(1));
+    MulticamEditBridge mc;
+    mc.setController(&controller);
+    mc.setSynchronous(true);
+    REQUIRE(mc.clip() != QString());
+    CHECK(mc.sourceKey() == sequenceKey(cams.source));
+    for (const QVariant& a : mc.angles()) {
+        CHECK(a.toMap().value(QStringLiteral("syncText")).toString().isEmpty());
+        CHECK(a.toMap().value(QStringLiteral("syncFrames")).toInt() == 0);
+    }
+
+    // Angle 2 three frames later: one undo step, the source's sync becomes manual, the badge says "+3 f".
+    const auto steps = controller.session().undoCount();
+    CHECK(mc.nudgeAngleSync(2, 3).isEmpty());
+    CHECK(controller.session().undoCount() == steps + 1);
+    CHECK(controller.undoText().contains(QStringLiteral("Sync Angle")));
+    CHECK(angleOf(controller, cams.source, 1).offset.value == 3 * kFrame25);
+    CHECK(angleOf(controller, cams.source, 0).offset.value == 0);
+    CHECK(controller.snapshot()->findSequence(cams.source)->multicam->sync == MulticamSync::Manual);
+    QVariantList angles = mc.angles();
+    CHECK(angles[1].toMap().value(QStringLiteral("syncText")).toString() == QStringLiteral("+3 f"));
+    CHECK(angles[1].toMap().value(QStringLiteral("syncFrames")).toInt() == 3);
+    CHECK(angles[0].toMap().value(QStringLiteral("syncText")).toString().isEmpty());
+
+    // 10 frames earlier would start 7 frames before 0: the angle stays at 0 and the others move 7 frames later, in the
+    // same step - the distances between the angles are what was asked for.
+    const auto before = controller.session().undoCount();
+    CHECK(mc.nudgeAngleSync(2, -10).isEmpty());
+    CHECK(controller.session().undoCount() == before + 1);
+    CHECK(angleOf(controller, cams.source, 1).offset.value == 0);
+    CHECK(angleOf(controller, cams.source, 0).offset.value == 7 * kFrame25);
+    CHECK(angleOf(controller, cams.source, 2).offset.value == 7 * kFrame25);
+    angles = mc.angles();
+    CHECK(angles[1].toMap().value(QStringLiteral("syncText")).toString().isEmpty()); // back on its measured sync
+    CHECK(angles[0].toMap().value(QStringLiteral("syncText")).toString() == QStringLiteral("+7 f"));
+    CHECK(angles[2].toMap().value(QStringLiteral("syncText")).toString() == QStringLiteral("+7 f"));
+    // One undo puts all three back.
+    REQUIRE(controller.undo());
+    CHECK(angleOf(controller, cams.source, 0).offset.value == 0);
+    CHECK(angleOf(controller, cams.source, 1).offset.value == 3 * kFrame25);
+    CHECK(angleOf(controller, cams.source, 2).offset.value == 0);
+
+    // Later by ten, then earlier past 0: the others move.
+    CHECK(mc.nudgeAngleSync(3, 10).isEmpty());
+    CHECK(mc.nudgeAngleSync(3, -12).isEmpty()); // 10 - 12 = -2: the others move 2 frames later
+    CHECK(angleOf(controller, cams.source, 2).offset.value == 0);
+    CHECK(angleOf(controller, cams.source, 0).offset.value == 2 * kFrame25);
+
+    // Reset: the angle goes back to what its sync measured, in one undo step; an angle on it does nothing.
+    CHECK(mc.nudgeAngleSync(1, 5).isEmpty());
+    REQUIRE(angleOf(controller, cams.source, 0).autoOffset.has_value());
+    const auto resetFrom = controller.session().undoCount();
+    CHECK(mc.resetAngleSync(1).isEmpty());
+    CHECK(controller.session().undoCount() == resetFrom + 1);
+    CHECK(angleOf(controller, cams.source, 0).offset.value == 0);
+    CHECK_FALSE(angleOf(controller, cams.source, 0).autoOffset.has_value());
+    CHECK(mc.resetAngleSync(1).isEmpty());
+    CHECK(controller.session().undoCount() == resetFrom + 1);
+
+    // Refusals say why and change nothing: an angle that does not exist, a locked angle track, nothing under the playhead.
+    CHECK_FALSE(mc.nudgeAngleSync(9, 1).isEmpty());
+    CHECK(mc.message().contains(QStringLiteral("9")));
+    CHECK(mc.nudgeAngleSync(2, 0).isEmpty()); // nothing to do
+    {
+        edit::TrackStateChange locked;
+        locked.locked = true;
+        const TrackId track = angleOf(controller, cams.source, 1).video;
+        REQUIRE(controller.session().apply("lock", [&](const ProjectState& s) -> std::expected<ProjectState, Error> {
+            auto r = edit::setTrackState(s, cams.source, track, locked);
+            if (!r)
+                return std::unexpected(r.error());
+            return std::move(r->state);
+        }));
+        const auto locks = controller.session().undoCount();
+        CHECK_FALSE(mc.nudgeAngleSync(2, 1).isEmpty());
+        CHECK(controller.session().undoCount() == locks);
+    }
+    controller.setPlayhead(seconds(30)); // past the multicam clip
+    CHECK_FALSE(mc.nudgeAngleSync(1, 1).isEmpty());
+    CHECK(mc.sourceKey().isEmpty());
+}
+
+TEST_CASE("Multi-camera view: right-click an angle for the sync menu; the tile shows how far it was nudged (card 009)",
+          "[app][multicam][sync][qml][screenshot][a5]") {
+    for (const bool dark : {true, false}) {
+        INFO((dark ? "dark" : "light"));
+        resetSettings();
+        clearMessages();
+        Shell shell;
+        REQUIRE(shell.window);
+        shell.resize(kShotWidth, kShotHeight);
+        shell.theme->setProperty("reduceMotion", true);
+        shell.setAppearance(dark, "ultraviolet");
+        auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+        auto* mc = shell.engine.singletonInstance<MulticamEditBridge*>("Wabcut", "Multicam");
+        REQUIRE(controller);
+        REQUIRE(mc);
+        mc->setSynchronous(true);
+        Timeline tl(emptyPicture());
+        const Cams cams = addTitledCams(tl.state, tl.seq, 4);
+        controller->resetProject(cams.state, cams.main);
+        placeMulticam(*controller, cams);
+        controller->setPlayhead(seconds(1));
+        REQUIRE_FALSE(shell.grab().isNull());
+        mc->setViewOn(true);
+        QQuickItem* view = findNamed(shell.window->contentItem(), QStringLiteral("multicamView"));
+        REQUIRE(view);
+        spin(100);
+
+        // The menu belongs to the view; its rows run the bridge's nudges.
+        QObject* menu = view->findChild<QObject*>(QStringLiteral("multicamAngleMenu"));
+        REQUIRE(menu);
+        QQuickItem* cell = findNamed(view, QStringLiteral("multicamAngle_2"));
+        REQUIRE(cell);
+        REQUIRE(QMetaObject::invokeMethod(cell, "openMenu", Q_ARG(QPointF, QPointF(cell->width() / 2, cell->height() / 2))));
+        REQUIRE(waitFor([&] { return menu->property("opened").toBool(); }));
+        CHECK(menu->property("angle").toInt() == 2);
+        for (const char* row : {"multicamSyncEarlier", "multicamSyncLater", "multicamSyncEarlier10", "multicamSyncLater10",
+                                "multicamSyncReset", "multicamOpenSource"})
+            CHECK(menu->findChild<QObject*>(QString::fromLatin1(row)));
+        CHECK_FALSE(menu->findChild<QObject*>(QStringLiteral("multicamSyncReset"))->property("enabled").toBool()); // on its sync
+        const auto steps = controller->session().undoCount();
+        REQUIRE(QMetaObject::invokeMethod(menu->findChild<QObject*>(QStringLiteral("multicamSyncLater10")), "triggered"));
+        CHECK(controller->session().undoCount() == steps + 1);
+        CHECK(angleOf(*controller, cams.source, 1).offset.value == 10 * kFrame25);
+        QMetaObject::invokeMethod(menu, "close");
+        spin(100);
+
+        // The tile now carries "+10 f"; the menu offers Reset for it.
+        QQuickItem* badge = findNamed(view, QStringLiteral("multicamSyncBadge_2"));
+        REQUIRE(badge);
+        CHECK(badge->isVisible());
+        CHECK_FALSE(findNamed(view, QStringLiteral("multicamSyncBadge_1"))->isVisible());
+        REQUIRE(QMetaObject::invokeMethod(cell, "openMenu", Q_ARG(QPointF, QPointF(cell->width() / 3, cell->height() / 3))));
+        REQUIRE(waitFor([&] { return menu->property("opened").toBool(); }));
+        CHECK(menu->findChild<QObject*>(QStringLiteral("multicamSyncReset"))->property("enabled").toBool());
+        auto* tabs = shell.engine.singletonInstance<SequenceTabsBridge*>("Wabcut", "SequenceTabs");
+        REQUIRE(tabs);
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        QQuickItem* monitor = shell.item("monitorPanel");
+        REQUIRE(monitor);
+        saveCrop(image, monitor, dark ? QStringLiteral("multicam-a5-sync-menu.png") : QStringLiteral("multicam-a5-sync-menu-light.png"));
+
+        // Open Multi-Camera Source: the source sequence in its own tab.
+        REQUIRE(QMetaObject::invokeMethod(menu->findChild<QObject*>(QStringLiteral("multicamOpenSource")), "triggered"));
+        REQUIRE(waitFor([&] { return controller->currentSequenceId() == cams.source; }, 3000));
+        CHECK(tabs->current() == sequenceKey(cams.source));
+        const QStringList messages = takeMessages();
+        INFO(join(messages));
+        CHECK(messages.isEmpty());
+    }
+}

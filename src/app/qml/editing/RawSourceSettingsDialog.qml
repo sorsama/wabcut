@@ -3,9 +3,9 @@ import QtQuick
 import QtQuick.Layouts
 
 // RAW Source Settings (0.2): Premiere's Clip > Modify > Source Settings for camera RAW items (ProRes RAW, CinemaDNG) -
-// the exposure the mosaic is developed with, and its white balance: the camera's (As Shot) or the colour temperature
-// and tint of the light to balance for. Playback, thumbnails and export develop the items so. One undo step
-// (media.setRawSourceSettings).
+// the exposure the mosaic is developed with, the ISO (0.7: As Shot, or the ISO it was shot at and the one to develop for:
+// a stop per doubling) and its white balance: the camera's (As Shot) or the colour temperature and tint of the light to
+// balance for. Playback, thumbnails and export develop the items so. One undo step (media.setRawSourceSettings).
 WabcutDialog {
     id: dialog
     objectName: "rawSourceSettingsDialog"
@@ -16,6 +16,12 @@ WabcutDialog {
     property bool custom: false
     property real temperature: 5600
     property real tint: 0
+    // 0.7 (card #108): ISO. Wabcut cannot read the ISO a camera recorded, so "Custom" says which ISO the clip was shot at
+    // and which to develop it for: a stop of exposure per doubling.
+    property bool isoCustom: false
+    property real isoShot: 800
+    property real isoDevelop: 800
+    readonly property real isoStops: isoShot > 0 && isoDevelop > 0 ? Math.log(isoDevelop / isoShot) / Math.LN2 : 0
     property string errorText: ""
 
     function openFor(keys) {
@@ -27,12 +33,17 @@ WabcutDialog {
         dialog.custom = dialog.info.whiteBalance === "custom"
         dialog.temperature = dialog.info.temperature ?? 5600
         dialog.tint = dialog.info.tint ?? 0
+        dialog.isoCustom = dialog.info.iso === "custom"
+        dialog.isoShot = dialog.info.isoShot ?? 800
+        dialog.isoDevelop = dialog.info.isoDevelop ?? 800
         open()
     }
     function apply() {
         const error = Editing.applyRawSourceSettings(dialog.mediaKeys, {
             exposure: dialog.exposure, whiteBalance: dialog.custom ? "custom" : "asShot",
-            temperature: Math.round(dialog.temperature), tint: Math.round(dialog.tint)
+            temperature: Math.round(dialog.temperature), tint: Math.round(dialog.tint),
+            iso: dialog.isoCustom ? "custom" : "asShot",
+            isoShot: Math.round(dialog.isoShot), isoDevelop: Math.round(dialog.isoDevelop)
         })
         if (error === "")
             dialog.close()
@@ -67,6 +78,54 @@ WabcutDialog {
         decimals: 2
         value: dialog.exposure
         onValueModified: v => dialog.exposure = v
+    }
+
+    SectionHeader { text: qsTr("ISO") }
+    PillTabs {
+        objectName: "rawIso"
+        Layout.fillWidth: true
+        compact: true
+        Accessible.name: qsTr("ISO")
+        model: [qsTr("As Shot"), qsTr("Custom")]
+        currentIndex: dialog.isoCustom ? 1 : 0
+        onActivated: index => dialog.isoCustom = index === 1
+    }
+    PropSlider {
+        objectName: "rawIsoShot"
+        Layout.fillWidth: true
+        visible: dialog.isoCustom
+        label: qsTr("Shot at")
+        unit: qsTr("ISO")
+        from: 50
+        to: 25600
+        defaultValue: 800
+        stepSize: 50
+        value: dialog.isoShot
+        onValueModified: v => dialog.isoShot = v
+    }
+    PropSlider {
+        objectName: "rawIsoDevelop"
+        Layout.fillWidth: true
+        visible: dialog.isoCustom
+        label: qsTr("Develop for")
+        unit: qsTr("ISO")
+        from: 50
+        to: 25600
+        defaultValue: 800
+        stepSize: 50
+        value: dialog.isoDevelop
+        onValueModified: v => dialog.isoDevelop = v
+    }
+    Text {
+        objectName: "rawIsoHint"
+        Layout.fillWidth: true
+        text: !dialog.isoCustom ? qsTr("The camera's own ISO: the picture is developed as it was recorded.")
+            : qsTr("The camera's ISO is not stored in the file: say what the clip was shot at. Each doubling is one stop (%1 stops now).")
+                  .arg((dialog.isoStops >= 0 ? "+" : "") + dialog.isoStops.toFixed(2))
+        color: Theme.textTertiary
+        font.family: Theme.fontSans
+        font.pixelSize: Theme.textSm
+        wrapMode: Text.Wrap
     }
 
     SectionHeader { text: qsTr("White balance") }

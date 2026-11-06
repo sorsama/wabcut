@@ -35,9 +35,12 @@ Item {
         }
     }
 
-    RowLayout {
+    // Two columns side by side; narrower than 680 px they stack (r07: nothing clips at the smallest window).
+    GridLayout {
         anchors.fill: parent
-        spacing: Theme.space(6)
+        columns: width >= Theme.space(170) ? 2 : 1
+        columnSpacing: Theme.space(6)
+        rowSpacing: Theme.space(4)
 
         ColumnLayout {
             Layout.fillWidth: true
@@ -164,6 +167,7 @@ Item {
 
                         Text {
                             Layout.fillWidth: true
+                            elide: Text.ElideRight
                             text: qsTr("since %1").arg(consentRow.modelData.grantedAt)
                             color: Theme.textTertiary
                             font.family: Theme.fontMono

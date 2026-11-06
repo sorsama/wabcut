@@ -20,6 +20,10 @@ import QtQuick
 // marker's flag the menu starts with Edit Marker… and Clear Marker.
 // 0.5 (stream B): a left-button press and drag is a scrub for Playback (Playback.beginScrub / endScrub): with audio
 // scrubbing on, a stopped transport plays a little of the mix at each new frame.
+// 0.7 (card 119): several markers at once. A click on a flag selects it (Ctrl-click adds it to the selection or takes it
+// out, Shift-click selects the flags between); a Ctrl-drag on the ruler draws a marquee that selects the flags inside it
+// (Ctrl+Shift adds); dragging one flag of a selection moves them all by the same distance (Markers.moveSelectedBy).
+// Selected flags wear a light outline.
 Item {
     id: root
 
@@ -28,6 +32,9 @@ Item {
     required property TimelineView view
     /// 0.4: the ruler menu is open (the clip tooltip stays hidden meanwhile).
     readonly property bool menuOpen: rulerMenu.opened
+    /// 0.7 (card 119): a selected flag is being dragged and the rest of the selection follows by `groupDragDx` pixels.
+    property bool groupDragging: false
+    property real groupDragDx: 0
 
     clip: true
     Accessible.role: Accessible.Slider
@@ -149,6 +156,25 @@ Item {
         color: Qt.alpha(Theme.accentFill, 0.4)
     }
 
+    // 0.7 (card 024): the work area (Premiere's work area bar, Alt+[ / Alt+]; Sequence > Clear Work Area): a thin bar on the
+    // ruler's bottom edge from its In to its Out, the range Render In to Out, Export's "Work Area" range and playback use.
+    // It only shows the range: nothing here takes the mouse.
+    Rectangle {
+        id: workAreaBar
+        objectName: "rulerWorkArea"
+        readonly property real x0: root.view.workAreaInX
+        readonly property real x1: root.view.workAreaOutX
+        visible: !isNaN(x0) && !isNaN(x1) && x1 > 0 && x0 < root.width
+        x: Math.round(Math.max(0, x0))
+        width: Math.max(Theme.hairline, Math.round(Math.min(root.width, x1)) - x)
+        y: root.height - height
+        height: Theme.space(0.75)
+        radius: height / 2
+        color: Qt.alpha(Theme.textSecondary, 0.85)
+        Accessible.role: Accessible.Indicator
+        Accessible.name: qsTr("Work area")
+    }
+
     // 0.6 (P1 round, D9 #8): the sequence's beat grid as thin ticks (Timeline Display > Beat grid, Sequence > Beat Grid).
     // Downbeats are taller and in the accent; the grid is TimelineView.beatTicks (visible beats only, culled when dense).
     Item {
@@ -199,6 +225,17 @@ Item {
 
         /// 0.5: a left-button scrub is under way (Playback hears it: audio scrubbing).
         property bool scrubbing: false
+        /// 0.7 (card 119): a Ctrl-drag marquee is being drawn from marqueeX0 to marqueeX1 (add: Ctrl+Shift).
+        property bool marquee: false
+        property real marqueeX0: 0
+        property real marqueeX1: 0
+        property bool marqueeAdd: false
+        function finishMarquee() {
+            scrubArea.marquee = false
+            Markers.scope = "sequence"
+            Markers.selectBetween(root.view.timeKeyAt(Math.min(scrubArea.marqueeX0, scrubArea.marqueeX1)),
+                                  root.view.timeKeyAt(Math.max(scrubArea.marqueeX0, scrubArea.marqueeX1)), scrubArea.marqueeAdd)
+        }
         function finishScrub() {
             root.view.endScrub()
             if (scrubArea.scrubbing) {
@@ -217,6 +254,14 @@ Item {
                 rulerMenu.openAt(root, Qt.point(mouse.x, mouse.y), -1)
                 return
             }
+            if (mouse.modifiers & Qt.ControlModifier) {
+                // A Ctrl-drag is a marquee over the flags, not a scrub (a Ctrl-click on bare ruler selects no flag).
+                scrubArea.marquee = true
+                scrubArea.marqueeX0 = mouse.x
+                scrubArea.marqueeX1 = mouse.x
+                scrubArea.marqueeAdd = (mouse.modifiers & Qt.ShiftModifier) !== 0
+                return
+            }
             if (!scrubArea.scrubbing) {
                 scrubArea.scrubbing = true
                 Playback.beginScrub()
@@ -224,13 +269,25 @@ Item {
             root.view.seekToX(mouse.x, (mouse.modifiers & Qt.ShiftModifier) !== 0)
         }
         onPositionChanged: mouse => {
+            if (scrubArea.marquee) {
+                scrubArea.marqueeX1 = mouse.x
+                return
+            }
             if (pressed && (pressedButtons & Qt.LeftButton)) {
                 Playback.scrubMoving() // the drag: a move back plays backwards (the press played forward)
                 root.view.seekToX(mouse.x, (mouse.modifiers & Qt.ShiftModifier) !== 0)
             }
         }
-        onReleased: scrubArea.finishScrub()
-        onCanceled: scrubArea.finishScrub()
+        onReleased: {
+            if (scrubArea.marquee)
+                scrubArea.finishMarquee()
+            else
+                scrubArea.finishScrub()
+        }
+        onCanceled: {
+            scrubArea.marquee = false
+            scrubArea.finishScrub()
+        }
     }
 
     // Sequence markers (M5i), over the scrub area: a flag in the marker's colour, a bar to its end for a range marker.
@@ -244,7 +301,11 @@ Item {
             // While dragging: where the flag (or, Alt-dragging, the end) is.
             property real dragX: NaN
             property bool settingEnd: false
-            readonly property real startX: !isNaN(dragX) && !settingEnd ? dragX : modelData.x
+            /// 0.7 (card 119): part of the marker selection; a drag of one flag of a larger selection moves them all.
+            readonly property bool selected: Markers.scope === "sequence" && Markers.selection.indexOf(modelData.index) >= 0
+            readonly property bool groupDrag: selected && Markers.selectionCount > 1 && !settingEnd
+            readonly property real groupShift: selected && root.groupDragging && isNaN(dragX) ? root.groupDragDx : 0
+            readonly property real startX: !isNaN(dragX) && !settingEnd ? dragX : modelData.x + groupShift
             readonly property real endX: !isNaN(dragX) && settingEnd ? Math.max(dragX, modelData.x)
                                        : modelData.endX + (startX - modelData.x)
             readonly property color color: Theme.markerColor(modelData.colorIndex)
@@ -269,6 +330,17 @@ Item {
                 height: Theme.space(1)
                 radius: height / 2
                 color: Qt.alpha(marker.color, 0.55)
+            }
+            // 0.7 (card 119): the outline of a selected flag.
+            Rectangle {
+                objectName: "rulerMarkerSelected"
+                visible: marker.selected
+                x: -Math.round(width / 2)
+                y: root.height - (Theme.markerFlagWidth + 5) - Theme.space(1.5) - Theme.selectionWidth
+                width: Theme.markerFlagWidth + 1 + 2 * Theme.selectionWidth
+                height: Theme.markerFlagWidth + 5 + 2 * Theme.selectionWidth
+                radius: width / 2
+                color: Theme.textPrimary
             }
             // The flag: a pill rounded on top, square at its foot (the reference's marker tab).
             Rectangle {
@@ -340,6 +412,7 @@ Item {
                 cursorShape: Qt.PointingHandCursor
                 property real pressX: 0
                 property bool rightPress: false
+                property int pressMods: 0
                 onPressed: mouse => {
                     flagArea.rightPress = mouse.button === Qt.RightButton
                     if (flagArea.rightPress) {
@@ -348,6 +421,13 @@ Item {
                     }
                     pressX = mapToItem(root, mouse.x, 0).x
                     marker.settingEnd = (mouse.modifiers & Qt.AltModifier) !== 0
+                    flagArea.pressMods = mouse.modifiers
+                    // A plain press on a flag outside the selection selects it, so a drag moves it alone; one on a flag of the
+                    // selection keeps the selection, so a drag moves them all (a click then selects just this one).
+                    if (!(mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier | Qt.AltModifier)) && !marker.selected) {
+                        Markers.scope = "sequence"
+                        Markers.select(marker.modelData.index)
+                    }
                 }
                 onPositionChanged: mouse => {
                     if (!pressed || flagArea.rightPress)
@@ -356,6 +436,10 @@ Item {
                     if (isNaN(marker.dragX) && Math.abs(x - pressX) < Theme.space(1))
                         return
                     marker.dragX = x
+                    if (marker.groupDrag) {
+                        root.groupDragDx = x - marker.modelData.x
+                        root.groupDragging = true
+                    }
                 }
                 onReleased: {
                     if (flagArea.rightPress) {
@@ -365,14 +449,27 @@ Item {
                     if (!isNaN(marker.dragX)) {
                         if (marker.settingEnd)
                             Markers.setEnd(marker.modelData.index, root.view.timeKeyAt(marker.dragX))
+                        else if (marker.groupDrag)
+                            Markers.moveSelectedBy(String(Number(root.view.timeKeyAt(marker.dragX))
+                                                          - Number(root.view.timeKeyAt(marker.modelData.x))))
                         else
                             Markers.moveTo(marker.modelData.index, root.view.timeKeyAt(marker.dragX))
+                    } else if (flagArea.pressMods & Qt.ControlModifier) {
+                        Markers.scope = "sequence"
+                        Markers.select(marker.modelData.index, "toggle")
+                    } else if (flagArea.pressMods & Qt.ShiftModifier) {
+                        Markers.scope = "sequence"
+                        Markers.select(marker.modelData.index, "extend")
                     } else {
                         // A click is not a scrub: onto the marker, and no snap line left behind in the lanes.
+                        Markers.scope = "sequence"
+                        Markers.select(marker.modelData.index)
                         root.view.seekToX(marker.modelData.x)
                         root.view.endScrub()
                     }
                     marker.dragX = NaN
+                    root.groupDragging = false
+                    root.groupDragDx = 0
                 }
                 onDoubleClicked: mouse => {
                     if (mouse.button !== Qt.LeftButton)
@@ -401,6 +498,19 @@ Item {
                 }
             }
         }
+    }
+
+    // 0.7 (card 119): the marquee of a Ctrl-drag over the ruler.
+    Rectangle {
+        objectName: "rulerMarquee"
+        visible: scrubArea.marquee
+        x: Math.min(scrubArea.marqueeX0, scrubArea.marqueeX1)
+        width: Math.abs(scrubArea.marqueeX1 - scrubArea.marqueeX0)
+        y: root.height - Theme.markerFlagWidth - 5 - Theme.space(3)
+        height: Theme.markerFlagWidth + 5 + Theme.space(2.5)
+        color: Theme.accentWash
+        border.width: Theme.hairline
+        border.color: Theme.accentStroke
     }
 
     MarkerEditor {

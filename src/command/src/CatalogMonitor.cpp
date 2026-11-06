@@ -45,11 +45,13 @@ constexpr std::array kMotionParams{
     MotionParam{"rotation", ParamId::Rotation, &edit::MotionChange::rotation},
     MotionParam{"anchorX", ParamId::AnchorX, &edit::MotionChange::anchorX},
     MotionParam{"anchorY", ParamId::AnchorY, &edit::MotionChange::anchorY},
+    MotionParam{"scaleWidth", ParamId::ScaleWidth, &edit::MotionChange::scaleWidth}, // 0.7 (card #12)
 };
 
 Json motionJson(const edit::MotionValues& v) {
     return Json{{"positionX", v.positionX}, {"positionY", v.positionY}, {"scale", v.scale},
-                {"rotation", v.rotation},   {"anchorX", v.anchorX},     {"anchorY", v.anchorY}};
+                {"rotation", v.rotation},   {"anchorX", v.anchorX},     {"anchorY", v.anchorY},
+                {"scaleWidth", v.scaleWidth}, {"uniformScale", v.uniformScale}};
 }
 
 /// Export Frame's formats (Premiere's list) and their file extensions; the first extension is the one added.
@@ -429,7 +431,10 @@ void registerMonitorCommands(CommandRegistry& registry) {
          "given is in the model's unit: position and anchor in pixels from the centre (sequence pixels for position, "
          "source pixels for the anchor), scale as a factor (1 = 100%), rotation in degrees clockwise. A parameter "
          "whose stopwatch is on gets a keyframe at \"time\" (the key there changes, else a new one continues the "
-         "curve's shape); a constant one takes the value. Parameters left out keep their values.",
+         "curve's shape); a constant one takes the value. Parameters left out keep their values. Scale Width and the "
+         "Uniform Scale switch are Premiere's: with uniformScale off, \"scale\" is the Scale Height and \"scaleWidth\" "
+         "the width; giving a scaleWidth turns Uniform Scale off first, and switching it carries the width along "
+         "(off: the width starts at the Scale; on: the width goes back to 100%), so the picture does not jump.",
          Capability::EditSequence,
          withSequence({{"clip", clipParam("The video clip.")},
                        {"time", timeParam("Where animated parameters are keyed (inside the clip). Required when one "
@@ -438,7 +443,10 @@ void registerMonitorCommands(CommandRegistry& registry) {
                                                     "sequence pixels (right is positive).")},
                        {"positionY", schema::number("Position Y: the anchor's offset from the frame's centre, in "
                                                     "sequence pixels (down is positive).")},
-                       {"scale", schema::number("Scale as a factor (1 = 100%).", 0.0, 100.0)},
+                       {"scale", schema::number("Scale as a factor (1 = 100%); the Scale Height while Uniform Scale is off.",
+                                                0.0, 100.0)},
+                       {"scaleWidth", schema::number("Scale Width as a factor (1 = 100%); turns Uniform Scale off.", 0.0, 100.0)},
+                       {"uniformScale", schema::boolean("Premiere's Uniform Scale switch (on by default). Not keyframable.")},
                        {"rotation", schema::number("Rotation in degrees, clockwise.")},
                        {"anchorX", schema::number("Anchor Point X: offset from the clip frame's centre, in source "
                                                   "pixels.")},
@@ -460,8 +468,15 @@ void registerMonitorCommands(CommandRegistry& registry) {
                      }
                  }
              }
+             if (c.has("uniformScale")) {
+                 change.uniformScale = c.boolean("uniformScale", true);
+                 if (*change.uniformScale && change.scaleWidth) {
+                     fail(ErrorCode::InvalidParams, "scaleWidth needs uniformScale off", Json{{"path", "/scaleWidth"}});
+                 }
+             }
              if (change.empty()) {
-                 fail(ErrorCode::InvalidParams, "give at least one of positionX, positionY, scale, rotation, anchorX, anchorY");
+                 fail(ErrorCode::InvalidParams,
+                      "give at least one of positionX, positionY, scale, scaleWidth, uniformScale, rotation, anchorX, anchorY");
              }
              Ticks at = clip.start();
              if (c.has("time")) {

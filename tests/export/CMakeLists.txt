@@ -17,6 +17,7 @@ wabcut_add_test_suite(export
         test_audio_post_host.cpp # P.2: AAF / OMF audio rendered from real media, and the CLI
         test_caption_files_export.cpp # P.2: caption sidecar formats and 608 embedded in H.264
         test_caption_redaction.cpp
+        test_caption_text_rules.cpp # card 114: case, punctuation and accents in caption files
         test_cli_render.cpp
         test_content_credentials.cpp # AI-15: signed C2PA Content Credentials in MP4 exports
         test_export.cpp
@@ -53,6 +54,10 @@ target_sources(wabcut_export_tests PRIVATE test_sdr_conform_export.cpp)
 target_sources(wabcut_export_tests PRIVATE test_mxf_export.cpp)
 # 0.6 (#52): dialogue / music / effects stems with the master, by track role.
 target_sources(wabcut_export_tests PRIVATE test_stems_export.cpp)
+# 0.7 (C1): the sequence's pixel aspect ratio in exports, preset ids, output names with dots, the target-size audio estimate
+# and second pass, UTF-8 safe cuts, the OP-Atom file set moved into place as one unit (private headers of src/export/src).
+target_sources(wabcut_export_tests PRIVATE test_r08_c1.cpp)
+target_include_directories(wabcut_export_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/export/src)
 
 # Export UI: ExportController and the Export workspace on the real QML shell, through tests/app's ShellFixture
 # (one QGuiApplication per process, Qt message capture, Main.qml created hidden). The screenshot lands in
@@ -78,4 +83,27 @@ endif()
 # 0.6 (#73): MXF delivery and Embedded captions in the Export workspace (summary, job report, drawer screenshots).
 if(TARGET wabcut_export_ui_tests)
     target_sources(wabcut_export_ui_tests PRIVATE ui/test_mxf_export_ui.cpp)
+endif()
+# 0.7 (C2): the Streaming (-14 LUFS) loudness standard.
+target_sources(wabcut_export_tests PRIVATE test_r08_c2.cpp)
+# 0.7 (C4): H.264 / HEVC smart rendering (whole GOPs copied), the pre-export check, the newer codecs.
+target_sources(wabcut_export_tests PRIVATE test_r08_c4.cpp)
+# 0.7 (card "Dolby Vision 8.4 and HDR10+ dynamic metadata"): the HDR10+ plan, SEI insertion and its round trip through FFmpeg's MP4
+# muxer and decoder, the settings rules, the Dolby Vision licence gate, and the hardware-encoder end-to-end cases.
+target_sources(wabcut_export_tests PRIVATE test_hdr_dynamic.cpp)
+# 0.7 (A7): a soloed video track is the only one the export's used-media check and the pre-export check read.
+target_sources(wabcut_export_tests PRIVATE test_r08_a7.cpp)
+# 0.7 (card 38): the spherical metadata of VR / 360 exports.
+target_sources(wabcut_export_tests PRIVATE test_vr_export.cpp)
+# 0.7 (card 034): OpenFX video plug-ins in the export - the effect is in the file and the export matches the program monitor,
+# with the test plug-ins of tests/ofxhost (built into <build>/test-ofx) and the real wabcut-ofxhost helper.
+if(TARGET wabcut_ofx)
+    find_package(nlohmann_json CONFIG REQUIRED)
+    target_sources(wabcut_export_tests PRIVATE test_ofx_export.cpp)
+    target_link_libraries(wabcut_export_tests PRIVATE wabcut_ofx nlohmann_json::nlohmann_json)
+    target_include_directories(wabcut_export_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests/ofxhost)
+    target_compile_definitions(wabcut_export_tests PRIVATE
+        WABCUT_TEST_OFX_DIR="${CMAKE_BINARY_DIR}/test-ofx"
+        WABCUT_OFXHOST_PATH="$<TARGET_FILE:wabcut-ofxhost>")
+    add_dependencies(wabcut_export_tests wabcut-ofxhost wabcut_test_ofx_main wabcut_test_ofx_crash wabcut_test_ofx_hang)
 endif()

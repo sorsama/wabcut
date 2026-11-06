@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -130,6 +131,20 @@ enum class DynamicRange : std::uint8_t {
     Pq,   ///< BT.2100 PQ, Rec.2020, with HDR10 metadata (mastering display, MaxCLL / MaxFALL); HDR or ACES projects
     Hlg,  ///< BT.2100 HLG, Rec.2020; HDR or ACES projects
 };
+
+/// 0.7 (card "Dolby Vision 8.4 and HDR10+ dynamic metadata"): dynamic HDR metadata an export writes next to the picture.
+/// HDR10+ (SMPTE ST 2094-40) is measured from the rendered frames, shot by shot, and written as a T.35 SEI message into
+/// every access unit of a PQ HEVC video (MP4, MOV, MKV). Dolby Vision is licensed by Dolby: the writer sits behind
+/// DolbyVisionRegistry (DynamicMetadata.h), and a build without a licensed one refuses it with the reason.
+enum class DynamicMetadata : std::uint8_t {
+    None,
+    Hdr10Plus,     ///< HDR10+ on a PQ master
+    DolbyVision81, ///< Dolby Vision profile 8.1: an HDR10 (PQ) base layer with an RPU per frame
+    DolbyVision84, ///< Dolby Vision profile 8.4: an HLG base layer with an RPU per frame
+};
+/// "none", "hdr10plus", "dolbyVision81", "dolbyVision84" (the preset and override names).
+std::string_view dynamicMetadataName(DynamicMetadata kind);
+std::optional<DynamicMetadata> dynamicMetadataFromName(std::string_view name);
 /// DNxHR LB / SQ / HQ (4:2:2 8-bit), HQX (4:2:2 10-bit), 444 (4:4:4 10-bit, 0.2), at any size; and (0.2) DNxHD, 1920x1080
 /// only, at the bitrate Avid defines for the frame rate (dnxhdBitrate): LB 36/45/75/90, SQ 115/120/145/240/290, HQ
 /// 175/185/220/365/440 Mb/s (8-bit), HQX 175x/185x/365x/440x (10-bit).
@@ -176,6 +191,8 @@ struct VideoSettings {
     Ticks keyframeInterval = Ticks::fromSeconds(2);
     /// I.9: SDR, PQ or HLG (Auto: the project's own).
     DynamicRange dynamicRange = DynamicRange::Auto;
+    /// 0.7: dynamic HDR metadata (HDR10+ on a PQ HEVC master; Dolby Vision where a licensed writer is registered).
+    DynamicMetadata dynamicMetadata = DynamicMetadata::None;
     /// 0.6 (#72): the output colour space (Automatic: the sequence's colour setup's, ColorManagement::outputSpace) and
     /// SDR Conform (nullopt: the sequence's) of this export.
     OutputColorSpace outputSpace = OutputColorSpace::Automatic;
@@ -339,6 +356,10 @@ struct ResolvedExport {
     int height = 0;
     int renderWidth = 0; ///< size the canvas is rendered at before the ScaleMode crop/pad (even)
     int renderHeight = 0;
+    /// 145: the pixel aspect ratio the output file carries (reduced; 1/1 = square). The sequence's, when the output
+    /// keeps the canvas's shape (the default size, or a pure scale of it); an output of another shape is made of square
+    /// pixels (the canvas is resampled to its seen shape, ScaleMode fits that shape).
+    Rate sampleAspect{1, 1};
     Rate frameRate{}; ///< output frame rate
     /// Video frames: output frame k shows sequence time range.start + k frame periods; enough frames to cover
     /// the range (the last one may run past its end).
@@ -349,6 +370,9 @@ struct ResolvedExport {
     std::int64_t audioSamples = 0;
     /// I.9: what the picture is written as (never Auto): Sdr (BT.709 tags), Pq or Hlg (BT.2020 + ST 2084 / ARIB STD-B67).
     DynamicRange dynamicRange = DynamicRange::Sdr;
+    /// 0.7: the dynamic metadata written (VideoSettings::dynamicMetadata, checked against the format: HDR10+ needs a PQ
+    /// master on 10-bit HEVC in MP4, MOV or MKV).
+    DynamicMetadata dynamicMetadata = DynamicMetadata::None;
     /// I.9: rendered and read back at 10 bits per channel (a colour-managed project into a 10-bit format). Exports of
     /// display-referred projects keep the 8-bit path they always had.
     bool tenBitRender = false;
@@ -385,6 +409,17 @@ std::string_view fileExtension(Container container);
 /// 0.2: the extension of what `settings` write: fileExtension(container), or the still format's for Container::Image
 /// (".png", ".tif", ".dpx", ".jpg", ".tga", ".exr").
 std::string_view outputExtension(const ExportSettings& settings);
+/// 148: `extension` (".mov", any case) is the file extension of a media or still format - one the export writes or a
+/// neighbour (.mp4 .m4v .mov .mkv .webm .avi .mxf .wav .aif .aiff .mp3 .m4a .aac .flac .ogg .opus .gif .png .tif .tiff
+/// .dpx .jpg .jpeg .tga .exr ...) - and not a piece of a name.
+bool isMediaFileExtension(std::string_view extension);
+/// 148: `extension` could be a file extension at all: a dot and 1 to 5 letters or digits that start with a letter.
+/// ".03 Highlights" (from "Stream 2026.11.03 Highlights") and ".2" (from "cut v1.2") are not.
+bool isPlausibleExtension(std::string_view extension);
+/// 148: `path` with the format's `extension` (".mp4"): a current extension that is a media or still format's
+/// (isMediaFileExtension) is swapped (.mov -> .mp4); anything else belongs to the name, so the format's extension is
+/// appended ("Stream 2026.11.03 Highlights" -> "Stream 2026.11.03 Highlights.mp4", not "Stream 2026.11.mp4").
+std::filesystem::path withOutputExtension(std::filesystem::path path, std::string_view extension);
 /// "h264", "hevc", "prores", "dnxhr", "av1", "gif", "vp9", "png", "tiff", "dpx", "jpeg", "targa", "exr", "animation",
 /// "cineform"; 0.6: "xdcam-hd422", "avc-intra-100".
 std::string_view videoCodecName(VideoCodec codec);

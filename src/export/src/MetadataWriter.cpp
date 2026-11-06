@@ -1,5 +1,7 @@
 #include "MetadataWriter.h"
 
+#include "Utf8.h"
+
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/Sequence.h>
 #include <wabcut/model/Timecode.h>
@@ -91,9 +93,7 @@ std::vector<ChapterMark> chapterMarks(const Sequence& sequence, TimeRange range)
         c.startMs = toMs(m.start - range.start);
         c.endMs = toMs(std::min(end, range.end()) - range.start);
         c.title = !m.name.empty() ? m.name : !m.comment.empty() ? m.comment : std::format("Chapter {}", i + 1);
-        if (c.title.size() > 1024) {
-            c.title.resize(1024);
-        }
+        truncateUtf8(c.title, 1024); // 151: at a character boundary (Thai / CJK are 3 bytes a character)
         if (c.endMs > c.startMs) {
             out.push_back(std::move(c));
         }
@@ -174,6 +174,7 @@ std::string xmpPacket(const ExportSettings& settings, const Sequence& sequence, 
                     markers += "         <xmpDM:target>" + xmlEscape(marker.target) + "</xmpDM:target>\n";
                 }
                 break;
+            case MarkerType::Source: // a citation travels as a comment marker (the name and note above)
             case MarkerType::Comment:
                 break;
             }

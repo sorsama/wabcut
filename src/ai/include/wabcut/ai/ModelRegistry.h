@@ -61,11 +61,17 @@ enum class AuthScheme {
     XGoogApiKey,      ///< x-goog-api-key: <key> (Gemini)
     Token,            ///< Authorization: Token <key> (Deepgram)
     RawAuthorization, ///< Authorization: <key> (AssemblyAI)
+    /// r07: <ProviderSpec::authHeader>: <ProviderSpec::authPrefix><key>, e.g. "x-gladia-key: <key>",
+    /// "Authorization: DeepL-Auth-Key <key>", "Authorization: Key <key>" (fal.ai); custom providers' header auth.
+    Header,
 };
 
 std::string_view toString(AuthScheme scheme);
-/// Adds the auth header for `scheme` (nothing for None or an empty key).
+/// Adds the auth header for `scheme` (nothing for None or an empty key). Header needs the provider: see below.
 void applyAuth(HttpHeaders& headers, AuthScheme scheme, std::string_view key);
+struct ProviderSpec;
+/// Adds the provider's auth header (every scheme, Header included; nothing for None or an empty key).
+void applyAuth(HttpHeaders& headers, const ProviderSpec& provider, std::string_view key);
 
 /// Integer micro-USD.
 using MicroUsd = std::int64_t;
@@ -166,6 +172,16 @@ struct ProviderSpec {
     bool verified = false;
     std::string source;       ///< documentation the entry was checked against
     std::string notes;
+    std::string authHeader;   ///< r07, AuthScheme::Header: the header that carries the key ("x-gladia-key")
+    std::string authPrefix;   ///< r07, AuthScheme::Header: text before the key in it ("DeepL-Auth-Key ")
+    // r07 (A1): the provider catalogue and custom providers.
+    std::string description;  ///< one line: what it is good for
+    std::string website;      ///< the vendor's home page
+    /// Feature ids (featureIds()) its API serves beyond what its listed models say, e.g. "chat" for a router whose
+    /// models the user adds. The app shows the union of these, featuresOfApi(api) and its models' features.
+    std::vector<std::string> features;
+    bool custom = false;      ///< added by the user (Settings > AI > Custom provider), never read from models.json
+    std::string protocol;     ///< custom providers: "openai", "anthropic" or "gemini"
 
     bool operator==(const ProviderSpec&) const = default;
 };
@@ -190,9 +206,17 @@ struct ModelSpec {
     bool verified = false;
     std::string source;
     std::string notes;
+    /// r07 (A1): the id the provider's API expects, when it differs from the registry id. Model ids are unique across
+    /// the registry, but many hosts serve one model under the same name ("openai/gpt-oss-120b" on Together, DeepInfra,
+    /// Hugging Face): those entries are "<provider>:<name>" with apiId "<name>". Adapters see the model with `id` set
+    /// to apiId (ProviderRegistry::create*), so they keep sending `spec.id`. Empty = id.
+    std::string apiId;
 
     bool operator==(const ModelSpec&) const = default;
 };
+
+/// The model id the provider's API expects (apiId, else id).
+inline const std::string& apiModelId(const ModelSpec& model) { return model.apiId.empty() ? model.id : model.apiId; }
 
 /// The price rule that applies to a call with `inputTokens` prompt tokens on `date`; nullptr without prices. With a
 /// `tier` (generated media), a rule of that tier wins over untiered rules; rules of other tiers never apply.
@@ -203,6 +227,21 @@ const PriceRule* priceRuleFor(const ModelSpec& model, std::int64_t inputTokens, 
 MicroUsd costOf(const ModelSpec& model, const Usage& usage, std::chrono::year_month_day date);
 
 bool isDeprecated(const ModelSpec& model, std::chrono::year_month_day today);
+
+/// r07: the parts of Wabcut the user routes to a model ("features"), in display order: "chat" (assistant, rough cut,
+/// shorts, takes, autopilot, describe), "transcribe", "translate", "speak" (dub, narration), "image", "video", "sound"
+/// (sound effects). Search embeddings stay on this computer and are not routed.
+std::span<const std::string_view> featureIds();
+/// The registry capability behind a feature ("image" -> GenerateMedia); nullopt for unknown ids.
+std::optional<Capability> featureCapability(std::string_view feature);
+/// Whether `model` serves `feature`: translate = a translate or chat model; image / video / sound = a generateMedia
+/// model whose generation block makes that.
+bool servesFeature(const ModelSpec& model, std::string_view feature);
+/// Every feature `model` serves, in featureIds() order.
+std::vector<std::string> featuresOf(const ModelSpec& model);
+/// The feature ids an API style serves on its own (a chat API also translates), e.g. {"chat","translate"} for
+/// "chat-completions"; empty for media-only APIs.
+std::vector<std::string> featuresOfApi(std::string_view api);
 
 /// Today's date in UTC.
 std::chrono::year_month_day todayUtc();
@@ -238,6 +277,11 @@ public:
     /// Adds (or replaces) a user-defined provider with its models, e.g. an OpenAI-compatible server. Errors:
     /// InvalidRequest (empty id, a built-in provider id, models of another provider).
     std::expected<void, AiError> addCustomProvider(ProviderSpec provider, std::vector<ModelSpec> models);
+    /// Removes a provider added with addCustomProvider() and its models (built-in providers stay). False when there
+    /// was none.
+    bool removeCustomProvider(std::string_view id);
+    /// A provider that is not part of the shipped registry (added with addCustomProvider()).
+    bool isCustomProvider(std::string_view id) const;
 
     /// Adds a user-defined model to an existing provider, e.g. "qwen3.5:9b" on Ollama or any OpenRouter model;
     /// capabilities and api default to a text chat model on the provider's api. InvalidRequest when the provider

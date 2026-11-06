@@ -19,11 +19,9 @@ Item {
     property bool advanced: false
     readonly property var graphic: Graphics.graphic
     readonly property var responsive: graphic.responsive ?? null
-    readonly property var fontFamilies: [
-        { id: "Segoe UI", name: "Segoe UI" }, { id: "Arial", name: "Arial" }, { id: "Inter", name: "Inter" },
-        { id: "Georgia", name: "Georgia" }, { id: "Noto Sans Thai", name: "Noto Sans Thai" }, { id: "Cascadia Mono", name: "Cascadia Mono" },
-        { id: "Bai Jamjuree", name: "Bai Jamjuree" }, { id: "IBM Plex Sans", name: "IBM Plex Sans" }
-    ].concat((Graphics.brand.fonts ?? []).map(f => ({ id: f.family, name: qsTr("Brand %1 (%2)").arg(f.role).arg(f.family) })))
+    /// card 053: the font picker's extras: the brand kit's fonts by family (every installed family is searched in the
+    /// picker itself).
+    readonly property var fontExtras: (Graphics.brand.fonts ?? []).map(f => ({ id: f.family, name: qsTr("Brand %1 (%2)").arg(f.role).arg(f.family) }))
     readonly property var kindIcons: ({ text: "type", shape: "square", image: "image", group: "folder" })
 
     /// Save as template… (the panel opens its dialog).
@@ -199,11 +197,11 @@ Item {
                             Graphics.endEdit()
                         }
                     }
-                    GraphicChoicePill {
+                    FontChoicePill {
                         objectName: "graphicFieldFont_" + (fieldRow.field.id ?? "")
                         visible: fieldRow.kind === "font"
-                        options: root.fontFamilies
-                        current: String(fieldRow.field.value ?? "")
+                        family: String(fieldRow.field.value ?? "")
+                        extras: root.fontExtras
                         placeholder: String(fieldRow.field.value ?? "")
                         Accessible.name: fieldRow.field.label ?? ""
                         onChosen: id => {
@@ -245,6 +243,60 @@ Item {
                         onToggled: {
                             Graphics.setField(fieldRow.field.id, checked)
                             Graphics.endEdit()
+                        }
+                    }
+                    // 0.7 (card #71): the stopwatch animates the field over the clip (the keys go at the playhead); its keys
+                    // are chips: click one to go to it, x removes it.
+                    RowLayout {
+                        objectName: "graphicFieldKeys_" + (fieldRow.field.id ?? "")
+                        Layout.fillWidth: true
+                        visible: fieldRow.field.animatable === true
+                        spacing: Theme.space(1)
+
+                        IconButton {
+                            objectName: "graphicFieldStopwatch_" + (fieldRow.field.id ?? "")
+                            Layout.alignment: Qt.AlignTop
+                            compact: true
+                            checkable: true
+                            checked: fieldRow.field.keyed === true
+                            iconName: "timer"
+                            iconSize: Theme.iconSm
+                            tooltip: fieldRow.field.keyed === true ? qsTr("Stop animating %1 (deletes its keys)").arg(fieldRow.field.label ?? "")
+                                                                   : qsTr("Animate %1: it changes over the clip, keys go at the playhead").arg(fieldRow.field.label ?? "")
+                            Accessible.name: tooltip
+                            onClicked: Graphics.animateField(fieldRow.field.id, fieldRow.field.keyed !== true)
+                        }
+                        Flow {
+                            Layout.fillWidth: true
+                            visible: fieldRow.field.keyed === true
+                            spacing: Theme.space(0.5)
+
+                            Repeater {
+                                model: fieldRow.field.keys ?? []
+                                delegate: Row {
+                                    id: keyChip
+                                    required property var modelData
+                                    objectName: "graphicFieldKey_" + (fieldRow.field.id ?? "") + "_" + keyChip.modelData.index
+                                    spacing: 0
+
+                                    PillButton {
+                                        compact: true
+                                        variant: "ghost"
+                                        iconName: "diamond"
+                                        text: qsTr("%1 s").arg(Number(keyChip.modelData.seconds).toFixed(2))
+                                        tooltip: qsTr("Go to this key")
+                                        onClicked: Graphics.goToFieldKey(fieldRow.field.id, keyChip.modelData.index)
+                                    }
+                                    IconButton {
+                                        compact: true
+                                        iconName: "x"
+                                        iconSize: Theme.iconSm
+                                        tooltip: qsTr("Remove this key")
+                                        Accessible.name: tooltip
+                                        onClicked: Graphics.removeFieldKey(fieldRow.field.id, keyChip.modelData.index)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -293,12 +345,13 @@ Item {
                     onTextEdited: Graphics.setText(basics.layerId, text)
                     onEditingFinished: Graphics.endEdit()
                 }
-                GraphicChoicePill {
+                FontChoicePill {
                     objectName: "calloutFont"
                     Layout.fillWidth: true
                     visible: basics.kind === "text"
-                    options: root.fontFamilies
-                    current: basics.run.fontFamily ?? ""
+                    family: basics.run.fontFamily ?? ""
+                    extras: root.fontExtras
+                    sampleText: basics.kind === "text" ? String((basics.sel.text ?? {}).text ?? "") : ""
                     placeholder: (basics.run.fontFamily ?? "") !== "" ? basics.run.fontFamily : qsTr("Default font")
                     Accessible.name: qsTr("Font")
                     onChosen: id => {

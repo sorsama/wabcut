@@ -1,9 +1,12 @@
 #include "TestMedia.h"
 
 #include <wabcut/media/DecoderPool.h>
+#include <wabcut/model/MediaLocator.h>
 
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <latch>
 #include <mutex>
 #include <string>
@@ -362,4 +365,49 @@ TEST_CASE("DecoderPool: a 240 fps source at 60 fps times delivers every fourth f
     CHECK(s.videoFramesDecoded <= 480);
     CHECK(s.videoFramesReadBack == 0);
     CHECK(s.videoFramesConverted == 0);
+}
+
+TEST_CASE("DecoderPool: closePath drops the sessions of a file that changed under the same path (143)", "[media][pool]") {
+    // Reload Footage: another program re-exported the file over the same path. A session reuses by path and stream, so
+    // without closePath the next frame would come from the decoder opened on the old bytes.
+    requireClips({"h264_1080p60_aac.mp4", "h264_360p120.mp4"});
+    const std::filesystem::path dir = scratchDir("pool_close_path");
+    const std::filesystem::path file = dir / "footage.mp4";
+    const auto writeFrom = [&](const char* clip) {
+        // Written in place (not renamed over), as a program saving over the file does; the open decoder shares it.
+        std::ifstream in(std::filesystem::path(WABCUT_TEST_MEDIA_DIR) / clip, std::ios::binary);
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        REQUIRE(in.good());
+        REQUIRE(out.good());
+        out << in.rdbuf();
+        out.flush();
+        REQUIRE(out.good());
+    };
+    writeFrom("h264_1080p60_aac.mp4");
+    const std::string path = pathToUtf8(file);
+    DecoderPoolConfig config;
+    config.decoderOptions.allowHardware = false;
+    DecoderPool pool(config);
+    const auto frameOf = [&](std::int64_t sixtieth) {
+        FrameRequest r;
+        r.path = path;
+        r.time = framesToTicks(sixtieth, kRate60);
+        return indexOf(pool.requestFrame(r));
+    };
+    CHECK(frameOf(10) == 10); // 1080p60: frame 10
+    CHECK(pool.stats().sessionsCreated == 1);
+
+    // Another picture under the same path: 640x360 at 120 fps, where 10/60 s is frame 20.
+    writeFrom("h264_360p120.mp4");
+    pool.closePath(path);
+    CHECK(pool.stats().videoSessions == 0);
+    CHECK(frameOf(10) == 20);
+    CHECK(pool.stats().sessionsCreated == 2);
+
+    // Another path is left alone.
+    CHECK(indexOf(pool.requestFrame(frameAt("h264_1080p60_aac.mp4", framesToTicks(3, kRate60)))) == 3);
+    pool.closePath(path);
+    CHECK(pool.stats().videoSessions == 1);
+    pool.closePath(mediaPath("h264_1080p60_aac.mp4"));
+    CHECK(pool.stats().videoSessions == 0);
 }

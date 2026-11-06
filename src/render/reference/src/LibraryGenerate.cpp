@@ -580,6 +580,87 @@ Image strokes(const Image& in, LibraryEffect op, const LibraryParams& q, std::sp
     return out;
 }
 
+/// The depth map's value (the second picture's alpha, 0 = nearest .. 1 = farthest) at a point in 0..1 of the picture: bilinear
+/// between pixel centres, clamped at the edges (what the texture sampler does).
+double depthAlpha(const Image& depth, double u, double v) {
+    const double x = u * depth.width - 0.5;
+    const double y = v * depth.height - 0.5;
+    const int x0 = static_cast<int>(std::floor(x));
+    const int y0 = static_cast<int>(std::floor(y));
+    const double fx = x - x0;
+    const double fy = y - y0;
+    const auto at = [&](int ix, int iy) {
+        return static_cast<double>(depth.alpha(std::clamp(ix, 0, depth.width - 1), std::clamp(iy, 0, depth.height - 1)));
+    };
+    const double top = at(x0, y0) * (1.0 - fx) + at(x0 + 1, y0) * fx;
+    const double bottom = at(x0, y0 + 1) * (1.0 - fx) + at(x0 + 1, y0 + 1) * fx;
+    return clamp01(top * (1.0 - fy) + bottom * fy);
+}
+
+/// AI Refocus (0.7), shaders/fx_generate.frag OP_DEPTH_BLUR: a lens blur driven by the depth map `second` (alpha: 0 = nearest ..
+/// 1 = farthest). q: Focus Distance, Depth of Field, Blur Amount (largest radius, % of 40 px at 1080 lines), Foreground Blur,
+/// Background Blur (%), Show (0 result, 1 depth map, 2 blur size). Without a depth map the picture is left as it is.
+Image depthBlur(const Image& in, const LibraryParams& q, const Image* second) {
+    if (second == nullptr || second->empty()) {
+        return in;
+    }
+    constexpr int kTaps = 48;
+    constexpr double kGolden = 2.39996323;
+    const double focus = clamp01(q[0] / 100.0);
+    const double zone = std::clamp(q[1], 0.0, 100.0) / 200.0;
+    const double maxRadius = std::clamp(q[2], 0.0, 100.0) / 100.0 * 40.0 * (in.height / 1080.0);
+    const double fore = std::clamp(q[3], 0.0, 100.0) / 100.0;
+    const double back = std::clamp(q[4], 0.0, 100.0) / 100.0;
+    const int view = static_cast<int>(std::floor(q[5] + 0.5));
+    const auto circle = [&](double z) {
+        const double off = z - focus;
+        return clamp01(std::max(std::abs(off) - zone, 0.0) / 0.4) * (off < 0.0 ? fore : back);
+    };
+    Image out(in.width, in.height);
+    for (int y = 0; y < in.height; ++y) {
+        for (int x = 0; x < in.width; ++x) {
+            const double u = (x + 0.5) / in.width;
+            const double v = (y + 0.5) / in.height;
+            const double z0 = depthAlpha(*second, u, v);
+            const double c0 = circle(z0);
+            const double r0 = c0 * maxRadius;
+            if (view == 1 || view == 2) {
+                const double g = toLinear(view == 1 ? z0 : c0);
+                out.setD(x, y, {g, g, g, 1.0});
+                continue;
+            }
+            const Rgba centre = in.atD(x, y);
+            if (maxRadius < 0.25) {
+                out.setD(x, y, centre);
+                continue;
+            }
+            Rgba sum = centre;
+            double total = 1.0;
+            for (int i = 0; i < kTaps; ++i) {
+                const double rr = std::sqrt((i + 0.5) / kTaps) * maxRadius;
+                const double th = i * kGolden;
+                const double px = std::clamp(std::floor(x + 0.5 + std::cos(th) * rr), 0.0, in.width - 1.0);
+                const double py = std::clamp(std::floor(y + 0.5 + std::sin(th) * rr), 0.0, in.height - 1.0);
+                const int ix = static_cast<int>(px);
+                const int iy = static_cast<int>(py);
+                const double zs = depthAlpha(*second, (ix + 0.5) / in.width, (iy + 0.5) / in.height);
+                const double rs = circle(zs) * maxRadius;
+                double cover = clamp01(rs - rr + 0.5);
+                if (zs > z0 + 0.02) {
+                    cover *= smoothstep(0.0, 1.0, r0 / std::max(rs, 1.0));
+                }
+                const Rgba s = in.atD(ix, iy);
+                for (std::size_t k = 0; k < 4; ++k) {
+                    sum[k] += s[k] * cover;
+                }
+                total += cover;
+            }
+            out.setD(x, y, scaled(sum, 1.0 / total));
+        }
+    }
+    return out;
+}
+
 } // namespace
 
 bool isGenerate(LibraryEffect effect) {
@@ -590,6 +671,12 @@ Image generate(const Image& in, LibraryEffect op, const LibraryParams& q, const 
                std::span<const LibraryPath> paths) {
     if (op == E::PaintBucket) {
         return paintBucket(in, q);
+    }
+    if (op == E::DepthBlur) {
+        return depthBlur(in, q, second);
+    }
+    if (op == E::SkinSmoothing || op == E::FaceRetouch) {
+        return retouch(in, op, q, second);
     }
     if (op == E::Lightning || op == E::Scribble) {
         return strokes(in, op, q, paths);

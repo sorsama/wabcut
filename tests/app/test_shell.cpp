@@ -195,9 +195,9 @@ TEST_CASE("Interacting with the mock shell stays warning-free", "[app][qml]") {
     REQUIRE(view != nullptr);
 
     SECTION("tabs, selection, zoom, scroll and workspaces") {
-        // Library tabs (recreates the media grid delegates; Text is Essential Graphics) and Effect Controls with and
-        // without its keyframe lane (the side panel resizes).
-        for (int tab : {1, 2, 0}) {
+        // Library tabs (recreates the media grid delegates) and Effect Controls with and without its keyframe lane (the
+        // side panel resizes).
+        for (int tab : {1, 0}) {
             libraryTabs->setProperty("currentIndex", tab);
             shell.preferences->setProperty("keyframeLane", tab != 1);
             REQUIRE_FALSE(shell.grab().isNull());

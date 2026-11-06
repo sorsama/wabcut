@@ -5,6 +5,9 @@ import QtQuick
 // frame | the incoming frame, each with its clip, source timecode and the frames trimmed since trim mode started, then
 // trim −5 / −1, play around the edit, +1 / +5, the trim type and exit. Toggle Trim Type (Ctrl+Shift+T) cycles the
 // type, J/K/L trims dynamically, Ctrl/⌥+arrows trim from the keyboard.
+// 0.7 (card 127): the Slip type (Avid's slip): both edges of a clip are the edit points and the buttons slip its content
+// (later source frames with +), so the view shows the clip's first frame (left) and last frame (right) with the frames
+// slipped; the clip keeps its place and length.
 Item {
     id: root
 
@@ -13,6 +16,7 @@ Item {
     function offsetText(n) {
         return n > 0 ? "+" + n : String(n)
     }
+    readonly property bool slip: Trim.type === "slip"
 
     component Side: Column {
         id: side
@@ -89,12 +93,14 @@ Item {
         anchors.topMargin: Theme.space(3)
         anchors.horizontalCenter: parent.horizontalCenter
         spacing: Theme.space(3)
+        // Slip: the clip's first frame (the incoming side) on the left, its last frame on the right.
+        layoutDirection: root.slip ? Qt.RightToLeft : Qt.LeftToRight
         readonly property real sideWidth: Math.max(Theme.space(20), (root.width - Theme.space(9)) / 2)
 
         Side {
             objectName: "trimOutgoing"
             width: sides.sideWidth
-            label: qsTr("Outgoing")
+            label: root.slip ? qsTr("Last frame") : qsTr("Outgoing")
             clipName: Trim.outgoingName
             timecode: Trim.outgoingText
             offset: Trim.outgoingOffset
@@ -104,7 +110,7 @@ Item {
         Side {
             objectName: "trimIncoming"
             width: sides.sideWidth
-            label: qsTr("Incoming")
+            label: root.slip ? qsTr("First frame") : qsTr("Incoming")
             clipName: Trim.incomingName
             timecode: Trim.incomingText
             offset: Trim.incomingOffset
@@ -188,9 +194,9 @@ Item {
             anchors.horizontalCenter: parent.horizontalCenter
             width: Math.min(Theme.space(64), root.width - Theme.space(4))
             compact: true
-            model: [{ label: qsTr("Regular") }, { label: qsTr("Ripple") }, { label: qsTr("Roll") }]
-            currentIndex: ["regular", "ripple", "roll"].indexOf(Trim.type)
-            onActivated: index => Trim.type = ["regular", "ripple", "roll"][index]
+            model: [{ label: qsTr("Regular") }, { label: qsTr("Ripple") }, { label: qsTr("Roll") }, { label: qsTr("Slip") }]
+            currentIndex: ["regular", "ripple", "roll", "slip"].indexOf(Trim.type)
+            onActivated: index => Trim.type = ["regular", "ripple", "roll", "slip"][index]
             Accessible.name: qsTr("Trim type")
         }
     }

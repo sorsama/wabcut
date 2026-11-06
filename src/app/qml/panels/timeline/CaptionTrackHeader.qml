@@ -23,6 +23,7 @@ Item {
                                     : root.modelData.name
 
     objectName: "captionHeader_" + root.label
+    y: root.modelData.y // 0.7: the header column places every header at its row's y (a track group's row stands between them)
     height: root.modelData.height
     Accessible.role: Accessible.Pane
     Accessible.name: qsTr("Caption track %1, %2").arg(root.label).arg(root.title)

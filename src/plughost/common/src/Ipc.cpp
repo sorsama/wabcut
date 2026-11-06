@@ -52,6 +52,33 @@ HANDLE helperJob() {
     return job;
 }
 
+/// A job object of its own that holds one child to `limits` (and ends it when closed).
+HANDLE limitedJob(const ChildLimits& limits) {
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    if (job == nullptr) {
+        return nullptr;
+    }
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (limits.noChildProcesses) {
+        info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+        info.BasicLimitInformation.ActiveProcessLimit = 1;
+    }
+    if (limits.memoryBytes != 0) {
+        info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+        info.JobMemoryLimit = static_cast<SIZE_T>(limits.memoryBytes);
+    }
+    SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info, sizeof info);
+    if (limits.noDesktopAccess) {
+        JOBOBJECT_BASIC_UI_RESTRICTIONS ui{};
+        ui.UIRestrictionsClass = JOB_OBJECT_UILIMIT_DESKTOP | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS | JOB_OBJECT_UILIMIT_EXITWINDOWS |
+                                 JOB_OBJECT_UILIMIT_GLOBALATOMS | JOB_OBJECT_UILIMIT_READCLIPBOARD | JOB_OBJECT_UILIMIT_WRITECLIPBOARD |
+                                 JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS;
+        SetInformationJobObject(job, JobObjectBasicUIRestrictions, &ui, sizeof ui);
+    }
+    return job;
+}
+
 std::wstring quoteArg(const std::wstring& arg) {
     if (!arg.empty() && arg.find_first_of(L" \t\"") == std::wstring::npos) {
         return arg;
@@ -285,7 +312,8 @@ bool NamedEvent::wait(std::chrono::milliseconds timeout) noexcept {
 // ---- ChildProcess -----------------------------------------------------------------------------------------------
 
 std::unique_ptr<ChildProcess> ChildProcess::start(const std::filesystem::path& exe, const std::vector<std::string>& args,
-                                                  const std::filesystem::path& stderrFile, std::string& error) {
+                                                  const std::filesystem::path& stderrFile, std::string& error,
+                                                  const ChildLimits& limits) {
     SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
     HANDLE inRead = nullptr;
     HANDLE inWrite = nullptr;
@@ -348,9 +376,27 @@ std::unique_ptr<ChildProcess> ChildProcess::start(const std::filesystem::path& e
     if (HANDLE job = helperJob(); job != nullptr) {
         AssignProcessToJobObject(job, pi.hProcess);
     }
+    HANDLE own = nullptr;
+    if (limits.any()) {
+        // A job nested in the helper job (Windows 8 and later): the child is held to `limits` as well.
+        own = limitedJob(limits);
+        if (own == nullptr || !AssignProcessToJobObject(own, pi.hProcess)) {
+            error = lastError("restricting " + narrow(exe.wstring()));
+            if (own != nullptr) {
+                CloseHandle(own);
+            }
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            CloseHandle(inWrite);
+            CloseHandle(outRead);
+            return nullptr;
+        }
+    }
     ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     std::unique_ptr<ChildProcess> p(new ChildProcess());
+    p->m_job = own;
     p->m_process = pi.hProcess;
     p->m_stdinWrite = inWrite;
     p->m_stdoutRead = outRead;
@@ -371,6 +417,9 @@ ChildProcess::~ChildProcess() {
     }
     if (m_stdoutRead != nullptr) {
         CloseHandle(m_stdoutRead);
+    }
+    if (m_job != nullptr) {
+        CloseHandle(m_job);
     }
 }
 

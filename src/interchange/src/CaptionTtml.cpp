@@ -82,6 +82,14 @@ std::optional<Ticks> parseTime(std::string_view text, const TimingParameters& p)
                                                         rate, true);
                 return frames ? framesToTicks(*frames, rate, Rounding::Nearest) : std::nullopt;
             }
+            if (!p.smpte) {
+                // timeBase "media" (the default): hh:mm:ss are real seconds and ff frames of the effective frame rate
+                // (ttp:frameRate x ttp:frameRateMultiplier). TTML1 Appendix N.2.2 (https://www.w3.org/TR/ttml1/):
+                // M = 3600 * hours + 60 * minutes + seconds + (frames + subFrames / subFrameRate) / effectiveFrameRate.
+                // (Counting the labelled seconds in frames of the nominal rate, below, is timecode: timeBase "smpte".)
+                const auto frames = framesToTicks(*f, rate, Rounding::Nearest);
+                return frames ? std::optional<Ticks>(Ticks::fromSeconds(*h * 3600 + *m * 60 + *s) + *frames) : std::nullopt;
+            }
             const std::int64_t base = std::max<std::int64_t>(1, timecodeBase(rate));
             return framesToTicks((*h * 3600 + *m * 60 + *s) * base + *f, rate, Rounding::Nearest);
         }

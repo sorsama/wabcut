@@ -27,7 +27,7 @@ namespace wabcut::ai {
 
 struct TranscriptionOptions {
     std::string model = "base";    ///< ModelStore id or alias ("tiny", "base", "large-v3-turbo")
-    std::string language = "auto"; ///< ISO 639-1 ("en", "th", ...) or "auto" (detected once, then kept)
+    std::string language = "auto"; ///< ISO 639-1 ("en", "th", ...) or "auto" (detected once, then kept; see mixedLanguages)
     bool useGpu = true;            ///< let the helper use a GPU backend (Vulkan, ...) when one is present
     bool vad = true;               ///< skip silence with Silero VAD (downloads the 0.9 MB model on first use)
     std::string vadModel = "silero"; ///< ModelStore id of the VAD model
@@ -38,6 +38,19 @@ struct TranscriptionOptions {
     int threads = 0;               ///< CPU threads for the helper; 0 = automatic
     int beamSize = 5;              ///< 1 = greedy decoding (faster, slightly worse)
     std::string initialPrompt;     ///< vocabulary hint (names, jargon)
+    /// Whisper's translate task: the words come out in English, whatever the language spoken (card 073). Not for the
+    /// English-only models. The transcript's language is then "en"; a translated transcript is cached apart from the
+    /// transcription of the same audio.
+    bool translate = false;
+    /// 0.7 (card 111): the recording switches between languages (an interview with a translator, a streamer who changes
+    /// language): with language "auto" every stretch of speech is transcribed in the language it is spoken in, instead of
+    /// the language of the first one for the whole file. The audio is cut at pauses into short chunks (about a sentence
+    /// each, ChunkOptions::closeAfterSamples) and the recogniser names the language of each; every segment of the
+    /// transcript carries its own (TranscriptSegment::language), the transcript's is the one most words are in. A
+    /// language that changes in the middle of a sentence stays in the language the recogniser heard first. Ignored with a
+    /// named language or translate; needs a multilingual model (InvalidArgument for ".en" ones). A transcript of mixed
+    /// languages is cached apart from one of a single language.
+    bool mixedLanguages = false;
     bool useCache = true;          ///< reuse / store the result in the AnalysisCache
     bool refresh = false;          ///< with useCache: transcribe anyway, then store (replaces the entry)
     ChunkOptions chunking;
@@ -115,6 +128,14 @@ struct TranscriptionServiceConfig {
 /// The wabcut-infer helper: $WABCUT_INFER_PATH when set (packagers, tests), else the one next to the running
 /// executable.
 std::filesystem::path defaultInferExecutable();
+
+/// 0.7 (card 061): the longest vocabulary prompt (bytes of UTF-8). Whisper reads at most 224 tokens of prompt (half
+/// its text context); names and made-up words take 2 to 4 tokens each, so this keeps well inside it.
+inline constexpr std::size_t kMaxVocabularyPromptBytes = 480;
+/// The vocabulary hint whisper takes as `initialPrompt` for the user's custom words: "Vocabulary: Elden Ring, Malenia,
+/// Radahn." Empty without words. Words are used in order; the ones that no longer fit in kMaxVocabularyPromptBytes
+/// are left out (`used`, when given, gets how many were kept).
+std::string vocabularyPrompt(std::span<const std::string> words, std::size_t* used = nullptr);
 
 /// Zeroes the samples of `ranges` (media time; sample 0 = media time 0) in a raw 16 kHz mono float32 file of
 /// `samples` samples. Errors: IoError.

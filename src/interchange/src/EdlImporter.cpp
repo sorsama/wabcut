@@ -22,6 +22,7 @@
 #include "Importers.h"
 #include "TimeMath.h"
 
+#include <wabcut/model/Plural.h>
 #include <wabcut/model/Timecode.h>
 
 #include <algorithm>
@@ -332,7 +333,7 @@ std::expected<void, Error> EdlParser::parse(std::string_view data) {
     }
     if (unrecognised > 0) {
         report(ReportOutcome::Dropped, ReportCategory::Effect,
-               std::to_string(unrecognised) + " line(s) that are not CMX3600 events or comments were ignored",
+               "Ignored, not CMX3600 events or comments: " + counted(static_cast<std::int64_t>(unrecognised), "line"),
                m_seq.location);
     }
 

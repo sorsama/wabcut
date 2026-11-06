@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace wabcut::render {
@@ -32,6 +33,11 @@ using LayerFrame = media::VideoFrame;
 struct CanvasSize {
     int width = 1920;
     int height = 1080;
+    /// 0.7 (#145, #156): the pixel aspect ratio of the canvas's pixels (Sequence::pixelAspect; 1 = square, 4/3 HDV, 1.2121
+    /// DV wide). Media frames carry their own; layerToCanvas() places one in canvas pixels by their ratio, so a clip of
+    /// the sequence's own pixel aspect fills the canvas, and the monitor shows the canvas widened by it
+    /// (Compositor::letterboxRect). Titles, graphics and captions are drawn in canvas pixels and are not corrected.
+    double pixelAspect = 1.0;
 
     constexpr bool isValid() const { return width > 0 && height > 0; }
     constexpr bool operator==(const CanvasSize&) const = default;
@@ -41,12 +47,34 @@ struct CanvasSize {
 struct LayerTransform {
     /// Offset of the anchor point from the canvas centre, in sequence pixels (0,0 = centred).
     Vec2 position{};
-    /// Uniform scale (1 = 100 %).
+    /// Scale (1 = 100 %): both axes, or the height when `aspectX` is not 1.
     double scale = 1.0;
     /// Clockwise rotation in degrees.
     double rotationDegrees = 0.0;
     /// Anchor point as an offset from the frame centre, in source pixels.
     Vec2 anchor{};
+    /// The stored frame is flipped horizontally (about its centre, in stored pixels) before the anchor, rotation and
+    /// scale apply: the mirror half of a stream's display orientation (card 154; see applyDisplayOrientation).
+    bool mirrorX = false;
+    /// 0.7 (card #12): Scale Width over `scale` (1 = Uniform Scale on, the default): the layer is drawn `scale * aspectX`
+    /// wide and `scale` high in its own (display-oriented) axes. setScaleXY() sets both. Last, so that the positional
+    /// initialisers of the members above keep their meaning.
+    double aspectX = 1.0;
+
+    /// The horizontal scale factor drawn (`scale * aspectX`).
+    constexpr double scaleX() const { return scale * aspectX; }
+    /// Sets the scale from a width and a height factor (Motion's Scale Width and Scale, times Scale to Frame Size). A zero
+    /// height or width leaves the layer invisible (see isVisibleScale).
+    constexpr void setScaleXY(double width, double height) {
+        scale = height;
+        aspectX = height != 0.0 ? width / height : (width == 0.0 ? 0.0 : 1.0);
+    }
+    /// setScaleXY() from a ClipProperties::scaleAt() pair {width, height} times `factor` (Scale to Frame Size).
+    constexpr void setScaleXY(std::pair<double, double> widthHeight, double factor = 1.0) {
+        setScaleXY(widthHeight.first * factor, widthHeight.second * factor);
+    }
+    /// Neither axis is scaled to nothing: the layer covers an area.
+    constexpr bool hasArea() const { return scale != 0.0 && aspectX != 0.0; }
 
     constexpr bool operator==(const LayerTransform&) const = default;
 };
@@ -210,6 +238,8 @@ struct LayerTransition {
     /// (the two sides of a jump cut) analyse it; the mix is motion::interpolate at `progress`. Without it, or one-sided,
     /// a FlowMorph mixes as a cross dissolve. Immutable and shared.
     std::shared_ptr<const motion::FlowPair> motion;
+    /// FlowMorph (0.7): the Morph Cut's Face Aware setting - the analysis aligns the flow inside the faces both sides show.
+    bool faceAware = false;
 
     bool operator==(const LayerTransition&) const = default;
 };
@@ -218,6 +248,9 @@ struct CompositeLayer {
     LayerFrame frame;
     /// Synthetic CPU pixels (generated mattes, titles, tests). When set, used instead of `frame`.
     std::optional<FrameView> view;
+    /// 0.7: `view` is a media frame an OpenFX effect processed, not a picture drawn in canvas pixels: it keeps the pixel
+    /// aspect ratio it carries (a frame of an anamorphic source stays widened) instead of the canvas'.
+    bool viewIsMedia = false;
     /// A nested or multicam clip (C.8, docs/internal/c8-nested-multicam-handoff.md): the layer's picture is this composite of the
     /// nested sequence, rendered on its own canvas (`nested->canvas`; its colour pipeline and views are the parent's)
     /// and then placed, with the effects, opacity and transition below, exactly like a media frame of that size.
@@ -225,6 +258,12 @@ struct CompositeLayer {
     /// the redactions inside it never fail open.
     std::shared_ptr<const PreparedComposite> nested;
     LayerTransform transform;
+    /// 0.7 Motion Blur (model/MotionBlur.h): the layer's placement at each instant of the camera shutter, in order. With two
+    /// or more, the layer is drawn once per entry (instead of once with `transform`) and the draws are averaged, so a moving
+    /// layer smears along its path; `transform` stays the layer's placement at the frame's instant, the one its effects and
+    /// masks are laid out by. Empty (the usual case) or one entry: drawn once, as it always was. Entries are in the same
+    /// units as `transform` (frame-height and nested-canvas scaling is applied to each by the compositor like to `transform`).
+    std::vector<LayerTransform> blur;
     /// P.2: a projective warp of the layer's own frame before its Motion, row-major 3 x 3 in fractions of the frame
     /// (x of its width, y of its height; top-left origin, y down): (x', y', w') = warp (x, y, 1), so it holds at any
     /// decode size. Identity = none. The stabilizers' compensation (Warp Stabilizer, Rolling Shutter Repair) of the frame
@@ -241,6 +280,10 @@ struct CompositeLayer {
     /// field (even rows) and interpolate the lower one's lines, 2 keep the lower field (odd rows), 3 Flicker Removal
     /// (each line blended [1 2 1] / 4 with its neighbours). Rows count in the frame's own pixels, before any scaling.
     std::uint8_t fieldMode = 0;
+    /// 0.7 (card #98), Clip > Video Options > Nearest Neighbor Scaling: the layer's picture is resized without
+    /// smoothing - each canvas pixel takes the colour of the source pixel under it (luma at the pixel's centre; the
+    /// chroma of a subsampled frame interpolated there), so enlarged pixel art keeps hard edges.
+    bool nearest = false;
     /// Source-anchored redactions covering the layer's media at its frame (I.6), applied to the layer's own pixels
     /// before any of its effects. Not left out by anything but a per-clip exception (the model's Redaction).
     std::vector<LayerRedaction> redactions;
@@ -260,6 +303,9 @@ struct CompositeLayer {
     /// A display-referred graphic (a title, a burned-in caption, a colour matte): in an ACES project it is read through
     /// the inverse output transform, so it looks as designed; in HDR its white sits at the reference white.
     bool graphics = false;
+    /// 0.7 (AI video effects, model/AiEffects.h): the clip has AI effects and this picture is not processed yet, so the
+    /// layer shows the decoded picture as it is (the monitor says so; the export processes what is missing first).
+    bool aiUnprocessed = false;
 };
 
 struct PreparedComposite {
@@ -312,9 +358,55 @@ struct Affine2D {
 
 /// Maps a layer's source pixel coordinates (origin at the frame's top-left corner, y down, stored pixels) to
 /// sequence canvas pixels (origin top-left, y down):
-///   canvas = canvasCentre + position + R(rotation) * scale * (P * (src - frameCentre) - anchor)
-/// where P stretches x by `pixelAspect` (anamorphic sources) and R rotates clockwise on screen.
+///   canvas = canvasCentre + position + C * R(rotation) * diag(scale * aspectX, scale) * (P * (src - frameCentre) - anchor)
+/// where P stretches x by `pixelAspect` (anamorphic sources, in the frame's own axes), R rotates clockwise on screen and
+/// C divides x by the canvas's own ratio (`canvas.pixelAspect`; 1 for square canvas pixels): the picture is turned in the
+/// shape it is seen in (the monitor widens the canvas by its ratio) and only then measured in canvas pixels, so a rotated
+/// clip stays a rigid picture on a non-square sequence. Anchor, rotation and scale are in seen units; the position in
+/// canvas pixels.
 Affine2D layerToCanvas(const LayerTransform& transform, double frameWidth, double frameHeight,
                        double pixelAspect, CanvasSize canvas);
+
+/// The quarter turns (0..3) a layer transform carries for a stream whose display orientation is "rotate clockwise by
+/// `quarterTurns`, then, if `mirrored`, flip the picture horizontally" (FrameHandle.h Orientation). A mirrored stream is
+/// turned the other way round and flipped before the turn (a flip then a turn is a turn the other way then a flip):
+/// 90 degrees clockwise + mirrored is 270 degrees + mirrorX.
+constexpr int transformQuarterTurns(int quarterTurns, bool mirrored) {
+    const int q = ((quarterTurns % 4) + 4) % 4;
+    return mirrored ? (4 - q) % 4 : q;
+}
+
+/// A clip's anchor (displayed pixels, as the model stores it) in the space of a stream turned by `quarter` (the value
+/// transformQuarterTurns gives) quarter turns; fromTransformAnchor is the way back.
+constexpr Vec2 toTransformAnchor(Vec2 a, int quarter) {
+    switch (((quarter % 4) + 4) % 4) {
+    case 1:
+        return {a.y, -a.x};
+    case 2:
+        return {-a.x, -a.y};
+    case 3:
+        return {-a.y, a.x};
+    default:
+        return a;
+    }
+}
+constexpr Vec2 fromTransformAnchor(Vec2 a, int quarter) {
+    switch (((quarter % 4) + 4) % 4) {
+    case 1:
+        return {-a.y, a.x};
+    case 2:
+        return {-a.x, -a.y};
+    case 3:
+        return {a.y, -a.x};
+    default:
+        return a;
+    }
+}
+
+/// Folds a stream's display orientation into `transform`, whose rotation and anchor hold the clip's own motion (the
+/// anchor in displayed pixels): the stream's pixels are stored unrotated and unmirrored, so the compositor turns (and
+/// flips) them before the clip's motion applies. Playback, the mask / motion overlays and the exports place a layer with
+/// the same transform.
+void applyDisplayOrientation(LayerTransform& transform, int quarterTurns, bool mirrored);
 
 } // namespace wabcut::render

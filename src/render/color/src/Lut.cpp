@@ -72,6 +72,26 @@ std::optional<int> integer(std::string_view s) {
     return v;
 }
 
+/// Where the '#' comment of a line starts (npos: none). A '#' inside the quotes of a TITLE line is part of the title
+/// ("Look #1", card #155), so on a TITLE line with an opening quote a comment can only start after the title's last
+/// quote; with no closing quote the first '#' decides (the title is refused as unclosed, as before).
+std::size_t commentStart(std::string_view line) {
+    const std::size_t hash = line.find('#');
+    if (hash == std::string_view::npos) {
+        return hash;
+    }
+    const std::string_view body = trim(line);
+    if (body.starts_with("TITLE") && (body.size() == 5 || isSpace(body[5]))) {
+        const std::string_view rest = trim(body.substr(5));
+        const std::size_t open = line.find('"');
+        const std::size_t last = line.rfind('"');
+        if (!rest.empty() && rest.front() == '"' && open != std::string_view::npos && last > open) {
+            return line.find('#', last);
+        }
+    }
+    return hash;
+}
+
 double lerp(double a, double b, double t) { return a + (b - a) * t; }
 
 /// x mapped from [lo, hi] to [0, 1], clamped (NaN -> 0).
@@ -121,7 +141,7 @@ std::expected<Lut, Error> parseCube(std::string_view text) {
         std::string_view line = text.substr(pos, end - pos);
         pos = end + 1;
         ++lineNumber;
-        if (const std::size_t hash = line.find('#'); hash != std::string_view::npos) {
+        if (const std::size_t hash = commentStart(line); hash != std::string_view::npos) {
             line = line.substr(0, hash);
         }
         line = trim(line);
@@ -294,7 +314,11 @@ std::string writeCube(const Lut& lut) {
         out += '\n';
     };
     if (!lut.title.empty()) {
-        line(std::format("TITLE \"{}\"", lut.title));
+        // The title is one line: a line break in it would end the TITLE line early (a '#' or a quote in it is fine).
+        std::string title = lut.title;
+        std::ranges::replace(title, '\n', ' ');
+        std::ranges::replace(title, '\r', ' ');
+        line(std::format("TITLE \"{}\"", title));
     }
     const auto rgb = [](const Rgb& v) { return std::format("{:.9g} {:.9g} {:.9g}", v[0], v[1], v[2]); };
     if (lut.has1d() && lut.has3d()) {

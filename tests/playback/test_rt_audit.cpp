@@ -761,3 +761,143 @@ TEST_CASE("The callback never allocates or locks with submixes and sends: routin
     CHECK(audio::rt::lockViolations() == locksBefore);
     CHECK(rig.player->stats().underrunFrames == 0);
 }
+
+TEST_CASE("The callback never allocates or locks with Dynamics Processing on a clip, a track and the master, through live edits",
+          "[playback][rt][effects][dynamics]") {
+    // 0.7 (card 044): four bands with the lookahead limiter and the auto gate on, the clip's threshold animated; a live
+    // threshold edit, a band-count change (the processor is rebuilt on the feeder) and a second instance on the master.
+    Project p;
+    SyntheticSignal noise;
+    noise.kind = SyntheticSignal::Kind::Noise;
+    noise.amplitude = 0.4f;
+    p.media('A', noise);
+    SyntheticSignal tone;
+    tone.kind = SyntheticSignal::Kind::Sine;
+    tone.frequency = 180.0;
+    tone.amplitude = 0.6f;
+    p.media('B', tone);
+    auto fx = [&](const char* id, std::vector<EffectParam> params) {
+        EffectInstance e;
+        e.id = p.state.ids.allocate<EffectInstanceId>();
+        e.effect = id;
+        for (EffectParam& param : params) {
+            e.set(std::move(param.key), std::move(param.value));
+        }
+        return e;
+    };
+    const char* const dynamics = "wabcut.audio.dynamicsProcessing";
+    p.addTrack({{'A', Ticks{}, ms(3000), Ticks{}}});
+    p.addTrack({{'B', ms(100), ms(3000), Ticks{}, -3.0, 0.3}});
+    {
+        Track a1 = p.track(0);
+        a1.clips.mutableAt(0).setEffects(
+            {fx(dynamics, {{"limiterEnable", ParamValue(1.0)}, {"autoGate", ParamValue(1.0)}, {"autoGateThreshold", ParamValue(-60.0)},
+                           {"band1Threshold", ParamValue(Curve{{Keyframe{ms(0), -30.0}, Keyframe{ms(2000), -12.0}}})},
+                           {"band2Mode", ParamValue(1.0)}, {"band3Mode", ParamValue(2.0)}, {"band4Mode", ParamValue(3.0)}})});
+        p.state = Project::withTrack(p.state, 0, a1);
+        Track a2 = p.track(1);
+        a2.effects = {fx(dynamics, {{"bandCount", ParamValue(2.0)}, {"band2Solo", ParamValue(1.0)}, {"mix", ParamValue(70.0)}})};
+        p.state = Project::withTrack(p.state, 1, a2);
+        Sequence seq = *p.state.sequences.front();
+        seq.audioEffects = {fx(dynamics, {{"bandCount", ParamValue(1.0)}, {"band1Mode", ParamValue(3.0)}, {"limiterEnable", ParamValue(1.0)}})};
+        p.state = p.state.withSequence(std::make_shared<const Sequence>(std::move(seq)));
+    }
+    Rig rig(p, Rig::Options{ms(2), ms(2), false, ms(30)});
+    rig.player->play();
+    rig.pullFor(300); // the processors are built and have run
+
+    const std::uint64_t allocationsBefore = g_realtimeAllocations.load();
+    const std::uint64_t locksBefore = audio::rt::lockViolations();
+    rig.pullFor(300);
+    for (int step = 0; step < 3; ++step) {
+        ProjectState next = *rig.session.snapshot();
+        Sequence seq = *next.sequences.front();
+        if (step == 0) {
+            seq.audioEffects[0].set("band1Threshold", ParamValue(-18.0));
+        } else if (step == 1) {
+            seq.audioEffects[0].set("bandCount", ParamValue(3.0));
+        } else {
+            EffectInstance second;
+            second.id = next.ids.allocate<EffectInstanceId>();
+            second.effect = dynamics;
+            second.set("bandCount", ParamValue(2.0));
+            seq.audioEffects.push_back(second);
+        }
+        next.sequences.front() = std::make_shared<const Sequence>(std::move(seq));
+        REQUIRE(rig.session.commit("master", std::move(next)));
+        rig.pullFor(150);
+    }
+    rig.player->seek(ms(1200));
+    rig.pullFor(200);
+    rig.player->setLoop(TimeRange{ms(1300), ms(400)});
+    rig.pullFor(600);
+    rig.player->setLoop(std::nullopt);
+    for (const std::size_t size : {std::size_t{37}, std::size_t{1024}, std::size_t{4096}, std::size_t{1}}) {
+        rig.pull(size);
+    }
+    CHECK(g_realtimeAllocations.load() == allocationsBefore);
+    CHECK(audio::rt::lockViolations() == locksBefore);
+    CHECK(rig.engine.stats().callbacks > 100);
+}
+
+TEST_CASE("The callback never allocates or locks with a 7.1 master downmixed for a stereo device", "[playback][rt][channels]") {
+    // 0.7 (card 048): the mix runs at 8 channels (7.1 track, 5.1 track, stereo track with a pan) and the callback converts
+    // it to the device's 2 (ITU-R BS.775); a live fader move and a master switch 7.1 -> 5.1 while playing included.
+    Project p;
+    SyntheticSignal tone;
+    tone.kind = SyntheticSignal::Kind::Sine;
+    tone.frequency = 330.0;
+    tone.channelGains = {1.0f, 0.5f};
+    p.media('A', tone);
+    p.addTrack({{'A', Ticks{}, ms(3000), Ticks{}}});
+    p.addTrack({{'A', ms(100), ms(2500), Ticks{}}});
+    p.addTrack({{'A', ms(200), ms(2500), Ticks{}}});
+    {
+        Track a1 = p.track(0);
+        ClipContent content = a1.clips[0].content();
+        content.channels = AudioChannelMap::fill(1);
+        a1.clips.mutableAt(0).setContent(std::move(content));
+        p.state = Project::withTrack(p.state, 0, a1);
+        Track a2 = p.track(1);
+        a2.format = ChannelFormat::Mono;
+        a2.surround = SurroundPan{ParamValue(0.4), ParamValue(-0.9), ParamValue(-10.0)};
+        p.state = Project::withTrack(p.state, 1, a2);
+        Track a3 = p.track(2);
+        a3.format = ChannelFormat::Surround51;
+        p.state = Project::withTrack(p.state, 2, a3);
+        Sequence seq = *p.state.sequences.front();
+        seq.masterFormat = ChannelFormat::Surround71;
+        p.state = p.state.withSequence(std::make_shared<const Sequence>(std::move(seq)));
+    }
+    Rig rig(p, Rig::Options{ms(2), ms(2), false, ms(30)});
+    rig.player->play();
+    rig.pullFor(200);
+
+    const std::uint64_t allocationsBefore = g_realtimeAllocations.load();
+    const std::uint64_t locksBefore = audio::rt::lockViolations();
+    rig.pullFor(300);
+    for (int k = 0; k < 20; ++k) {
+        REQUIRE(rig.player->setLiveTrackMix(p.track(0).id, -6.0 + 0.2 * k, std::nullopt));
+        rig.pull();
+    }
+    rig.player->clearLiveMix();
+    {
+        ProjectState next = *rig.session.snapshot();
+        Sequence seq = *next.sequences.front();
+        seq.masterFormat = ChannelFormat::Surround51;
+        next.sequences.front() = std::make_shared<const Sequence>(std::move(seq));
+        REQUIRE(rig.session.commit("master", std::move(next)));
+        rig.pullFor(200);
+    }
+    rig.player->seek(ms(1200));
+    rig.pullFor(200);
+    rig.player->setSpeed({2, 1});
+    rig.pullFor(100);
+    rig.player->setSpeed(audio::TransportSpeed::normal());
+    for (const std::size_t size : {std::size_t{37}, std::size_t{1024}, std::size_t{1}}) {
+        rig.pull(size);
+    }
+    CHECK(g_realtimeAllocations.load() == allocationsBefore);
+    CHECK(audio::rt::lockViolations() == locksBefore);
+    CHECK(rig.player->stats().underrunFrames == 0);
+}

@@ -4,6 +4,8 @@
 
 #include "VoiceOverBooth.h"
 
+#include <wabcut/audio/WavWriter.h>
+
 #include <catch2/catch_approx.hpp>
 
 #include <algorithm>
@@ -185,6 +187,7 @@ TEST_CASE("Punch-in at the playhead with a manual stop; a pass stopped before th
     const auto result = booth.recorder->stop();
     REQUIRE(result);
     CHECK_FALSE(result->punchedOut);
+    CHECK_FALSE(result->reachedLimit); // card 161: only a take that hit the WAV's ceiling says so
     CHECK(result->start == Ticks::fromSeconds(4));
     CHECK(result->duration > ms(1000));
     CHECK(result->duration < ms(1300));
@@ -219,6 +222,35 @@ TEST_CASE("Punch-in at the playhead with a manual stop; a pass stopped before th
     booth.input.stop();
     CHECK(booth.recorder->start(passOptions(dir / "y.wav", Ticks::fromSeconds(3), std::nullopt)).error().code ==
           ErrorCode::InvalidArgument);
+}
+
+// Card 161: a take with no punch-out that reaches the longest a WAV can be (4 GiB; here a 0.5 s cap) ends there cleanly -
+// the pass finishes (it does not fail), the file is a whole valid WAV, and the result says why it ended.
+TEST_CASE("A take that reaches the longest a WAV file can be ends there cleanly with a valid file", "[playback][voiceover]") {
+    Project p = programProject();
+    Booth booth(p, {.outputLatency = 256, .reportedInputLatency = 128, .actualInputLatency = 128, .maxTakeFrames = 24000});
+    const auto dir = voiceOverScratch("limit");
+    REQUIRE(booth.recorder->start(passOptions(dir / "long.wav", Ticks::fromSeconds(4), std::nullopt)));
+    REQUIRE(booth.runUntil(VoiceOverState::Recording, 3.0));
+    REQUIRE(booth.runUntil(VoiceOverState::Finished, 5.0)); // not Failed: the pass ends at the cap
+    CHECK(booth.recorder->status().state == VoiceOverState::Finished);
+    CHECK(booth.rig.engine.isPaused());
+    booth.run(300); // the writer keeps draining the input without writing more
+    const auto result = booth.recorder->stop();
+    REQUIRE(result);
+    CHECK(result->reachedLimit);
+    CHECK_FALSE(result->punchedOut);
+    CHECK(result->frames == 24000);
+    CHECK(result->start == Ticks::fromSeconds(4));
+    CHECK(result->duration == ms(500));
+    // The file holds exactly those frames and needs no repair.
+    const std::vector<float> take = wavSamples(result->file);
+    REQUIRE(take.size() == 24000);
+    CHECK(mismatches(p, take, 4 * 48000) == 0);
+    const auto inspected = audio::inspectWav(result->file);
+    REQUIRE(inspected);
+    CHECK_FALSE(inspected->needsRepair);
+    CHECK(inspected->frames == 24000);
 }
 
 TEST_CASE("A punch-in at the start of the sequence counts in before 0", "[playback][voiceover]") {

@@ -202,9 +202,7 @@ What is not done or not checked yet is under [Known issues](#known-issues).
 - Screen readers have not been checked by hand (NVDA, Narrator). The Effects panel's rows report keyboard focus to
   them, but whether a screen reader announces it is not confirmed, and folders say "open" or "closed" in their
   description instead of as an expanded state (that needs Qt 6.12).
-- A gap can only be selected and a timeline transition's menu only opened with the pointer; a lone panel's tab menu has
-  no key (its actions do: Ctrl+W, Shift+`, the pop-out button). The timecode field opens with a click, or from the
-  keyboard once the timecode has the focus.
+- The timecode field opens with a click, or from the keyboard once the timecode has the focus.
 - Applying a transition from the Effects panel puts it on both ends of each selected clip: Wabcut has no edit-point
   selection yet. Dragging it onto an edit point works as before.
 - The Library's thumbnail slider is in the icon view only (the Freeform view's card size is an edit with its own undo

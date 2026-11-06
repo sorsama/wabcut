@@ -25,6 +25,16 @@
 // requested size; present while any red is in the picture (objectScore +5 / -5), iou 0.9. --mode crash-on-track
 // crashes on the third tracked frame of a process, crash-gpu-segmentation on a segmentation load for any device but
 // "cpu".
+//
+// 0.7 process_picture (AI video effects): the picture is resampled to scale x its size (nearest) and the model adds its mark
+// to every value - drunet-color +1000, nafnet-deblur +2000, others 0 - so the tests see which models ran and in what order;
+// the tiles / tile / pad / sigma of the request are echoed in the reply (tiles = the count the real helper would run).
+// rife-v425-lite (frame interpolation, an "input2" picture and a "timestep") answers the cross-fade of the two pictures;
+// depth-anything-v2-small answers a nearness ramp from 0 at the left edge to 1 at the right; bisenet-face-parse answers a face map
+// of one fixed face (R skin: an ellipse over the middle half, G mouth: a bar low in it, B eyes: two bars high in it; all or nothing).
+// --mode crash-gpu-picture crashes on a picture-model load for any device but "cpu"; --picture-sleep MS delays an answer.
+
+#include "../video/FakeGaze.h"
 
 #include <wabcut/ai/search/EmbedProtocol.h>
 
@@ -139,6 +149,7 @@ int main(int argc, char** argv) {
     std::string mode = "normal";
     std::filesystem::path marker;
     std::filesystem::path exits;
+    int pictureSleep = 0;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string key = argv[i];
         if (key == "--dim") {
@@ -151,6 +162,8 @@ int main(int argc, char** argv) {
             std::ofstream(argv[i + 1], std::ios::app) << "start\n";
         } else if (key == "--exits") {
             exits = argv[i + 1];
+        } else if (key == "--picture-sleep") {
+            pictureSleep = std::atoi(argv[i + 1]);
         }
     }
     if (mode == "crash-at-start") {
@@ -185,6 +198,9 @@ int main(int argc, char** argv) {
             if (mode == "crash-gpu-segmentation" && !load->segmentation.empty() && load->device != "cpu") {
                 std::_Exit(57); // AI-14: the same for the segmentation model
             }
+            if (mode == "crash-gpu-picture" && !load->pictures.empty() && load->device != "cpu") {
+                std::_Exit(57); // 0.7: DirectML taking the helper down while it creates a picture model's session
+            }
             if (mode == "fail-load") {
                 send(embed::Failure{load->id, "model", "no such model file"});
             } else {
@@ -195,7 +211,7 @@ int main(int argc, char** argv) {
         const bool embedding = std::holds_alternative<embed::EmbedImages>(*request) || std::holds_alternative<embed::EmbedText>(*request) ||
                                std::holds_alternative<embed::Detect>(*request) || std::holds_alternative<embed::EnhanceAudio>(*request) ||
                                std::holds_alternative<embed::SeparateAudio>(*request) || std::holds_alternative<embed::TranslateText>(*request) ||
-                               std::holds_alternative<embed::SegmentFrame>(*request);
+                               std::holds_alternative<embed::SegmentFrame>(*request) || std::holds_alternative<embed::ProcessPicture>(*request);
         if (embedding && mode == "crash-on-embed") {
             std::_Exit(57); // like a crash: no cleanup, no answer
         }
@@ -245,6 +261,105 @@ int main(int argc, char** argv) {
             std::ofstream(separate->output, std::ios::binary)
                 .write(reinterpret_cast<const char*>(stems.data()), static_cast<std::streamsize>(stems.size() * sizeof(float)));
             send(embed::AudioDone{separate->id, separate->audio.frames, 2, mode == "wrong-count" ? 3 : 4, 5.0, "FakeCPU"});
+            continue;
+        }
+        if (const auto* pic = std::get_if<embed::ProcessPicture>(&*request)) {
+            if (pictureSleep > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(pictureSleep));
+            }
+            auto rgb = embed::readPictureFile(pic->input);
+            if (!rgb) {
+                send(embed::Failure{pic->id, "io", rgb.error().message});
+                continue;
+            }
+            if (!pic->input2.path.empty()) {
+                // 0.7 frame interpolation: the two pictures mixed by the timestep (a straight cross-fade, the same size).
+                auto second = embed::readPictureFile(pic->input2);
+                if (!second || second->size() != rgb->size()) {
+                    send(embed::Failure{pic->id, "io", "cannot read the second picture"});
+                    continue;
+                }
+                std::vector<std::uint16_t> mixed(rgb->size());
+                for (std::size_t i = 0; i < mixed.size(); ++i) {
+                    mixed[i] = static_cast<std::uint16_t>(std::lround((*rgb)[i] + ((*second)[i] - static_cast<double>((*rgb)[i])) * pic->timestep));
+                }
+                if (!embed::writePictureFile(pic->output, pic->input.width, pic->input.height, mixed)) {
+                    send(embed::Failure{pic->id, "io", "cannot write the output"});
+                    continue;
+                }
+                send(embed::PictureDone{pic->id, pic->input.width, pic->input.height, 1, 5.0, "FakeCPU"});
+                continue;
+            }
+            if (pic->model == "depth-anything-v2-small") {
+                // 0.7 depth: nearness grows from the left edge (0, far) to the right edge (1, near), all three channels.
+                std::vector<std::uint16_t> depth(rgb->size());
+                const int width = pic->input.width;
+                for (std::size_t i = 0; i < depth.size() / 3; ++i) {
+                    const int x = static_cast<int>(i % static_cast<std::size_t>(width));
+                    const auto v = static_cast<std::uint16_t>(std::lround(65535.0 * x / std::max(1, width - 1)));
+                    depth[3 * i] = v;
+                    depth[3 * i + 1] = v;
+                    depth[3 * i + 2] = v;
+                }
+                if (!embed::writePictureFile(pic->output, pic->input.width, pic->input.height, depth)) {
+                    send(embed::Failure{pic->id, "io", "cannot write the output"});
+                    continue;
+                }
+                send(embed::PictureDone{pic->id, pic->input.width, pic->input.height, 1, 5.0, "FakeCPU"});
+                continue;
+            }
+            if (pic->model == "mediapipe-face-landmarks") {
+                // 0.7 eye measurements: the landmark table of one fixed face looking down by 12 % of the eye's width (ai/video/Gaze.h).
+                const wabcut::ai::video::Picture table = wabcut::ai::video::test::fakeGazeTable(pic->input.width, pic->input.height);
+                if (!embed::writePictureFile(pic->output, table.width, table.height, table.rgb)) {
+                    send(embed::Failure{pic->id, "io", "cannot write the output"});
+                    continue;
+                }
+                send(embed::PictureDone{pic->id, table.width, table.height, 1, 5.0, "FakeCPU"});
+                continue;
+            }
+            if (pic->model == "bisenet-face-parse") {
+                // 0.7 face map: skin, mouth and eyes of one fixed face; the same size as the picture.
+                std::vector<std::uint16_t> faces(rgb->size(), 0);
+                const int width = pic->input.width;
+                const int height = pic->input.height;
+                for (std::size_t i = 0; i < faces.size() / 3; ++i) {
+                    const double u = (static_cast<double>(i % static_cast<std::size_t>(width)) + 0.5) / width;
+                    const double v = (static_cast<double>(i / static_cast<std::size_t>(width)) + 0.5) / height;
+                    const double ex = (u - 0.5) / 0.25;
+                    const double ey = (v - 0.5) / 0.35;
+                    const bool mouth = u > 0.42 && u < 0.58 && v > 0.62 && v < 0.68;
+                    const bool eyes = v > 0.38 && v < 0.42 && ((u > 0.35 && u < 0.43) || (u > 0.57 && u < 0.65));
+                    faces[3 * i] = ex * ex + ey * ey < 1.0 && !mouth && !eyes ? 65535 : 0;
+                    faces[3 * i + 1] = mouth ? 65535 : 0;
+                    faces[3 * i + 2] = eyes ? 65535 : 0;
+                }
+                if (!embed::writePictureFile(pic->output, width, height, faces)) {
+                    send(embed::Failure{pic->id, "io", "cannot write the output"});
+                    continue;
+                }
+                send(embed::PictureDone{pic->id, width, height, 1, 5.0, "FakeCPU"});
+                continue;
+            }
+            const int w = pic->input.width * pic->scale;
+            const int h = pic->input.height * pic->scale;
+            const int mark = pic->model == "drunet-color" ? 1000 : pic->model == "nafnet-deblur" ? 2000 : 0;
+            std::vector<std::uint16_t> out(static_cast<std::size_t>(w) * h * 3);
+            for (int y = 0; y < h; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    for (int c = 0; c < 3; ++c) {
+                        const int v = (*rgb)[(static_cast<std::size_t>(y / pic->scale) * pic->input.width + x / pic->scale) * 3 + c] + mark;
+                        out[(static_cast<std::size_t>(y) * w + x) * 3 + c] = static_cast<std::uint16_t>(std::min(v, 65535));
+                    }
+                }
+            }
+            if (!embed::writePictureFile(pic->output, w, h, out)) {
+                send(embed::Failure{pic->id, "io", "cannot write the output"});
+                continue;
+            }
+            const int cols = (pic->input.width + pic->tile - 1) / pic->tile;
+            const int rows = (pic->input.height + pic->tile - 1) / pic->tile;
+            send(embed::PictureDone{pic->id, w, h, cols * rows, 5.0, "FakeCPU"});
             continue;
         }
         if (const auto* seg = std::get_if<embed::SegmentFrame>(&*request)) {

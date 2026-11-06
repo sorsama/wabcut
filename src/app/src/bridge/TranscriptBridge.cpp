@@ -2,10 +2,13 @@
 
 #include "AiController.h"
 #include "BridgeIds.h"
+#include "LocalModelsController.h"
 #include "ProjectController.h"
 
 #include <wabcut/ai/AnalysisCache.h>
 #include <wabcut/ai/Capability.h>
+#include <wabcut/ai/HttpDownload.h>
+#include <wabcut/ai/SpokenLanguages.h>
 #include <wabcut/ai/TranscribeService.h>
 #include <wabcut/ai/TranscriptRedaction.h>
 #include <wabcut/ai/TranscriptJson.h>
@@ -32,6 +35,7 @@
 #include <QTextBoundaryFinder>
 
 #include <algorithm>
+#include <map>
 #include <optional>
 #include <cmath>
 #include <cstdio>
@@ -108,6 +112,16 @@ bool defaultVoice(const Track& track) {
 }
 } // namespace
 
+/// 0.7 (card 111): "English", "Thai" for a language code of the transcript ("th-TH" works too); the code itself when it is
+/// not one of the recogniser's languages, "" for "".
+static QString languageDisplayName(std::string_view code) {
+    if (code.empty())
+        return {};
+    if (const ai::SpokenLanguage* language = ai::findSpokenLanguage(code))
+        return QString::fromUtf8(language->name.data(), static_cast<qsizetype>(language->name.size()));
+    return QString::fromUtf8(code.data(), static_cast<qsizetype>(code.size()));
+}
+
 Ticks seekPointIn(const TimeRange& range, Rate rate) {
     const Ticks snapped = snapToFrame(range.start, rate);
     const Ticks next = snapped + framesToTicks(1, rate);
@@ -123,7 +137,8 @@ int TranscriptParagraphModel::rowCount(const QModelIndex& parent) const {
 QHash<int, QByteArray> TranscriptParagraphModel::roleNames() const {
     return {{SpeakerRole, "speaker"}, {TimeRole, "timeText"}, {FirstRole, "first"},
             {LastRole, "last"},       {WordsRole, "words"},   {SpeakerIndexRole, "speakerIndex"},
-            {SpeakerKeyRole, "speakerKey"}, {SpeakerColorRole, "speakerColor"}};
+            {SpeakerKeyRole, "speakerKey"}, {SpeakerColorRole, "speakerColor"},
+            {LanguageRole, "language"},     {LanguageNameRole, "languageName"}};
 }
 
 QVariant TranscriptParagraphModel::data(const QModelIndex& index, int role) const {
@@ -139,6 +154,8 @@ QVariant TranscriptParagraphModel::data(const QModelIndex& index, int role) cons
     case SpeakerIndexRole: return p.speakerIndex;
     case SpeakerKeyRole: return p.speakerKey;
     case SpeakerColorRole: return p.speakerColor;
+    case LanguageRole: return p.language;
+    case LanguageNameRole: return p.languageName;
     default: return {};
     }
 }
@@ -150,7 +167,8 @@ QVariantMap TranscriptParagraphModel::get(int row) const {
     return {{QStringLiteral("speaker"), p.speaker}, {QStringLiteral("timeText"), p.timeText},
             {QStringLiteral("first"), p.first},     {QStringLiteral("last"), p.last},
             {QStringLiteral("words"), p.words},     {QStringLiteral("speakerIndex"), p.speakerIndex},
-            {QStringLiteral("speakerKey"), p.speakerKey}, {QStringLiteral("speakerColor"), p.speakerColor}};
+            {QStringLiteral("speakerKey"), p.speakerKey}, {QStringLiteral("speakerColor"), p.speakerColor},
+            {QStringLiteral("language"), p.language}, {QStringLiteral("languageName"), p.languageName}};
 }
 
 void TranscriptParagraphModel::reset(std::vector<Paragraph> paragraphs) {
@@ -167,6 +185,14 @@ void TranscriptParagraphModel::reset(std::vector<Paragraph> paragraphs) {
 TranscriptBridge::TranscriptBridge(QObject* parent)
     : QObject(parent), m_paragraphs(new TranscriptParagraphModel(this)),
       m_session(std::make_shared<ai::edit::MapTranscriptProvider>()) {
+    // Card 073: the language last chosen (an unknown code from an older or edited setting falls back to auto-detect).
+    const QSettings settings;
+    const QString saved = settings.value(QStringLiteral("transcript/spokenLanguage"), QStringLiteral("auto")).toString();
+    m_spokenLanguage = QString::fromStdString(ai::spokenLanguageCode(saved.toStdString()));
+    if (m_spokenLanguage.isEmpty())
+        m_spokenLanguage = QStringLiteral("auto");
+    m_translate = settings.value(QStringLiteral("transcript/translateToEnglish"), false).toBool();
+    m_mixed = settings.value(QStringLiteral("transcript/mixedLanguages"), false).toBool(); // 0.7 (card 111)
     setUseAnalysisCache(true);
 }
 
@@ -192,9 +218,11 @@ void TranscriptBridge::setUseAnalysisCache(bool use) {
     m_useCache = use;
     m_chain = std::make_shared<ai::edit::TranscriptProviderChain>();
     m_chain->add(m_session);
+    m_cached.reset();
     if (use) {
         const std::filesystem::path project = m_controller ? m_controller->projectFile() : std::filesystem::path();
-        m_chain->add(std::make_shared<ai::edit::CachedTranscriptProvider>(ai::AnalysisCache::defaultRoot(), project));
+        m_cached = std::make_shared<ai::edit::CachedTranscriptProvider>(ai::AnalysisCache::defaultRoot(), project);
+        m_chain->add(m_cached);
     }
     m_services = std::make_shared<ai::edit::TranscriptServices>(m_chain);
     if (m_controller)
@@ -226,7 +254,28 @@ void TranscriptBridge::setAiController(AiController* ai) {
         disconnect(m_ai, nullptr, this, nullptr);
     m_ai = ai;
     if (m_ai) {
-        connect(m_ai, &AiController::modelsChanged, this, &TranscriptBridge::providersChanged);
+        // r07: the panel's engine follows Settings > AI > Features (transcribe) until the user picks one here: an
+        // explicit cloud model, else whisper.cpp on this computer, else the first usable cloud model.
+        const auto follow = [this] {
+            if (m_providerPicked || !m_ai) {
+                return;
+            }
+            QString routed = QStringLiteral("local");
+            std::error_code missing;
+            if (const QString chosen = m_ai->defaultModel(QStringLiteral("transcribe")); !chosen.isEmpty()) {
+                routed = QStringLiteral("cloud:") + chosen;
+            } else if (!std::filesystem::exists(ai::defaultInferExecutable(), missing)) {
+                if (const QString cloud = m_ai->routedModel(QStringLiteral("transcribe")); !cloud.isEmpty()) {
+                    routed = QStringLiteral("cloud:") + cloud;
+                }
+            }
+            m_provider = routed;
+        };
+        follow();
+        connect(m_ai, &AiController::modelsChanged, this, [this, follow] {
+            follow();
+            emit providersChanged();
+        });
         // A cloud transcription job holds the platform (TranscribeServiceConfig::platform): it stops and is joined
         // before AiController destroys it (review wave 4, P2-4).
         connect(m_ai, &AiController::shuttingDown, this, [this] {
@@ -273,6 +322,10 @@ QString TranscriptBridge::language() const {
     return m_transcript.empty() ? QString() : fromStd(m_transcript.language(0));
 }
 
+bool TranscriptBridge::rtl() const {
+    return ai::isRightToLeftLanguage(language().toStdString());
+}
+
 void TranscriptBridge::rebuild() {
     cancelReview();
     if (!m_controller)
@@ -298,6 +351,11 @@ void TranscriptBridge::onModelChanged() {
     cancelReview();
     if (!m_controller)
         return;
+    // 0.7 (card 061): custom words changed (an edit, undo, another project).
+    if (const QString words = customWords(); words != m_customWordsShown) {
+        m_customWordsShown = words;
+        emit customWordsChanged();
+    }
     const ProjectSnapshot next = m_controller->snapshot();
     if (!m_mapped || m_transcript.sequence() != m_controller->currentSequenceId()) {
         rebuild();
@@ -356,15 +414,35 @@ void TranscriptBridge::rebuildParagraphs() {
             return {1, w.speakerId.value};
         return w.speaker ? std::pair<int, std::uint64_t>{2, static_cast<std::uint64_t>(*w.speaker)} : std::pair<int, std::uint64_t>{0, 0};
     };
+    // 0.7 (card 111): a transcript of mixed languages starts a paragraph where the language changes and names each one;
+    // "English 62 % · Thai 38 %" says how the words divide (most first).
+    std::map<std::string, std::size_t> languageWords;
+    for (std::size_t i = 0; i < n; ++i)
+        ++languageWords[std::string(m_transcript.language(i))];
+    const bool mixedLanguages = languageWords.size() > 1;
+    m_languageSummary.clear();
+    if (mixedLanguages) {
+        std::vector<std::pair<std::string, std::size_t>> ordered(languageWords.begin(), languageWords.end());
+        std::stable_sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+        QStringList parts;
+        for (const auto& [code, words] : ordered)
+            parts << tr("%1 %2 %").arg(languageDisplayName(code)).arg(std::lround(100.0 * static_cast<double>(words) / static_cast<double>(n)));
+        m_languageSummary = parts.join(QStringLiteral(" · "));
+    }
     for (std::size_t i = 0; i < n; ++i) {
         const ai::edit::TimelineWord& w = m_transcript[i];
         const ai::edit::TimelineWord* previous = rows.empty() ? nullptr : &m_transcript[static_cast<std::size_t>(rows.back().last)];
+        const bool languageChanged = mixedLanguages && previous &&
+                                     m_transcript.language(i) != m_transcript.language(static_cast<std::size_t>(rows.back().last));
         const bool start = !previous || speakerOfWord(w) != speakerOfWord(*previous)
                         || w.timeline.start - previous->timeline.end() >= kParagraphPause
-                        || static_cast<std::size_t>(rows.back().last - rows.back().first + 1) >= kParagraphWords;
+                        || static_cast<std::size_t>(rows.back().last - rows.back().first + 1) >= kParagraphWords
+                        || languageChanged;
         if (start) {
             TranscriptParagraphModel::Paragraph p;
             p.first = static_cast<int>(i);
+            p.language = fromStd(m_transcript.language(i));
+            p.languageName = mixedLanguages ? languageDisplayName(m_transcript.language(i)) : QString();
             p.speakerIndex = w.speaker.value_or(-1);
             const Speaker* named = w.speakerId.isValid() && m_mapped ? m_mapped->findSpeaker(w.speakerId) : nullptr;
             if (named) {
@@ -429,6 +507,17 @@ bool TranscriptBridge::isRemoving(int word) const {
 
 bool TranscriptBridge::isMatch(int word) const {
     return word >= 0 && m_matchWords.contains(static_cast<std::size_t>(word));
+}
+
+QVariantMap TranscriptBridge::selectionTimeSpan() const {
+    const std::vector<ai::edit::WordRange> ranges = selectionRanges();
+    if (ranges.empty() || ranges.front().last >= m_transcript.size())
+        return {};
+    const Ticks start = m_transcript[ranges.front().first].timeline.start;
+    const Ticks end = m_transcript[ranges.front().last].timeline.end();
+    return QVariantMap{{QStringLiteral("text"), selectedText()},
+                       {QStringLiteral("start"), static_cast<qlonglong>(start.value)},
+                       {QStringLiteral("duration"), static_cast<qlonglong>(std::max<std::int64_t>(0, (end - start).value))}};
 }
 
 std::vector<ai::edit::WordRange> TranscriptBridge::selectionRanges() const {
@@ -847,13 +936,27 @@ void TranscriptBridge::setAllReviewRemove(bool remove) {
 
 // ---- Transcription ----------------------------------------------------------------------------------
 
+namespace {
+/// The local whisper model's short name ("large-v3-turbo, 5-bit"), from its manifest description.
+QString localWhisperName() {
+    const QString id = LocalModelsController::transcriptionModelId();
+    const ai::ModelInfo* m = ai::findModel(id.toStdString());
+    if (!m)
+        return id;
+    QString name = QString::fromStdString(m->description.substr(0, m->description.find('(')));
+    if (name.startsWith(QLatin1String("Whisper ")))
+        name = name.mid(8);
+    return name.trimmed();
+}
+} // namespace
+
 QVariantList TranscriptBridge::providers() const {
     QVariantList out;
     const bool local = std::filesystem::exists(ai::defaultInferExecutable());
     out.append(QVariantMap{
         {QStringLiteral("id"), QStringLiteral("local")},
         {QStringLiteral("label"), tr("On this computer")},
-        {QStringLiteral("detail"), tr("whisper.cpp, private, free")},
+        {QStringLiteral("detail"), tr("whisper.cpp %1, private, free").arg(localWhisperName())},
         {QStringLiteral("available"), local},
         {QStringLiteral("reason"), local ? QString() : tr("Local transcription is not part of this build")},
     });
@@ -887,13 +990,14 @@ bool TranscriptBridge::setupNeeded() const {
 }
 
 void TranscriptBridge::setProvider(const QString& id) {
+    m_providerPicked = true; // r07: the user's pick for this session wins over Settings > AI
     if (id == m_provider)
         return;
     m_provider = id;
     emit providersChanged();
 }
 
-std::vector<TranscriptBridge::JobItem> TranscriptBridge::jobItems(const QString& scope) const {
+std::vector<TranscriptBridge::JobItem> TranscriptBridge::jobItems(const QString& scope, ItemFilter filter) const {
     std::vector<JobItem> items;
     if (!m_controller)
         return items;
@@ -904,6 +1008,9 @@ std::vector<TranscriptBridge::JobItem> TranscriptBridge::jobItems(const QString&
     std::set<std::uint64_t> wanted;
     if (scope == QLatin1String("selection")) {
         const std::vector<ClipId> clips = m_controller->selection();
+        // Deleting what is stored (card 080) never falls back to the whole sequence when nothing is selected.
+        if (clips.empty() && filter == ItemFilter::Present)
+            return items;
         for (ClipId c : edit::withLinkedClips(*seq, clips))
             wanted.insert(c.value);
     }
@@ -923,27 +1030,30 @@ std::vector<TranscriptBridge::JobItem> TranscriptBridge::jobItems(const QString&
             if (!media || media->isGenerator() || clip.stream.index < 0
                 || clip.stream.index >= static_cast<int>(media->info.audio.size()))
                 continue;
-            if (m_chain->transcript(*media, clip.stream.index))
-                continue; // transcribed already
+            const bool transcribed = m_chain->transcript(*media, clip.stream.index) != nullptr;
+            if ((filter == ItemFilter::Missing && transcribed) || (filter == ItemFilter::Present && !transcribed))
+                continue;
             const auto path = resolveMediaPath(media->locator, m_controller->projectFile());
-            if (!path || !std::filesystem::is_regular_file(*path))
+            // A job reads the file; deleting what is stored (card 080) does not need it to be there.
+            const bool present = path && std::filesystem::is_regular_file(*path);
+            if (!present && filter != ItemFilter::Present)
                 continue;
             items.push_back({media->id, clip.stream.index, media->info.audio[static_cast<std::size_t>(clip.stream.index)].index,
-                             pathToUtf8(*path)});
+                             path ? pathToUtf8(*path) : std::string()});
         }
     }
     return items;
 }
 
-QVariantMap TranscriptBridge::consentFor(const QString& scope) const {
+QVariantMap TranscriptBridge::consentFor(const QString& scope, bool redo) const {
     if (!m_ai || !m_provider.startsWith(QLatin1String("cloud:")))
         return {};
-    const std::vector<JobItem> items = jobItems(scope);
+    const std::vector<JobItem> items = jobItems(scope, redo ? ItemFilter::All : ItemFilter::Missing);
     return m_ai->consentPrompt(m_provider.mid(6), QStringLiteral("transcribe"),
                                tr("the audio of %n media file(s)", nullptr, static_cast<int>(items.size())));
 }
 
-QString TranscriptBridge::transcribe(const QString& scope, bool allowOnce) {
+QString TranscriptBridge::transcribe(const QString& scope, bool allowOnce, bool redo) {
     if (m_jobStatus == QLatin1String("running"))
         return tr("A transcription is running");
     // Consent is enforced here and by the guarded platform call, not only by the panel that asks for it (AI-6).
@@ -960,7 +1070,7 @@ QString TranscriptBridge::transcribe(const QString& scope, bool allowOnce) {
             return m_message;
         }
     }
-    std::vector<JobItem> items = jobItems(scope);
+    std::vector<JobItem> items = jobItems(scope, redo ? ItemFilter::All : ItemFilter::Missing);
     if (items.empty()) {
         // Selected clips heard only on tracks switched off under Tracks: say so, and which tracks (fix round 1: the
         // message below blamed transcripts or missing files).
@@ -988,10 +1098,62 @@ QString TranscriptBridge::transcribe(const QString& scope, bool allowOnce) {
                 return m_message;
             }
         }
-        setMessage(tr("Nothing to transcribe: every clip here has a transcript, or its media file is missing"));
+        setMessage(redo ? tr("Nothing to transcribe again: no clip here has sound with a media file to read")
+                        : tr("Nothing to transcribe: every clip here has a transcript, or its media file is missing"));
         return m_message;
     }
-    return startJob(std::move(items), allowOnce);
+    return startJob(std::move(items), allowOnce, redo);
+}
+
+int TranscriptBridge::transcriptCount(const QString& scope) const {
+    return static_cast<int>(jobItems(scope, ItemFilter::Present).size());
+}
+
+QString TranscriptBridge::deleteTranscript(const QString& scope) {
+    if (m_jobStatus == QLatin1String("running"))
+        return tr("A transcription is running");
+    const std::vector<JobItem> items = jobItems(scope, ItemFilter::Present);
+    if (items.empty()) {
+        setMessage(tr("Nothing to delete: no transcript of this audio is stored"));
+        return m_message;
+    }
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    int deleted = 0;
+    for (const JobItem& item : items) {
+        const MediaItem* media = snap ? snap->findMedia(item.media) : nullptr;
+        if (!media)
+            continue;
+        const QString why = deleteMediaTranscript(item.media, item.audioStream, false);
+        if (!why.isEmpty()) {
+            setMessage(why);
+            if (deleted > 0)
+                rebuild();
+            return why;
+        }
+        ++deleted;
+    }
+    rebuild();
+    setMessage(tr("Deleted the transcript of %n file(s)", nullptr, deleted));
+    return {};
+}
+
+QString TranscriptBridge::deleteMediaTranscript(MediaId media, int audioStream, bool refresh) {
+    if (m_jobStatus == QLatin1String("running"))
+        return tr("A transcription is running");
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    const MediaItem* item = snap ? snap->findMedia(media) : nullptr;
+    if (!item)
+        return tr("This clip has no sound to transcribe");
+    m_session->remove(media, audioStream);
+    if (m_cached) {
+        if (const auto removed = m_cached->remove(*item, audioStream); !removed)
+            return tr("Cannot delete the transcript: %1").arg(fromStd(removed.error().message));
+    }
+    if (refresh) {
+        rebuild(); // the words leave the Transcript tab (and the Source Monitor's, which follows transcriptChanged)
+        setMessage(tr("Deleted the transcript of this clip"));
+    }
+    return {};
 }
 
 QVariantMap TranscriptBridge::consentForMedia() const {
@@ -1000,7 +1162,7 @@ QVariantMap TranscriptBridge::consentForMedia() const {
     return m_ai->consentPrompt(m_provider.mid(6), QStringLiteral("transcribe"), tr("the audio of %n media file(s)", nullptr, 1));
 }
 
-QString TranscriptBridge::transcribeMedia(MediaId media, int audioStream, bool allowOnce) {
+QString TranscriptBridge::transcribeMedia(MediaId media, int audioStream, bool allowOnce, bool redo) {
     if (m_jobStatus == QLatin1String("running"))
         return tr("A transcription is running");
     if (m_provider.startsWith(QLatin1String("cloud:")) && m_ai && !allowOnce &&
@@ -1012,7 +1174,7 @@ QString TranscriptBridge::transcribeMedia(MediaId media, int audioStream, bool a
         setMessage(tr("This clip has no sound to transcribe"));
         return m_message;
     }
-    if (m_chain->transcript(*item, audioStream)) {
+    if (!redo && m_chain->transcript(*item, audioStream)) {
         setMessage(tr("This clip has a transcript already"));
         return m_message;
     }
@@ -1023,10 +1185,26 @@ QString TranscriptBridge::transcribeMedia(MediaId media, int audioStream, bool a
     }
     std::vector<JobItem> items{{item->id, audioStream, item->info.audio[static_cast<std::size_t>(audioStream)].index,
                                 pathToUtf8(*path)}};
-    return startJob(std::move(items), allowOnce);
+    return startJob(std::move(items), allowOnce, redo);
 }
 
-QString TranscriptBridge::startJob(std::vector<JobItem> items, bool allowOnce) {
+QString TranscriptBridge::startJob(std::vector<JobItem> items, bool allowOnce, bool redo) {
+    // Card 073: the language to name, and translating to English (the local transcriber's task).
+    const std::string language = m_spokenLanguage.toStdString();
+    const bool translate = m_translate;
+    if (translate && !m_fakeTranscribers.contains(m_provider) && m_provider != QLatin1String("local"))
+        return tr("Translating to English runs on this computer: choose “On this computer” as the transcriber");
+    if (translate && !ai::modelCanTranslate(LocalModelsController::transcriptionModelId().toStdString()))
+        return tr("The chosen transcription model only knows English and cannot translate: pick another in Settings > AI > Local models");
+    // 0.7 (card 111): mixed languages: each stretch of speech in its own language - with auto-detect, on this computer,
+    // with a model that knows more than English.
+    const bool mixed = m_mixed && language == "auto" && !translate;
+    if (mixed && !m_fakeTranscribers.contains(m_provider) && m_provider != QLatin1String("local"))
+        return tr("Mixed languages are told apart on this computer: choose “On this computer” as the transcriber");
+    if (mixed && !ai::modelCanTranslate(LocalModelsController::transcriptionModelId().toStdString()))
+        return tr("The chosen transcription model only knows English and cannot tell languages apart: pick another in Settings > AI > Local models");
+    if (m_jobObserver)
+        m_jobObserver(m_spokenLanguage, translate, redo);
     // Review P1-3: what the project bleeps or mutes is silenced before any transcriber hears it (TranscribeSource::
     // redacted) and never comes back as words (every result is redacted below, whatever made it). Per file: every media
     // item of the project that plays it adds its redactions - two items of one file share its transcript (review
@@ -1082,12 +1260,29 @@ QString TranscriptBridge::startJob(std::vector<JobItem> items, bool allowOnce) {
         }
         ai::TranscribeServiceConfig config;
         config.platform = m_ai ? &m_ai->platform() : nullptr;
+        // r07: the whisper model chosen in Settings > AI > Local models (or the automatic one), downloaded on first use
+        // through the AI network stack (offline mode and the no-cloud lock block it) together with the VAD model.
+        std::shared_ptr<ai::HttpDownloadTransport> downloads;
+        if (m_ai) {
+            downloads = std::make_shared<ai::HttpDownloadTransport>(m_ai->transport());
+            config.local.download = downloads.get();
+        }
+        const std::string whisperModel = LocalModelsController::transcriptionModelId().toStdString();
         auto service = std::make_shared<ai::TranscribeService>(std::move(config));
-        transcriber = [service, provider, allowOnce, redacted](const std::string& path, int stream,
-                                                               const std::function<void(float)>& progress,
-                                                               std::stop_token stop) -> std::expected<ai::Transcript, Error> {
+        // 0.7 (card 061): the project's custom words (names, jargon), taken now: the job runs on another thread.
+        const std::vector<std::string> vocabulary = m_controller && m_controller->snapshot() ? m_controller->snapshot()->customWords
+                                                                                         : std::vector<std::string>{};
+        transcriber = [service, downloads, whisperModel, provider, allowOnce, redacted, language, translate, mixed, redo, vocabulary](
+                          const std::string& path, int stream, const std::function<void(float)>& progress,
+                          std::stop_token stop) -> std::expected<ai::Transcript, Error> {
             ai::TranscribeJobOptions options;
             options.provider = provider;
+            options.language = language;
+            options.translate = translate;
+            options.mixedLanguages = mixed; // 0.7 (card 111)
+            options.useCache = !redo; // redo: transcribe again and replace (the old transcript stays until this one is done)
+            options.vocabulary = vocabulary;
+            options.local.model = whisperModel;
             options.allowOnce = allowOnce; // only the user's answer; otherwise the platform requires recorded consent
             const auto ranges = redacted.find(path);
             auto outcome = service->run(
@@ -1170,6 +1365,83 @@ void TranscriptBridge::finishJob(std::vector<std::pair<JobItem, std::expected<ai
               : !error.isEmpty() ? tr("Transcription failed: %1").arg(error)
                                  : tr("Transcribed %n file(s)", nullptr, done);
     emit jobChanged();
+}
+
+// ---- card 073: the language spoken ----------------------------------------------------------------------------
+
+void TranscriptBridge::setSpokenLanguage(const QString& code) {
+    const QString normalised = QString::fromStdString(ai::spokenLanguageCode(code.toStdString()));
+    if (normalised.isEmpty() || normalised == m_spokenLanguage)
+        return;
+    m_spokenLanguage = normalised;
+    QSettings().setValue(QStringLiteral("transcript/spokenLanguage"), normalised);
+    emit spokenLanguageChanged();
+}
+
+void TranscriptBridge::setTranslateToEnglish(bool on) {
+    if (on == m_translate)
+        return;
+    m_translate = on;
+    QSettings().setValue(QStringLiteral("transcript/translateToEnglish"), on);
+    emit spokenLanguageChanged();
+}
+
+void TranscriptBridge::setMixedLanguages(bool on) {
+    if (on == m_mixed)
+        return;
+    m_mixed = on;
+    QSettings().setValue(QStringLiteral("transcript/mixedLanguages"), on);
+    emit spokenLanguageChanged();
+}
+
+QVariantList TranscriptBridge::spokenLanguages() const {
+    QVariantList out;
+    std::vector<const ai::SpokenLanguage*> sorted;
+    for (const ai::SpokenLanguage& l : ai::spokenLanguages())
+        sorted.push_back(&l);
+    std::ranges::sort(sorted, [](const ai::SpokenLanguage* a, const ai::SpokenLanguage* b) { return a->name < b->name; });
+    for (const ai::SpokenLanguage* l : sorted) {
+        const QString name = QString::fromUtf8(l->name.data(), static_cast<qsizetype>(l->name.size()));
+        const QString native = QString::fromUtf8(l->nativeName.data(), static_cast<qsizetype>(l->nativeName.size()));
+        out.append(QVariantMap{
+            {QStringLiteral("code"), QString::fromUtf8(l->code.data(), static_cast<qsizetype>(l->code.size()))},
+            {QStringLiteral("name"), name},
+            {QStringLiteral("nativeName"), native},
+            {QStringLiteral("label"), native.isEmpty() || native == name ? name : name + QStringLiteral(" · ") + native},
+            {QStringLiteral("rtl"), l->rtl},
+            {QStringLiteral("tier"), l->tier == ai::SpokenTier::Strong ? QStringLiteral("strong")
+                                      : l->tier == ai::SpokenTier::Fair ? QStringLiteral("fair") : QStringLiteral("limited")}});
+    }
+    return out;
+}
+
+QString TranscriptBridge::spokenLanguageLabel() const {
+    if (m_spokenLanguage == QLatin1String("auto"))
+        return tr("Auto-detect");
+    for (const QVariant& v : spokenLanguages()) {
+        const QVariantMap m = v.toMap();
+        if (m.value(QStringLiteral("code")).toString() == m_spokenLanguage)
+            return m.value(QStringLiteral("label")).toString();
+    }
+    return m_spokenLanguage;
+}
+
+bool TranscriptBridge::spokenLanguageRtl() const {
+    return ai::isRightToLeftLanguage(m_spokenLanguage.toStdString());
+}
+
+QString TranscriptBridge::spokenLanguageNote() const {
+    const std::string model = LocalModelsController::transcriptionModelId().toStdString();
+    // Advice that names a model is only true of the local transcriber.
+    if (m_provider != QLatin1String("local"))
+        return m_translate ? tr("Translating to English runs on this computer: choose “On this computer” as the transcriber") : QString();
+    const std::string note = m_translate ? ai::translationAdvice(model) : std::string();
+    if (!note.empty())
+        return fromStd(note);
+    // 0.7 (card 111): telling languages apart is what the small models do worst.
+    if (m_mixed && m_spokenLanguage == QLatin1String("auto") && !m_translate)
+        return fromStd(ai::mixedLanguagesAdvice(model));
+    return fromStd(ai::spokenLanguageAdvice(m_spokenLanguage.toStdString(), model));
 }
 
 void TranscriptBridge::cancelTranscription() {
@@ -1587,6 +1859,37 @@ QString TranscriptBridge::mergeParagraphSpeaker(int paragraph, const QString& in
         return m_message;
     }
     setMessage({});
+    return {};
+}
+
+
+// ---- 0.7 (card 061): custom words ------------------------------------------------------------------------------
+
+QString TranscriptBridge::customWords() const {
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    QStringList lines;
+    if (snap) {
+        for (const std::string& w : snap->customWords)
+            lines << fromStd(w);
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
+int TranscriptBridge::customWordCount() const {
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    return snap ? static_cast<int>(snap->customWords.size()) : 0;
+}
+
+QString TranscriptBridge::setCustomWords(const QString& text) {
+    if (!m_controller)
+        return tr("No project");
+    const command::CommandResult result = run("transcript.setCustomWords", Json{{"text", text.toStdString()}});
+    if (!result.ok()) {
+        setMessage(fromStd(result.error->message));
+        return m_message;
+    }
+    m_customWordsShown = customWords();
+    emit customWordsChanged();
     return {};
 }
 

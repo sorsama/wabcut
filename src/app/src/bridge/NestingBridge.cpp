@@ -133,7 +133,9 @@ QVariantMap NestingBridge::clipInfo(const QString& key) const {
     if (!loc)
         return {};
     const Clip& c = loc->clip();
-    QVariantMap out{{QStringLiteral("nested"), c.isNested()}, {QStringLiteral("multicam"), false}};
+    // 0.7 (card 069): "rendered" - a nest that Render and Replace swapped for a file (Restore Unrendered brings it back).
+    QVariantMap out{{QStringLiteral("nested"), c.isNested()}, {QStringLiteral("multicam"), false},
+                    {QStringLiteral("rendered"), c.renderedNest() != nullptr}};
     if (!c.isNested())
         return out;
     const Sequence* nested = m_controller->snapshot()->findSequence(c.sequence);

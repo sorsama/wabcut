@@ -80,7 +80,7 @@ QVariant ClipAccessModel::data(const QModelIndex& index, int role) const {
     case SelectedRole:
         return m_selected.contains(clip.id.value);
     case LockedRole:
-        return track.track->locked;
+        return track.track->locked || clip.locked; // 0.7 (card 064): a locked clip reads as locked too
     case EnabledRole:
         return clip.enabled;
     case DurationRole:
@@ -104,7 +104,7 @@ QVariant ClipAccessModel::data(const QModelIndex& index, int role) const {
             text += tr(", selected");
         if (!clip.enabled)
             text += tr(", disabled");
-        if (track.track->locked)
+        if (track.track->locked || clip.locked)
             text += tr(", locked");
         return text;
     }

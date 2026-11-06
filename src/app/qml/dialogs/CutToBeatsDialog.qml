@@ -37,7 +37,7 @@ WabcutDialog {
     Text {
         objectName: "cutToBeatsSummary"
         Layout.fillWidth: true
-        text: qsTr("Uses the %1 selected clips in order, each from its In, from the first beat at or after the playhead. It overwrites what is on the tracks: Undo puts it back.").arg(dialog.info.clips ?? 0)
+        text: qsTr("Uses the %n selected clip(s) in order, each from its In, from the first beat at or after the playhead. It overwrites what is on the tracks: Undo puts it back.", "", dialog.info.clips ?? 0)
         color: Theme.textSecondary
         font.family: Theme.fontSans
         font.pixelSize: Theme.textMd

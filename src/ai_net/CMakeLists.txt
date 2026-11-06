@@ -14,7 +14,16 @@ add_library(wabcut_ai_adapters STATIC
     src/MediaGenerators.cpp
     src/SoundEffects.cpp
     src/SpeechSynths.cpp # AI-12: ElevenLabs, OpenAI and Gemini text-to-speech
-    src/Transcribers.cpp)
+    src/Transcribers.cpp
+    # r07: more providers per capability (docs/ai.md "Providers")
+    src/GenerationUtil.cpp
+    src/GeneratorBase.h
+    src/ImageGenerators.cpp
+    src/JobGenerators.cpp
+    src/OpenAiTranscriptions.cpp
+    src/SpeechToText.cpp
+    src/Translators.cpp
+    src/VoiceAdapters.cpp)
 target_include_directories(wabcut_ai_adapters PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(wabcut_ai_adapters PUBLIC wabcut_ai)
 wabcut_target_defaults(wabcut_ai_adapters)

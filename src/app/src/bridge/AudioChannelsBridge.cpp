@@ -39,6 +39,17 @@ int sourceChannelsOf(const ProjectState& state, const Clip& clip) {
     return 2;
 }
 
+/// 0.7 (card 062): the names a field recorder gave the channels of audio stream `stream` of `item` (one per channel, ""
+/// for a channel with none); empty when the file names none.
+QStringList channelNamesOf(const MediaItem* item, int stream) {
+    QStringList out;
+    if (item && stream >= 0 && static_cast<std::size_t>(stream) < item->info.audio.size()) {
+        for (const std::string& name : item->info.audio[static_cast<std::size_t>(stream)].channelNames)
+            out << QString::fromStdString(name);
+    }
+    return out;
+}
+
 int mediaSourceChannels(const MediaItem& item) {
     return !item.info.audio.empty() && item.info.audio.front().channels > 0 ? item.info.audio.front().channels : 2;
 }
@@ -131,6 +142,8 @@ QString channelBadge(const ProjectState& state, const Clip& clip) {
         return QStringLiteral("MAP");
     case ChannelFormat::Surround51:
         return QStringLiteral("5.1");
+    case ChannelFormat::Surround71:
+        return QStringLiteral("7.1");
     case ChannelFormat::Adaptive:
         break;
     }
@@ -270,6 +283,10 @@ QStringList AudioChannelsBridge::channelLabels(const QString& format, int count)
     case ChannelFormat::Surround51:
         //: 5.1 audio channel labels: left, right, centre, low-frequency effects, left surround, right surround
         return {tr("L"), tr("R"), tr("C"), tr("LFE"), tr("Ls"), tr("Rs")};
+    case ChannelFormat::Surround71:
+        //: 7.1 audio channel labels, in the order of a 7.1 file: left, right, centre, low-frequency effects, left rear
+        //: surround, right rear surround, left side surround, right side surround
+        return {tr("L"), tr("R"), tr("C"), tr("LFE"), tr("Lrs"), tr("Rrs"), tr("Ls"), tr("Rs")};
     case ChannelFormat::Adaptive:
         break;
     }
@@ -320,7 +337,21 @@ QVariantMap AudioChannelsBridge::info(const QStringList& clipKeys) const {
         channels.append(route);
     }
     const QString format = QString::fromStdString(map.value("format", std::string("stereo")));
+    QStringList sourceNames; // the poly WAV's channel names (card 062), from the first clip's stream
+    if (const ProjectSnapshot snapshot = m_controller->snapshot()) {
+        if (const SequencePtr sequence = m_controller->currentSequence()) {
+            for (const QString& key : clipKeys) {
+                const auto id = parseClipKey(key);
+                const auto found = id ? sequence->findClip(*id) : std::nullopt;
+                if (found) {
+                    sourceNames = channelNamesOf(snapshot->findMedia(found->clip().media), found->clip().stream.index);
+                    break;
+                }
+            }
+        }
+    }
     out = {{QStringLiteral("ok"), true},
+           {QStringLiteral("sourceNames"), sourceNames},
            {QStringLiteral("clips"), static_cast<int>(list.size())},
            {QStringLiteral("sourceChannels"), sourceChannels},
            {QStringLiteral("mapFrom"), QString::fromStdString(first.value("mapFrom", std::string("none")))},
@@ -342,6 +373,7 @@ QVariantMap AudioChannelsBridge::mediaInfo(const QStringList& mediaKeys) const {
     const int sourceChannels = mediaSourceChannels(*item);
     const AudioChannelMap map = item->channels ? *item->channels : AudioChannelMap::identity(sourceChannels);
     out = {{QStringLiteral("ok"), true},
+           {QStringLiteral("sourceNames"), channelNamesOf(item, 0)},
            {QStringLiteral("clips"), static_cast<int>(mediaKeys.size())},
            {QStringLiteral("sourceChannels"), sourceChannels},
            {QStringLiteral("mapFrom"), item->channels ? QStringLiteral("media") : QStringLiteral("none")},
@@ -653,7 +685,27 @@ QString AudioChannelsBridge::setTrackFormat(const QString& key, const QString& f
 }
 
 QString AudioChannelsBridge::setMasterFormat(const QString& format) {
-    return run("sequence.setMasterFormat", Json{{"format", format.toStdString()}});
+    const auto to = channelFormatFromString(format.toStdString());
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    const ChannelFormat from = seq ? seq->masterFormat : ChannelFormat::Stereo;
+    const QString error = run("sequence.setMasterFormat", Json{{"format", format.toStdString()}});
+    // 0.7 (card 048): say what the change does to the sound (an upmix is never silent about what it leaves empty).
+    QString note;
+    if (error.isEmpty() && to && *to != from) {
+        if (from == ChannelFormat::Surround51 && *to == ChannelFormat::Surround71)
+            note = tr("5.1 became 7.1: the surround channels play from the side pair (Ls, Rs); the rear pair (Lrs, Rrs) is silent.");
+        else if (from == ChannelFormat::Surround71 && *to == ChannelFormat::Surround51)
+            note = tr("7.1 became 5.1: the rear pair is folded into the surrounds at -3 dB.");
+        else if (*to == ChannelFormat::Stereo && (from == ChannelFormat::Surround51 || from == ChannelFormat::Surround71))
+            note = tr("The mix is now stereo: the surround channels are downmixed (ITU-R BS.775; the LFE is left out).");
+        else if (*to == ChannelFormat::Surround71)
+            note = tr("The mix is now 7.1: tracks play from their surround panners; the rear pair is silent until a track pans there.");
+    }
+    if (note != m_masterNote) {
+        m_masterNote = note;
+        emit masterNoteChanged();
+    }
+    return error;
 }
 
 QString AudioChannelsBridge::setSurroundPan(const QString& key, double x, double y, double lfeDb) {

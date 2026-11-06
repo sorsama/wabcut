@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls.Basic as QC // qualified: unqualified, its ContextMenu would hide the app's
 
 // ● CALLOUTS (M5o, panel key "graphics"; bridge `Graphics`; Premiere's Essential Graphics panel, C.13, made simple for
 //   gaming videos):
@@ -8,7 +9,10 @@ import QtQuick.Layouts
 //     Countdown), Lottie stickers, the project's templates and the user's, with live thumbnails; drag one onto the
 //     timeline or press Enter to add it at the playhead (its first text layer selected, ready to type);
 //   * Edit: the selected graphic clip - a template's fields and the selected layer's text, font, size and colour; the
-//     layers, their properties, animation presets, pins and Responsive Design behind "Advanced".
+//     layers, their properties, animation presets, pins and Responsive Design behind "Advanced";
+//   * Styles (0.7, card #81): the project's Text Styles as cards (TextStyleItems): click one to style the selected graphics,
+//     drag it onto a graphic clip, right-click to rename, duplicate, reorder or delete it. Part of a text is styled in the
+//     Program Monitor's text editor (select some text: the styles show under the box).
 // Selecting a graphic clip on the timeline turns to Edit; the Program Monitor's handles edit the same selection
 // (double-click a text layer there to type in place).
 Panel {
@@ -54,7 +58,7 @@ Panel {
             Layout.fillWidth: true
             compact: true
             tabs: true
-            model: [qsTr("Browse"), qsTr("Edit")]
+            model: [qsTr("Browse"), qsTr("Edit"), qsTr("Styles")]
             currentIndex: Graphics.clip !== "" ? 1 : 0
             Accessible.name: qsTr("Callouts view")
         }
@@ -69,6 +73,19 @@ Panel {
             }
             GraphicsEditPage {
                 onSaveRequested: root.openSaveDialog()
+            }
+            Flickable {
+                id: stylesPage
+                objectName: "graphicsStylesPage"
+                contentHeight: styleCards.implicitHeight
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                QC.ScrollBar.vertical: ThinScrollBar {}
+
+                TextStyleItems {
+                    id: styleCards
+                    width: stylesPage.width - Theme.space(3)
+                }
             }
         }
     }

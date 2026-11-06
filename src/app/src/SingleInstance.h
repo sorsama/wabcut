@@ -1,12 +1,13 @@
 #pragma once
 
-// SingleInstance (UX rework, stream S): one Wabcut opens the projects. A launch that names a .wabcut file (File
-// Explorer's Open through the installer's opt-in file association runs `wabcut.exe "<file>"`) first offers it to a
-// Wabcut already running for this user: when that one takes it, it opens the file in its own window (AppShell's
-// openRequested, with the unsaved-changes prompt) and the new process ends at once. Otherwise the new process starts as
-// usual and, once its window is up, listens, so later launches hand their files to it - unless another Wabcut already
-// answers on the name: that one keeps it (a launch without a project file always starts a Wabcut of its own, as before,
-// and must not take the name from the running one). `--new-instance` starts a separate Wabcut that neither hands over
+// SingleInstance (UX rework, stream S): one Wabcut opens the projects. A launch that names files - a .wabcut (File
+// Explorer's Open through the installer's opt-in file association runs `wabcut.exe "<file>"`) or, since 0.7, a recording
+// or timeline file ("Open with" in File Explorer) - first offers them to a Wabcut already running for this user: when
+// that one takes them, it opens the project or imports the media in its own window (AppShell's openRequested, with the
+// unsaved-changes prompt) and the new process ends at once. Otherwise the new process starts as usual and, once its
+// window is up, listens, so later launches hand their files to it - unless another Wabcut already answers on the name:
+// that one keeps it (a launch without a file always starts a Wabcut of its own, as before, and must not take the name
+// from the running one). `--new-instance` starts a separate Wabcut that neither hands over
 // nor listens; so does the startup benchmark (WABCUT_PERF_STARTUP). The tests never get here (only main() uses it).
 //
 // The handshake runs over a local socket (a named pipe on Windows) named per user and settings location
@@ -18,7 +19,16 @@
 // Wabcut of its own meanwhile) finds nobody to confirm and drops the request - the project never opens twice. On
 // Windows the sender lets the receiver take the foreground (AllowSetForegroundWindow), so its window can come to the
 // front.
+//
+// Several files at once (card 005; File Explorer starts one process per selected file for a verb without multi-select):
+//   * With Wabcut closed, the launches race: only the one that gets the launch lock (claimLaunch(): a lock file named like
+//     the pipe, held for the life of the process) starts the Wabcut; the others, which name files, wait for it
+//     (handOverOrWait(): they offer their files again until the first one listens, or give up after a few seconds and
+//     start on their own) instead of each starting a Wabcut.
+//   * The receiving Wabcut collects what arrives within a moment of each other (setBatchWindow(), 300 ms) and emits ONE
+//     filesRequested, so the files are one import, one undo step and one toast.
 
+#include <QElapsedTimer>
 #include <QList>
 #include <QObject>
 #include <QString>
@@ -26,9 +36,12 @@
 #include <QUrl>
 
 #include <functional>
+#include <memory>
 
 class QLocalServer;
 class QLocalSocket;
+class QLockFile;
+class QTimer;
 class QWindow;
 
 namespace wabcut::app {
@@ -49,11 +62,30 @@ public:
     /// The project a launch with `arguments` hands to a running Wabcut (ProjectLifecycle::launchProjectIn: the first
     /// argument naming an existing .wabcut file, absolute), or an empty URL: none named, or a separate instance asked for.
     static QUrl projectToHandOver(const QStringList& arguments);
+    /// 0.7 (card 005): every file a launch with `arguments` hands to a running Wabcut (ProjectLifecycle::launchFilesIn:
+    /// each existing file argument, absolute - projects and media alike: "Open with" on a recording), in order, or an
+    /// empty list: none named, or a separate instance asked for.
+    static QList<QUrl> filesToHandOver(const QStringList& arguments);
 
     QString serverName() const { return m_name; }
     /// Offers `files` to the Wabcut listening on the name: true when it took them (it answered "ok" and this process
     /// confirmed: it may end). Blocks about `timeoutMs` in all; false at once when nobody listens.
     bool handOver(const QList<QUrl>& files, int timeoutMs = 3000) const;
+    /// The launch lock: true for the first launch of this user (this process then is the one that starts the Wabcut the
+    /// others hand their files to), false while another process holds it. Held until close() or the end of this object.
+    /// A lock left by a process that ended without releasing it (a crash) is taken over.
+    bool claimLaunch();
+    /// Whether this process holds the launch lock.
+    bool holdsLaunch() const;
+    /// handOver() for a launch that names files and may be one of several started at the same moment: offers `files`; when
+    /// nobody takes them it claims the launch lock and returns false (this process starts the Wabcut and opens its own
+    /// files), else it waits and offers again until `waitMs` have passed (the Wabcut that holds the lock is starting up
+    /// and listens once its window is up); false at the end of the wait (that one never answered: start on your own).
+    bool handOverOrWait(const QList<QUrl>& files, int waitMs = 10000, int timeoutMs = 3000);
+    /// How long the receiver waits for more hand-overs after one before it emits them together (default 300 ms; each
+    /// arrival restarts the wait, which never lasts more than 5 times as long in all). 0 emits every hand-over at once.
+    void setBatchWindow(int ms);
+    int batchWindow() const { return m_batchMs; }
     /// Whether this Wabcut can open handed-over files now (main(): its window is loaded). While it says no, launches are
     /// answered "no" and start on their own. Unset: always.
     void setReady(std::function<bool()> ready);
@@ -65,16 +97,25 @@ public:
     bool isListening() const;
 
 signals:
-    /// Another launch handed these over (absolute local file URLs, as it sent them).
+    /// Other launches handed these over (absolute local file URLs, as they sent them, in the order they arrived, none
+    /// twice): everything that came within the batch window as one list.
     void filesRequested(const QList<QUrl>& files);
 
 private:
     void accept();
     void read(QLocalSocket* socket);
+    /// Collects `files` into the batch and starts or restarts its timer (or emits them at once with no batch window).
+    void queue(const QList<QUrl>& files);
+    void flush();
 
     QString m_name;
     QLocalServer* m_server = nullptr;
     std::function<bool()> m_ready;
+    std::unique_ptr<QLockFile> m_lock;
+    int m_batchMs = 300;
+    QList<QUrl> m_batch;
+    QTimer* m_batchTimer = nullptr;
+    QElapsedTimer m_batchClock; ///< since the first hand-over of the batch
 };
 
 /// Brings `window` to the front: shown, out of the minimized state (back to maximized when it was), raised and

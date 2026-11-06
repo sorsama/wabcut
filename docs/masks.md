@@ -244,6 +244,52 @@ mask keys and source redactions still evaluate through remapping. A UI tracking 
 snapshot and sequence before committing; intervening edits or cancellation discard its result without adding undo
 history or overwriting the newer edit.
 
+### Track Motion: pin a graphic or censor bar to a moving subject (0.7)
+
+**Effect Controls > Track Motion** (the mouse-pointer button in the panel's header, or **Clip > Track Motion…**; the
+section opens under Masks while footage is under the playhead and closes with its x, so the panel keeps its room) is the
+user interface of `track.transform`. Premiere's request - "track not only the mask but objects, images, titles" - is
+met by tracking the *subject* and keying the Motion of the clip that should follow:
+
+1. **Subject in** names the footage clip with the moving subject (a video clip under the playhead that shows camera or
+   screen footage; a still, a title or a generated item has nothing to track). It defaults from the clip Effect Controls
+   shows: select the graphic, and the footage under it is the subject and the graphic follows; select the footage, and the
+   clip above it follows. Both are menus.
+2. **Move a clip with it** (default) or **Hold it still**. *Follows* picks the clip that follows (any other video clip under
+   the playhead: a title, a picture, or a clip with Gaussian Blur or Mosaic for a censor bar); **Position** keys its Position, **Position, scale, rotation** also its Scale and Rotation (a subject
+   that comes closer grows the graphic). **Hold it still** keys the footage itself the other way, so the subject stays
+   where it is (a targeted stabilize).
+3. **Mark the subject** at the frame you start from: put the playhead where the following clip sits over the subject,
+   then **Draw box** and drag on the program monitor (the box can be moved by its body and resized by its corner handles;
+   **Box on the clip** starts from where the following clip sits), or pick a **Mask** of the footage - the outline of an
+   ellipse, a pen path, or an AI Object Mask, which follows a person or thing exactly. A box and a mask exclude each other.
+   The box is stored in canvas fractions and read through the footage clip's own Motion (scale, rotation, position,
+   display rotation, pixel aspect), so a footage clip that is zoomed or moved tracks the right part of its picture.
+4. **Track forward** (to the clip's end) or **Track back** (to its start) runs on a worker thread with the media decoders'
+   pictures (proxies if the original is offline), a progress bar, **Stop**, and the confidence strip (green sure, amber
+   unsure, red lost); it stops where the picture is lost. The keyframes land on the follower's Motion as **one undo step
+   "Track Motion"**, the playhead moves to the last frame tracked and the box is used up. **Stop keeps what was tracked
+   until then** ("Stopped after 40 frames", one undo step; stopping before the first frame changes nothing). The box is read
+   through the footage clip's placement exactly as the picture is drawn - display rotation, a mirrored (front camera)
+   picture, a sequence of non-square pixels - and a long track keeps a bounded strip (each bar then stands for several
+   frames and shows the lowest confidence among them). A result is dropped (and says so) if the project changed while it ran.
+
+The follower is keyed *relative to where it is at the start frame*, so it keeps whatever offset you gave it (a label next
+to a face, a bar over eyes). Keys of the follower's Motion inside the tracked span are replaced; outside it they stay.
+
+**Rotated and mirrored footage (0.7).** The tracker looks at the stored picture, so its motion is mapped to the canvas the
+way the compositor places the clip: through the footage's display rotation (a phone clip turned 90 degrees moves the
+follower along the turned picture) and its **mirror** flag (a selfie camera's flipped picture moves it the other way, and a
+rotation the tracker sees reverses). `track.transform` (follow or stabilize, translation, similarity) and Track Motion do
+this; a stabilized mirrored clip holds the subject still on screen.
+It needs the playhead on both clips; **Track** says why it cannot run (no box, no clip picked, "Turn off Time Remapping
+on ..." - the engine refuses a remapped footage clip - or "Put the playhead where ... is over the subject").
+Command / MCP: `track.transform` (`region`: a box, `{"mask": id, "effect": id}` or `{"detect": "face"}` once a detector is
+plugged in, `target`, `mode`, `model`).
+
+What a later version could add: a planar (corner-pin) model for tracking a surface, a tracking box that follows its subject
+to re-draw itself after a lost frame, one-click "follow this object mask", and tracking a clip inside a nest.
+
 **Face / person detection** is a seam: `TrackingServices::detect(picture, kind)` (AI-9 plugs a detector in there); until
 then `{"detect": "face"}` fails with a clear message.
 
@@ -288,7 +334,7 @@ undo step per click, drag or slider gesture.
   delete); for the selected mask its mode (Add / Subtract / Intersect), **Feather**, **Expansion** and **Opacity** (a
   key at the playhead when the parameter is animated), and **Track**: to the start, one frame back, one frame forward,
   to the end, Stop, with a progress bar and a **confidence strip** (one bar per frame: green sure, amber unsure, red
-  lost) and what happened ("Tracked 120 frame(s)", "Lost after 37 frame(s)").
+  lost) and what happened ("Tracked 120 frames", "Lost after 37 frames").
   0.4: for a clip without a mask (no opacity mask, no local mask on any effect) the section is **one row**: the chevron,
   "Masks" and the target menu, so Transform and Opacity get the room. It opens by itself while the clip has a mask
   (the count beside "Masks" is every mask of the clip, on any target), a monitor tool or the AI Object tool is armed,
@@ -298,7 +344,8 @@ undo step per click, drag or slider gesture.
 - **Program monitor**: the target's outlines (the selected one solid, the others dashed), the selected mask's feather
   band (dashed, inside and outside) and handles - centre (move), corner (size), the round handle above (rotate), path
   points (move) and their tangent ends, the expansion square and the feather dot on the right. Click an outline to
-  select its mask. Ellipse / Rectangle: drag a box. Pen: click for corners, drag for curves, click the first point (or
+  select its mask. Ellipse / Rectangle: drag a box; hold **Shift** while dragging for a perfect square or circle (the
+  shape follows the longer side as you move, and Shift can be pressed or let go mid-drag). Pen: click for corners, drag for curves, click the first point (or
   Enter) to close, Esc cancels. The overlay sits beside the monitor slot (the slot keeps its one child) and maps
   through the clip's Motion, so handles stay on the picture when the clip is moved, scaled or rotated.
 - **Source Monitor**: the **Redact** button (eye-off) arms the tool - drag over the picture to cover that region from

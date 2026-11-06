@@ -7,10 +7,12 @@
 
 #include <wabcut/export/ExportSettings.h>
 #include <wabcut/media/FrameHandle.h>
+#include <wabcut/model/Vr.h>
 
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -48,6 +50,11 @@ public:
     std::expected<AVStream*, Error> addCaptionStream(AVRational frameTimeBase);
     /// 0.6 (#73): the file this muxer writes (UTF-8).
     const std::string& path() const { return m_path; }
+    /// 0.7 (VR / 360 video): marks the video stream as a VR picture so players and YouTube recognise it: MP4 gets Google's
+    /// Spherical Video V2 boxes ('st3d' for the eye layout, 'sv3d' for the projection), Matroska and WebM their Projection
+    /// and StereoMode elements. Other containers have no such metadata and are left alone. Returns whether the container
+    /// carries it. Before open().
+    bool setSpherical(AVStream* stream, const VrFormat& format);
 
     Muxer() = default;
     Muxer(Muxer&& other) noexcept;
@@ -62,6 +69,13 @@ public:
     /// Rescales `packet` from the encoder's time base to the stream's and interleaves it (takes its data).
     /// Thread-safe (video and audio are encoded on different threads).
     std::expected<void, Error> write(AVPacket* packet, AVRational encoderTimeBase, AVStream* stream);
+    /// 0.7 (HDR10+): a filter every packet of the video stream passes (in the encoder's time base) before it is rescaled and written: it
+    /// may replace the packet's data (SEI NAL units put into the access unit). Set it after addStream().
+    using PacketFilter = std::function<std::expected<void, Error>(AVPacket*, AVRational encoderTimeBase)>;
+    void setPacketFilter(AVStream* stream, PacketFilter filter) {
+        m_filterStream = stream;
+        m_filter = std::move(filter);
+    }
     /// Writes the trailer and closes the file.
     std::expected<void, Error> finish();
     /// Closes the file without a trailer (the caller deletes it).
@@ -75,6 +89,8 @@ private:
     bool m_bext = false;
     std::unique_ptr<std::mutex> m_writeMutex = std::make_unique<std::mutex>();
     std::vector<std::pair<std::string, std::string>> m_formatOptions; ///< 0.6 (#73)
+    AVStream* m_filterStream = nullptr; ///< 0.7: setPacketFilter
+    PacketFilter m_filter;
 };
 
 // ---- Colour (I.9) -----------------------------------------------------------------------------------------
@@ -127,6 +143,9 @@ struct VideoEncodeParams {
     bool a53Captions = false;
     /// 0.2 (smart rendering): slice threads only, so each frame's packet comes out as it goes in.
     bool noFrameDelay = false;
+    /// 0.7 (capture): the encoder must keep up with a live source, so the software encoders take their fast presets
+    /// (libx264 / libx265 "veryfast", SVT-AV1 preset 11); hardware encoders are unchanged.
+    bool realtime = false;
 };
 
 /// Whether FFmpeg's encoder `name` writes AV_FRAME_DATA_A53_CC side data into the stream (libx264, libx265 with its

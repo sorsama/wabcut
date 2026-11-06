@@ -2,6 +2,8 @@
 
 #include <wabcut/ai/Text.h>
 
+#include <algorithm>
+
 namespace wabcut::ai {
 
 std::expected<void, Error> Transcript::validate() const {
@@ -33,7 +35,7 @@ std::expected<void, Error> Transcript::validate() const {
         if (s.firstWord != nextWord || s.wordCount > words.size() - s.firstWord) {
             return bad("segment " + std::to_string(i) + " does not cover the next words in order");
         }
-        if (!text::isValidUtf8(s.text)) {
+        if (!text::isValidUtf8(s.text) || !text::isValidUtf8(s.language)) {
             return bad("segment " + std::to_string(i) + " is not valid UTF-8");
         }
         nextWord = s.firstWord + s.wordCount;
@@ -45,6 +47,41 @@ std::expected<void, Error> Transcript::validate() const {
         return bad("language or source path is not valid UTF-8");
     }
     return {};
+}
+
+std::string_view Transcript::wordLanguage(std::size_t wordIndex) const {
+    // The last segment that starts at or before the word (segments are in word order).
+    const auto it = std::ranges::upper_bound(segments, wordIndex, {}, &TranscriptSegment::firstWord);
+    if (it == segments.begin()) {
+        return language;
+    }
+    return segmentLanguage(static_cast<std::size_t>(it - segments.begin()) - 1);
+}
+
+std::vector<LanguageShare> languageShares(const Transcript& transcript) {
+    std::vector<LanguageShare> shares;
+    const auto add = [&shares](std::string_view language, std::size_t words) {
+        if (words == 0) {
+            return;
+        }
+        for (LanguageShare& share : shares) {
+            if (share.language == language) {
+                share.words += words;
+                return;
+            }
+        }
+        shares.push_back({std::string(language), words});
+    };
+    if (transcript.segments.empty()) {
+        add(transcript.language, transcript.words.size());
+    }
+    for (std::size_t i = 0; i < transcript.segments.size(); ++i) {
+        add(transcript.segmentLanguage(i), transcript.segments[i].wordCount);
+    }
+    std::ranges::sort(shares, [](const LanguageShare& a, const LanguageShare& b) {
+        return a.words != b.words ? a.words > b.words : a.language < b.language;
+    });
+    return shares;
 }
 
 } // namespace wabcut::ai

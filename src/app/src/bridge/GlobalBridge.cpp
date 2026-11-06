@@ -19,6 +19,7 @@
 #include <QTextBoundaryFinder>
 #include <QUrl>
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
 
@@ -30,6 +31,67 @@ namespace {
 
 QString qs(const std::string& s) { return QString::fromStdString(s); }
 QString qs(std::string_view s) { return QString::fromUtf8(s.data(), static_cast<qsizetype>(s.size())); }
+
+/// r07: the voice model a Dub / narration / voice preview without a model of its own uses: Settings > AI > Features
+/// (speak), else the first of the automatic order (so the error names what to set up). "" without any voice model.
+std::string routedVoiceModel(::AiController* controller) {
+    if (!controller) {
+        return {};
+    }
+    if (const QString routed = controller->routedModel(QStringLiteral("speak")); !routed.isEmpty()) {
+        return routed.toStdString();
+    }
+    const auto preference = controller->platform().providers().preference(ai::Capability::Speak);
+    return preference.empty() ? std::string() : preference.front();
+}
+
+/// r07: what caption translation uses in the cloud: Settings > AI > Features (translate), which follows the assistant
+/// unless the user picked a model for it - a chat model (LlmTranslator) or a translation service such as DeepL.
+struct TranslationRoute {
+    std::string model; ///< "" when nothing usable is routed
+    bool service = false; ///< a translation API (ITranslator), not a chat model
+};
+
+TranslationRoute translationRoute(::AiController* controller) {
+    if (!controller) {
+        return {};
+    }
+    auto resolved = controller->platform().resolve(ai::Capability::Translate);
+    if (!resolved) {
+        return {};
+    }
+    for (const auto& candidate : *resolved) {
+        if (!candidate.model) {
+            continue;
+        }
+        if (candidate.model->caps.has(ai::Capability::Chat)) {
+            return {candidate.model->id, false};
+        }
+        if (controller->platform().providers().hasAdapter(candidate.model->api, ai::Capability::Translate)) {
+            return {candidate.model->id, true};
+        }
+    }
+    return {};
+}
+
+/// r07 (QA-07): offline mode or the project's no-cloud lock is on: only models on this computer may run.
+bool cloudBlocked(::AiController* controller, ProjectController* project) {
+    return !controller || controller->offlineMode() || controller->projectLock() || (project && project->snapshot()->aiNoCloud);
+}
+
+/// r07 (QA-07): the voice models that run on this computer (custom providers on localhost), for a job thread.
+std::vector<std::string> localVoiceModels(::AiController* controller) {
+    std::vector<std::string> out;
+    if (!controller) {
+        return out;
+    }
+    for (const ai::ModelSpec* m : controller->platform().providers().models().modelsWith(ai::Capability::Speak)) {
+        if (controller->runsLocally(m->id)) {
+            out.push_back(m->id);
+        }
+    }
+    return out;
+}
 
 std::filesystem::path projectPath(QQmlEngine* engine) {
     auto* file = engine ? engine->singletonInstance<ProjectLifecycle*>("Wabcut", "ProjectFile") : nullptr;
@@ -119,6 +181,32 @@ public:
 private:
     std::shared_ptr<ai::IChatModel> m_model;
 };
+
+/// r07: a translation service opened on the GUI thread (with the user's consent answer), lent to a job.
+class BorrowedTranslator final : public ai::ITranslator {
+public:
+    explicit BorrowedTranslator(std::shared_ptr<ai::ITranslator> translator) : m_translator(std::move(translator)) {}
+    std::expected<ai::TranslationResult, ai::AiError> translate(const ai::TranslationRequest& r, std::stop_token s) override {
+        return m_translator->translate(r, s);
+    }
+
+private:
+    std::shared_ptr<ai::ITranslator> m_translator;
+};
+
+/// r07: opens the routed translation service now (GUI thread) and hands the job a borrowed copy per language.
+ai::translate::TranslateServices::ServiceOpener translationService(::AiController* controller, const std::string& id, bool allowOnce) {
+    auto opened = controller->platform().translator(id, ai::CallOptions{allowOnce, {}});
+    const ai::ModelSpec* spec = controller->platform().providers().models().model(id);
+    if (!opened || !spec) {
+        const ai::AiError error = opened ? ai::AiError(ai::AiErrorCode::ModelMissing, "unknown translation model") : opened.error();
+        return [error]() -> std::expected<ai::translate::TranslateServices::Service, ai::AiError> { return std::unexpected(error); };
+    }
+    std::shared_ptr<ai::ITranslator> translator(std::move(*opened));
+    return [translator, model = *spec]() -> std::expected<ai::translate::TranslateServices::Service, ai::AiError> {
+        return ai::translate::TranslateServices::Service{std::make_unique<BorrowedTranslator>(translator), model};
+    };
+}
 
 class BorrowedSpeech final : public ai::ISpeechSynth {
 public:
@@ -213,19 +301,21 @@ TranslateBridge::TranslateBridge(QObject* parent) : CreatorBase(parent) {}
 QVariantList TranslateBridge::captionTracks() const { return captionTracksOf(m_controller); }
 
 bool TranslateBridge::cloudAvailable() const {
-    if (!m_ai || m_ai->offlineMode() || (m_controller && m_controller->snapshot()->aiNoCloud)) {
+    if (!m_ai) {
         return false;
     }
-    auto resolved = m_ai->platform().resolve(ai::Capability::Chat);
-    return resolved && !resolved->empty();
+    // r07: the translate route. QA-07: offline mode and the no-cloud lock stop cloud models only (resolve() leaves them
+    // out); a model on this computer keeps translating.
+    const std::string model = translationRoute(m_ai).model;
+    return !model.empty() && (!cloudBlocked(m_ai, m_controller) || m_ai->runsLocally(model));
 }
 
 QString TranslateBridge::cloudModelName() const {
     if (!cloudAvailable()) {
         return {};
     }
-    auto resolved = m_ai->platform().resolve(ai::Capability::Chat);
-    return resolved && !resolved->empty() ? qs(resolved->front().model->name) : QString();
+    const ai::ModelSpec* model = m_ai->platform().providers().models().model(translationRoute(m_ai).model);
+    return model ? qs(model->name.empty() ? model->id : model->name) : QString();
 }
 
 QVariantList TranslateBridge::languages(const QString& source) const {
@@ -302,10 +392,15 @@ std::shared_ptr<command::CommandServices> TranslateBridge::jobServices(bool allo
         return m_services; // tests
     }
     std::shared_ptr<ai::IChatModel> chat;
+    ai::translate::TranslateServices::ServiceOpener service;
+    bool routedLocal = false;
     if (cloudAvailable()) {
-        auto resolved = m_ai->platform().resolve(ai::Capability::Chat);
-        if (resolved && !resolved->empty()) {
-            if (auto model = m_ai->platform().chat(resolved->front().model->id, ai::CallOptions{allowOnce, {}})) {
+        const TranslationRoute route = translationRoute(m_ai);
+        routedLocal = m_ai->runsLocally(route.model); // QA-07: a no-cloud project may use it
+        if (route.service) {
+            service = translationService(m_ai, route.model, allowOnce);
+        } else if (!route.model.empty()) {
+            if (auto model = m_ai->platform().chat(route.model, ai::CallOptions{allowOnce, {}})) {
                 chat = std::shared_ptr<ai::IChatModel>(std::move(*model));
             }
         }
@@ -315,7 +410,8 @@ std::shared_ptr<command::CommandServices> TranslateBridge::jobServices(bool allo
         opener = [chat]() -> std::expected<std::unique_ptr<ai::IChatModel>, ai::AiError> { return std::make_unique<BorrowedChat>(chat); };
     }
     return std::make_shared<command::ServiceBundle>(std::vector<std::shared_ptr<command::CommandServices>>{
-        creatorServices(m_engine, m_transcripts, projectPath(m_engine)), std::make_shared<ai::translate::TranslateServices>(localOpener(), opener),
+        creatorServices(m_engine, m_transcripts, projectPath(m_engine)),
+        std::make_shared<ai::translate::TranslateServices>(localOpener(), opener, service, routedLocal),
         std::make_shared<command::CaptionServices>(qtLineBreaker())});
 }
 
@@ -425,11 +521,12 @@ QVariantMap TranslateBridge::consentPrompt(int cues) const {
     if (!cloudAvailable()) {
         return {};
     }
-    auto resolved = m_ai->platform().resolve(ai::Capability::Chat);
-    if (!resolved || resolved->empty()) {
+    const TranslationRoute route = translationRoute(m_ai);
+    if (route.model.empty()) {
         return {};
     }
-    return m_ai->consentPrompt(qs(resolved->front().model->id), QStringLiteral("chat"),
+    // A chat model is consented for chat; a translation service for translation (what its guard checks).
+    return m_ai->consentPrompt(qs(route.model), route.service ? QStringLiteral("translate") : QStringLiteral("chat"),
                                tr("the text of %n caption cue(s), with redacted words as [bleep]", nullptr, cues));
 }
 
@@ -437,10 +534,15 @@ QString TranslateBridge::apply() { return commitStaged(tr("Translate captions"))
 
 std::shared_ptr<command::CommandServices> TranslateBridge::agentServices() {
     std::shared_ptr<ai::IChatModel> chat;
+    ai::translate::TranslateServices::ServiceOpener service;
+    bool routedLocal = false;
     if (cloudAvailable()) {
-        auto resolved = m_ai->platform().resolve(ai::Capability::Chat);
-        if (resolved && !resolved->empty()) {
-            if (auto model = m_ai->platform().chat(resolved->front().model->id, ai::CallOptions{false, {}})) {
+        const TranslationRoute route = translationRoute(m_ai);
+        routedLocal = m_ai->runsLocally(route.model);
+        if (route.service) {
+            service = translationService(m_ai, route.model, false);
+        } else if (!route.model.empty()) {
+            if (auto model = m_ai->platform().chat(route.model, ai::CallOptions{false, {}})) {
                 chat = std::shared_ptr<ai::IChatModel>(std::move(*model));
             }
         }
@@ -450,7 +552,8 @@ std::shared_ptr<command::CommandServices> TranslateBridge::agentServices() {
         opener = [chat]() -> std::expected<std::unique_ptr<ai::IChatModel>, ai::AiError> { return std::make_unique<BorrowedChat>(chat); };
     }
     return std::make_shared<command::ServiceBundle>(std::vector<std::shared_ptr<command::CommandServices>>{
-        std::make_shared<ai::translate::TranslateServices>(localOpener(), opener), std::make_shared<command::CaptionServices>(qtLineBreaker())});
+        std::make_shared<ai::translate::TranslateServices>(localOpener(), opener, service, routedLocal),
+        std::make_shared<command::CaptionServices>(qtLineBreaker())});
 }
 
 // --- DubBridge ---------------------------------------------------------------------------------------------------------
@@ -461,8 +564,16 @@ namespace {
 class ProposalDubServices final : public ai::dub::DubServices {
 public:
     QPointer<DubBridge> owner;
+    std::string routedModel; // r07: the assistant's dub without a model uses Settings > AI > Features (speak)
+    std::shared_ptr<const ai::ModelRegistry> models; // QA-02: the live registry (custom providers, added models)
+    std::vector<std::string> localModels;           // QA-07: voice models on this computer
 
     bool proposes() const override { return true; }
+    std::string defaultModel(std::string_view) const override { return routedModel; }
+    std::shared_ptr<const ai::ModelRegistry> registry() const override { return models; }
+    bool onThisComputer(const ai::ModelSpec& model) const override {
+        return std::find(localModels.begin(), localModels.end(), model.id) != localModels.end();
+    }
 
     command::CommandOutput dub(const ai::dub::DubPlan& plan, command::ExecutionContext& context) override {
         if (!owner) {
@@ -551,25 +662,58 @@ bool DubBridge::cloudAvailable() const {
     if (m_services) {
         return true; // tests
     }
-    return m_ai && !m_ai->offlineMode() && !(m_controller && m_controller->snapshot()->aiNoCloud);
+    // QA-07: offline mode and the no-cloud lock stop cloud voices only: a voice server on this computer keeps working.
+    return m_ai && (!cloudBlocked(m_ai, m_controller) || m_ai->runsLocally(routedVoiceModel(m_ai)));
 }
+
+bool DubBridge::modelAllowed(const std::string& model) const {
+    return m_services || (m_ai && (!cloudBlocked(m_ai, m_controller) || m_ai->runsLocally(model)));
+}
+
+namespace {
+
+/// A voice model's API (the model's own, else its provider's) in `registry`.
+std::string voiceApi(const ai::ModelRegistry& registry, const ai::ModelSpec& spec) {
+    if (!spec.api.empty()) {
+        return spec.api;
+    }
+    const ai::ProviderSpec* p = registry.provider(spec.provider);
+    return p ? p->api : std::string();
+}
+
+} // namespace
 
 QVariantList DubBridge::voices(const QString& model) const {
     QVariantList out;
-    const ai::ModelSpec* spec = ai::ModelRegistry::builtin().model(model.toStdString());
+    // r07: the live registry (catalogue and custom providers), not only the shipped file.
+    const ai::ModelRegistry& registry = m_ai ? m_ai->platform().providers().models() : ai::ModelRegistry::builtin();
+    const ai::ModelSpec* spec = registry.model(model.isEmpty() ? routedVoiceModel(m_ai) : model.toStdString());
     if (!spec) {
         return out;
     }
-    std::string api = spec->api;
-    if (api.empty()) {
-        if (const ai::ProviderSpec* p = ai::ModelRegistry::builtin().provider(spec->provider)) {
-            api = p->api;
-        }
-    }
-    for (const ai::dub::VoiceInfo& v : ai::dub::builtinVoices(api)) {
+    // QA-02: a server that copies OpenAI's speech API gets the names such servers commonly map, "alloy" first.
+    for (const ai::dub::VoiceInfo& v : ai::dub::voicesFor(voiceApi(registry, *spec), spec->provider)) {
         out.append(QVariantMap{{QStringLiteral("id"), qs(v.id)}, {QStringLiteral("name"), qs(v.name)}, {QStringLiteral("description"), qs(v.description)}});
     }
     return out;
+}
+
+QString DubBridge::voiceIdHint(const QString& model) const {
+    const ai::ModelRegistry& registry = m_ai ? m_ai->platform().providers().models() : ai::ModelRegistry::builtin();
+    const ai::ModelSpec* spec = registry.model(model.isEmpty() ? routedVoiceModel(m_ai) : model.toStdString());
+    if (!spec) {
+        return {};
+    }
+    const std::string api = voiceApi(registry, *spec);
+    if (!ai::dub::acceptsAnyVoice(api, spec->provider)) {
+        return {};
+    }
+    const ai::ProviderSpec* provider = registry.provider(spec->provider);
+    const QString name = provider ? qs(provider->name) : qs(spec->provider);
+    if (api == "openai-speech") {
+        return tr("Or a voice name %1 offers").arg(name);
+    }
+    return tr("Or a voice id from your %1 library").arg(name);
 }
 
 Json DubBridge::paramsOf(const QVariantMap& options, bool estimate) const {
@@ -627,9 +771,26 @@ std::shared_ptr<command::CommandServices> DubBridge::jobServices(bool allowOnce)
     };
     m_openedSpeech = synths;
     const std::filesystem::path cache = ai::userCacheDir();
+    // QA-02 / QA-07: the run plans on the live registry (custom providers, added models) with the routed default, and
+    // knows which voice models run on this computer.
     return std::make_shared<command::ServiceBundle>(std::vector<std::shared_ptr<command::CommandServices>>{
         creatorServices(m_engine, m_transcripts, projectPath(m_engine)),
-        std::make_shared<ai::dub::DirectDubServices>(opener, ai::dub::makeMediaSpeechAudio(cache / "tts"), cache / "generated" / "dub")});
+        std::make_shared<ai::dub::DirectDubServices>(opener, ai::dub::makeMediaSpeechAudio(cache / "tts"), cache / "generated" / "dub",
+                                                     routedVoiceModel(m_ai), m_ai ? m_ai->registrySnapshot() : nullptr,
+                                                     localVoiceModels(m_ai))});
+}
+
+std::shared_ptr<command::CommandServices> DubBridge::planningServices() {
+    // QA-02: an estimate plans like a run (the routed default, the live registry) but can never speak: its opener fails.
+    auto opener = [](const ai::ModelSpec& model, std::optional<ai::MicroUsd>) -> std::expected<std::unique_ptr<ai::ISpeechSynth>, ai::AiError> {
+        return std::unexpected(ai::AiError(ai::AiErrorCode::InvalidRequest, "an estimate does not speak " + model.name));
+    };
+    const std::filesystem::path cache = ai::userCacheDir();
+    return std::make_shared<command::ServiceBundle>(std::vector<std::shared_ptr<command::CommandServices>>{
+        creatorServices(m_engine, m_transcripts, projectPath(m_engine)),
+        std::make_shared<ai::dub::DirectDubServices>(opener, ai::dub::makeMediaSpeechAudio(cache / "tts"), cache / "generated" / "dub",
+                                                     routedVoiceModel(m_ai), m_ai ? m_ai->registrySnapshot() : nullptr,
+                                                     localVoiceModels(m_ai))});
 }
 
 QString DubBridge::estimate(const QVariantMap& options) {
@@ -650,7 +811,7 @@ QString DubBridge::estimate(const QVariantMap& options) {
             }
             emit self->resultChanged();
         },
-        m_services ? m_services : creatorServices(m_engine, m_transcripts, projectPath(m_engine)));
+        m_services ? m_services : planningServices());
     return started ? QString() : tr("Busy");
 }
 
@@ -658,7 +819,10 @@ QString DubBridge::run(const QVariantMap& options) {
     if (!m_controller) {
         return tr("No project");
     }
-    if (!cloudAvailable()) {
+    // QA-07: the chosen (else routed) voice model: offline / no-cloud stop it only when it is in the cloud.
+    const std::string chosen = options.value(QStringLiteral("model")).toString().isEmpty() ? routedVoiceModel(m_ai)
+                                                                                         : options.value(QStringLiteral("model")).toString().toStdString();
+    if (!modelAllowed(chosen)) {
         return tr("Voice-over needs your cloud voice provider, and this project is no-cloud or offline");
     }
     if (options.value(QStringLiteral("maxCost")).toDouble() <= 0) {
@@ -673,7 +837,10 @@ QString DubBridge::run(const QVariantMap& options) {
         // Open the chosen model's guarded speech now (GUI thread), with the run's cap.
         std::string model = options.value(QStringLiteral("model")).toString().toStdString();
         if (model.empty()) {
-            model = "eleven_v3";
+            model = routedVoiceModel(m_ai); // r07: Settings > AI > Features, no fixed vendor
+        }
+        if (model.empty()) {
+            return tr("Add a voice provider in Settings > AI first");
         }
         const auto cap = static_cast<ai::MicroUsd>(std::llround(options.value(QStringLiteral("maxCost")).toDouble() * 1e6));
         auto synth = m_ai->platform().speech(model, ai::CallOptions{options.value(QStringLiteral("allowOnce")).toBool(), cap});
@@ -714,11 +881,11 @@ QString DubBridge::run(const QVariantMap& options) {
 QString DubBridge::previewVoice(const QVariantMap& options) {
     std::string model = options.value(QStringLiteral("model")).toString().toStdString();
     if (model.empty()) {
-        model = "eleven_v3";
+        model = routedVoiceModel(m_ai); // r07: Settings > AI > Features, no fixed vendor
     }
-    const ai::ModelSpec* spec = ai::ModelRegistry::builtin().model(model);
+    const ai::ModelSpec* spec = (m_ai ? m_ai->platform().providers().models() : ai::ModelRegistry::builtin()).model(model);
     if (!spec) {
-        return tr("Unknown voice model");
+        return model.empty() ? tr("Add a voice provider in Settings > AI first") : tr("Unknown voice model");
     }
     QString text = options.value(QStringLiteral("text")).toString().trimmed();
     if (text.isEmpty()) {
@@ -733,7 +900,7 @@ QString DubBridge::previewVoice(const QVariantMap& options) {
     request.style = options.value(QStringLiteral("style")).toString().toStdString();
     std::shared_ptr<ai::ISpeechSynth> synth = m_previewSynth; // tests
     if (!synth) {
-        if (!m_ai || !cloudAvailable()) {
+        if (!m_ai || !modelAllowed(model)) { // QA-07: a voice server on this computer previews offline too
             return tr("Voice previews need your cloud voice provider");
         }
         // A sample costs a few cents at most: capped at $0.05.
@@ -744,7 +911,7 @@ QString DubBridge::previewVoice(const QVariantMap& options) {
         synth = std::shared_ptr<ai::ISpeechSynth>(std::move(*opened));
     }
     if (request.voiceId.empty()) {
-        request.voiceId = ai::dub::defaultVoice(spec->api);
+        request.voiceId = ai::dub::defaultVoice(spec->api, spec->provider); // QA-02: "alloy" on an OpenAI-compatible server
     }
     const std::filesystem::path dir = ai::userCacheDir() / "tts";
     setJob(tr("Speaking a sample"), -1.0);
@@ -788,7 +955,7 @@ QVariantMap DubBridge::consentPrompt(const QString& model, int characters, bool 
     if (!m_ai) {
         return {};
     }
-    const QString id = model.isEmpty() ? QStringLiteral("eleven_v3") : model;
+    const QString id = model.isEmpty() ? QString::fromStdString(routedVoiceModel(m_ai)) : model; // r07: routing
     if (!clone) {
         return m_ai->consentPrompt(id, QStringLiteral("speak"),
                                    tr("%n character(s) of text to speak (no audio or video of the project)", nullptr, characters));
@@ -825,6 +992,9 @@ void DubBridge::propose(const QVariantMap& options) {
 std::shared_ptr<command::CommandServices> DubBridge::proposalServices() {
     auto services = std::make_shared<ProposalDubServices>();
     services->owner = this;
+    services->routedModel = routedVoiceModel(m_ai);
+    services->models = m_ai ? m_ai->registrySnapshot() : nullptr;
+    services->localModels = localVoiceModels(m_ai);
     return services;
 }
 

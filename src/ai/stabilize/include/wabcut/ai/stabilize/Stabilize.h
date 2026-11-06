@@ -116,6 +116,12 @@ std::expected<MotionAnalysis, Error> analyzeMotion(std::span<const Ticks> frameT
 
 struct SmoothOptions {
     double smoothness = 0.5; ///< Premiere's Smoothness / 100 (50 % = 0.5), 0..10; a time constant, independent of the frame rate
+    /// 0.7 (card #129): Smoothness per analysed frame (the unit of `smoothness`, clamped to 0..10), for a Smoothness that is
+    /// keyframed: the Gaussian smoothing then takes the window of each frame from its own value, so a shot can be steadied
+    /// in one part and left as it was shot in another (0 keeps the camera as shot at that frame). Used when it holds one
+    /// value for every analysed frame and they are not all the same; otherwise (empty, another size, or all equal)
+    /// `smoothness` holds throughout. The L1 smoothing uses the mean.
+    std::vector<double> smoothnessAt;
     Smoothing smoothing = Smoothing::Gaussian;
     bool noMotion = false; ///< Result "No Motion": lock the camera to the first frame
     Framing framing = Framing::CropAutoScale;
@@ -175,6 +181,18 @@ struct Compensation {
 /// edges and scaleCapped are reported for every framing; only CropAutoScale applies autoScale to the transforms (Crop
 /// leaves cropping to the caller). Empty when the analysis has no frames or a size is not positive.
 Compensation stabilize(const MotionAnalysis& analysis, const SmoothOptions& options, int sourceWidth, int sourceHeight);
+
+/// The skew a rolling-shutter camera's scan puts in a picture that moved (vx, vy) pixels per frame while the scan took `share`
+/// of the frame time, over a picture `height` pixels high: the line at y (pixel centres) was read (y + 0.5) / height - 0.5 of
+/// a frame from mid-frame, so it shows the scene moved by that much of the motion. Its inverse takes the skew out.
+Homography rollingShutterSkew(double share, double vx, double vy, int height);
+
+/// The framing of stabilize(), for compensations that are already homographies in source pixels (0.7: the gyro method
+/// builds its own, GyroMotion.h): the uniform scale that hides every uncovered border (capped at maxScale), the edges ever
+/// uncovered, and the compensation per frame as corner offsets (`corners`; Perspective) or as translation, rotation (kept
+/// only when `keepRotation`) and scale. Empty when `compensation` is empty or a size is not positive.
+Compensation frameCompensations(std::span<const Ticks> times, std::span<const Homography> compensation, const SmoothOptions& options,
+                                int sourceWidth, int sourceHeight, bool corners, bool keepRotation = true);
 
 /// The compensating transform of frame i as one homography in source pixels (for the tests and the render handoff);
 /// identity when i is out of range.

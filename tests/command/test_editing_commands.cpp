@@ -79,6 +79,43 @@ TEST_CASE("clip.scaleToFrameSize, setToFrameSize and setToFillFrame scale video 
           "EditRejected");
 }
 
+TEST_CASE("clip.nearestNeighborScaling turns smoothing off for video clips in one undo step (card 98)",
+          "[command][editing][scaling]") {
+    Timeline tl = resized(R"(
+        V1 tgt |Aaaaaaaaaa|
+        A1 tgt |Aaaaaaaaaa|
+    )", 'A', 320, 180);
+    tl.linkMatching();
+    CommandHarness h(std::move(tl));
+    const ClipId video = h.clip("V1@0");
+    const ClipId audio = h.clip("A1@0");
+
+    // A dry run changes nothing; naming the linked audio clip reaches the video clip, the audio clip is skipped.
+    const auto preview = h.run(dryRun("clip.nearestNeighborScaling", Json{{"clips", Json::array({audio.value})}}));
+    REQUIRE(preview.ok());
+    CHECK_FALSE(clipIn(h.state(), h.tl.seq, video).content().nearestNeighbor);
+
+    const std::size_t undo = h.session.undoCount();
+    h.ok("clip.nearestNeighborScaling", Json{{"clips", Json::array({audio.value})}});
+    CHECK(h.session.undoCount() == undo + 1);
+    CHECK(clipIn(h.state(), h.tl.seq, video).content().nearestNeighbor);
+    CHECK_FALSE(clipIn(h.state(), h.tl.seq, audio).content().nearestNeighbor);
+    CHECK(h.ok("clip.details", Json{{"clip", video.value}}).data.value("nearestNeighbor", false));
+
+    // Again: nothing changes (no new step). Off: smooth scaling again, the key leaves the details.
+    h.ok("clip.nearestNeighborScaling", Json{{"clips", Json::array({video.value})}});
+    CHECK(h.session.undoCount() == undo + 1);
+    h.ok("clip.nearestNeighborScaling", Json{{"clips", Json::array({video.value})}, {"enabled", false}});
+    CHECK_FALSE(clipIn(h.state(), h.tl.seq, video).content().nearestNeighbor);
+    CHECK_FALSE(h.ok("clip.details", Json{{"clip", video.value}}).data.contains("nearestNeighbor"));
+    h.session.undo();
+    CHECK(clipIn(h.state(), h.tl.seq, video).content().nearestNeighbor);
+
+    // Audio alone (not following links) has no picture to scale.
+    CHECK(h.errorOf("clip.nearestNeighborScaling", Json{{"clips", Json::array({audio.value})}, {"linked", false}}) ==
+          "EditRejected");
+}
+
 TEST_CASE("media.setScaling sets the default media scaling later edits apply", "[command][editing][scaling]") {
     CommandHarness h(resized(R"(
         V1 tgt |..........|
@@ -152,6 +189,31 @@ TEST_CASE("Duplicate, New Sequence From Clip and Sequence Settings run as comman
     CHECK(labelled.data["label"] == 6);
     CHECK(h.ok("sequence.settings", Json{{"sequence", h.tl.seq.value}}).data["label"] == 6);
     CHECK(h.errorOf("sequence.setSettings", Json{{"sequence", h.tl.seq.value}, {"label", 16}}) == "InvalidParams");
+
+    // 0.7 (card 046): the work area through the same command, in one undo step each way.
+    CHECK_FALSE(h.sequence(h.state()).workArea.has_value());
+    const std::size_t beforeWork = h.session.undoCount();
+    h.ok("sequence.setSettings", Json{{"sequence", h.tl.seq.value},
+                                      {"workAreaIn", kTicksPerSecond / 10},
+                                      {"workAreaOut", kTicksPerSecond / 2}});
+    CHECK(h.session.undoCount() == beforeWork + 1);
+    REQUIRE(h.sequence(h.state()).workArea.has_value());
+    CHECK(h.sequence(h.state()).workArea->start == Ticks{kTicksPerSecond / 10});
+    CHECK(h.sequence(h.state()).workArea->end() == Ticks{kTicksPerSecond / 2});
+    // Both ends or none; an empty or outside range is refused; nothing changes.
+    CHECK(h.errorOf("sequence.setSettings", Json{{"sequence", h.tl.seq.value}, {"workAreaIn", kTicksPerSecond / 10}}) ==
+          "InvalidParams");
+    CHECK(h.errorOf("sequence.setSettings", Json{{"sequence", h.tl.seq.value},
+                                                 {"workAreaIn", kTicksPerSecond / 2},
+                                                 {"workAreaOut", kTicksPerSecond / 10}}) == "EditRejected");
+    CHECK(h.errorOf("sequence.setSettings", Json{{"sequence", h.tl.seq.value},
+                                                 {"workAreaIn", 0},
+                                                 {"workAreaOut", 100 * kTicksPerSecond}}) == "EditRejected");
+    CHECK(h.sequence(h.state()).workArea->start == Ticks{kTicksPerSecond / 10});
+    h.ok("sequence.setSettings", Json{{"sequence", h.tl.seq.value}, {"clearWorkArea", true}});
+    CHECK_FALSE(h.sequence(h.state()).workArea.has_value());
+    h.session.undo();
+    CHECK(h.sequence(h.state()).workArea.has_value());
 }
 
 TEST_CASE("Replace, Make Offline and Replace Footage run as commands", "[command][editing][replace]") {
@@ -197,6 +259,66 @@ TEST_CASE("Replace, Make Offline and Replace Footage run as commands", "[command
     // Without a host that reads files, Replace Footage is refused.
     CommandHarness bare("    V1 tgt |Aaaa|\n");
     CHECK(bare.errorOf("media.replaceFootage", Json{{"media", "A"}, {"path", "D:/x.mov"}}) == "InvalidRequest");
+}
+
+TEST_CASE("sequence.removeTransitions and sequence.removeDisabledClips clean a sequence up in one undo step each (0.7)",
+          "[command][editing][cleanup]") {
+    Timeline tl(R"(
+        V1 tgt |AaaaaaaaaaB5bbbbbbbbC5ccccccccc|
+        A1 tgt |AaaaaaaaaaB5bbbbbbbbC5ccccccccc|
+    )");
+    CommandHarness h(std::move(tl)); // unlinked: every command acts on the clips it is given
+    const auto transitions = [&] {
+        std::size_t n = 0;
+        h.sequence(h.state()).forEachTrack([&](const Track& t) { n += t.transitions.size(); });
+        return n;
+    };
+    h.ok("transition.add", Json{{"clip", h.clip("V1@0").value}, {"edge", "tail"}, {"duration", tc(4)}});
+    h.ok("transition.add", Json{{"clip", h.clip("V1@10").value}, {"edge", "tail"}, {"duration", tc(4)}});
+    h.ok("transition.add", Json{{"clip", h.clip("A1@0").value}, {"edge", "tail"}, {"duration", tc(4)}});
+    REQUIRE(transitions() == 3);
+
+    // The clips' transitions only: B on V1 touches both dissolves; a dry run previews and changes nothing.
+    const std::size_t steps = h.session.undoCount();
+    const auto preview = h.run(dryRun("sequence.removeTransitions", Json{{"clips", Json::array({h.clip("V1@10").value})}}));
+    REQUIRE(preview.ok());
+    CHECK(transitions() == 3);
+    const auto some = h.ok("sequence.removeTransitions", Json{{"clips", Json::array({h.clip("V1@10").value})}});
+    CHECK(some.data["removed"] == 2);
+    CHECK(transitions() == 1);
+    CHECK(h.session.undoCount() == steps + 1);
+    REQUIRE(h.session.undo());
+    CHECK(transitions() == 3);
+
+    // No clips: every transition of the sequence.
+    const auto all = h.ok("sequence.removeTransitions");
+    CHECK(all.data["removed"] == 3);
+    CHECK(transitions() == 0);
+    CHECK(h.session.undoCount() == steps + 1);
+    CHECK_SESSION(h, R"(
+        V1 |AaaaaaaaaaB5bbbbbbbbC5ccccccccc|
+        A1 |AaaaaaaaaaB5bbbbbbbbC5ccccccccc|
+    )");
+    CHECK(h.errorOf("sequence.removeTransitions") == "EditRejected"); // nothing left to remove
+    REQUIRE(h.session.undo());
+
+    // Remove Disabled Clips: disable B's picture, then clean up; its sound stays (the model tests cover linked partners).
+    h.ok("clip.enable", Json{{"clips", Json::array({h.clip("V1@10").value})}, {"enabled", false}});
+    const ProjectSnapshot disabled = h.state();
+    const std::size_t before = h.session.undoCount();
+    const auto removed = h.ok("sequence.removeDisabledClips");
+    CHECK(removed.data["removed"] >= 1);
+    CHECK(h.sequence(h.state()).videoTracks[0]->clips.size() == 2);
+    CHECK(h.sequence(h.state()).audioTracks[0]->clips.size() == 3);
+    CHECK(h.session.undoCount() == before + 1);
+    REQUIRE(h.session.undo());
+    CHECK(*h.state() == *disabled);
+    const auto rippled = h.ok("sequence.removeDisabledClips", Json{{"ripple", true}});
+    CHECK(rippled.data["removed"] >= 1);
+    REQUIRE(h.session.undo());
+    // Nothing disabled, nothing to do.
+    h.ok("clip.enable", Json{{"clips", Json::array({h.clip("V1@10").value})}, {"enabled", true}});
+    CHECK(h.errorOf("sequence.removeDisabledClips") == "EditRejected");
 }
 
 TEST_CASE("Subsequences, through edits, gaps and frame holds run as commands", "[command][editing][sequenceTools]") {
@@ -317,6 +439,27 @@ TEST_CASE("RAW Source Settings run as commands", "[command][editing][raw]") {
     CHECK(now.data["exposure"] == 1.5);
     CHECK(now.data["temperature"] == 3200);
     CHECK(now.data["tint"] == -20);
+    // 0.7 (card #108): ISO - shot at / developed for; absent fields keep the item's; equal ISOs (or isoShot alone) put the
+    // camera's back; one undo step; it is reported by media.rawSourceSettings.
+    const std::size_t beforeIso = h.session.undoCount();
+    const auto iso = h.ok("media.setRawSourceSettings", Json{{"media", Json::array({"A"})}, {"isoShot", 800}, {"isoDevelop", 3200}});
+    CHECK(h.session.undoCount() == beforeIso + 1);
+    CHECK(iso.data["isoShot"] == 800);
+    CHECK(iso.data["isoDevelop"] == 3200);
+    CHECK(iso.data["isoStops"] == 2.0);
+    CHECK(h.state()->findMedia(h.tl.media('A'))->locator.path ==
+          "D:/Shoot/A001.mov?raw=exposure:+1.50,white:3200:-20,iso:800:3200");
+    h.ok("media.setRawSourceSettings", Json{{"media", Json::array({"A"})}, {"isoDevelop", 1600}}); // shot stays 800
+    const auto kept = h.ok("media.rawSourceSettings", Json{{"media", "A"}});
+    CHECK(kept.data["isoShot"] == 800);
+    CHECK(kept.data["isoDevelop"] == 1600);
+    CHECK(kept.data["exposure"] == 1.5);
+    h.ok("media.setRawSourceSettings", Json{{"media", Json::array({"A"})}, {"isoShot", 1600}}); // shot alone: back to the camera's
+    CHECK_FALSE(h.ok("media.rawSourceSettings", Json{{"media", "A"}}).data.contains("isoShot"));
+    CHECK(h.state()->findMedia(h.tl.media('A'))->locator.path == "D:/Shoot/A001.mov?raw=exposure:+1.50,white:3200:-20");
+    CHECK(h.errorOf("media.setRawSourceSettings", Json{{"media", Json::array({"A"})}, {"isoShot", 10}, {"isoDevelop", 800}}) == "InvalidParams");
+    CHECK(h.errorOf("media.setRawSourceSettings", Json{{"media", Json::array({"A"})}, {"isoShot", 800}, {"isoDevelop", 300000}}) ==
+          "InvalidParams");
     h.ok("media.setRawSourceSettings", Json{{"media", Json::array({"A"})}, {"exposure", 0}, {"whiteBalance", "asShot"}});
     CHECK(h.state()->findMedia(h.tl.media('A'))->locator.path == "D:/Shoot/A001.mov");
     // Out of bounds, a temperature with As Shot, an item that is not RAW.

@@ -17,6 +17,11 @@
 
 namespace wabcut::exporter {
 
+/// `text` (a cue's) as `track`'s style shows it (card 114): its case, without punctuation, without accents, as the style
+/// says; unchanged for a style with none of the three. Caption files and soft subtitles carry the same text the burned-in
+/// captions draw.
+std::string captionStyledText(const CaptionTrack& track, const std::string& text);
+
 /// The caption track `captions` exports from `sequence` (its `track`, else the first enabled one); null: none.
 const CaptionTrack* captionTrackToExport(const Sequence& sequence, const CaptionExportSettings& captions);
 

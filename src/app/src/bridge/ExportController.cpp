@@ -440,7 +440,7 @@ const ExportJobModel::Row* ExportJobModel::update(exporter::ExportJobId queueId,
         break;
     case exporter::ExportPhase::Rendering:
         r.state = QStringLiteral("running");
-        r.phaseText = translate("Rendering");
+        r.phaseText = p.analyzing ? translate("Analyzing HDR10+") : translate("Rendering"); // 0.7: the first pass of an HDR10+ export
         break;
     case exporter::ExportPhase::Finalizing:
         r.state = QStringLiteral("running");
@@ -470,6 +470,7 @@ const ExportJobModel::Row* ExportJobModel::update(exporter::ExportJobId queueId,
         r.encoder = fromUtf8(p.audioEncoder);
     }
     if (status.result) {
+        r.smartNotes.clear();
         const double factor = status.result->realtimeFactor;
         r.detail = translate("%1 · %2× realtime")
                        .arg(clockText(status.result->duration.toSeconds()))
@@ -479,12 +480,63 @@ const ExportJobModel::Row* ExportJobModel::update(exporter::ExportJobId queueId,
             r.detail += QStringLiteral(" · ") + translate("%1 MB").arg(static_cast<double>(status.result->bytes) / 1e6, 0, 'f', 1);
         if (status.result->attempts > 1)
             r.detail += QStringLiteral(" · ") + translate("encoded twice to fit the size");
+        // 0.7 (card 049): smart rendering - how much of the picture was copied from the sources, and why the rest was not.
+        if (!status.result->smartRenderCodec.empty()) {
+            const std::int64_t frames = std::max<std::int64_t>(1, status.result->frames);
+            const std::int64_t copied = std::min(status.result->copiedFrames, frames);
+            const int percent = copied >= frames ? 100 : static_cast<int>(std::min<std::int64_t>(99, std::llround(100.0 * static_cast<double>(copied) / static_cast<double>(frames))));
+            r.detail += QStringLiteral(" · ") + translate("%1 passthrough: %2 % copied, %3 % re-encoded")
+                                                    .arg(fromUtf8(status.result->smartRenderCodec)).arg(percent).arg(100 - percent);
+            QStringList lines;
+            for (const ex::SmartRenderNote& note : status.result->smartRenderNotes) {
+                lines << QCoreApplication::translate("ExportController", "%n frame(s) encoded again from %1: %2", nullptr,
+                                                     static_cast<int>(std::min<std::int64_t>(note.frames, 1'000'000)))
+                             .arg(fromUtf8(note.firstTimecode), fromUtf8(note.reason));
+            }
+            r.smartNotes = lines.join(QLatin1Char('\n'));
+        } else if (status.result->copiedFrames > 0) {
+            r.detail += QStringLiteral(" · ") +
+                        QCoreApplication::translate("ExportController", "%1 of %n frame(s) copied", nullptr,
+                                                    static_cast<int>(std::min<std::int64_t>(status.result->frames, 1'000'000'000)))
+                            .arg(status.result->copiedFrames);
+        }
         // 0.2 (I.9): an HDR file, with a PQ master's measured light levels.
         if (status.result->dynamicRange == ex::DynamicRange::Pq)
             r.detail += QStringLiteral(" · ") +
                         translate("HDR PQ · MaxCLL %1 / MaxFALL %2 nits").arg(status.result->maxCll).arg(status.result->maxFall);
         else if (status.result->dynamicRange == ex::DynamicRange::Hlg)
             r.detail += QStringLiteral(" · ") + translate("HDR HLG");
+        // 0.7: dynamic metadata - what was written, with the shots in the tooltip of this line.
+        if (status.result->dynamicMetadata.kind != ex::DynamicMetadata::None) {
+            const ex::DynamicMetadataReport& report = status.result->dynamicMetadata;
+            const QString kind = report.kind == ex::DynamicMetadata::Hdr10Plus ? translate("HDR10+") : translate("Dolby Vision");
+            if (report.written) {
+                r.detail += QStringLiteral(" · ") +
+                            QCoreApplication::translate("ExportController", "%1 · %n shot(s) · peak %2 nits", nullptr,
+                                                        static_cast<int>(std::min<std::size_t>(report.shots.size(), 1'000'000)))
+                                .arg(kind)
+                                .arg(std::lround(report.peakNits));
+                QStringList shotLines;
+                const std::size_t shown = std::min<std::size_t>(report.shots.size(), 12);
+                for (std::size_t i = 0; i < shown; ++i) {
+                    const ex::ShotReport& shot = report.shots[i];
+                    shotLines << QCoreApplication::translate("ExportController", "Shot %1 · from frame %2 · %n frame(s) · peak %3 nits · average %4 nits", nullptr,
+                                                             static_cast<int>(std::min<std::int64_t>(shot.frameCount, 1'000'000'000)))
+                                     .arg(i + 1)
+                                     .arg(shot.firstFrame)
+                                     .arg(std::lround(shot.peakNits))
+                                     .arg(std::lround(shot.averageNits));
+                }
+                if (report.shots.size() > shown) {
+                    shotLines << QCoreApplication::translate("ExportController", "and %n more shot(s)", nullptr,
+                                                             static_cast<int>(report.shots.size() - shown));
+                }
+                r.smartNotes = r.smartNotes.isEmpty() ? shotLines.join(QLatin1Char('\n'))
+                                                      : r.smartNotes + QLatin1Char('\n') + shotLines.join(QLatin1Char('\n'));
+            } else {
+                r.detail += QStringLiteral(" · ") + translate("%1 not written").arg(kind);
+            }
+        }
         // 0.6 (#73): the delivery - MXF's operational pattern, timecode, audio layout and UMID, the embedded captions.
         if (!status.result->operationalPattern.empty()) {
             r.detail += QStringLiteral(" · ") + translate("MXF %1 · TC %2").arg(fromUtf8(status.result->operationalPattern),
@@ -862,17 +914,9 @@ QString ExportController::defaultOutputPath(const QString& sequenceId, const QSt
                                             const QVariantMap& overrides) const {
     const auto settings = settingsFor(presetId, overrides);
     const SequencePtr sequence = sequenceFor(sequenceId);
-    // UX rework (L): the folder the user last exported to, then next to the project.
-    QString folder = lastFolder();
-    if (folder.isEmpty() && !m_projectFile.empty()) {
-        folder = pathToQString(m_projectFile.parent_path());
-    }
-    if (folder.isEmpty()) {
-        folder = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
-    }
-    if (folder.isEmpty()) {
-        folder = QDir::homePath();
-    }
+    // UX rework (L): the folder the user last exported to, then next to the project; 0.7 (card #70): or the folder the
+    // Export setting names.
+    const QString folder = defaultFolderFor(sequenceId);
     const QString base = safeFileName(sequence ? QString::fromStdString(sequence->name) : QString());
     const QString ext = fromUtf8(settings ? ex::outputExtension(*settings) : ex::fileExtension(ex::Container::Mp4));
     auto taken = [&](const QString& path) {
@@ -985,6 +1029,29 @@ QVariantMap ExportController::describe(const QString& sequenceId, const QString&
         d[QStringLiteral("hdrAvailable")] =
             management.managed() && (s.video.codec == ex::VideoCodec::Hevc || s.video.codec == ex::VideoCodec::Av1 ||
                                      s.video.codec == ex::VideoCodec::ProRes);
+        // 0.7: dynamic metadata. HDR10+ needs a PQ master on HEVC in MP4, MOV or MKV; Dolby Vision a licensed writer.
+        {
+            const bool containerOk = s.container == ex::Container::Mp4 || s.container == ex::Container::Mov || s.container == ex::Container::Mkv;
+            const bool hdr10PlusOk = management.managed() && s.video.codec == ex::VideoCodec::Hevc && containerOk;
+            d[QStringLiteral("dynamicMetadataSetting")] = fromUtf8(ex::dynamicMetadataName(s.video.dynamicMetadata));
+            d[QStringLiteral("hdr10PlusAvailable")] = hdr10PlusOk;
+            d[QStringLiteral("hdr10PlusReason")] =
+                hdr10PlusOk ? QString()
+                            : translate("HDR10+ is written into HEVC video in MP4, MOV and MKV files, from an HDR or Wide Gamut sequence colour setup.");
+            d[QStringLiteral("dolbyVisionReason")] =
+                fromUtf8(ex::DolbyVisionRegistry::unavailableReason(ex::DynamicMetadata::DolbyVision81));
+            QString note;
+            if (s.video.dynamicMetadata == ex::DynamicMetadata::Hdr10Plus) {
+                note = translate("HDR10+ is measured from the picture in a first pass (about a third more time) and written shot by shot, "
+                                 "as SMPTE ST 2094-40 in every frame of the file. Shots are the sequence's cuts where the brightness jumps.");
+            } else if (s.video.dynamicMetadata != ex::DynamicMetadata::None) {
+                note = translate("Dolby Vision is written by the licensed Dolby Vision writer of this build.");
+            } else if (!d.value(QStringLiteral("dolbyVisionReason")).toString().isEmpty()) {
+                note = translate("Dolby Vision is not available in this build: Dolby licenses its metadata format and certifies the "
+                                 "files, and this build has no licensed writer. HDR10, HDR10+ and HLG are not affected.");
+            }
+            d[QStringLiteral("dynamicMetadataNote")] = note;
+        }
         d[QStringLiteral("dynamicRange")] =
             r->dynamicRange == ex::DynamicRange::Pq    ? translate("HDR · Rec.2100 PQ · HDR10 metadata, %1 nits").arg(management.peakNits)
             : r->dynamicRange == ex::DynamicRange::Hlg ? translate("HDR · Rec.2100 HLG")
@@ -1015,6 +1082,7 @@ QVariantMap ExportController::describe(const QString& sequenceId, const QString&
     const QString channelText = channels == 1   ? translate("mono")
                                 : channels == 2 ? translate("stereo")
                                 : channels == 6 ? translate("5.1")
+                                : channels == 8 ? translate("7.1")
                                                 : translate("%1 channels").arg(channels);
     d[QStringLiteral("audioChannels")] = s.audio.channels;
     d[QStringLiteral("audioCodec")] = fromUtf8(ex::audioCodecName(s.audio.codec));
@@ -1053,7 +1121,12 @@ QVariantMap ExportController::describe(const QString& sequenceId, const QString&
     d[QStringLiteral("subtitlesAvailable")] =
         s.video.enabled && (s.container == ex::Container::Mp4 || s.container == ex::Container::Mov || s.container == ex::Container::Mkv);
     d[QStringLiteral("subtitles")] = s.subtitles.enabled;
-    d[QStringLiteral("smartRenderAvailable")] = vc == ex::VideoCodec::ProRes || vc == ex::VideoCodec::DnxHR;
+    // 0.7 (card 049): ProRes and DNx copy their frames; H.264 and HEVC in MP4 and MOV copy whole GOPs.
+    d[QStringLiteral("smartRenderLongGop")] =
+        (vc == ex::VideoCodec::H264 || vc == ex::VideoCodec::Hevc) && s.video.rateControl != ex::RateControl::TargetSize &&
+        (s.container == ex::Container::Mp4 || s.container == ex::Container::Mov || s.container == ex::Container::Mkv);
+    d[QStringLiteral("smartRenderAvailable")] =
+        vc == ex::VideoCodec::ProRes || vc == ex::VideoCodec::DnxHR || d.value(QStringLiteral("smartRenderLongGop")).toBool();
     // 0.6 (#73): MXF delivery - the operational pattern, the reel, how the audio is laid out - and embedded captions:
     // what the format can carry and where this export puts them.
     const bool mxf = ex::isMxf(s.container);
@@ -1064,7 +1137,11 @@ QVariantMap ExportController::describe(const QString& sequenceId, const QString&
     d[QStringLiteral("reelName")] = fromUtf8(s.mxf.reelName);
     d[QStringLiteral("mxfAudioLayout")] = fromUtf8(ex::mxfAudioLayoutName(s.mxf.audioLayout));
     if (mxf && s.audio.enabled) {
-        const int mixChannels = channels <= 1 ? 1 : channels >= 6 && sequence->masterFormat == ChannelFormat::Surround51 ? 6 : 2;
+        const ChannelFormat master = sequence->masterFormat; // as ExportJob mixes it (mxfMixChannels)
+        const int mixChannels = channels <= 1                                          ? 1
+                                : master == ChannelFormat::Surround71 && channels >= 8 ? 8
+                                : channels >= 6 && (master == ChannelFormat::Surround51 || master == ChannelFormat::Surround71) ? 6
+                                                                                       : 2;
         QString layout = s.container == ex::Container::MxfOpAtom
                              ? (channels == 1 ? translate("1 mono audio file") : translate("%1 mono audio files").arg(channels))
                          : s.mxf.audioLayout == ex::MxfAudioLayout::OneTrack ? translate("one %1-channel track").arg(channels)
@@ -1073,7 +1150,7 @@ QVariantMap ExportController::describe(const QString& sequenceId, const QString&
         if (channels > mixChannels) {
             layout += translate(" · %1 the %2 mix, %3 silent")
                           .arg(mixChannels == 1 ? QStringLiteral("1") : QStringLiteral("1-%1").arg(mixChannels),
-                               mixChannels == 6 ? translate("5.1") : translate("stereo"),
+                               mixChannels == 8 ? translate("7.1") : mixChannels == 6 ? translate("5.1") : translate("stereo"),
                                mixChannels + 1 == channels ? QString::number(channels)
                                                            : QStringLiteral("%1-%2").arg(mixChannels + 1).arg(channels));
         }
@@ -1114,7 +1191,7 @@ QVariantMap ExportController::describe(const QString& sequenceId, const QString&
                          : defaultOutputPath(sequenceId, presetId, overrides);
     if (!output.isEmpty()) { // the format decides the extension
         std::filesystem::path path = pathFromQString(output);
-        path.replace_extension(std::string(ex::outputExtension(s)));
+        path = ex::withOutputExtension(std::move(path), ex::outputExtension(s)); // 148
         output = pathToQString(path);
     }
     d[QStringLiteral("output")] = output;
@@ -1230,7 +1307,7 @@ QString ExportController::queueExportAs(const QString& sequenceId, const QString
     if (stemRole && !overrides.contains(QStringLiteral("output"))) {
         output = ex::stemOutput(output, *stemRole); // next to the master's default file
     }
-    output.replace_extension(std::string(ex::outputExtension(*settings))); // the format decides (0.2: stills too)
+    output = ex::withOutputExtension(std::move(output), ex::outputExtension(*settings)); // the format decides (0.2: stills too; 148: only a known extension is swapped)
 
     ex::ExportRequest request;
     request.snapshot = project()->snapshot();
@@ -1353,6 +1430,61 @@ std::expected<ExportController::Transcode, Error> ExportController::queueTransco
     const QString job = queueRequestAs(newJobId(), std::move(request),
                                        user ? fromUtf8(user->name) : presetName(settings->presetId), false, QString(),
                                        QStringLiteral("transcode"));
+    return Transcode{job, output};
+}
+
+std::expected<ExportController::Transcode, Error> ExportController::queueSequenceRange(
+    SequenceId sequenceId, TimeRange range, const QString& presetId, const QVariantMap& overrides,
+    const std::filesystem::path& folder, const QString& baseName) {
+    if (!project()) {
+        return std::unexpected(Error{ErrorCode::NotFound, "There is no project to export"});
+    }
+    const ProjectSnapshot snap = project()->snapshot();
+    const Sequence* sequence = snap ? snap->findSequence(sequenceId) : nullptr;
+    if (!sequence) {
+        return std::unexpected(Error{ErrorCode::NotFound, "The sequence is not in the project"});
+    }
+    auto settings = settingsFor(presetId, overrides);
+    if (!settings) {
+        return std::unexpected(settings.error());
+    }
+    settings->range = ex::RangeMode::Custom;
+    settings->customRange = range;
+    if (const auto r = ex::resolve(*settings, *sequence, snap->colorManagement); !r) {
+        return std::unexpected(r.error());
+    }
+    std::error_code ec;
+    if (folder.empty() || (!std::filesystem::is_directory(folder, ec) && !std::filesystem::create_directories(folder, ec))) {
+        return std::unexpected(Error{ErrorCode::IoError, "The folder for the rendered files cannot be made"});
+    }
+    // "<name><extension>", numbered "<name> (2)<extension>", ... against the disk and the queue.
+    const std::filesystem::path stem = pathFromQString(baseName.isEmpty() ? QStringLiteral("Rendered") : baseName).filename();
+    const std::string ext(ex::outputExtension(*settings));
+    const auto taken = [&](const std::filesystem::path& path) {
+        if (std::filesystem::exists(path, ec)) {
+            return true;
+        }
+        const QString key = QDir::cleanPath(pathToQString(path));
+        return std::any_of(m_jobs->rows().begin(), m_jobs->rows().end(), [&](const ExportJobModel::Row& r) {
+            return !r.finished && QDir::cleanPath(r.outputPath) == key;
+        });
+    };
+    std::filesystem::path output = folder / stem;
+    output += ext;
+    for (int n = 2; taken(output) && n < 10000; ++n) {
+        output = folder / stem;
+        output += " (" + std::to_string(n) + ")" + ext;
+    }
+    ex::ExportRequest request;
+    request.snapshot = snap;
+    request.sequence = sequenceId;
+    request.settings = *settings;
+    request.output = output;
+    request.projectFile = m_projectFile;
+    request.videoSource = m_videoSource;
+    const auto user = settings->presetId.starts_with("user-") ? userPresetStore()->find(settings->presetId) : std::nullopt;
+    const QString job = queueRequestAs(newJobId(), std::move(request), user ? fromUtf8(user->name) : presetName(settings->presetId),
+                                       false, QStringLiteral("off"), QStringLiteral("renderReplace"));
     return Transcode{job, output};
 }
 
@@ -1665,6 +1797,9 @@ void ExportController::onStatus(const ex::ExportJobStatus& status) {
                 warnings << QString::fromStdString(w);
             setLastError(tr("Export finished. %1").arg(warnings.join(QLatin1Char(' '))));
         }
+        if (row->state == QLatin1String("done")) {
+            recordHistory(*row); // 0.7 (card 004)
+        }
         emit jobFinished(row->jobId, row->state == QLatin1String("done"), row->detail);
         if (m_watch && !m_watch->folders().empty()) {
             emit watchFoldersChanged(); // a watch folder's counters may have moved
@@ -1841,6 +1976,9 @@ const QString kLastQuickPresetKey = QStringLiteral("export/lastQuickPreset");
 const QString kLastFolderKey = QStringLiteral("export/lastFolder");
 const QString kLastRangeKey = QStringLiteral("export/lastRange");
 const QString kLastTargetKey = QStringLiteral("export/lastTargetMB"); // P1 (#28)
+const QString kFolderModeKey = QStringLiteral("export/folderMode");               // 0.7 (#70)
+const QString kDefaultFolderKey = QStringLiteral("export/defaultFolder");         // 0.7 (#70)
+const QString kStreamingLoudnessKey = QStringLiteral("export/streamingLoudness"); // 0.7 (#2)
 const QString kDefaultPreset = QStringLiteral("match-source");
 // P1 (#21): a vertical sequence's own choices (the keys above are the landscape ones, as before).
 const QString kPortraitSuffix = QStringLiteral("Portrait");
@@ -1891,6 +2029,7 @@ QVariantMap ExportController::job(const QString& jobId) const {
             {QStringLiteral("finished"), row->finished},
             {QStringLiteral("origin"), row->origin},
             {QStringLiteral("errorKind"), row->errorKind},
+            {QStringLiteral("smartNotes"), row->smartNotes},
             {QStringLiteral("exists"), file.exists()}};
 }
 
@@ -1946,7 +2085,7 @@ QUrl ExportController::folderUrlOf(const QString& pathOrUrl) const {
 void ExportController::forgetExportChoices() {
     QSettings settings;
     for (const QString& key : {kLastPresetKey, kLastGamingPresetKey, kLastQuickPresetKey, kLastFolderKey, kLastRangeKey,
-                               kLastTargetKey,
+                               kLastTargetKey, kStreamingLoudnessKey,
                                shapedKey(kLastPresetKey, true), shapedKey(kLastGamingPresetKey, true),
                                shapedKey(kLastQuickPresetKey, true)}) {
         settings.remove(key);
@@ -2063,6 +2202,115 @@ void ExportController::setLastTargetMB(double megabytes) {
     }
     QSettings().setValue(kLastTargetKey, next);
     emit exportMemoryChanged();
+}
+
+QString ExportController::defaultFolderMode() const {
+    const QString mode = QSettings().value(kFolderModeKey).toString();
+    return mode == QLatin1String("project") || mode == QLatin1String("media") || mode == QLatin1String("fixed")
+               ? mode
+               : QStringLiteral("last");
+}
+
+void ExportController::setDefaultFolderMode(const QString& mode) {
+    const QString next = mode == QLatin1String("project") || mode == QLatin1String("media") || mode == QLatin1String("fixed")
+                             ? mode
+                             : QStringLiteral("last");
+    if (defaultFolderMode() == next) {
+        return;
+    }
+    QSettings().setValue(kFolderModeKey, next);
+    emit exportMemoryChanged();
+}
+
+QString ExportController::defaultFolder() const {
+    const QString folder = QSettings().value(kDefaultFolderKey).toString();
+    return folder.isEmpty() ? QString() : QDir::toNativeSeparators(folder);
+}
+
+void ExportController::setDefaultFolder(const QString& folder) {
+    const QString path = localFolderOf(folder);
+    if (QDir::cleanPath(QSettings().value(kDefaultFolderKey).toString()) == path) {
+        return;
+    }
+    QSettings().setValue(kDefaultFolderKey, path);
+    emit exportMemoryChanged();
+}
+
+QUrl ExportController::defaultFolderUrl() const {
+    const QString folder = defaultFolder();
+    return folder.isEmpty() ? QUrl() : QUrl::fromLocalFile(QDir::fromNativeSeparators(folder));
+}
+
+bool ExportController::streamingLoudness() const {
+    return QSettings().value(kStreamingLoudnessKey, false).toBool();
+}
+
+void ExportController::setStreamingLoudness(bool on) {
+    if (streamingLoudness() == on) {
+        return;
+    }
+    QSettings().setValue(kStreamingLoudnessKey, on);
+    emit exportMemoryChanged();
+}
+
+QString ExportController::defaultFolderFor(const QString& sequenceId) const {
+    const QString mode = defaultFolderMode();
+    const QString projectFolder = m_projectFile.empty() ? QString() : pathToQString(m_projectFile.parent_path());
+    QString folder;
+    if (mode == QLatin1String("fixed")) {
+        const QString fixed = defaultFolder();
+        if (!fixed.isEmpty() && QFileInfo(fixed).isDir()) {
+            folder = fixed;
+        }
+    } else if (mode == QLatin1String("media")) {
+        // The first clip of the sequence that plays a file: its folder (card #70, "next to the source media").
+        const SequencePtr sequence = sequenceFor(sequenceId);
+        ProjectController* projectController = project();
+        const ProjectSnapshot snapshot = projectController ? projectController->snapshot() : nullptr;
+        if (sequence && snapshot) {
+            const Clip* first = nullptr;
+            const MediaItem* firstItem = nullptr;
+            const auto consider = [&](const Track& track) {
+                for (const Clip& clip : track.clips) {
+                    const MediaItem* item = clip.media.isValid() ? snapshot->findMedia(clip.media) : nullptr;
+                    if (item && !item->isGenerator() && !item->locator.path.empty() && (!first || clip.start() < first->start())) {
+                        first = &clip;
+                        firstItem = item;
+                    }
+                }
+            };
+            for (const TrackPtr& track : sequence->videoTracks) {
+                if (track) {
+                    consider(*track);
+                }
+            }
+            if (!first) {
+                for (const TrackPtr& track : sequence->audioTracks) {
+                    if (track) {
+                        consider(*track);
+                    }
+                }
+            }
+            if (firstItem) {
+                folder = QFileInfo(fromUtf8(firstItem->locator.path)).absolutePath();
+            }
+        }
+        if (!QFileInfo(folder).isDir()) {
+            folder.clear();
+        }
+    } else if (mode == QLatin1String("last")) {
+        folder = lastFolder();
+    }
+    if (folder.isEmpty()) {
+        folder = projectFolder;
+    }
+    if (folder.isEmpty()) {
+        folder = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
+    }
+    if (folder.isEmpty()) {
+        folder = QDir::homePath();
+    }
+    return QDir::toNativeSeparators(folder);
 }
 
 void ExportController::probeEncoders() {
@@ -2408,6 +2656,15 @@ std::shared_ptr<ex::ExportCommandServices> ExportController::commandServices() {
         if (self) {
             std::lock_guard lock(self->m_idsMutex);
             folder = self->m_sharedProjectFile.parent_path();
+        }
+        // 0.7 (card #70): a folder chosen in Settings > General > Export is where the commands write too (the other modes
+        // follow the panel's last choices and the open clips: they are for the interactive export).
+        const QSettings prefs;
+        if (prefs.value(kFolderModeKey).toString() == QLatin1String("fixed")) {
+            const QString chosen = prefs.value(kDefaultFolderKey).toString();
+            if (!chosen.isEmpty() && QFileInfo(chosen).isDir()) {
+                folder = pathFromQString(chosen);
+            }
         }
         if (folder.empty()) {
             folder = pathFromQString(QStandardPaths::writableLocation(QStandardPaths::MoviesLocation));

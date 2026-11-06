@@ -10,12 +10,16 @@ add_library(wabcut_audio_edit STATIC
     src/EssentialSoundCommands.cpp
     src/PluginCommands.cpp
     src/AudioSync.cpp
+    src/AutoMix.cpp
     src/Ducking.cpp
     src/EssentialSound.cpp
     src/GameAudio.cpp
     src/Loudness.cpp
+    src/MatchCommands.cpp
+    src/MatchCurve.cpp
     src/Remix.cpp
     src/SoundClassifier.cpp
+    src/SpectralRepairCommands.cpp
     src/SubmixCommands.cpp
     src/SyncFft.h
     src/VoiceOver.cpp

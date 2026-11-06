@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Make an installed wabcut.app self-contained, sign it ad hoc and check it (release workflow, macOS).
+"""Make an installed wabcut.app self-contained, sign it and check it (release workflow, macOS).
 
-    python3 finish_bundle.py <path/to/Wabcut.app>
+    python3 finish_bundle.py <path/to/Wabcut.app> [--identity <Developer ID Application identity> [--keychain <file>]
+                             [--entitlements-app <plist>] [--entitlements-helper <plist>]]
 
 `cmake --install` with macdeployqt (cmake/WabcutInstall.cmake) leaves two things a Mac without the build tools would
 trip over:
@@ -11,22 +12,29 @@ trip over:
    (libc++, libc++abi, libunwind) into Contents/Frameworks, points the files at @rpath/<name>, gives them an rpath to
    Contents/Frameworks, and drops the rpaths into the build machine (Homebrew, the Qt kit, the build tree).
 2. Apple silicon runs no unsigned code, and macdeployqt and install_name_tool changed the files after the linker
-   signed them: every Mach-O file is signed again ad hoc, the bundle last. (Not a Developer ID signature: Gatekeeper
-   still asks the user to confirm the first start; docs/release.md.)
+   signed them: every Mach-O file is signed again, the bundle last. Without --identity the signature is ad hoc (not a
+   Developer ID signature: Gatekeeper still asks the user to confirm the first start; docs/release.md). With --identity
+   (a "Developer ID Application" certificate in the keychain given by --keychain) every file gets that identity, a
+   secure timestamp and the hardened runtime, the main executable the entitlements of --entitlements-app and the other
+   executables in Contents/MacOS (wabcut-cli and the helpers) those of --entitlements-helper: the form Apple's
+   notarization accepts (notarize.py then submits the bundle).
 
 Then it checks that every load command of every Mach-O file resolves inside the bundle or the OS, that no Mach-O file
 needs a newer macOS than the bundle's LSMinimumSystemVersion (Homebrew's libc++ is built for the macOS of its bottle:
-0.5.2 declared macOS 13 and crashed at launch on 13 and 14), and that the signature verifies. Exits non-zero with the
-reasons otherwise. LLVM_ROOT (the Homebrew LLVM prefix) is searched for libraries an outside library loads through
-@rpath without an rpath of its own.
+0.5.2 declared macOS 13 and crashed at launch on 13 and 14), that the signature verifies and, for a Developer ID
+signature, that every executable has the hardened runtime and a secure timestamp. Exits non-zero with the reasons
+otherwise. LLVM_ROOT (the Homebrew LLVM prefix) is searched for libraries an outside library loads through @rpath
+without an rpath of its own.
 """
 
+import argparse
 import os
 import plistlib
 import shutil
 import struct
 import subprocess
 import sys
+import time
 
 SYSTEM_PREFIXES = ("/System/Library/", "/usr/lib/")
 MACHO_MAGICS = {0xFEEDFACE, 0xFEEDFACF, 0xCEFAEDFE, 0xCFFAEDFE, 0xCAFEBABE, 0xBEBAFECA}
@@ -38,6 +46,19 @@ def run(*args):
     if result.returncode != 0:
         raise RuntimeError(f"{' '.join(args)} failed ({result.returncode}):\n{result.stdout}{result.stderr}")
     return result.stdout
+
+
+def run_signing(*args):
+    """run() for codesign with a secure timestamp: Apple's timestamp server is a network service that now and then does not
+    answer ("The timestamp service is not available"); the same signature a moment later works."""
+    for attempt in range(1, 5):
+        try:
+            return run(*args)
+        except RuntimeError as error:
+            if attempt == 4 or "timestamp" not in str(error).lower():
+                raise
+            print(f"timestamp service not available (attempt {attempt}), trying again", file=sys.stderr)
+            time.sleep(5 * attempt)
 
 
 def is_macho(path):
@@ -93,10 +114,14 @@ def required_macos(path):
 
 
 class Bundle:
-    def __init__(self, app):
+    def __init__(self, app, identity=None, keychain=None, entitlements_app=None, entitlements_helper=None):
         self.app = os.path.realpath(app)
         self.macos = os.path.join(self.app, "Contents", "MacOS")
         self.frameworks = os.path.join(self.app, "Contents", "Frameworks")
+        self.identity = identity
+        self.keychain = keychain
+        self.entitlements_app = entitlements_app
+        self.entitlements_helper = entitlements_helper
         self.search = []  # outside folders that held a copied library: where its own @rpath dependencies are
         llvm = os.environ.get("LLVM_ROOT")
         if llvm:
@@ -173,15 +198,50 @@ class Bundle:
                     run("install_name_tool", "-delete_rpath", rpath, macho)
                     print(f"dropped rpath {rpath} from {os.path.relpath(macho, self.app)}")
 
+    def main_executable(self):
+        with open(os.path.join(self.app, "Contents", "Info.plist"), "rb") as f:
+            return os.path.join(self.macos, plistlib.load(f)["CFBundleExecutable"])
+
+    def codesign(self, entitlements=None):
+        """The codesign command line (without the path): ad hoc, or the Developer ID with a secure timestamp and the
+        hardened runtime that notarization demands."""
+        if not self.identity:
+            return ["codesign", "--force", "--sign", "-"]
+        args = ["codesign", "--force", "--timestamp", "--options", "runtime", "--sign", self.identity]
+        if self.keychain:
+            args += ["--keychain", self.keychain]
+        if entitlements:
+            args += ["--entitlements", entitlements]
+        return args
+
     def sign(self):
-        # Inside out: every Mach-O file, then each framework, then the app.
+        # Inside out: every Mach-O file, then each framework, then the app. Entitlements belong to executables: the
+        # main one gets the app's, the other executables in Contents/MacOS (wabcut-cli, the helpers) the helpers'.
+        main = self.main_executable()
         for macho in self.machos():
-            run("codesign", "--force", "--sign", "-", macho)
+            entitlements = None
+            if os.path.dirname(macho) == self.macos:
+                entitlements = self.entitlements_app if macho == main else self.entitlements_helper
+            run_signing(*self.codesign(entitlements), macho)
         if os.path.isdir(self.frameworks):
             for name in sorted(os.listdir(self.frameworks)):
                 if name.endswith(".framework"):
-                    run("codesign", "--force", "--sign", "-", os.path.join(self.frameworks, name))
-        run("codesign", "--force", "--sign", "-", self.app)
+                    run_signing(*self.codesign(), os.path.join(self.frameworks, name))
+        run_signing(*self.codesign(self.entitlements_app), self.app)
+
+    def check_developer_id(self):
+        """Every Mach-O file must carry the hardened runtime and a secure timestamp, or Apple's notary service rejects
+        the bundle (and says so only after minutes: this finds it at once)."""
+        for macho in self.machos():
+            result = subprocess.run(["codesign", "-d", "--verbose=4", macho], capture_output=True, text=True)
+            report = result.stdout + result.stderr
+            rel = os.path.relpath(macho, self.app)
+            if "(runtime)" not in report:
+                self.problems.append(f"{rel}: signed without the hardened runtime")
+            if "Timestamp=" not in report:
+                self.problems.append(f"{rel}: signed without a secure timestamp")
+            if "Authority=Developer ID Application" not in report:
+                self.problems.append(f"{rel}: not signed with a Developer ID Application certificate")
 
     def check(self):
         with open(os.path.join(self.app, "Contents", "Info.plist"), "rb") as f:
@@ -208,12 +268,24 @@ class Bundle:
             run("codesign", "--verify", "--deep", "--strict", self.app)
         except RuntimeError as error:
             self.problems.append(str(error))
+        if self.identity:
+            self.check_developer_id()
 
 
 def main():
-    if len(sys.argv) != 2 or not sys.argv[1].rstrip("/").endswith(".app") or not os.path.isdir(sys.argv[1]):
+    parser = argparse.ArgumentParser(usage="finish_bundle.py <Wabcut.app> [--identity ...]", add_help=False)
+    parser.add_argument("app")
+    parser.add_argument("--identity")
+    parser.add_argument("--keychain")
+    parser.add_argument("--entitlements-app")
+    parser.add_argument("--entitlements-helper")
+    args = parser.parse_args()
+    if not args.app.rstrip("/").endswith(".app") or not os.path.isdir(args.app):
         sys.exit(__doc__)
-    bundle = Bundle(sys.argv[1])
+    if args.identity and not (args.entitlements_app and args.entitlements_helper):
+        sys.exit("finish_bundle: a Developer ID signature needs --entitlements-app and --entitlements-helper "
+                 "(cmake/packaging/macos/entitlements-*.plist): the hardened runtime stops the app without them")
+    bundle = Bundle(args.app, args.identity, args.keychain, args.entitlements_app, args.entitlements_helper)
     for _ in range(10):
         if not bundle.localize():
             break
@@ -222,7 +294,7 @@ def main():
     bundle.check()
     for line in bundle.copied:
         print(f"copied {line}")
-    print(f"{len(bundle.machos())} Mach-O files signed ad hoc")
+    print(f"{len(bundle.machos())} Mach-O files signed " + ("with the Developer ID" if args.identity else "ad hoc"))
     if bundle.problems:
         print("\n".join(["The bundle is not self-contained:"] + bundle.problems), file=sys.stderr)
         sys.exit(1)

@@ -20,6 +20,9 @@ WabcutDialog {
     property bool ignoreAlpha: false
     property bool invertAlpha: false
     property string premultiplication: ""
+    // 0.7 (VR / 360 video): "" = what the file's spherical metadata says, else none / equirect360 / equirect180.
+    property string vrProjection: ""
+    property string vrStereo: "mono"
     property string errorText: ""
     readonly property var rateOptions: [
         { id: "23.976", name: qsTr("23.976 fps") }, { id: "24", name: qsTr("24 fps") }, { id: "25", name: qsTr("25 fps") },
@@ -36,6 +39,23 @@ WabcutDialog {
         { id: "", name: qsTr("Use Field Order from File") }, { id: "progressive", name: qsTr("No Fields (Progressive Scan)") },
         { id: "upperFirst", name: qsTr("Upper Field First") }, { id: "lowerFirst", name: qsTr("Lower Field First") }
     ]
+    readonly property var vrProjectionOptions: [
+        { id: "", name: qsTr("Use VR Settings from File") }, { id: "none", name: qsTr("Flat Video (not VR)") },
+        { id: "equirect360", name: qsTr("Equirectangular 360") }, { id: "equirect180", name: qsTr("Equirectangular 180 (VR180)") }
+    ]
+    readonly property var vrStereoOptions: [
+        { id: "mono", name: qsTr("Monoscopic") }, { id: "topBottom", name: qsTr("Stereoscopic: Top - Bottom (left eye on top)") },
+        { id: "sideBySide", name: qsTr("Stereoscopic: Side by Side (left eye on the left)") }
+    ]
+    // What the file says, as a sentence ("Equirectangular 360, top - bottom").
+    function vrFileText() {
+        const p = dialog.info.fileVrProjection ?? "none"
+        if (p === "none")
+            return qsTr("The file has no VR metadata")
+        const layout = dialog.info.fileVrStereo === "topBottom" ? qsTr("stereoscopic top - bottom")
+                       : dialog.info.fileVrStereo === "sideBySide" ? qsTr("stereoscopic side by side") : qsTr("monoscopic")
+        return (p === "equirect180" ? qsTr("The file says Equirectangular 180 (VR180), %1") : qsTr("The file says Equirectangular 360, %1")).arg(layout)
+    }
     readonly property var premultiplicationOptions: [
         { id: "", name: qsTr("Use Alpha Premultiplication from File") }, { id: "straight", name: qsTr("Straight") },
         { id: "premultiplied", name: qsTr("Premultiplied") }
@@ -63,13 +83,15 @@ WabcutDialog {
         dialog.ignoreAlpha = dialog.info.ignoreAlpha === true
         dialog.invertAlpha = dialog.info.invertAlpha === true
         dialog.premultiplication = dialog.info.premultiplication ?? ""
+        dialog.vrProjection = dialog.info.vrProjection ?? ""
+        dialog.vrStereo = dialog.info.vrStereo ?? "mono"
         open()
     }
     function apply() {
         const error = Editing.applyInterpretation(dialog.mediaKeys, {
             frameRate: dialog.assumeRate ? dialog.rate : 0, pixelAspect: dialog.conformAspect ? dialog.aspect : 0,
             fieldOrder: dialog.fieldOrder, ignoreAlpha: dialog.ignoreAlpha, invertAlpha: dialog.invertAlpha,
-            premultiplication: dialog.premultiplication
+            premultiplication: dialog.premultiplication, vrProjection: dialog.vrProjection, vrStereo: dialog.vrStereo
         })
         if (error === "")
             dialog.close()
@@ -172,6 +194,42 @@ WabcutDialog {
             checked: dialog.invertAlpha
             onToggled: dialog.invertAlpha = checked
         }
+    }
+    SectionHeader {
+        text: qsTr("VR video")
+        visible: dialog.info.hasVideo === true
+    }
+    GridLayout {
+        visible: dialog.info.hasVideo === true
+        columns: 2
+        columnSpacing: Theme.space(4)
+        rowSpacing: Theme.space(2)
+        Label { text: qsTr("Projection") }
+        EditingChoice {
+            objectName: "interpretVrProjection"
+            options: dialog.vrProjectionOptions
+            current: dialog.vrProjection
+            onChosen: id => dialog.vrProjection = id
+        }
+        Label {
+            visible: dialog.vrProjection !== "" && dialog.vrProjection !== "none"
+            text: qsTr("Stereoscopic layout")
+        }
+        EditingChoice {
+            objectName: "interpretVrStereo"
+            visible: dialog.vrProjection !== "" && dialog.vrProjection !== "none"
+            options: dialog.vrStereoOptions
+            current: dialog.vrStereo
+            onChosen: id => dialog.vrStereo = id
+        }
+    }
+    Label {
+        objectName: "interpretVrFile"
+        Layout.fillWidth: true
+        visible: dialog.info.hasVideo === true
+        text: dialog.vrFileText()
+        font.pixelSize: Theme.textSm
+        wrapMode: Text.Wrap
     }
     Text {
         objectName: "interpretError"

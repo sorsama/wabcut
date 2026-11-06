@@ -101,7 +101,7 @@ QString layoutText(const AudioStreamInfo& audio) {
         return QStringLiteral("5.1");
     if (layout.startsWith(QLatin1String("7.1")))
         return QStringLiteral("7.1");
-    return GamingStartBridge::tr("%n channels", "", audio.channels);
+    return GamingStartBridge::tr("%n channel(s)", "", audio.channels);
 }
 
 } // namespace

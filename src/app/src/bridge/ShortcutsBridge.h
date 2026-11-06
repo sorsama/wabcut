@@ -85,7 +85,8 @@ class ShortcutsBridge : public QObject {
     Q_OBJECT
     Q_PROPERTY(wabcut::app::ShortcutCommandModel* commands READ commands CONSTANT FINAL)
     Q_PROPERTY(QString search READ search WRITE setSearch NOTIFY filterChanged FINAL)
-    /// "" (every command), "application", "panels", or a scope id ("timeline", ...).
+    /// "" (every command), "application", "panels", "modified" (the commands whose keys the user changed), or a scope
+    /// id ("timeline", ...).
     Q_PROPERTY(QString scopeFilter READ scopeFilter WRITE setScopeFilter NOTIFY filterChanged FINAL)
     /// The scope filter's choices: [{ id, name, count }].
     Q_PROPERTY(QVariantList scopes READ scopes NOTIFY changed FINAL)
@@ -167,6 +168,16 @@ public:
     Q_INVOKABLE QVariantMap importKeySet(const QUrl& file);
     /// Writes the user's overrides (the changes from Premiere's defaults) as .json. Returns "" or the error.
     Q_INVOKABLE QString exportOverrides(const QUrl& file) const;
+    /// Puts the commands the list shows now (search and filter applied) on the clipboard as tab-separated text, one
+    /// line per command: "Command<TAB>Panel<TAB>Shortcut" under a header line (the shortcuts as drawn in the list, ", "
+    /// between several). Returns the text ("" when there is nothing to copy or no clipboard).
+    Q_INVOKABLE QString copyToClipboard() const;
+    /// Writes a printable cheat sheet of every key in use: one self-contained HTML page (inline style, a print style
+    /// sheet, no script and no remote assets), commands grouped by menu group, only those that have a key. Returns ""
+    /// or the error.
+    Q_INVOKABLE QString exportCheatSheet(const QUrl& file) const;
+    /// The cheat sheet's HTML for the keys now (exportCheatSheet writes it; the tests read it).
+    QString cheatSheetHtml() const;
 
 signals:
     void changed();

@@ -689,6 +689,23 @@ TEST_CASE("Camera RAW: Source Settings' exposure and white balance in the develo
     CHECK(cool[0] < plain[0]);
     CHECK(darkSource != plainSource); // the frame caches keep the developments apart
     CHECK(coolSource != darkSource);
+
+    // 0.7 (card #108): ISO. Shot at 1600 and developed for 800 is a stop darker (the same as -1 stop of exposure), shot at
+    // 800 and developed for 1600 a stop brighter; the two stack with the exposure and keep their frame caches apart.
+    const std::string isoDark = withRawSourceSettings(asShot, RawSourceSettings{0.0, std::nullopt, RawIso{1600, 800}});
+    const std::string isoBright = withRawSourceSettings(asShot, RawSourceSettings{0.0, std::nullopt, RawIso{800, 1600}});
+    const std::string isoPlusExposure = withRawSourceSettings(asShot, RawSourceSettings{-1.0, std::nullopt, RawIso{800, 1600}});
+    const auto [isoLow, isoLowSource] = pixelOf(isoDark);
+    const auto [isoHigh, isoHighSource] = pixelOf(isoBright);
+    const auto [isoNet, isoNetSource] = pixelOf(isoPlusExposure);
+    INFO("ISO 1600 -> 800 " << isoLow[1] << ", 800 -> 1600 " << isoHigh[1] << ", + -1 stop " << isoNet[1] << ", as shot " << plain[1]);
+    CHECK(isoLow[1] == Approx(plain[1] / 2.0).margin(0.02));
+    CHECK(isoLow[1] == Approx(dark[1]).margin(0.005)); // the same picture as -1 stop of exposure
+    CHECK(isoHigh[1] == Approx(plain[1] * 2.0).margin(0.03));
+    CHECK(isoNet[1] == Approx(plain[1]).margin(0.02)); // +1 stop of ISO and -1 stop of exposure cancel
+    CHECK(isoLowSource != plainSource);
+    CHECK(isoHighSource != isoLowSource);
+    CHECK(isoNetSource != isoHighSource);
 }
 
 TEST_CASE("Camera RAW helpers: a vendor-SDK helper's frames probe and decode like any clip", "[media][raw][helper]") {
@@ -726,4 +743,28 @@ TEST_CASE("Camera RAW helpers: a vendor-SDK helper's frames probe and decode lik
     auto refused = probe(pathToUtf8(folder / "broken.fakeraw"));
     REQUIRE_FALSE(refused.has_value());
     CHECK(refused.error().message.find("not supported by the fake helper") != std::string::npos);
+}
+
+// Card #157: a flattened file's extra channel (a saved selection, a spot colour) is not the picture's transparency. Only
+// a negative layer count says the first alpha channel is.
+TEST_CASE("PSD: a flattened file with a saved selection stays opaque (157)", "[media][psd]") {
+    for (const int depth : {8, 16}) {
+        INFO("depth " << depth);
+        // The merged picture is red; the channel after R, G, B holds a black selection (0 = not selected).
+        const auto flat = writePsd(8, 8, depth, {}, TestPsdCompression::Raw, false, Rgba{65535, 0, 0, 0});
+        auto image = compositePsd(std::span<const std::uint8_t>(flat), {}, true);
+        REQUIRE(image.has_value());
+        CHECK_PIXEL(*image, 4, 4, kRed); // alpha 65535, not the selection's 0
+        CHECK_PIXEL(*image, 0, 0, kRed);
+        // The same with the selection white: no change.
+        const auto selected = writePsd(8, 8, depth, {}, TestPsdCompression::Raw, false, Rgba{65535, 0, 0, 65535});
+        auto again = compositePsd(std::span<const std::uint8_t>(selected), {}, true);
+        REQUIRE(again.has_value());
+        CHECK_PIXEL(*again, 4, 4, kRed);
+    }
+    // The same for a CMYK file: its fifth channel is not transparency either.
+    const auto cmyk = writePsd(8, 8, 8, {}, TestPsdCompression::Raw, false, Rgba{65535, 0, 0, 0}, TestPsdMode::Cmyk);
+    auto cmykImage = compositePsd(std::span<const std::uint8_t>(cmyk), {}, true);
+    REQUIRE(cmykImage.has_value());
+    CHECK((*cmykImage).rgba[4 * (4 * 8 + 4) + 3] == 65535);
 }

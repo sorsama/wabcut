@@ -396,7 +396,9 @@ std::expected<PlacedBroll, Error> placeBroll(const ProjectState& state, Sequence
     std::optional<std::size_t> chosen;
     for (std::size_t i = aroll + 1; i < seq->videoTracks.size(); ++i) {
         const Track& t = *seq->videoTracks[i];
-        if (!t.locked && !overlaps(t)) {
+        // Card 167: a track whose output is switched off shows nothing (Pacing.cpp skips it too), so B-roll placed there
+        // would be reported and previewed but never seen: such a track is passed over like a locked or busy one.
+        if (t.enabled && !t.locked && !overlaps(t)) {
             chosen = i;
             break;
         }

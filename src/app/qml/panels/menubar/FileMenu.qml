@@ -35,6 +35,19 @@ MenuBarMenu {
         command: "file.newSequenceFromClip"
         available: Library.mediaSelected
     }
+    // 0.7 (card 055): with several clips selected in the Library, one sequence each, or all in one.
+    BarMenuItem {
+        objectName: "newSequencePerClipMenuItem"
+        text: qsTr("New Sequence per Clip")
+        command: "file.newSequencesFromClips"
+        available: Library.mediaSelected && Library.selectionCount > 1
+    }
+    BarMenuItem {
+        objectName: "newSequenceFromAllClipsMenuItem"
+        text: qsTr("New Sequence From All Selected Clips")
+        command: "file.newSequenceFromClipsTogether"
+        available: Library.mediaSelected && Library.selectionCount > 1
+    }
     ContextMenuSeparator {}
     BarMenuItem {
         objectName: "fileMenuOpen"
@@ -115,6 +128,26 @@ MenuBarMenu {
         text: qsTr("Save a Copy…")
         command: "file.saveCopy"
     }
+    // 0.7 (card 059): a copy an older Wabcut opens (what it cannot hold is left out and listed).
+    BarMenuItem {
+        objectName: "fileMenuSaveForOlderVersion"
+        text: qsTr("Save for an Older Version…")
+        command: "file.saveForOlderVersion"
+    }
+    // 0.7 (card 006): a named version of the project's history, and that history (Review > Versions: restore, compare).
+    // The history lives next to the saved project file: an untitled project has none.
+    BarMenuItem {
+        objectName: "fileMenuSaveVersion"
+        text: qsTr("Save Version…")
+        command: "file.saveVersion"
+        available: History.available
+    }
+    BarMenuItem {
+        objectName: "fileMenuVersionHistory"
+        text: qsTr("Version History…")
+        command: "file.versionHistory"
+        available: History.available
+    }
     // The project as last saved (after a confirmation): only a saved project with unsaved changes.
     BarMenuItem {
         objectName: "fileMenuRevert"
@@ -144,6 +177,26 @@ MenuBarMenu {
         objectName: "importLottieMenuItem"
         text: qsTr("Import Lottie…")
         onTriggered: root.request("importLottie", null)
+    }
+    // 0.7 (card 078): record from a camera, a capture card or a tape deck the system exposes as one (Windows in this version).
+    BarMenuItem {
+        objectName: "fileMenuCapture"
+        text: qsTr("Capture…")
+        command: "file.capture"
+        available: !ProjectFile.demo
+    }
+    // 0.7 (card 035): keep a project on storage you own, and share a review copy with a page that collects comments.
+    BarMenuItem {
+        objectName: "fileMenuCloudProject"
+        text: qsTr("Cloud Project…")
+        command: "file.cloudProject"
+        available: !ProjectFile.demo
+    }
+    BarMenuItem {
+        objectName: "fileMenuReviewLinks"
+        text: qsTr("Share Review Link…")
+        command: "file.reviewLinks"
+        available: !ProjectFile.demo
     }
     MenuBarMenu {
         objectName: "fileMenuExport"
@@ -178,6 +231,13 @@ MenuBarMenu {
             available: ProjectController.sequenceNames.length > 0
             onTriggered: root.request("mediaUsageReport", null)
         }
+        // 0.7 (card 179): the clearance log for archival footage, with the end-credits roll.
+        BarMenuItem {
+            objectName: "rightsLogMenuItem"
+            text: qsTr("Rights and Clearance Log…")
+            available: ProjectController.sequenceNames.length > 0
+            onTriggered: root.request("rightsLog", null)
+        }
     }
     // 0.6 (1D, #39): Premiere's File > Get Properties for > Selection (Ctrl/Cmd+Shift+H): the Properties dialog.
     BarMenuItem {
@@ -202,6 +262,12 @@ MenuBarMenu {
         text: qsTr("Collect Files…")
         available: !ProjectFile.demo
         onTriggered: root.request("collectFiles", null)
+    }
+    // 0.7 (card 050): a Python script run against the open project (docs/python.md).
+    BarMenuItem {
+        objectName: "runScriptMenuItem"
+        text: qsTr("Run Python Script…")
+        onTriggered: root.request("runScript", null)
     }
     ContextMenuSeparator {}
     BarMenuItem {

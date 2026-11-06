@@ -1,0 +1,1547 @@
+{
+  "schemaVersion": 1,
+  "updated": "2026-11-03",
+  "comment": "Published benchmark results of base model families for the local model library (Settings > AI > Local models; docs/ai.md). Every score is copied from the page in its family's 'source' (or the score's own 'source'), as the publisher reported it; 'mode' says which column when a table has several. Scores apply to a repository that is the family's model or a quantization of it, never to fine-tunes or merges. The composite used for sorting is the mean of the 'core' metrics a family reports.",
+  "metrics": [
+    {
+      "id": "mmlu_pro",
+      "name": "MMLU-Pro",
+      "description": "Knowledge and reasoning across 14 subjects",
+      "core": true
+    },
+    {
+      "id": "gpqa_diamond",
+      "name": "GPQA Diamond",
+      "description": "Graduate-level science questions",
+      "core": true
+    },
+    {
+      "id": "ifeval",
+      "name": "IFEval",
+      "description": "Following formatting instructions",
+      "core": true
+    },
+    {
+      "id": "livecodebench",
+      "name": "LiveCodeBench",
+      "description": "Recent programming problems",
+      "core": true
+    },
+    {
+      "id": "aime25",
+      "name": "AIME 2025",
+      "description": "Competition mathematics",
+      "core": false
+    },
+    {
+      "id": "mmlu",
+      "name": "MMLU",
+      "description": "Knowledge across 57 subjects (older test)",
+      "core": false
+    }
+  ],
+  "families": [
+    {
+      "id": "Qwen/Qwen3-8B",
+      "name": "Qwen3 8B",
+      "publisher": "Qwen",
+      "paramsB": 8.2,
+      "license": "Apache-2.0",
+      "vision": false,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 63.4,
+          "mode": "non-thinking",
+          "note": "Only non-thinking reported; from the 'Pure text performance' image on the Qwen3-VL-8B-Instruct card (column 'Qwen3-8B Non-Thinking'). Qwen3 report has no post-trained MMLU-Pro.",
+          "source": "https://qianwen-res.oss-accelerate.aliyuncs.com/Qwen3-VL/qwen3vl_4b_8b_text_instruct.jpg"
+        },
+        "gpqa_diamond": {
+          "value": 62.0,
+          "mode": "thinking",
+          "note": "Report Table 17 (thinking). Non-thinking (Table 18): 39.3"
+        },
+        "ifeval": {
+          "value": 85.0,
+          "mode": "thinking",
+          "note": "Row 'IFEval strict prompt'. Non-thinking (Table 18): 83.0"
+        },
+        "livecodebench": {
+          "value": 57.5,
+          "mode": "thinking",
+          "note": "v5. Non-thinking (Table 18): 22.8"
+        },
+        "aime25": {
+          "value": 67.3,
+          "mode": "thinking",
+          "note": "Non-thinking (Table 18): 20.9"
+        }
+      },
+      "source": "https://arxiv.org/html/2505.09388v1",
+      "released": "2025-04-27",
+      "checked": "2026-11-03",
+      "note": "The Hugging Face card has no table; it links the Qwen3 blog and cites the Qwen3 Technical Report (arXiv 2505.09388). Scores are from report Tables 17 (thinking) and 18 (non-thinking), column 'Qwen3-8B'. Thinking is the default mode. Publisher self-reported."
+    },
+    {
+      "id": "Qwen/Qwen3-1.7B",
+      "name": "Qwen3 1.7B",
+      "publisher": "Qwen",
+      "paramsB": 2.0,
+      "license": "Apache-2.0",
+      "vision": false,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 56.5,
+          "mode": "thinking",
+          "note": "From the Qwen3.5-2B card language table, column 'Qwen3-1.7B', section 'Knowledge & STEM (Thinking)'. Non-thinking (same table): 40.2",
+          "source": "https://huggingface.co/Qwen/Qwen3.5-2B/blob/15852e8c16360a2fea060d615a32b45270f8a8fc/README.md"
+        },
+        "gpqa_diamond": {
+          "value": 40.1,
+          "mode": "thinking",
+          "note": "Report Table 19 (thinking). Non-thinking (Table 20): 28.6"
+        },
+        "ifeval": {
+          "value": 72.5,
+          "mode": "thinking",
+          "note": "Row 'IFEval strict prompt'. Non-thinking (Table 20): 68.2"
+        },
+        "livecodebench": {
+          "value": 33.2,
+          "mode": "thinking",
+          "note": "v5. Non-thinking (Table 20): 11.6"
+        },
+        "aime25": {
+          "value": 36.8,
+          "mode": "thinking",
+          "note": "Non-thinking (Table 20): 9.8"
+        }
+      },
+      "source": "https://arxiv.org/html/2505.09388v1",
+      "released": "2025-04-27",
+      "checked": "2026-11-03",
+      "note": "The Hugging Face card has no table; scores from Qwen3 Technical Report Tables 19 (thinking) and 20 (non-thinking), column 'Qwen3-1.7B' (thinking is the default). MMLU-Pro is from the Qwen3.5-2B card, where Qwen lists Qwen3-1.7B as a baseline. paramsB is the stored weight count from the Hugging Face API (2.03B incl. embeddings); the name says 1.7B. Publisher self-reported."
+    },
+    {
+      "id": "Qwen/Qwen3-4B-Instruct-2507",
+      "name": "Qwen3 4B Instruct 2507",
+      "publisher": "Qwen",
+      "paramsB": 4.0,
+      "license": "Apache-2.0",
+      "vision": false,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 69.6,
+          "mode": "non-thinking (instruct-only model)"
+        },
+        "gpqa_diamond": {
+          "value": 62.0,
+          "mode": "non-thinking (instruct-only model)",
+          "note": "Row is labelled 'GPQA' (variant not stated)."
+        },
+        "ifeval": {
+          "value": 83.4,
+          "mode": "non-thinking (instruct-only model)"
+        },
+        "livecodebench": {
+          "value": 35.1,
+          "mode": "non-thinking (instruct-only model)",
+          "note": "v6 (25.02-25.05). Row 'LiveCodeBench v6 (25.02-25.05)'."
+        },
+        "aime25": {
+          "value": 47.4,
+          "mode": "non-thinking (instruct-only model)"
+        }
+      },
+      "source": "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507/blob/cdbee75f17c01a7cc42f958dc650907174af0554/README.md",
+      "released": "2025-08-05",
+      "checked": "2026-11-03",
+      "note": "Card table compares against GPT-4.1-nano, Qwen3-30B-A3B Non-Thinking and Qwen3-4B Non-Thinking. This model has no thinking mode. Publisher self-reported."
+    },
+    {
+      "id": "microsoft/Phi-4-mini-instruct",
+      "name": "Phi-4 mini instruct",
+      "publisher": "Microsoft",
+      "paramsB": 3.8,
+      "license": "MIT",
+      "vision": false,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 52.8,
+          "mode": "instruct (no thinking mode)",
+          "note": "Row 'MMLU-Pro (0-shot, CoT)'."
+        },
+        "gpqa_diamond": {
+          "value": 25.2,
+          "mode": "instruct (no thinking mode)",
+          "note": "Row 'GPQA (0-shot, CoT)'; GPQA variant not stated."
+        }
+      },
+      "source": "https://huggingface.co/microsoft/Phi-4-mini-instruct/blob/cfbefacb99257ffa30c83adab238a50856ac3083/README.md",
+      "released": "2025-02-19",
+      "checked": "2026-11-03",
+      "note": "Card table (internal Microsoft benchmark platform) compares against Phi-3.5-mini, Llama-3.2-3B, Mistral-3B, Qwen2.5-3B/7B, Mistral-8B, Llama-3.1-8B, Tulu-3-8B, Gemma2-9B and GPT-4o-mini. No IFEval / LiveCodeBench / AIME numbers on the card. MMLU (5-shot) is 67.3 but omitted because MMLU-Pro exists. Publisher self-reported."
+    },
+    {
+      "id": "Qwen/Qwen3.5-0.8B",
+      "name": "Qwen3.5 0.8B",
+      "publisher": "Qwen",
+      "paramsB": 0.9,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 29.7,
+          "mode": "non-thinking (default for this size)",
+          "note": "First 'MMLU-Pro' row, under the non-thinking heading. Thinking: 42.3"
+        },
+        "gpqa_diamond": {
+          "value": 11.9,
+          "mode": "thinking (only mode reported)",
+          "note": "Row labelled 'GPQA' under 'Knowledge & STEM (Thinking)'; no non-thinking GPQA is reported."
+        },
+        "ifeval": {
+          "value": 52.1,
+          "mode": "non-thinking (default for this size)",
+          "note": "First 'IFEval' row, under the non-thinking heading. Thinking: 44.0"
+        }
+      },
+      "source": "https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/2fc06364715b967f1860aea9cf38778875588b17/README.md",
+      "released": "2026-02-28",
+      "checked": "2026-11-03",
+      "note": "Card states 'Qwen3.5-0.8B operates in non-thinking mode by default'. Language table columns: Qwen3-4B-2507, Qwen3-1.7B, Qwen3.5-2B, Qwen3.5-0.8B; it has a non-thinking block and thinking blocks. Vision-language model. Publisher self-reported."
+    },
+    {
+      "id": "Qwen/Qwen3.5-2B",
+      "name": "Qwen3.5 2B",
+      "publisher": "Qwen",
+      "paramsB": 2.3,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 55.3,
+          "mode": "non-thinking (default for this size)",
+          "note": "First 'MMLU-Pro' row, under the non-thinking heading. Thinking: 66.5"
+        },
+        "gpqa_diamond": {
+          "value": 51.6,
+          "mode": "thinking (only mode reported)",
+          "note": "Row labelled 'GPQA' under 'Knowledge & STEM (Thinking)'; no non-thinking GPQA is reported."
+        },
+        "ifeval": {
+          "value": 61.2,
+          "mode": "non-thinking (default for this size)",
+          "note": "First 'IFEval' row, under the non-thinking heading. Thinking: 78.6"
+        }
+      },
+      "source": "https://huggingface.co/Qwen/Qwen3.5-2B/blob/15852e8c16360a2fea060d615a32b45270f8a8fc/README.md",
+      "released": "2026-02-28",
+      "checked": "2026-11-03",
+      "note": "Card states 'Qwen3.5-2B operates in non-thinking mode by default'. Language table columns: Qwen3-4B-2507, Qwen3-1.7B, Qwen3.5-2B, Qwen3.5-0.8B; it has a non-thinking block and thinking blocks. Vision-language model. Publisher self-reported."
+    },
+    {
+      "id": "Qwen/Qwen3.5-4B",
+      "name": "Qwen3.5 4B",
+      "publisher": "Qwen",
+      "paramsB": 4.7,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 79.1,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "gpqa_diamond": {
+          "value": 76.2,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "ifeval": {
+          "value": 89.8,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "livecodebench": {
+          "value": 55.8,
+          "mode": "thinking (default; table mode not labelled)",
+          "note": "v6."
+        }
+      },
+      "source": "https://huggingface.co/Qwen/Qwen3.5-4B/blob/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/README.md",
+      "released": "2026-02-27",
+      "checked": "2026-11-03",
+      "note": "Card language table compares against GPT-OSS-120B, GPT-OSS-20B, Qwen3-Next-80B-A3B-Thinking and Qwen3-30BA3B-Thinking-2507 (all thinking models); the card says Qwen3.5 thinks by default. No AIME 2025 row. Vision-language model. Publisher self-reported."
+    },
+    {
+      "id": "Qwen/Qwen3.5-9B",
+      "name": "Qwen3.5 9B",
+      "publisher": "Qwen",
+      "paramsB": 9.7,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 82.5,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "gpqa_diamond": {
+          "value": 81.7,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "ifeval": {
+          "value": 91.5,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "livecodebench": {
+          "value": 65.6,
+          "mode": "thinking (default; table mode not labelled)",
+          "note": "v6."
+        }
+      },
+      "source": "https://huggingface.co/Qwen/Qwen3.5-9B/blob/c202236235762e1c871ad0ccb60c8ee5ba337b9a/README.md",
+      "released": "2026-02-27",
+      "checked": "2026-11-03",
+      "note": "Card language table compares against GPT-OSS-120B, GPT-OSS-20B, Qwen3-Next-80B-A3B-Thinking and Qwen3-30BA3B-Thinking-2507 (all thinking models); the card says Qwen3.5 thinks by default. No AIME 2025 row. Vision-language model. Publisher self-reported."
+    },
+    {
+      "id": "Qwen/Qwen3.5-27B",
+      "name": "Qwen3.5 27B",
+      "publisher": "Qwen",
+      "paramsB": 27.8,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 86.1,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "gpqa_diamond": {
+          "value": 85.5,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "ifeval": {
+          "value": 95.0,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "livecodebench": {
+          "value": 80.7,
+          "mode": "thinking (default; table mode not labelled)",
+          "note": "v6."
+        }
+      },
+      "source": "https://huggingface.co/Qwen/Qwen3.5-27B/blob/fc05daec18b0a78c049392ed2e771dde82bdf654/README.md",
+      "released": "2026-02-24",
+      "checked": "2026-11-03",
+      "note": "Card language table compares against GPT-5-mini 2025-08-07, GPT-OSS-120B, Qwen3-235B-A22B and Qwen3.5-122B-A10B; Qwen3.5 thinks by default. No AIME 2025 row. Vision-language model. Publisher self-reported."
+    },
+    {
+      "id": "Qwen/Qwen3.5-35B-A3B",
+      "name": "Qwen3.5 35B-A3B",
+      "publisher": "Qwen",
+      "paramsB": 36.0,
+      "activeParamsB": 3.0,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 85.3,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "gpqa_diamond": {
+          "value": 84.2,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "ifeval": {
+          "value": 91.9,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "livecodebench": {
+          "value": 74.6,
+          "mode": "thinking (default; table mode not labelled)",
+          "note": "v6."
+        }
+      },
+      "source": "https://huggingface.co/Qwen/Qwen3.5-35B-A3B/blob/59d61f3ce65a6d9863b86d2e96597125219dc754/README.md",
+      "released": "2026-02-24",
+      "checked": "2026-11-03",
+      "note": "Card language table compares against GPT-5-mini 2025-08-07, GPT-OSS-120B, Qwen3-235B-A22B and Qwen3.5-122B-A10B; Qwen3.5 thinks by default. No AIME 2025 row. Card: '35B in total and 3B activated'. Vision-language model. Publisher self-reported."
+    },
+    {
+      "id": "Qwen/Qwen3.6-35B-A3B",
+      "name": "Qwen3.6 35B-A3B",
+      "publisher": "Qwen",
+      "paramsB": 36.0,
+      "activeParamsB": 3.0,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 85.2,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "gpqa_diamond": {
+          "value": 86.0,
+          "mode": "thinking (default; table mode not labelled)",
+          "note": "Row labelled 'GPQA' on this card; the Qwen3.6-27B card lists the same 86.0 for Qwen3.6-35B-A3B under 'GPQA Diamond'."
+        },
+        "livecodebench": {
+          "value": 80.4,
+          "mode": "thinking (default; table mode not labelled)",
+          "note": "v6."
+        }
+      },
+      "source": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/995ad96eacd98c81ed38be0c5b274b04031597b0/README.md",
+      "released": "2026-04-15",
+      "checked": "2026-11-03",
+      "note": "Card table compares against Qwen3.5-27B, Gemma4-31B, Qwen3.5-35BA3B and Gemma4-26BA4B (Gemma numbers there are Qwen's). No IFEval or AIME 2025 rows (AIME26 = 92.7, full AIME 2026 I & II). Card: '35B in total and 3B activated'; thinking by default. Publisher self-reported."
+    },
+    {
+      "id": "Qwen/Qwen3.6-27B",
+      "name": "Qwen3.6 27B",
+      "publisher": "Qwen",
+      "paramsB": 27.8,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 86.2,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "gpqa_diamond": {
+          "value": 87.8,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "livecodebench": {
+          "value": 83.9,
+          "mode": "thinking (default; table mode not labelled)",
+          "note": "v6."
+        }
+      },
+      "source": "https://huggingface.co/Qwen/Qwen3.6-27B/blob/6a9e13bd6fc8f0983b9b99948120bc37f49c13e9/README.md",
+      "released": "2026-04-21",
+      "checked": "2026-11-03",
+      "note": "Card table compares against Qwen3.5-27B, Qwen3.5-397B-A17B, Gemma4-31B, Claude 4.5 Opus and Qwen3.6-35B-A3B. No IFEval or AIME 2025 rows (AIME26 = 94.1). Publisher self-reported."
+    },
+    {
+      "id": "Qwen/Qwen3.8-27B",
+      "name": "Qwen3.8 27B",
+      "publisher": "Qwen",
+      "paramsB": 27.8,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "gpqa_diamond": {
+          "value": 89.2,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "livecodebench": {
+          "value": 90.3,
+          "mode": "thinking (default; table mode not labelled)",
+          "note": "v6."
+        }
+      },
+      "source": "https://huggingface.co/Qwen/Qwen3.8-27B/blob/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/README.md",
+      "released": "2026-08-05",
+      "checked": "2026-11-03",
+      "note": "Card 'Text Performance' table compares against Qwen3.6-27B, Qwen3.7-Plus, Muse Glimmer-30B and Opus4.6 Max. No MMLU-Pro, IFEval (only IFBench 79.5) or AIME 2025 rows. Thinking on by default. Publisher self-reported."
+    },
+    {
+      "id": "Qwen/Qwen3.8-Flash-Next",
+      "name": "Qwen3.8 Flash-Next",
+      "publisher": "Qwen",
+      "paramsB": 180.0,
+      "activeParamsB": 6.0,
+      "license": "qwen-community-1.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "gpqa_diamond": {
+          "value": 91.7,
+          "mode": "thinking (default; table mode not labelled)"
+        },
+        "livecodebench": {
+          "value": 91.9,
+          "mode": "thinking (default; table mode not labelled)",
+          "note": "v6."
+        }
+      },
+      "source": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/de4b8e4d43b917e7706784d8bb445c9af86a3540/README.md",
+      "released": "2026-08-24",
+      "checked": "2026-11-03",
+      "note": "Too large for most PCs: card says '125B with 6B activated, plus 51B n-gram embedding and 4B MTP' (paramsB 180 = Hugging Face API stored total = the sum). Card table compares against Qwen3.8-27B, Qwen3.7-Plus, DeepSeek-V4-Flash-0731 and Claude-Opus-4.6 (Max). No MMLU-Pro, IFEval (IFBench 81.3) or AIME 2025. License 'other: qwen-community-1.0' per Hugging Face API. Publisher self-reported."
+    },
+    {
+      "id": "Qwen/Qwen3-VL-8B-Instruct",
+      "name": "Qwen3-VL 8B Instruct",
+      "publisher": "Qwen",
+      "paramsB": 8.8,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "vision",
+        "reasoning",
+        "coding"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 71.6,
+          "mode": "instruct (non-thinking)",
+          "note": "Read from the card's 'Pure text performance' image: https://qianwen-res.oss-accelerate.aliyuncs.com/Qwen3-VL/qwen3vl_4b_8b_text_instruct.jpg"
+        },
+        "ifeval": {
+          "value": 83.7,
+          "mode": "instruct (non-thinking)",
+          "note": "From the card image (see mmlu_pro note)."
+        },
+        "livecodebench": {
+          "value": 39.3,
+          "mode": "instruct (non-thinking)",
+          "note": "v6 (25.02-25.05). Row 'LCBv6 (25.02 - 25.05)' in the card image."
+        },
+        "aime25": {
+          "value": 45.9,
+          "mode": "instruct (non-thinking)",
+          "note": "From the card image."
+        }
+      },
+      "source": "https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct/blob/0c351dd01ed87e9c1b53cbc748cba10e6187ff3b/README.md",
+      "released": "2025-10-11",
+      "checked": "2026-11-03",
+      "note": "Numbers are in a JPEG embedded in the card (https://qianwen-res.oss-accelerate.aliyuncs.com/Qwen3-VL/qwen3vl_4b_8b_text_instruct.jpg), read visually, not machine-checked. Same image columns: Qwen3-VL-4B Instruct, Qwen3-4B Instruct-2507, Qwen3-8B Non-Thinking; the 4B-2507 and 8B values in it match their text sources. No GPQA row. MMLU = 80.7 (omitted, MMLU-Pro present). Publisher self-reported."
+    },
+    {
+      "id": "google/gemma-4-E2B-it",
+      "name": "Gemma 4 E2B it",
+      "publisher": "Google",
+      "paramsB": 5.1,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 60.0,
+          "mode": "not stated (instruction-tuned)",
+          "note": "Row 'MMLU Pro'."
+        },
+        "gpqa_diamond": {
+          "value": 43.4,
+          "mode": "not stated (instruction-tuned)"
+        },
+        "livecodebench": {
+          "value": 44.0,
+          "mode": "not stated (instruction-tuned)",
+          "note": "v6."
+        }
+      },
+      "source": "https://huggingface.co/google/gemma-4-E2B-it/blob/3e22461f65e89153144f8adb70e3b8c2cc9845a7/README.md",
+      "released": "2026-03-02",
+      "checked": "2026-11-03",
+      "note": "Card: '2.3B effective (5.1B with embeddings)'; text, image and audio input. One shared table on every Gemma 4 card (31B, 26B A4B, 12B Unified, E4B, E2B, Gemma 3 27B); results are 'for instruction-tuned models'. Thinking mode is not stated for the table; the Gemma 3 column is labelled '(no think)', which suggests Gemma 4 ran with thinking on. AIME is 2026 (no 2025 row); no IFEval row. Publisher self-reported."
+    },
+    {
+      "id": "google/gemma-4-E4B-it",
+      "name": "Gemma 4 E4B it",
+      "publisher": "Google",
+      "paramsB": 8.0,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 69.4,
+          "mode": "not stated (instruction-tuned)",
+          "note": "Row 'MMLU Pro'."
+        },
+        "gpqa_diamond": {
+          "value": 58.6,
+          "mode": "not stated (instruction-tuned)"
+        },
+        "livecodebench": {
+          "value": 52.0,
+          "mode": "not stated (instruction-tuned)",
+          "note": "v6."
+        }
+      },
+      "source": "https://huggingface.co/google/gemma-4-E4B-it/blob/ee0ef6023621cff504d758262d4e04895a5af4a2/README.md",
+      "released": "2026-03-02",
+      "checked": "2026-11-03",
+      "note": "Card: '4.5B effective (8B with embeddings)'; text, image and audio input. One shared table on every Gemma 4 card (31B, 26B A4B, 12B Unified, E4B, E2B, Gemma 3 27B); results are 'for instruction-tuned models'. Thinking mode is not stated for the table; the Gemma 3 column is labelled '(no think)', which suggests Gemma 4 ran with thinking on. AIME is 2026 (no 2025 row); no IFEval row. Publisher self-reported."
+    },
+    {
+      "id": "google/gemma-4-12B-it",
+      "name": "Gemma 4 12B it (Unified)",
+      "publisher": "Google",
+      "paramsB": 11.95,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 77.2,
+          "mode": "not stated (instruction-tuned)",
+          "note": "Row 'MMLU Pro'."
+        },
+        "gpqa_diamond": {
+          "value": 78.8,
+          "mode": "not stated (instruction-tuned)"
+        },
+        "livecodebench": {
+          "value": 72.0,
+          "mode": "not stated (instruction-tuned)",
+          "note": "v6."
+        }
+      },
+      "source": "https://huggingface.co/google/gemma-4-12B-it/blob/43c9d014b231474fa7212dbb48a762566c2b255d/README.md",
+      "released": "2026-05-23",
+      "checked": "2026-11-03",
+      "note": "Card: 11.95B; encoder-free 'Unified' model, text, image and audio input. One shared table on every Gemma 4 card (31B, 26B A4B, 12B Unified, E4B, E2B, Gemma 3 27B); results are 'for instruction-tuned models'. Thinking mode is not stated for the table; the Gemma 3 column is labelled '(no think)', which suggests Gemma 4 ran with thinking on. AIME is 2026 (no 2025 row); no IFEval row. Publisher self-reported."
+    },
+    {
+      "id": "google/gemma-4-26B-A4B-it",
+      "name": "Gemma 4 26B-A4B it",
+      "publisher": "Google",
+      "paramsB": 25.2,
+      "activeParamsB": 3.8,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 82.6,
+          "mode": "not stated (instruction-tuned)",
+          "note": "Row 'MMLU Pro'."
+        },
+        "gpqa_diamond": {
+          "value": 82.3,
+          "mode": "not stated (instruction-tuned)"
+        },
+        "livecodebench": {
+          "value": 77.1,
+          "mode": "not stated (instruction-tuned)",
+          "note": "v6."
+        }
+      },
+      "source": "https://huggingface.co/google/gemma-4-26B-A4B-it/blob/4d7ae4984b7db7de8f8457170b3f1a419ee76d52/README.md",
+      "released": "2026-03-11",
+      "checked": "2026-11-03",
+      "note": "Card: 25.2B total, 3.8B active (MoE); text and image input. One shared table on every Gemma 4 card (31B, 26B A4B, 12B Unified, E4B, E2B, Gemma 3 27B); results are 'for instruction-tuned models'. Thinking mode is not stated for the table; the Gemma 3 column is labelled '(no think)', which suggests Gemma 4 ran with thinking on. AIME is 2026 (no 2025 row); no IFEval row. Publisher self-reported."
+    },
+    {
+      "id": "google/gemma-4-31B-it",
+      "name": "Gemma 4 31B it",
+      "publisher": "Google",
+      "paramsB": 30.7,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 85.2,
+          "mode": "not stated (instruction-tuned)",
+          "note": "Row 'MMLU Pro'."
+        },
+        "gpqa_diamond": {
+          "value": 84.3,
+          "mode": "not stated (instruction-tuned)"
+        },
+        "livecodebench": {
+          "value": 80.0,
+          "mode": "not stated (instruction-tuned)",
+          "note": "v6."
+        }
+      },
+      "source": "https://huggingface.co/google/gemma-4-31B-it/blob/842da3794eaa0b77d5f08bae87a17459d91ff475/README.md",
+      "released": "2026-03-11",
+      "checked": "2026-11-03",
+      "note": "Card: 30.7B dense; text and image input; above ~24 GB VRAM at 4-bit plus context. One shared table on every Gemma 4 card (31B, 26B A4B, 12B Unified, E4B, E2B, Gemma 3 27B); results are 'for instruction-tuned models'. Thinking mode is not stated for the table; the Gemma 3 column is labelled '(no think)', which suggests Gemma 4 ran with thinking on. AIME is 2026 (no 2025 row); no IFEval row. Publisher self-reported."
+    },
+    {
+      "id": "ornith-ai/Ornith-1.5-9B",
+      "name": "Ornith 1.5 9B",
+      "publisher": "Ornith AI",
+      "paramsB": 9.7,
+      "license": "MIT",
+      "vision": false,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding"
+      ],
+      "scores": {
+        "gpqa_diamond": {
+          "value": 86.4,
+          "mode": "thinking (reasoning model, thinks by default; table mode not labelled)",
+          "note": "Averaged over five runs (card footnote)."
+        }
+      },
+      "source": "https://huggingface.co/ornith-ai/Ornith-1.5-9B/blob/489cb97981b8654bcfcf30ce1f94ed1b62e07b53/README.md",
+      "released": "2026-08-18",
+      "checked": "2026-11-03",
+      "note": "Base repo of ornith-ai/Ornith-1.5-9B-GGUF. Card: Ornith-1.0 was built on Qwen3.5 and Gemma4; Hugging Face config architecture is Qwen3_5ForConditionalGeneration. The card's table is agentic/coding (Terminal-Bench, SWE-bench, MCP-Atlas...) plus HLE and GPQA Diamond; no MMLU-Pro, IFEval, LiveCodeBench or AIME. Comparison columns include Qwen3.5-9B / Qwen3.6-35B-A3B / Gemma-4-31B. vision=false because the card advertises text only (pipeline text-generation). Publisher self-reported."
+    },
+    {
+      "id": "ornith-ai/Ornith-1.5-35B-A3B",
+      "name": "Ornith 1.5 35B-A3B",
+      "publisher": "Ornith AI",
+      "paramsB": 36.0,
+      "activeParamsB": 3.0,
+      "license": "MIT",
+      "vision": false,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding"
+      ],
+      "scores": {
+        "gpqa_diamond": {
+          "value": 89.2,
+          "mode": "thinking (reasoning model, thinks by default; table mode not labelled)",
+          "note": "Averaged over five runs (card footnote)."
+        }
+      },
+      "source": "https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B/blob/10fbf86fed7ecee4a061f8b499a618f46001cac1/README.md",
+      "released": "2026-08-18",
+      "checked": "2026-11-03",
+      "note": "Base repo of ornith-ai/Ornith-1.5-35B-A3B-GGUF. Card: Ornith-1.0 was built on Qwen3.5 and Gemma4; Hugging Face config architecture is Qwen3_5MoeForConditionalGeneration. The card's table is agentic/coding (Terminal-Bench, SWE-bench, MCP-Atlas...) plus HLE and GPQA Diamond; no MMLU-Pro, IFEval, LiveCodeBench or AIME. Comparison columns include Qwen3.5-9B / Qwen3.6-35B-A3B / Gemma-4-31B / Muse-Glimmer-30B / Qwen3.5-397B. vision=false because the card advertises text only (pipeline text-generation). Publisher self-reported."
+    },
+    {
+      "id": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "name": "DeepSeek V4.1 Flash",
+      "publisher": "DeepSeek",
+      "paramsB": 552,
+      "activeParamsB": 16.0,
+      "license": "MIT",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "gpqa_diamond": {
+          "value": 90.9,
+          "mode": "max reasoning effort (reasoning_effort=100)",
+          "note": "Row 'GPQA Diamond (Pass@1)', column 'DS-V4.1-Flash'."
+        }
+      },
+      "source": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/314113f8a7dadb388215396ba5fbee2c610a04d6/README.md",
+      "released": "2026-09-10",
+      "checked": "2026-11-03",
+      "note": "Not runnable on a PC: card says 552B backbone parameters, 8B active during prefill and 16B during decode, plus a 196B Engram memory (Hugging Face API stores 763.2B). Instruct table compares against Opus-5.0, GPT-5.6 Sol, K3, GLM-5.3, DS-V4-Pro and DS-V4-Flash at max effort. MMLU-Pro (74.1, 5-shot) is reported only for DeepSeek-V4.1-Flash-Base, so it is omitted. A later checkpoint deepseek-ai/DeepSeek-V4.1-Flash-1017 also exists (not covered). Publisher self-reported."
+    },
+    {
+      "id": "openai/gpt-oss-20b",
+      "name": "gpt-oss 20B",
+      "publisher": "OpenAI",
+      "paramsB": 20.9,
+      "activeParamsB": 3.6,
+      "license": "Apache-2.0",
+      "vision": false,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "gpqa_diamond": {
+          "value": 66.0,
+          "mode": "reasoning: medium, no tools",
+          "note": "Row 'GPQA Diamond (no tools)'. low 56.8 / high 71.5."
+        },
+        "aime25": {
+          "value": 72.1,
+          "mode": "reasoning: medium, no tools",
+          "note": "Row 'AIME 2025 (no tools)'. low 37.1 / high 91.7."
+        },
+        "mmlu": {
+          "value": 84.0,
+          "mode": "reasoning: medium",
+          "note": "No MMLU-Pro reported. low 80.4 / high 85.3."
+        }
+      },
+      "source": "https://arxiv.org/html/2508.10925v1",
+      "released": "2025-08-04",
+      "checked": "2026-11-03",
+      "note": "The Hugging Face card has no table; it links the gpt-oss model card paper (arXiv 2508.10925). Values are from its Table 3 'Evaluations across multiple benchmarks and reasoning levels', gpt-oss-20b columns low/medium/high. The card does not name a default level; medium is recorded as the middle setting. The Hugging Face card: 21B parameters with 3.6B active. No IFEval or LiveCodeBench. Publisher self-reported."
+    },
+    {
+      "id": "mistralai/Ministral-3-3B-Reasoning-2512",
+      "name": "Ministral 3 3B Reasoning 2512",
+      "publisher": "Mistral AI",
+      "paramsB": 3.8,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "gpqa_diamond": {
+          "value": 53.4,
+          "mode": "reasoning model",
+          "note": "Card value 0.534 (fraction) shown here x100."
+        },
+        "livecodebench": {
+          "value": 54.8,
+          "mode": "reasoning model",
+          "note": "not stated. Card value 0.548; LiveCodeBench version not stated."
+        },
+        "aime25": {
+          "value": 72.1,
+          "mode": "reasoning model",
+          "note": "Card value 0.721."
+        }
+      },
+      "source": "https://huggingface.co/mistralai/Ministral-3-3B-Reasoning-2512/blob/4a36357c811bf511a7b625d132e12f22408aac91/README.md",
+      "released": "2025-10-31",
+      "checked": "2026-11-03",
+      "note": "From the '### Reasoning' table shared by all Ministral 3 cards (row 'Ministral 3 3B', compared against Qwen3 thinking / Qwen3-VL Thinking models); attributed to the Reasoning variant. Card values are fractions, stored x100. Has a 0.4B vision encoder (8B card). Publisher self-reported."
+    },
+    {
+      "id": "mistralai/Ministral-3-8B-Reasoning-2512",
+      "name": "Ministral 3 8B Reasoning 2512",
+      "publisher": "Mistral AI",
+      "paramsB": 8.9,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "gpqa_diamond": {
+          "value": 66.8,
+          "mode": "reasoning model",
+          "note": "Card value 0.668 (fraction) shown here x100."
+        },
+        "livecodebench": {
+          "value": 61.6,
+          "mode": "reasoning model",
+          "note": "not stated. Card value 0.616; LiveCodeBench version not stated."
+        },
+        "aime25": {
+          "value": 78.7,
+          "mode": "reasoning model",
+          "note": "Card value 0.787."
+        }
+      },
+      "source": "https://huggingface.co/mistralai/Ministral-3-8B-Reasoning-2512/blob/81eaece1948f3875421d9a45bc55487d10e2d894/README.md",
+      "released": "2025-10-31",
+      "checked": "2026-11-03",
+      "note": "From the '### Reasoning' table shared by all Ministral 3 cards (row 'Ministral 3 8B', compared against Qwen3 thinking / Qwen3-VL Thinking models); attributed to the Reasoning variant. Card values are fractions, stored x100. Has a 0.4B vision encoder (8B card). Publisher self-reported."
+    },
+    {
+      "id": "mistralai/Ministral-3-14B-Reasoning-2512",
+      "name": "Ministral 3 14B Reasoning 2512",
+      "publisher": "Mistral AI",
+      "paramsB": 13.9,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "gpqa_diamond": {
+          "value": 71.2,
+          "mode": "reasoning model",
+          "note": "Card value 0.712 (fraction) shown here x100."
+        },
+        "livecodebench": {
+          "value": 64.6,
+          "mode": "reasoning model",
+          "note": "not stated. Card value 0.646; LiveCodeBench version not stated."
+        },
+        "aime25": {
+          "value": 85.0,
+          "mode": "reasoning model",
+          "note": "Card value 0.850."
+        }
+      },
+      "source": "https://huggingface.co/mistralai/Ministral-3-14B-Reasoning-2512/blob/51f9210f3cd20f3452a80d5819d15dc61cc50630/README.md",
+      "released": "2025-10-31",
+      "checked": "2026-11-03",
+      "note": "From the '### Reasoning' table shared by all Ministral 3 cards (row 'Ministral 3 14B', compared against Qwen3 thinking / Qwen3-VL Thinking models); attributed to the Reasoning variant. Card values are fractions, stored x100. Has a 0.4B vision encoder (8B card). Publisher self-reported."
+    },
+    {
+      "id": "mistralai/Ministral-3-3B-Instruct-2512",
+      "name": "Ministral 3 3B Instruct 2512",
+      "publisher": "Mistral AI",
+      "paramsB": 3.8,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {},
+      "source": "https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512/blob/b35d4dfe56c142746f54dbd64f579faab2744308/README.md",
+      "released": "2025-10-31",
+      "checked": "2026-11-03",
+      "note": "No usable scores: the card's '### Instruct' table only has Arena Hard, WildBench, MATH Maj@1 and MM MTBench; its '### Reasoning' table belongs to the Reasoning variant and its '### Base' table (MMLU 5-shot) to the Base model. Weights stored in FP8."
+    },
+    {
+      "id": "mistralai/Ministral-3-8B-Instruct-2512",
+      "name": "Ministral 3 8B Instruct 2512",
+      "publisher": "Mistral AI",
+      "paramsB": 8.9,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {},
+      "source": "https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512/blob/5b26027e7b19eeb4b7352e1fed3926375dd2cb4d/README.md",
+      "released": "2025-10-31",
+      "checked": "2026-11-03",
+      "note": "No usable scores: the card's '### Instruct' table only has Arena Hard, WildBench, MATH Maj@1 and MM MTBench; its '### Reasoning' table belongs to the Reasoning variant and its '### Base' table (MMLU 5-shot) to the Base model. Weights stored in FP8."
+    },
+    {
+      "id": "mistralai/Ministral-3-14B-Instruct-2512",
+      "name": "Ministral 3 14B Instruct 2512",
+      "publisher": "Mistral AI",
+      "paramsB": 13.9,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {},
+      "source": "https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512/blob/29439f81c2be264d8d393273f99e7db9c0961120/README.md",
+      "released": "2025-10-31",
+      "checked": "2026-11-03",
+      "note": "No usable scores: the card's '### Instruct' table only has Arena Hard, WildBench, MATH Maj@1 and MM MTBench; its '### Reasoning' table belongs to the Reasoning variant and its '### Base' table (MMLU 5-shot) to the Base model. Weights stored in FP8."
+    },
+    {
+      "id": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+      "name": "Mistral Small 3.2 24B Instruct 2506",
+      "publisher": "Mistral AI",
+      "paramsB": 24.0,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "coding",
+        "vision"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 69.06,
+          "mode": "instruct",
+          "note": "Row header 'MMLU Pro (5-shot CoT)'."
+        },
+        "gpqa_diamond": {
+          "value": 46.13,
+          "mode": "instruct",
+          "note": "Column 'GPQA Diamond (5-shot CoT )'."
+        }
+      },
+      "source": "https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506/blob/95a6d26c4bfb886c58daf9d3f7332c857cb27b43/README.md",
+      "released": "2025-06-19",
+      "checked": "2026-11-03",
+      "note": "Latest Mistral Small that fits a PC; the newer Mistral-Small-4-119B-2603 (119B) is out of scope. Card STEM table compares only against Small 3.1 24B Instruct. Publisher self-reported."
+    },
+    {
+      "id": "ibm-granite/granite-4.2-3b",
+      "name": "Granite 4.2 3B",
+      "publisher": "IBM",
+      "paramsB": 3.7,
+      "license": "Apache-2.0",
+      "vision": false,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 67.84,
+          "mode": "not stated (thinking is the default mode)"
+        },
+        "gpqa_diamond": {
+          "value": 54.8,
+          "mode": "not stated (thinking is the default mode)",
+          "note": "Row labelled 'GPQA' (variant not stated)."
+        },
+        "livecodebench": {
+          "value": 69.71,
+          "mode": "not stated (thinking is the default mode)",
+          "note": "v6."
+        },
+        "aime25": {
+          "value": 78.33,
+          "mode": "not stated (thinking is the default mode)"
+        }
+      },
+      "source": "https://huggingface.co/ibm-granite/granite-4.2-3b/blob/4e9c275e232f10211ec88644d106a1f6a1b60e06/README.md",
+      "released": "2026-08-07",
+      "checked": "2026-11-03",
+      "note": "Card table covers 3B / 8B / 30B dense only (no outside baselines); run with a NeMo Evaluator SDK based framework. IFEval is not reported (IFBench prompt only). Card release date: August 25, 2026 (repo created 2026-08-07). Publisher self-reported."
+    },
+    {
+      "id": "ibm-granite/granite-4.2-8b",
+      "name": "Granite 4.2 8B",
+      "publisher": "IBM",
+      "paramsB": 8.8,
+      "license": "Apache-2.0",
+      "vision": false,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 74.04,
+          "mode": "not stated (thinking is the default mode)"
+        },
+        "gpqa_diamond": {
+          "value": 64.14,
+          "mode": "not stated (thinking is the default mode)",
+          "note": "Row labelled 'GPQA' (variant not stated)."
+        },
+        "livecodebench": {
+          "value": 73.24,
+          "mode": "not stated (thinking is the default mode)",
+          "note": "v6."
+        },
+        "aime25": {
+          "value": 86.67,
+          "mode": "not stated (thinking is the default mode)"
+        }
+      },
+      "source": "https://huggingface.co/ibm-granite/granite-4.2-8b/blob/a7042144125ce5ae64f89610e8289647fc000b9a/README.md",
+      "released": "2026-08-07",
+      "checked": "2026-11-03",
+      "note": "Card table covers 3B / 8B / 30B dense only (no outside baselines); run with a NeMo Evaluator SDK based framework. IFEval is not reported (IFBench prompt only). Card release date: August 25, 2026 (repo created 2026-08-07). Publisher self-reported."
+    },
+    {
+      "id": "ibm-granite/granite-4.2-30b",
+      "name": "Granite 4.2 30B",
+      "publisher": "IBM",
+      "paramsB": 29.3,
+      "license": "Apache-2.0",
+      "vision": false,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 77.6,
+          "mode": "not stated (thinking is the default mode)"
+        },
+        "gpqa_diamond": {
+          "value": 66.41,
+          "mode": "not stated (thinking is the default mode)",
+          "note": "Row labelled 'GPQA' (variant not stated)."
+        },
+        "livecodebench": {
+          "value": 75.77,
+          "mode": "not stated (thinking is the default mode)",
+          "note": "v6."
+        },
+        "aime25": {
+          "value": 89.17,
+          "mode": "not stated (thinking is the default mode)"
+        }
+      },
+      "source": "https://huggingface.co/ibm-granite/granite-4.2-30b/blob/9e668ce1c538387ef24d3644e9b0606647762636/README.md",
+      "released": "2026-08-07",
+      "checked": "2026-11-03",
+      "note": "Card table covers 3B / 8B / 30B dense only (no outside baselines); run with a NeMo Evaluator SDK based framework. IFEval is not reported (IFBench prompt only). Card release date: August 25, 2026 (repo created 2026-08-07). Publisher self-reported."
+    },
+    {
+      "id": "HuggingFaceTB/SmolLM3-3B",
+      "name": "SmolLM3 3B",
+      "publisher": "Hugging Face",
+      "paramsB": 3.1,
+      "license": "Apache-2.0",
+      "vision": false,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "gpqa_diamond": {
+          "value": 41.7,
+          "mode": "extended thinking (default)",
+          "note": "No-thinking: 35.7"
+        },
+        "ifeval": {
+          "value": 71.2,
+          "mode": "extended thinking (default)",
+          "note": "No-thinking: 76.7"
+        },
+        "livecodebench": {
+          "value": 30.0,
+          "mode": "extended thinking (default)",
+          "note": "v4. No-thinking: 15.2"
+        },
+        "aime25": {
+          "value": 36.7,
+          "mode": "extended thinking (default)",
+          "note": "No-thinking: 9.3"
+        }
+      },
+      "source": "https://huggingface.co/HuggingFaceTB/SmolLM3-3B/blob/a07cc9a04f16550a088caea529712d1d335b0ac1/README.md",
+      "released": "2025-07-08",
+      "checked": "2026-11-03",
+      "note": "Card evaluated with lighteval, zero-shot; comparison with Qwen2.5-3B, Llama3.1-3B, Qwen3-1.7B and Qwen3-4B. MMLU-Pro appears only for the base model (MMLU Pro CF/MCF), so omitted. Extended thinking is enabled by default. Publisher self-reported."
+    },
+    {
+      "id": "meta-llama/Llama-3.1-8B-Instruct",
+      "name": "Llama 3.1 8B Instruct",
+      "publisher": "Meta",
+      "paramsB": 8.0,
+      "license": "llama3.1",
+      "vision": false,
+      "tasks": [
+        "chat",
+        "coding"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 48.3,
+          "mode": "instruct",
+          "note": "Row 'MMLU-Pro (CoT)', 5-shot, micro_avg/acc_char."
+        },
+        "gpqa_diamond": {
+          "value": 30.4,
+          "mode": "instruct",
+          "note": "Row 'GPQA', 0-shot, em; GPQA variant not stated."
+        },
+        "ifeval": {
+          "value": 80.4,
+          "mode": "instruct"
+        }
+      },
+      "source": "https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct",
+      "released": "2024-07-18",
+      "checked": "2026-11-03",
+      "note": "Gated repo: the raw README needs approved access, so the numbers were read from the public rendered model page, table under 'Instruction tuned models' (columns Llama 3 8B/70B Instruct, Llama 3.1 8B/70B/405B Instruct). License: Llama 3.1 Community License. Publisher self-reported."
+    },
+    {
+      "id": "meta-llama/Llama-3.2-3B-Instruct",
+      "name": "Llama 3.2 3B Instruct",
+      "publisher": "Meta",
+      "paramsB": 3.2,
+      "license": "llama3.2",
+      "vision": false,
+      "tasks": [
+        "chat"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "gpqa_diamond": {
+          "value": 32.8,
+          "mode": "instruct (bf16)",
+          "note": "Row 'GPQA', 0-shot, acc; GPQA variant not stated."
+        },
+        "ifeval": {
+          "value": 77.4,
+          "mode": "instruct (bf16)",
+          "note": "Metric 'Avg(Prompt/Instruction acc Loose/Strict)'."
+        },
+        "mmlu": {
+          "value": 63.4,
+          "mode": "instruct (bf16)",
+          "note": "5-shot macro_avg/acc; no MMLU-Pro on the card."
+        }
+      },
+      "source": "https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct",
+      "released": "2024-09-18",
+      "checked": "2026-11-03",
+      "note": "Gated repo: numbers read from the public rendered model page, table under 'Instruction Tuned Models', column 'Llama 3.2 3B bf16' (other columns: 1B, quantised variants, Llama 3.1 8B). License: Llama 3.2 Community License. Publisher self-reported."
+    },
+    {
+      "id": "tencent/Hy-MT2-7B",
+      "name": "Hy-MT2 7B",
+      "publisher": "Tencent",
+      "paramsB": 8.0,
+      "license": "Apache-2.0",
+      "vision": false,
+      "tasks": [
+        "chat",
+        "translation"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {},
+      "source": "https://huggingface.co/tencent/Hy-MT2-7B/blob/9b0eb4e8f001def3e5ff6469a0ac96fdb39ec223/README.md",
+      "released": "2026-05-11",
+      "checked": "2026-11-03",
+      "note": "Translation model: results are only in an image (imgs/main_result.png) and the Hy-MT2 report (arXiv 2605.22064); none of the tracked general benchmarks apply. Not checked further."
+    },
+    {
+      "id": "Qwen/Qwen2.5-7B-Instruct",
+      "name": "Qwen2.5 7B Instruct",
+      "publisher": "Qwen",
+      "paramsB": 7.6,
+      "license": "Apache-2.0",
+      "vision": false,
+      "tasks": [
+        "chat",
+        "coding"
+      ],
+      "languages": [
+        "multilingual"
+      ],
+      "scores": {
+        "mmlu_pro": {
+          "value": 56.3,
+          "mode": "instruct"
+        },
+        "gpqa_diamond": {
+          "value": 36.4,
+          "mode": "instruct",
+          "note": "Row labelled 'GPQA'; the Qwen3 report (Table 18) gives the same 36.4 for Qwen2.5-7B-Instruct under GPQA-Diamond."
+        },
+        "ifeval": {
+          "value": 71.2,
+          "mode": "instruct",
+          "note": "Row 'IFeval strict-prompt'."
+        },
+        "livecodebench": {
+          "value": 28.7,
+          "mode": "instruct",
+          "note": "2305-2409. Row 'LiveCodeBench 2305-2409'."
+        }
+      },
+      "source": "https://qwenlm.github.io/blog/qwen2.5-llm/",
+      "released": "2024-09-16",
+      "checked": "2026-11-03",
+      "note": "The Hugging Face card links a Qwen2.5 blog for evaluation; numbers are from the Qwen2.5-LLM blog table comparing Gemma2-9b-IT, Llama3.1-8B-Instruct, Qwen2-7B-Instruct, Qwen2.5-7B-Instruct. Older (2024) model, still in the top-100 GGUFs. Publisher self-reported."
+    },
+    {
+      "id": "XHToken/Spark-X2.5-4B",
+      "name": "Spark-X2.5 4B",
+      "publisher": "XHToken",
+      "paramsB": 4.1,
+      "license": "Apache-2.0",
+      "vision": false,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding"
+      ],
+      "scores": {
+        "gpqa_diamond": {
+          "value": 67.4,
+          "mode": "thinking (card: all evaluations in thinking mode)",
+          "note": "Row labelled 'GPQA' (variant not stated)."
+        },
+        "ifeval": {
+          "value": 93.0,
+          "mode": "thinking (card: all evaluations in thinking mode)"
+        }
+      },
+      "source": "https://huggingface.co/XHToken/Spark-X2.5-4B/blob/0bcb35678590218655dff3765b9e61c83b35e9c4/README.md",
+      "released": "2026-08-24",
+      "checked": "2026-11-03",
+      "note": "Card compares against Spark-X2.5-1.7B, Qwen3.5-9B/4B/2B and Gemma4-12B/E4B/E2B ('*' = values copied from other model cards, others self-run; e.g. its own Qwen3.5-9B GPQA 77.2 differs from Qwen's 81.7). AIME is 2026 only; no MMLU-Pro or LiveCodeBench. Publisher self-reported."
+    },
+    {
+      "id": "meta-models/Muse-Glimmer-30B",
+      "name": "Muse Glimmer 30B",
+      "publisher": "Meta Superintelligence Lab (meta-models)",
+      "paramsB": 29.8,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "reasoning",
+        "coding",
+        "vision"
+      ],
+      "scores": {
+        "gpqa_diamond": {
+          "value": 83.5,
+          "mode": "high reasoning",
+          "note": "Row 'GPQA Diamond (AA)', column 'Muse Glimmer-30B High Reasoning'."
+        }
+      },
+      "source": "https://huggingface.co/meta-models/Muse-Glimmer-30B/blob/cec94fcfd6512f2cfe708138c32533b346ea4f69/README.md",
+      "released": "2026-08-09",
+      "checked": "2026-11-03",
+      "note": "Card table compares against Gemma4-31B and Qwen3.6-27B in thinking mode. Card says ~29.6B parameters including a ~1.8B vision encoder (Hugging Face API: 29.8B). No MMLU-Pro, IFEval (IFBench 77.0), LiveCodeBench or AIME 2025 (AIME 2026 = 94.7). Publisher self-reported."
+    },
+    {
+      "id": "Accio-Lab/occamy-1.0",
+      "name": "Occamy 1.0",
+      "publisher": "Accio Lab",
+      "paramsB": 35.1,
+      "activeParamsB": 3.0,
+      "license": "Apache-2.0",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "coding",
+        "vision"
+      ],
+      "scores": {
+        "ifeval": {
+          "value": 91.53,
+          "mode": "not stated"
+        }
+      },
+      "source": "https://huggingface.co/Accio-Lab/occamy-1.0/blob/72ca96031d8d11650882b5fae8dad88412a76155/README.md",
+      "released": "2026-08-13",
+      "checked": "2026-11-03",
+      "note": "Fine-tune of Qwen/Qwen3.6-35B-A3B for agentic co-work (35B total, 3B active). Card table compares against Qwen3.6 35B-A3B, Agents-A1, Nex-N2-mini, BigBang-1.0, Ornith-1.5 and large models. Only IFEval of the tracked metrics. Publisher self-reported."
+    },
+    {
+      "id": "poolside/Laguna-XS-2.1",
+      "name": "Laguna XS 2.1",
+      "publisher": "poolside",
+      "paramsB": 33.4,
+      "activeParamsB": 3.0,
+      "license": "openmdw-1.1",
+      "vision": false,
+      "tasks": [
+        "chat",
+        "coding"
+      ],
+      "scores": {},
+      "source": "https://huggingface.co/poolside/Laguna-XS-2.1/blob/c5f36269bbdbd3f27fddc9a9f9dbae0cf2cf57db/README.md",
+      "released": "2026-06-20",
+      "checked": "2026-11-03",
+      "note": "Agentic-coding MoE (card: 33B total, 3B activated, text-to-text). Card reports only SWE-bench Verified 70.9%, SWE-bench Multilingual 63.1%, SWE-Bench Pro 47.6%, Terminal-Bench 2.0 37.5% (thinking on); none of the tracked metrics."
+    },
+    {
+      "id": "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B",
+      "name": "MiMo V2.6 Distill Qwen 9B",
+      "publisher": "Xiaomi MiMo",
+      "paramsB": 9.4,
+      "license": "MIT",
+      "vision": true,
+      "tasks": [
+        "chat",
+        "coding",
+        "vision"
+      ],
+      "scores": {},
+      "source": "https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B/blob/1f09ddcc1a0ea45751ae0dfe2af20d533168c46f/README.md",
+      "released": "2026-09-21",
+      "checked": "2026-11-03",
+      "note": "SFT of Qwen/Qwen3.5-9B on MiMo-generated data, released as an RL starting point. Card reports only agentic/coding benchmarks (SWE Verified 61.1, SWE Pro 44.6, Terminal Bench 2.1 37.1, Toolathlon-Verified 35.2, ...); none of the tracked metrics."
+    }
+  ]
+}

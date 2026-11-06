@@ -1,6 +1,8 @@
 #include "SequenceEditor.h"
 
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/ChangeSet.h>
+#include <wabcut/model/ClipLock.h>
 #include <wabcut/model/Nesting.h>
 
 #include <algorithm>
@@ -32,7 +34,7 @@ std::string trackLabel(const Sequence& sequence, TrackId track) {
 }
 
 std::expected<std::vector<ClipRef>, Error> resolveClips(const Sequence& sequence, std::span<const ClipId> clips,
-                                                        LinkMode links) {
+                                                        LinkMode links, bool allowLocked) {
     const std::unordered_set<ClipId> wanted(clips.begin(), clips.end());
     struct Found {
         std::size_t trackOrdinal;
@@ -51,6 +53,9 @@ std::expected<std::vector<ClipRef>, Error> resolveClips(const Sequence& sequence
                 if (track.locked && !error) {
                     error = invalidArgument("clip " + std::to_string(clip.id.value) + " is on locked track " +
                                             trackLabel(sequence, track.id));
+                }
+                if (clip.locked && !allowLocked && !error) { // 0.7 (card 064): Lock Clip
+                    error = invalidArgument(edit::lockedClipMessage(clip));
                 }
                 found.push_back({ordinal, {track.id, clip.id, i}});
                 seen.insert(clip.id);
@@ -79,7 +84,9 @@ std::expected<std::vector<ClipRef>, Error> resolveClips(const Sequence& sequence
             if (!track.locked) {
                 std::size_t i = 0;
                 for (const Clip& clip : track.clips) {
-                    if (clip.linkGroup.isValid() && groups.contains(clip.linkGroup) && !seen.contains(clip.id)) {
+                    // A locked partner stays where it is, like one on a locked track (0.7, card 064).
+                    if (clip.linkGroup.isValid() && groups.contains(clip.linkGroup) && !seen.contains(clip.id)
+                        && (allowLocked || !clip.locked)) {
                         found.push_back({ordinal, {track.id, clip.id, i}});
                         seen.insert(clip.id);
                     }
@@ -113,6 +120,9 @@ std::expected<std::vector<ClipRef>, Error> edgeParticipants(const Sequence& sequ
                                                trackLabel(sequence, home.id)));
     }
     const Clip& clip = location->clip();
+    if (clip.locked) { // 0.7 (card 064): Lock Clip
+        return std::unexpected(invalidArgument(edit::lockedClipMessage(clip)));
+    }
     std::vector<ClipRef> out{{home.id, clip.id, location->index}};
     if (links == LinkMode::IgnoreLinks || !clip.linkGroup.isValid()) {
         return out;
@@ -127,7 +137,7 @@ std::expected<std::vector<ClipRef>, Error> edgeParticipants(const Sequence& sequ
         std::int64_t bestDistance = 0;
         std::size_t i = 0;
         for (const Clip& c : track.clips) {
-            if (c.linkGroup == clip.linkGroup) {
+            if (c.linkGroup == clip.linkGroup && !c.locked) {
                 const Ticks t = edge == Edge::Head ? c.start() : c.end();
                 const std::int64_t distance = t > edgeTime ? (t - edgeTime).value : (edgeTime - t).value;
                 if (!best || distance < bestDistance) {
@@ -164,7 +174,34 @@ std::vector<TrackId> unlockedTargets(const Sequence& sequence) {
 // --- SequenceEditor -----------------------------------------------------------------------------------
 
 SequenceEditor::SequenceEditor(const ProjectState& state, const Sequence& sequence)
-    : m_state(state), m_original(sequence), m_seq(sequence), m_ids(state.ids), m_markersFollow(sequence.rippleMarkers) {}
+    : m_state(state), m_original(sequence), m_seq(sequence), m_ids(state.ids), m_markersFollow(sequence.rippleMarkers),
+      m_trackKeysFollow(sequence.rippleTrackKeyframes) {}
+
+void SequenceEditor::renewTakeEffectIds(Clip& clip) {
+    const Audition* audition = clip.audition();
+    if (!audition) {
+        return;
+    }
+    Audition renewed = *audition;
+    bool any = false;
+    for (AuditionTake& take : renewed.others) {
+        if (!take.content || take.content->effects.empty()) {
+            continue;
+        }
+        ClipContent block = *take.content;
+        for (EffectInstance& e : block.effects) {
+            e.id = newEffectId();
+        }
+        take.content = std::make_shared<const ClipContent>(std::move(block));
+        any = true;
+    }
+    if (!any) {
+        return;
+    }
+    ClipContent block = clip.content();
+    block.audition = std::make_shared<const Audition>(std::move(renewed));
+    clip.setContent(std::move(block));
+}
 
 std::vector<TrackId> SequenceEditor::trackIds() const {
     std::vector<TrackId> out;
@@ -397,12 +434,147 @@ void SequenceEditor::markersRemove(TimeRange range) {
     mapMarkers(map, map);
 }
 
+namespace {
+
+/// 0.7 (card 120): the key times of a curve (timeline time) through `map`, which returns the new time or nullopt to
+/// drop the key. Keys keep their order (the maps are monotonic), two keys that meet keep the later one. A curve whose every
+/// key would go keeps its last key at `collapseTo`. False when nothing changed.
+template <class Map>
+bool mapKeyTimes(ParamValue& value, Map&& map, Ticks collapseTo) {
+    auto* curve = std::get_if<Curve>(&value.data);
+    if (!curve || curve->keys.empty()) {
+        return false;
+    }
+    std::vector<Keyframe> keys;
+    keys.reserve(curve->keys.size());
+    bool changed = false;
+    for (const Keyframe& k : curve->keys) {
+        const std::optional<Ticks> time = map(k.time);
+        if (!time) {
+            changed = true;
+            continue;
+        }
+        Keyframe moved = k;
+        moved.time = *time;
+        changed = changed || *time != k.time;
+        if (!keys.empty() && keys.back().time == moved.time) {
+            keys.back() = moved;
+            changed = true;
+            continue;
+        }
+        keys.push_back(moved);
+    }
+    if (!changed) {
+        return false;
+    }
+    if (keys.empty()) {
+        keys.push_back(curve->keys.back());
+        keys.back().time = collapseTo;
+    }
+    curve->keys = std::move(keys);
+    return true;
+}
+
+/// The keyframed members of a track that live in timeline time: its fader and panner, its effects' parameters and its
+/// sends' levels and pans.
+template <class Map>
+bool mapTrackValues(Track& track, Map&& map, Ticks collapseTo) {
+    bool changed = mapKeyTimes(track.volume, map, collapseTo);
+    changed = mapKeyTimes(track.pan, map, collapseTo) || changed;
+    for (EffectInstance& effect : track.effects) {
+        for (EffectParam& param : effect.params) {
+            changed = mapKeyTimes(param.value, map, collapseTo) || changed;
+        }
+    }
+    for (TrackSend& send : track.sends) {
+        changed = mapKeyTimes(send.level, map, collapseTo) || changed;
+        changed = mapKeyTimes(send.pan, map, collapseTo) || changed;
+    }
+    return changed;
+}
+
+} // namespace
+
+template <class Map>
+void SequenceEditor::mapTrackKeys(Map&& map, Ticks collapseTo) {
+    const auto visit = [&](const std::vector<TrackPtr>& tracks, bool submix) {
+        for (const TrackPtr& t : tracks) {
+            if (!t || t->locked || (!submix && !t->syncLocked)) {
+                continue;
+            }
+            Track scratch; // only the keyframed members: a track whose keys do not move is not copied
+            scratch.volume = t->volume;
+            scratch.pan = t->pan;
+            scratch.effects = t->effects;
+            scratch.sends = t->sends;
+            if (!mapTrackValues(scratch, map, collapseTo)) {
+                continue;
+            }
+            Track& mine = mutableTrack(t->id);
+            mine.volume = std::move(scratch.volume);
+            mine.pan = std::move(scratch.pan);
+            mine.effects = std::move(scratch.effects);
+            mine.sends = std::move(scratch.sends);
+        }
+    };
+    visit(m_seq.videoTracks, false);
+    visit(m_seq.audioTracks, false);
+    visit(m_seq.submixTracks, true);
+    // The master bus: its fader and its effects (the sequence's own, not a track's).
+    ParamValue volume = m_seq.masterVolume;
+    EffectStack video = m_seq.effects;
+    EffectStack audio = m_seq.audioEffects;
+    bool changed = mapKeyTimes(volume, map, collapseTo);
+    for (EffectStack* stack : {&video, &audio}) {
+        for (EffectInstance& effect : *stack) {
+            for (EffectParam& param : effect.params) {
+                changed = mapKeyTimes(param.value, map, collapseTo) || changed;
+            }
+        }
+    }
+    if (changed) {
+        Sequence& h = header();
+        h.masterVolume = std::move(volume);
+        h.effects = std::move(video);
+        h.audioEffects = std::move(audio);
+    }
+}
+
+void SequenceEditor::trackKeysInsert(Ticks at, Ticks duration) {
+    if (duration.value <= 0) {
+        return;
+    }
+    // A key at or after `at` moves later by `duration`; a curve across `at` stretches with the material.
+    mapTrackKeys([&](Ticks t) -> std::optional<Ticks> { return t >= at ? t + duration : t; }, at);
+}
+
+void SequenceEditor::trackKeysRemove(TimeRange range) {
+    if (range.duration.value <= 0) {
+        return;
+    }
+    // Keys inside the removed stretch go with it; later keys move back by its length; earlier ones stay.
+    mapTrackKeys(
+        [&](Ticks t) -> std::optional<Ticks> {
+            if (t <= range.start) {
+                return t;
+            }
+            if (t < range.end()) {
+                return std::nullopt;
+            }
+            return t - range.duration;
+        },
+        range.start);
+}
+
 void SequenceEditor::captionsInsert(Ticks at, Ticks duration, std::optional<Ticks> until) {
     if (duration.value <= 0) {
         return;
     }
     if (m_markersFollow && !until) {
         markersInsert(at, duration);
+    }
+    if (m_trackKeysFollow && !until) {
+        trackKeysInsert(at, duration);
     }
     mapCaptions([&](Ticks start, Ticks end) {
         std::vector<std::pair<Ticks, Ticks>> out;
@@ -433,6 +605,9 @@ void SequenceEditor::captionsRemove(TimeRange range, std::optional<Ticks> until)
     if (m_markersFollow && !until) {
         markersRemove(range);
     }
+    if (m_trackKeysFollow && !until) {
+        trackKeysRemove(range);
+    }
     const auto map = [&](Ticks t) {
         if (until && t >= *until) {
             return t;
@@ -449,13 +624,24 @@ void SequenceEditor::captionsStretch(TimeRange range, Ticks duration, bool rippl
     if (range.duration.value <= 0 || duration == range.duration) {
         return;
     }
-    if (m_markersFollow && ripple) {
-        // Markers after the clip move by the length change; markers over the clip stay (they do not scale).
+    if ((m_markersFollow || m_trackKeysFollow) && ripple) {
+        // Markers after the clip move by the length change; markers over the clip stay (they do not scale). So do the
+        // keyframes of the tracks.
         const Ticks delta = duration - range.duration;
         if (delta.value > 0) {
-            markersInsert(range.end(), delta);
+            if (m_markersFollow) {
+                markersInsert(range.end(), delta);
+            }
+            if (m_trackKeysFollow) {
+                trackKeysInsert(range.end(), delta);
+            }
         } else {
-            markersRemove({range.end() + delta, -delta});
+            if (m_markersFollow) {
+                markersRemove({range.end() + delta, -delta});
+            }
+            if (m_trackKeysFollow) {
+                trackKeysRemove({range.end() + delta, -delta});
+            }
         }
     }
     const auto map = [&](Ticks t) {
@@ -515,6 +701,11 @@ void SequenceEditor::eraseTrack(TrackId trackId) {
     for (auto* list : {&m_seq.videoTracks, &m_seq.audioTracks, &m_seq.submixTracks}) {
         std::erase_if(*list, [&](const TrackPtr& t) { return t->id == trackId; });
     }
+    // 0.7 (card 124): the track leaves its group; a group left without tracks goes.
+    for (TrackGroup& group : m_seq.trackGroups) {
+        std::erase(group.members, trackId);
+    }
+    std::erase_if(m_seq.trackGroups, [](const TrackGroup& group) { return group.members.empty(); });
     m_headerChanged = true;
 }
 
@@ -621,6 +812,7 @@ void SequenceEditor::dissolveSingletonGroups() {
         int count = 0;
         TrackId track;
         std::size_t index = 0;
+        bool locked = false; // 0.7 (card 064): the clip left alone is a locked clip
     };
     std::vector<Seen> seen(m_touchedGroups.size());
     m_seq.forEachTrack([&](const Track& t) {
@@ -633,6 +825,7 @@ void SequenceEditor::dissolveSingletonGroups() {
                     ++s.count;
                     s.track = t.id;
                     s.index = index;
+                    s.locked = clip.locked;
                 }
             }
             ++index;
@@ -640,8 +833,9 @@ void SequenceEditor::dissolveSingletonGroups() {
     });
     for (const Seen& s : seen) {
         // A clip left alone in its group on a locked track keeps the group: locked tracks never change.
-        // The group dissolves when that track is unlocked (setTrackState touches its groups).
-        if (s.count == 1 && !track(s.track).locked) {
+        // The group dissolves when that track is unlocked (setTrackState touches its groups). 0.7 (card 064): a locked
+        // clip keeps its group the same way (the lock edit touches its group when it comes off).
+        if (s.count == 1 && !track(s.track).locked && !s.locked) {
             mutableClip(s.track, s.index).linkGroup = {};
         }
     }

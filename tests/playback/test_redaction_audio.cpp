@@ -5,6 +5,7 @@
 
 #include "PlaybackFixture.h"
 
+#include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/playback/audio/AudioRedactions.h>
 #include <wabcut/playback/audio/OfflineMixdown.h>
@@ -12,6 +13,10 @@
 #include <catch2/catch_approx.hpp>
 
 #include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <string>
 #include <vector>
 
 using namespace wabcut;
@@ -336,4 +341,141 @@ TEST_CASE("Redaction audio: an edit refills only the tracks whose media sound di
     rig.pullFor(800);
     CHECK(rig.stream[at(ms(900)) * 2] == Approx(0.5f)); // A alone where B is muted
     CHECK(rig.stream[at(ms(600)) * 2] == Approx(0.75f));
+}
+
+// ---- 0.7 (card 102): a sound file of the user's in place of the bleep tone -------------------------------------------
+
+namespace {
+
+/// A mono 16-bit 48 kHz WAV: +0.25 for its first `half` samples, -0.25 for as many more.
+std::string writeStepSound(const char* name, std::uint32_t half) {
+    const std::filesystem::path dir = std::filesystem::path(WABCUT_TEST_OUTPUT_DIR) / "redaction-sound";
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path file = dir / name;
+    std::ofstream out(file, std::ios::binary);
+    const auto u32 = [&](std::uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+    const auto u16 = [&](std::uint16_t v) { out.write(reinterpret_cast<const char*>(&v), 2); };
+    const std::uint32_t samples = half * 2;
+    out.write("RIFF", 4);
+    u32(36 + samples * 2);
+    out.write("WAVEfmt ", 8);
+    u32(16);
+    u16(1);
+    u16(1);
+    u32(48000);
+    u32(96000);
+    u16(2);
+    u16(16);
+    out.write("data", 4);
+    u32(samples * 2);
+    for (std::uint32_t i = 0; i < samples; ++i) {
+        u16(static_cast<std::uint16_t>(static_cast<std::int16_t>(i < half ? 8192 : -8192)));
+    }
+    return pathToUtf8(file);
+}
+
+/// A bleep over media 500 .. 700 ms of A (timeline 300 .. 500 ms of the trimmed clip) that plays `soundPath`.
+RedactionId replaceWithSound(Project& p, const std::string& soundPath, bool offline = false) {
+    ProjectAsset asset;
+    asset.kind = std::string(kAssetKindSound);
+    asset.name = "step.wav";
+    asset.locator.path = soundPath;
+    asset.locator.offline = offline;
+    auto withAsset = edit::addAsset(p.state, asset);
+    REQUIRE(withAsset);
+    p.state = std::move(withAsset->state);
+    Redaction r;
+    r.media = p.mediaId('A');
+    r.source = TimeRange::fromStartEnd(ms(500), ms(700));
+    r.audio = RedactionAudio::Bleep;
+    r.sound = withAsset->id;
+    auto added = edit::addRedaction(p.state, r);
+    REQUIRE(added);
+    p.state = std::move(added->state);
+    return added->id;
+}
+
+} // namespace
+
+TEST_CASE("Redaction audio: a chosen sound file plays from the start of the range instead of the tone", "[playback][redaction][sound]") {
+    // 50 ms of +0.25, then 50 ms of -0.25: shorter than the 200 ms range, so silence follows it.
+    const std::string sound = writeStepSound("step.wav", 2400);
+    Project p;
+    p.media('A', level(0.5f));
+    const Clip clip = p.makeClip({'A', ms(0), ms(1000), ms(200)});
+    addTrack(p, {clip});
+    replaceWithSound(p, sound);
+
+    const auto out = exported(p, Ticks{}, 48000);
+    const std::size_t start = at(ms(300)); // the range starts at media 500 ms = timeline 300 ms
+    CHECK(out[(start + 100) * 2] == Approx(0.25f).margin(1e-4));       // the first half of the sound
+    CHECK(out[(start + 100) * 2 + 1] == Approx(0.25f).margin(1e-4));   // on both channels
+    CHECK(out[(start + 2400 + 100) * 2] == Approx(-0.25f).margin(1e-4)); // the second half
+    CHECK(out[(start + 4800 + 100) * 2] == Approx(0.0f).margin(1e-6));   // the sound is over: silence, not the source
+    CHECK(out[(at(ms(500)) - 1) * 2] == Approx(0.0f).margin(1e-6));      // the last sample of the range
+    // Outside the range the clip plays as ever.
+    CHECK(out[at(ms(100)) * 2] == Approx(0.5f));
+    CHECK(out[at(ms(700)) * 2] == Approx(0.5f));
+    // It is not the 1 kHz tone.
+    CHECK(out[(start + 100) * 2] != AudioRedactions::bleepAt(ms(500) + frames(100)));
+
+    SECTION("the same project gives the same table, and a changed file gives another") {
+        const auto a = AudioRedactions::of(p.state);
+        const auto b = AudioRedactions::of(p.state);
+        REQUIRE(a);
+        REQUIRE(b);
+        CHECK(*a == *b);
+        CHECK(AudioRedactions::changedMedia(a.get(), b.get()).empty());
+        REQUIRE_FALSE(a->ranges().empty());
+        REQUIRE(a->ranges().front().sound);
+        CHECK(a->ranges().front().sound->samples.size() == 4800);
+    }
+}
+
+TEST_CASE("Redaction audio: a sound file that is missing or offline falls back to the tone", "[playback][redaction][sound]") {
+    Project p;
+    p.media('A', level(0.5f));
+    const Clip clip = p.makeClip({'A', ms(0), ms(1000), ms(200)});
+    addTrack(p, {clip});
+    const std::filesystem::path dir = std::filesystem::path(WABCUT_TEST_OUTPUT_DIR) / "redaction-sound";
+    std::filesystem::create_directories(dir);
+
+    SECTION("no such file") {
+        replaceWithSound(p, pathToUtf8(dir / "gone.wav"));
+    }
+    SECTION("not a sound") {
+        const std::filesystem::path junk = dir / "junk.wav";
+        std::ofstream(junk, std::ios::binary) << "this is not audio at all";
+        replaceWithSound(p, pathToUtf8(junk));
+    }
+    SECTION("marked offline") {
+        replaceWithSound(p, writeStepSound("offline.wav", 2400), true);
+    }
+    const auto out = exported(p, Ticks{}, 48000);
+    const std::size_t k = at(ms(300)) + 100;
+    CHECK(out[k * 2] == AudioRedactions::bleepAt(ms(200) + frames(static_cast<std::int64_t>(k))));
+}
+
+TEST_CASE("Redaction audio: a mute ignores a sound; only a bleep plays it", "[playback][redaction][sound]") {
+    Project p;
+    p.media('A', level(0.5f));
+    const Clip clip = p.makeClip({'A', ms(0), ms(1000), ms(200)});
+    addTrack(p, {clip});
+    ProjectAsset asset;
+    asset.kind = std::string(kAssetKindSound);
+    asset.name = "step.wav";
+    asset.locator.path = writeStepSound("mute.wav", 2400);
+    auto withAsset = edit::addAsset(p.state, asset);
+    REQUIRE(withAsset);
+    p.state = std::move(withAsset->state);
+    Redaction r;
+    r.media = p.mediaId('A');
+    r.source = TimeRange::fromStartEnd(ms(500), ms(700));
+    r.audio = RedactionAudio::Mute;
+    r.sound = withAsset->id;
+    auto added = edit::addRedaction(p.state, r);
+    REQUIRE(added);
+    p.state = std::move(added->state);
+    const auto out = exported(p, Ticks{}, 48000);
+    CHECK(out[(at(ms(300)) + 100) * 2] == 0.0f);
 }

@@ -3,6 +3,7 @@
 #include <wabcut/command/ExecutionContext.h>
 #include <wabcut/command/Schema.h>
 
+#include <wabcut/model/ClipLock.h>
 #include <wabcut/model/MediaLocator.h>
 
 #include <algorithm>
@@ -344,6 +345,10 @@ CommandResult CommandEngine::run(const std::vector<CommandRequest>& commands, co
     if (changed) {
         if (auto valid = validate(working, Validation::Structure); !valid) {
             return failure({ErrorCode::InvariantViolation, valid.error().message, nullptr});
+        }
+        // 0.7 (card 064): a locked clip never changes; a dry run says so too (the session refuses the commit the same way).
+        if (auto locked = edit::lockedClipProblem(*snapshot, working)) {
+            return failure({ErrorCode::InvariantViolation, locked->message, nullptr});
         }
         result.changes = diff(*snapshot, working);
         changed = !result.changes.empty();

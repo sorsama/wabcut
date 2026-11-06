@@ -579,6 +579,23 @@ std::optional<ClipProperties> Fcp7Parser::propertiesOf(SequenceState& state, con
             set(ParamId::Opacity, value("opacity", ParamId::Opacity, percent));
         } else if (id == "basic") {
             set(ParamId::Scale, value("scale", ParamId::Scale, percent));
+            // 0.7 (card #12): Wabcut writes Scale Width and Uniform Scale off beside the Scale (the height); Premiere's and
+            // Final Cut Pro 7's files have the Scale only, which stays uniform.
+            for (const pugi::xml_node p : effect.children("parameter")) {
+                if (!iequals(childText(p, "parameterid"), "uniformscale")) {
+                    continue;
+                }
+                const std::string_view flag = childText(p, "value");
+                if (iequals(flag, "false") || flag == "0") {
+                    if (auto width = value("scalewidth", ParamId::ScaleWidth, percent)) {
+                        props[ParamId::ScaleWidth] = std::move(*width);
+                    } else {
+                        props[ParamId::ScaleWidth] = props[ParamId::Scale]; // no width given: as wide as it is high
+                    }
+                    props.set(ParamId::UniformScale, 0.0);
+                    any = true;
+                }
+            }
             set(ParamId::Rotation, value("rotation", ParamId::Rotation, same));
             // Center and anchor: points as fractions of the frame from its middle (X.1).
             for (const pugi::xml_node p : effect.children("parameter")) {
@@ -1713,6 +1730,12 @@ std::optional<std::size_t> Fcp7Parser::parseSequence(const pugi::xml_node& node,
     }
     if (const auto out = childInt(node, "out"); out && *out > 0) {
         seq.markOut = frames(*out, state.rate);
+    }
+    // 0.7 (card 046): Premiere's work area (ticks), on the sequence element.
+    if (const auto workIn = attrInt(node, "MZ.WorkInPoint"), workOut = attrInt(node, "MZ.WorkOutPoint");
+        workIn && workOut && *workIn >= 0 && *workOut > *workIn) {
+        seq.workIn = Ticks{*workIn};
+        seq.workOut = Ticks{*workOut};
     }
 
     std::size_t videoIndex = 0;

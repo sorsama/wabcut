@@ -430,11 +430,12 @@ std::uintmax_t CameraClip::bytes() const {
 }
 
 bool isBrowsableMedia(const fs::path& file) {
-    static constexpr std::array<std::string_view, 48> kExtensions{
+    static constexpr std::array<std::string_view, 52> kExtensions{
         ".MP4", ".MOV", ".MKV", ".MXF", ".AVI", ".M4V", ".WEBM", ".MTS", ".M2TS", ".TS", ".MPG", ".MPEG",
         ".M2V", ".DV", ".FLV", ".WMV", ".3GP", ".WAV", ".MP3", ".AAC", ".M4A", ".FLAC", ".OGG", ".OPUS",
         ".AIF", ".AIFF", ".WMA", ".PNG", ".JPG", ".JPEG", ".TIF", ".TIFF", ".BMP", ".GIF", ".TGA", ".DPX",
-        ".EXR", ".WEBP", ".HEIC", ".PSD", ".PSB", ".DNG", ".R3D", ".BRAW", ".ARI", ".CRM", ".INSV", ".LRV"};
+        ".EXR", ".WEBP", ".HEIC", ".PSD", ".PSB", ".DNG", ".R3D", ".BRAW", ".ARI", ".CRM", ".INSV", ".LRV",
+        ".SVG", ".SVGZ", ".AI", ".EPS"}; // 0.7 (card #86): vector artwork
     const std::string e = extOf(file);
     return e != ".LRV" && std::ranges::find(kExtensions, e) != kExtensions.end();
 }

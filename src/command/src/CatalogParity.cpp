@@ -256,6 +256,9 @@ void registerParityCommands(CommandRegistry& registry) {
              out.state = c.state();
              out.data = Json{{"segments", std::move(segments)}, {"counts", std::move(counts)},
                              {"cache", previewServicesOf(c) != nullptr && previewServicesOf(c)->cache() != nullptr}};
+             if (const PreviewServices* services = previewServicesOf(c); services && services->backgroundStatus) {
+                 out.data["background"] = services->backgroundStatus(); // 0.7: rendering while idle
+             }
              return out;
          }});
     addBuiltin(

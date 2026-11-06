@@ -50,13 +50,21 @@ std::optional<PictureSize> clipPictureSize(const ProjectState& state, const Clip
 
 /// The uniform scale that fits `picture` inside a `width` x `height` frame (`fill`: that covers it). 1 for an empty
 /// picture or frame.
-double frameFitScale(PictureSize picture, std::int32_t width, std::int32_t height, bool fill);
+double frameFitScale(PictureSize picture, double width, double height, bool fill);
+
+/// 145 / 156: the pixel aspect ratio the canvas of `sequence` is drawn with: its Pixel Aspect Ratio (1 for square pixels,
+/// and for a value outside 0.1 to 10, which a damaged project file can hold).
+double sequencePixelAspect(const Sequence& sequence);
 
 /// What Scale to Frame Size multiplies a clip's Motion > Scale by in a `width` x `height` sequence: frameFitScale() of its
-/// picture for a clip with ClipContent::scaleToFrame, else 1. Evaluators (preview and export) apply it.
-double scaleToFrameFactor(const ProjectState& state, const Clip& clip, std::int32_t width, std::int32_t height);
+/// picture for a clip with ClipContent::scaleToFrame, else 1. Evaluators (preview and export) apply it. A picture's size
+/// is its displayed one (square pixels), so a sequence of non-square pixels (`pixelAspect`, sequencePixelAspect()) is
+/// `width * pixelAspect` wide in the same units: an HDV clip fills an HDV sequence.
+double scaleToFrameFactor(const ProjectState& state, const Clip& clip, std::int32_t width, std::int32_t height,
+                          double pixelAspect = 1.0);
 /// The same for a clip whose picture size the caller knows.
-double scaleToFrameFactor(const Clip& clip, std::optional<PictureSize> picture, std::int32_t width, std::int32_t height);
+double scaleToFrameFactor(const Clip& clip, std::optional<PictureSize> picture, std::int32_t width, std::int32_t height,
+                          double pixelAspect = 1.0);
 
 } // namespace wabcut
 
@@ -65,6 +73,10 @@ namespace wabcut::edit {
 /// Clip > Video Options > Scale to Frame Size on (or off) for the video clips among `clips` (audio clips, linked partners
 /// included, are skipped). Errors: NotFound, InvalidArgument (no video clip, a clip on a locked track).
 EditOutcome setScaleToFrameSize(const ProjectState& state, SequenceId sequence, std::span<const ClipId> clips, bool enabled);
+
+/// Clip > Video Options > Nearest Neighbor Scaling on (or off) for the video clips among `clips` (0.7, card #98:
+/// ClipContent::nearestNeighbor; audio clips, linked partners included, are skipped). Errors as setScaleToFrameSize.
+EditOutcome setNearestNeighbor(const ProjectState& state, SequenceId sequence, std::span<const ClipId> clips, bool enabled);
 
 enum class FrameFit : std::uint8_t {
     Frame, ///< Set to Frame Size: the whole picture inside the frame

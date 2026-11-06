@@ -3,8 +3,10 @@ import QtQuick
 
 // Window (the menu bar, Premiere's order): Workspaces (switch, new from a preset, duplicate, rename, delete; P1 round:
 // Save Changes to This Workspace, Save as New Workspace…, Reset to <Preset> Preset…, Lock Workspace), Maximize Frame,
-// Reset to Saved Layout, then every panel of the catalog (Workspaces.catalog; P1 round: History is one of them),
-// checked while it is open in this workspace. Choosing a panel opens it where you clicked last (a closed one joins that group as a tab) or brings it
+// Reset to Saved Layout, then every panel of the catalog (Workspaces.catalog; P1 round: History is one of them) in
+// alphabetical order of its (translated) name like Premiere's Window menu (0.7; the catalog itself keeps its own order,
+// which the docking and the presets rely on), checked while it is open in this workspace. Choosing a panel opens it
+// where you clicked last (a closed one joins that group as a tab) or brings it
 // forward where it is, and focuses it (Main.openPanelFromWindowMenu). Generate is not listed while AI is turned off
 // (Settings > AI).
 MenuBarMenu {
@@ -23,9 +25,12 @@ MenuBarMenu {
                                              effects: "window.effects", effectControls: "window.effectControls",
                                              source: "window.sourceMonitor", program: "window.programMonitor",
                                              timeline: "window.timeline", mixer: "window.audioTrackMixer",
-                                             audioMeters: "window.audioMeters", history: "window.history" })
-    /// The catalog's panels the menu lists (AI off: no Generate).
+                                             audioMeters: "window.audioMeters", history: "window.history",
+                                             loudness: "window.loudness", sources: "window.sources" })
+    /// The catalog's panels the menu lists (AI off: no Generate), A to Z by their translated label (a sorted copy:
+    /// the catalog keeps its own order).
     readonly property var panels: Workspaces.catalog.filter(p => p.key !== "generate" || Preferences.aiEnabled)
+                                      .slice().sort((a, b) => a.label.localeCompare(b.label))
     /// Where the panels' rows start: after the separator that ends the fixed rows.
     function panelsAt(): int {
         for (let i = 0; i < root.count; ++i) {
@@ -89,6 +94,7 @@ MenuBarMenu {
         BarMenuItem {
             objectName: "windowMenuRenameWorkspace"
             text: qsTr("Rename Workspace…")
+            available: Preferences.showWorkspaceTabs // it is renamed on its tab
             onTriggered: workspacesMenu.request("renameWorkspace", root.workspace)
         }
         // The last workspace stays.
@@ -124,6 +130,19 @@ MenuBarMenu {
             onTriggered: {
                 checked = Qt.binding(() => Workspaces.isLocked(root.workspace))
                 workspacesMenu.request("lockWorkspace", root.workspace)
+            }
+        }
+        // 0.7: hide the tabs in the title bar for more room (Settings > Interface has the same switch); the workspaces
+        // stay in this menu, on their keys and in the command palette.
+        ContextMenuSeparator {}
+        BarMenuItem {
+            objectName: "windowMenuWorkspaceTabs"
+            text: qsTr("Show Workspace Tabs")
+            checkable: true
+            checked: Preferences.showWorkspaceTabs
+            onTriggered: {
+                Preferences.showWorkspaceTabs = !Preferences.showWorkspaceTabs
+                checked = Qt.binding(() => Preferences.showWorkspaceTabs)
             }
         }
     }

@@ -776,3 +776,172 @@ TEST_CASE("Layout picker in the window: it opens with the options last applied; 
     INFO(join(messages));
     CHECK(messages.isEmpty());
 }
+
+// 0.7 (card #54): the picker at the smallest window (1100 x 700): the frame holds its content and sits fully inside the
+// window; one message per problem (no gameplay: the line at the top and one button, not the dry run's error as well);
+// every disabled control says why; the wide-sequence hint under the cards with the Shorts button as the main action.
+TEST_CASE("Layout picker at 1100 x 700: it fits and says each problem once and disabled controls say why (screenshots)",
+          "[app][layout][qml][screenshot]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window);
+    constexpr int kWidth = 1100;
+    constexpr int kHeight = 700;
+    shell.resize(kWidth, kHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    shell.setAppearance(true, "ultraviolet");
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* layouts = shell.engine.singletonInstance<LayoutBridge*>("Wabcut", "Layouts");
+    REQUIRE(controller);
+    REQUIRE(layouts);
+    layouts->setRegistry(&catalog());
+    layouts->setSynchronous(true);
+    // Gameplay only: no webcam clip anywhere.
+    Timeline tl{R"(
+        V1 tgt |Gggggggggggggggggggggggggggggg|
+        A1 tgt |Gggggggggggggggggggggggggggggg|
+    )"};
+    controller->resetProject(tl.state, tl.seq);
+    REQUIRE_FALSE(shell.grab().isNull());
+    QQuickItem* monitor = findNamed(shell.window->contentItem(), QStringLiteral("monitorPanel"));
+    REQUIRE(monitor);
+    const auto host = makeItem(shell, "import QtQuick\nimport Wabcut\nItem {\n    property alias picker: p\n    LayoutPicker { id: p }\n}\n",
+                               QRectF(0, 0, kWidth, kHeight));
+    auto* picker = host->property("picker").value<QObject*>();
+    REQUIRE(picker);
+    const auto openPicker = [&] {
+        REQUIRE(QMetaObject::invokeMethod(picker, "openFor", Q_ARG(QVariant, QVariant::fromValue<QObject*>(host.get())),
+                                          Q_ARG(QVariant, QVariant::fromValue<QObject*>(monitor))));
+        REQUIRE(waitFor([&] { return picker->property("opened").toBool(); }, 5000));
+        spin(80);
+        REQUIRE_FALSE(shell.grab().isNull()); // a hidden window lays its items out when it renders
+    };
+    const auto closePicker = [&] {
+        QMetaObject::invokeMethod(picker, "close");
+        REQUIRE(waitFor([&] { return !picker->property("visible").toBool(); }, 3000));
+    };
+    const auto choose = [&](const char* preset) {
+        auto* content = picker->property("contentItem").value<QQuickItem*>();
+        QQuickItem* card = findNamed(content, QStringLiteral("layoutCard_") + QLatin1String(preset));
+        REQUIRE(card);
+        REQUIRE(QMetaObject::invokeMethod(card, "clicked"));
+        spin(80);
+        REQUIRE_FALSE(shell.grab().isNull());
+    };
+    const auto shot = [&](const char* name) {
+        for (const bool dark : {true, false}) {
+            shell.setAppearance(dark, "ultraviolet");
+            spin(60);
+            const QImage image = shell.grab();
+            REQUIRE_FALSE(image.isNull());
+            REQUIRE(image.save(QDir(outputDir()).filePath(QStringLiteral("layout-picker-%1-%2.png")
+                                                              .arg(QLatin1String(name), dark ? QStringLiteral("dark") : QStringLiteral("light")))));
+        }
+        shell.setAppearance(true, "ultraviolet");
+    };
+    // The frame holds its content and lies inside the window.
+    const auto requireFits = [&] {
+        auto* content = picker->property("contentItem").value<QQuickItem*>();
+        REQUIRE(content);
+        QQuickItem* popup = content->parentItem();
+        REQUIRE(popup);
+        QQuickItem* scroller = findNamed(content, QStringLiteral("layoutScroller"));
+        REQUIRE(scroller);
+        const QRectF frame = sceneRect(popup);
+        const QRectF window(0, 0, kWidth, kHeight);
+        INFO("frame " << frame.x() << "," << frame.y() << " " << frame.width() << "x" << frame.height());
+        CHECK(window.contains(frame));
+        const QRectF body = sceneRect(scroller);
+        CHECK(frame.contains(body));
+        // Even padding: the content's left and right gaps match.
+        CHECK((body.left() - frame.left()) == Approx(frame.right() - body.right()).margin(1.0));
+        // Nothing of the content hangs out of the scroller sideways.
+        QQuickItem* apply = findNamed(content, QStringLiteral("layoutApply"));
+        REQUIRE(apply);
+        if (apply->isVisible() && body.contains(sceneRect(apply).center()))
+            CHECK(body.right() >= sceneRect(apply).right() - 0.5);
+    };
+
+    // 1. No gameplay chosen (nothing selected, the playhead past the clip): one message at the top and one button.
+    controller->setSelection({});
+    controller->setPlayhead(Ticks::fromSeconds(10));
+    layouts->refreshTargets(); // the picker does this when it opens; the playhead is followed only while it is open
+    REQUIRE(waitFor([&] { return layouts->gameplay().isEmpty(); }));
+    REQUIRE_FALSE(layouts->suggestedGameplay().isEmpty());
+    CHECK_FALSE(layouts->suggestedGameplay().value(QStringLiteral("underPlayhead")).toBool());
+    openPicker();
+    auto* content = picker->property("contentItem").value<QQuickItem*>();
+    REQUIRE(content);
+    CHECK(findNamed(content, QStringLiteral("layoutGameplay"))->property("text").toString().contains(QStringLiteral("Select the gameplay clip")));
+    CHECK_FALSE(findNamed(content, QStringLiteral("layoutStatus"))->isVisible()); // not said a second time
+    QQuickItem* use = findNamed(content, QStringLiteral("layoutUseSuggested"));
+    REQUIRE(use);
+    CHECK(use->isVisible());
+    CHECK(use->property("text").toString() == QStringLiteral("Use the nearest video clip"));
+    QQuickItem* apply = findNamed(content, QStringLiteral("layoutApply"));
+    REQUIRE(apply);
+    CHECK_FALSE(apply->isEnabled());
+    CHECK(apply->property("disabledReason").toString() == QStringLiteral("Select the gameplay clip first")); // the tooltip says why
+    // No gameplay: the facecam clip control says why too.
+    QQuickItem* facecamClip = findNamed(content, QStringLiteral("layoutFacecamClip"));
+    REQUIRE(facecamClip);
+    CHECK_FALSE(facecamClip->isEnabled());
+    CHECK(facecamClip->property("disabledReason").toString() == QStringLiteral("Select the gameplay clip first"));
+    requireFits();
+    shot("no-gameplay");
+    // One click: the clip is the gameplay, the message and the button go.
+    REQUIRE(QMetaObject::invokeMethod(use, "clicked"));
+    REQUIRE(waitFor([&] { return !layouts->gameplay().isEmpty(); }));
+    CHECK(layouts->gameplay() == clipKey(tl.clip("V1@0")));
+    CHECK_FALSE(use->isVisible());
+    CHECK(findNamed(content, QStringLiteral("layoutGameplay"))->property("text").toString().startsWith(QStringLiteral("Gameplay:")));
+    closePicker();
+
+    // 2. Gameplay chosen, Facecam = Clip with no webcam clip: the next step is said, the control says why it is off.
+    controller->setSelection({tl.clip("V1@0")});
+    controller->setPlayhead(Ticks{});
+    openPicker();
+    content = picker->property("contentItem").value<QQuickItem*>();
+    facecamClip = findNamed(content, QStringLiteral("layoutFacecamClip"));
+    REQUIRE(facecamClip);
+    CHECK_FALSE(facecamClip->isEnabled());
+    CHECK(facecamClip->property("disabledReason").toString() == QStringLiteral("No video clip above the gameplay overlaps it"));
+    QQuickItem* hint = findNamed(content, QStringLiteral("layoutFacecamClipHint"));
+    REQUIRE(hint);
+    CHECK(hint->isVisible());
+    CHECK(hint->property("text").toString().contains(QStringLiteral("track above the gameplay")));
+    requireFits();
+    shot("no-facecam-clip");
+
+    // 3. A vertical layout on this wide sequence: the hint under the cards, Create a Shorts sequence as the main action.
+    choose("verticalBlurFill");
+    QQuickItem* wide = findNamed(content, QStringLiteral("layoutWideHint"));
+    REQUIRE(wide);
+    CHECK(wide->isVisible());
+    QQuickItem* cards = findNamed(content, QStringLiteral("layoutCards"));
+    REQUIRE(cards);
+    CHECK(sceneRect(wide).top() >= sceneRect(cards).bottom() - 0.5); // under the cards, before the options
+    QQuickItem* facecamOptions = findNamed(content, QStringLiteral("layoutBlurOptions"));
+    REQUIRE(facecamOptions);
+    CHECK(sceneRect(wide).bottom() <= sceneRect(facecamOptions).top() + 0.5);
+    QQuickItem* shorts = findNamed(content, QStringLiteral("layoutCreateShorts"));
+    REQUIRE(shorts);
+    CHECK(shorts->isVisible());
+    CHECK(shorts->property("variant").toString() == QStringLiteral("primary"));
+    CHECK(apply->property("variant").toString() == QStringLiteral("secondary"));
+    requireFits();
+    shot("wide-sequence");
+    // Back to a layout that fits the sequence: Apply is the main action again, the Shorts button and the hint are gone.
+    choose("pip");
+    CHECK_FALSE(wide->isVisible());
+    CHECK_FALSE(shorts->isVisible());
+    CHECK(apply->property("variant").toString() == QStringLiteral("primary"));
+    requireFits();
+    closePicker();
+
+    layouts->setRegistry(nullptr);
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}

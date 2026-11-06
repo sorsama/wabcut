@@ -31,7 +31,8 @@ import QtQuick.Controls.Basic
 //   timecode takes a typed time or a +/- offset (TimecodeEntry); the track header menu for both kinds with its Add
 //   Tracks... and Delete Track dialogs (TrackHeaderMenu, here: AddTracksDialog, DeleteTrackDialog); right clicks on a
 //   transition (TransitionContextMenu: Set Duration..., alignment, Replace with Default, Set as Default, Clear) and in
-//   a selected gap (GapContextMenu: Ripple Delete); Delete on a selected gap closes it, a refusal shows as a toast
+//   a selected gap (GapContextMenu: Ripple Delete, 0.7: Close Gaps on <track> and Close Gaps in Sequence); Delete on a
+//   selected gap closes it, a refusal shows as a toast
 //   (messageRequested)
 // - 0.4 (stream A): resting the pointer on a clip shows its facts in a tooltip (TimelineView.clipHoverInfo: start, end,
 //   duration, speed, source; Settings > Timeline & editing > Clip tooltips), hidden while pressing, dragging, scrolling,
@@ -103,6 +104,10 @@ Panel {
     /// Each group's face: the tool last used from it (group key -> tool key).
     property var groupShown: ({})
     onToolChanged: {
+        // 0.7 (card 063): a held H / Z is only remembered while a view tool is the tool (root.tool itself: the viewTool
+        // binding may not have re-evaluated yet when this handler runs).
+        if (root.tool !== "hand" && root.tool !== "zoom")
+            root.heldFrom = ""
         const group = root.toolGroups.find(g => g.tools.includes(root.tool))
         if (group && root.groupShown[group.key] !== root.tool) {
             const next = Object.assign({}, root.groupShown)
@@ -226,6 +231,45 @@ Panel {
     // Keymap commands the timeline view owns. Returns false for anything else.
     // The empty state's action (Main opens File > Import).
     signal importRequested()
+    // ---- 0.7 (card 067): reorder tracks by dragging a header's name chip ----
+    /// The y (in the header column) of the drop line while a track header is dragged; -1 when it would not move.
+    property real trackMoveLineY: -1
+    /// Where dropping the dragged track at `y` (in the header column) puts it: the header of the same kind the pointer is
+    /// over (the nearest end of the stack past the ends) takes the dragged track's place. { number, line } (the track
+    /// number it gets, the y of the drop line on the edge the track moves towards), or null when it would not move.
+    function trackMoveTarget(trackId: string, y: real): var {
+        let source = null
+        for (let i = 0; i < trackHeaders.count; ++i) {
+            const h = trackHeaders.itemAt(i) as TrackHeader
+            if (h && h.trackId === trackId)
+                source = h
+        }
+        if (!source)
+            return null
+        let target = null
+        for (let i = 0; i < trackHeaders.count; ++i) {
+            const h = trackHeaders.itemAt(i) as TrackHeader
+            if (!h || h.kind !== source.kind || !h.visible) // 0.7: a track folded into a collapsed group is no target
+                continue
+            if (!target || y >= h.y)
+                target = h
+        }
+        if (!target || target === source)
+            return null
+        const above = target.y < source.y
+        return { number: parseInt(target.shortName.substring(1)), line: above ? target.y : target.y + target.height }
+    }
+    function previewTrackMove(trackId: string, y: real) {
+        const target = root.trackMoveTarget(trackId, y)
+        root.trackMoveLineY = target ? target.line : -1
+    }
+    function dropTrackMove(trackId: string, y: real) {
+        const target = isNaN(y) ? null : root.trackMoveTarget(trackId, y) // NaN: the drag was cancelled
+        root.trackMoveLineY = -1
+        if (target && !ProjectController.moveTrack(trackId, target.number))
+            root.messageRequested(ProjectController.lastError)
+    }
+
     /// UX rework (stream T): an edit from the panel's menus was refused; Main shows `text` as a toast.
     signal messageRequested(string text)
 
@@ -297,11 +341,27 @@ Panel {
         }
         const tool = root.tools.find(t => t.command === commandId)
         if (tool) {
+            // 0.7 (card 063): H and Z remember the tool they replace. A tap keeps the new tool, as before; held past the
+            // keymap's hold threshold the key is a momentary tool: its release (releaseTool) gives the old one back.
+            root.heldFrom = tool.key === "hand" || tool.key === "zoom" ? root.tool : ""
             root.tool = tool.key
             return true
         }
         // Trim mode (M5i): Toggle Trim Type, Trim Backward / Forward (Many).
         return Trim.runCommand(commandId)
+    }
+
+    /// 0.7 (card 063): the tool the last H / Z key press replaced ("" when the tool did not come from such a press).
+    property string heldFrom: ""
+    /// 0.7 (card 063): the key of a momentary tool command (tool.hand, tool.zoom) came up after a hold (KeymapDispatcher
+    /// .commandReleased, or the window lost focus): the tool it replaced comes back, unless another tool was chosen since.
+    function releaseTool(commandId: string) {
+        const current = root.toolCatalog[root.tool]
+        if (root.heldFrom === "" || !current || current.command !== commandId)
+            return
+        const back = root.heldFrom
+        root.heldFrom = ""
+        root.tool = back
     }
 
     /// Keyboard focus to the lanes (or the Timeline list when it is shown). `quiet`: focus the app moved here by itself
@@ -315,6 +375,46 @@ Panel {
         } else {
             lanesArea.forceActiveFocus(Qt.TabFocusReason)
         }
+    }
+
+    /// 0.7 (card 008): the Menu key and Shift+F10 (the pattern of DockTabs and the track header's chip).
+    function isMenuKey(event: KeyEvent): bool {
+        return event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier) !== 0)
+    }
+    /// 0.7 (card 008): the context menu of what is selected, from the keyboard: the selected transition's, else the
+    /// selected gap's, else the primary clip's, opened where it sits in the lanes (scrolled into view first). With
+    /// nothing selected, the menu of the first targeted track's header (the first track when none is targeted).
+    /// Returns whether a menu opened.
+    function openContextMenu(): bool {
+        const anchor = lanes.view.menuAnchor()
+        const at = Qt.point(anchor.x ?? 0, anchor.y ?? 0)
+        switch (anchor.kind ?? "") {
+        case "transition":
+            transitionMenu.openAt(lanes, anchor.id, at)
+            return true
+        case "gap":
+            gapMenu.openAt(lanes, at)
+            return true
+        case "clip":
+            clipMenu.openAt(lanes, anchor.id, at)
+            return true
+        }
+        let header = null
+        for (let i = 0; i < trackHeaders.count; ++i) {
+            const candidate = trackHeaders.itemAt(i) as TrackHeader
+            if (!candidate)
+                continue
+            if (candidate.targeted) {
+                header = candidate
+                break
+            }
+            if (header === null)
+                header = candidate
+        }
+        if (header === null)
+            return false
+        header.openMenu(header, Qt.point(header.width / 2, header.height / 2))
+        return true
     }
 
     // Keeps the playhead in view after keyboard navigation.
@@ -747,6 +847,22 @@ Panel {
         view: lanes.view
     }
 
+    // 0.7 (card 180): the pacing heat strip, between the ruler and the tracks while Timeline Display > Pacing strip is on.
+    TimelinePacingStrip {
+        id: pacingStrip
+        visible: Preferences.timelineShowPacing
+        x: lanesArea.x
+        y: ruler.y + ruler.height + Theme.space(0.5)
+        width: lanesArea.width
+        height: Theme.space(2)
+        view: lanes.view
+    }
+    Binding {
+        target: Pacing
+        property: "active"
+        value: Preferences.timelineShowPacing
+    }
+
     // Playhead line between the ruler and the lanes (the view draws it inside the lanes).
     Rectangle {
         readonly property real px: lanes.view.playheadX
@@ -765,15 +881,17 @@ Panel {
         anchors.right: parent.right
         anchors.top: ruler.bottom
         anchors.bottom: footer.top
-        anchors.topMargin: Theme.space(2)
+        anchors.topMargin: Theme.space(2) + (pacingStrip.visible ? pacingStrip.height + Theme.space(0.5) : 0)
         anchors.bottomMargin: Theme.space(2)
         clip: true
 
-        Column {
+        // 0.7 (card 124): every header sits at its row's y in the lanes (TimelineView: caption rows, track group rows and
+        // track rows), so a track group's row can stand between the headers and a collapsed group's tracks fold away.
+        Item {
             id: headers
             y: -lanes.view.scrollY
             width: Theme.trackHeaderWidth
-            spacing: Theme.trackGap
+            height: lanes.view.contentHeight
 
             // 0.5: the caption tracks' headers, above the video tracks as their lanes are (TimelineView.captionRows).
             Repeater {
@@ -783,15 +901,34 @@ Panel {
                     view: lanes.view
                 }
             }
+            // 0.7 (card 124): the track groups' header rows (TimelineView.groupRows), each above its first track.
             Repeater {
+                id: groupHeaders
+                model: lanes.view.groupRows.length // a count: a change to a group updates its header in place
+                delegate: TrackGroupHeader {
+                    width: headers.width
+                    view: lanes.view
+                    onMessageRequested: text => root.messageRequested(text)
+                }
+            }
+            Repeater {
+                id: trackHeaders
                 model: ProjectController.tracks
                 delegate: TrackHeader {
                     width: headers.width
                     view: lanes.view
+                    // The revision is read as a value (not as a statement of its own), so the bindings are made again whenever the
+                    // rows change.
+                    y: lanes.view.layoutRevision >= 0 ? lanes.view.trackYOf(trackId) : 0
+                    visible: lanes.view.layoutRevision >= 0 && lanes.view.trackVisible(trackId) // 0.7: a track folded into a collapsed group has no header
                     // UX rework (stream T): the header menu's dialogs and refusals.
                     onAddTracksRequested: trackId => addTracksDialog.openFor(trackId)
+                    onTrackEffectsRequested: (trackId, name) => trackEffectsPopover.openFor(trackId, name)
                     onDeleteRequested: info => deleteTrackDialog.openFor(info)
                     onMessageRequested: text => root.messageRequested(text)
+                    // 0.7 (card 067): dragging the name chip reorders the track.
+                    onReorderMoved: (trackId, y) => root.previewTrackMove(trackId, y)
+                    onReorderDropped: (trackId, y) => root.dropTrackMove(trackId, y)
                 }
             }
 
@@ -799,6 +936,7 @@ Panel {
             Rectangle {
                 objectName: "newTrackHeader"
                 visible: lanes.view.newTrackLabel !== ""
+                y: lanes.view.contentHeight + Theme.trackGap
                 width: headers.width
                 height: Theme.trackHeightAudio
                 radius: Theme.radiusTimeline
@@ -817,6 +955,19 @@ Panel {
                     font.weight: Font.DemiBold
                 }
             }
+        }
+
+        // 0.7 (card 067): where a dragged track header would land: a line on the edge of the header it takes the place of.
+        Rectangle {
+            objectName: "trackMoveLine"
+            z: 5
+            visible: root.trackMoveLineY >= 0
+            x: 0
+            y: headers.y + root.trackMoveLineY - height / 2
+            width: Theme.trackHeaderWidth
+            height: Theme.space(0.75)
+            radius: height / 2
+            color: Theme.accentFill
         }
 
         FocusScope {
@@ -845,6 +996,12 @@ Panel {
                 event.accepted = Trim.active
                 Trim.clear()
             }
+            // 0.7 (card 008): the Menu key / Shift+F10 open the menu of the selected clip, transition or gap.
+            Keys.onShortcutOverride: event => event.accepted = root.isMenuKey(event)
+            Keys.onPressed: event => {
+                if (root.isMenuKey(event))
+                    event.accepted = root.openContextMenu()
+            }
 
             TimelineLanes {
                 id: lanes
@@ -865,6 +1022,40 @@ Panel {
                 view: lanes.view
                 tool: root.viewTool ? root.tool : ""
                 onPressedByPointer: lanesArea.focusByPointer()
+            }
+
+            // 0.7 (card 063): a drag with the middle button pans the timeline with any tool, in both directions, and edits
+            // nothing (the mouse's wheel button, as in Premiere and every editor). A pointer handler, not a MouseArea: it
+            // takes no left or right press and leaves the lanes' own cursors alone.
+            DragHandler {
+                id: middlePan
+                objectName: "timelineMiddlePan"
+                target: null
+                acceptedButtons: Qt.MiddleButton
+                acceptedDevices: PointerDevice.Mouse
+                dragThreshold: 0
+                property real startX: 0
+                property real startY: 0
+                onActiveChanged: {
+                    if (!active)
+                        return
+                    startX = lanes.view.scrollX
+                    startY = lanes.view.scrollY
+                    root.hideClipTip()
+                    lanesArea.focusByPointer()
+                }
+                onTranslationChanged: {
+                    if (!active)
+                        return
+                    lanes.view.scrollX = startX - translation.x
+                    lanes.view.scrollY = startY - translation.y
+                }
+            }
+            CursorArea {
+                objectName: "timelineMiddlePanCursor"
+                z: 6
+                anchors.fill: lanes
+                shape: middlePan.active ? "grab" : ""
             }
 
             // One panel overlay for the active speed gesture; the lanes remain a bare scene-graph host.
@@ -1056,6 +1247,11 @@ Panel {
                 function onContextMenuRequested(clipId, x, y) {
                     clipMenu.openAt(lanes, clipId, Qt.point(x, y))
                 }
+                // 0.7 (card 041): a click on a clip's fx badge (it selected the clip): the menu of its properties, to show
+                // one's keyframes on the clip.
+                function onFxBadgeClicked(clipId, x, y) {
+                    clipKeyframesMenu.openAt(lanes, lanes.view, clipId, Qt.point(x, y))
+                }
                 // 0.4, the clip tooltip: a new clip under the pointer starts the wait again; a press, a drag, a scroll
                 // or zoom and an edit hide it.
                 function onHoveredClipChanged() {
@@ -1109,6 +1305,7 @@ Panel {
             ClipContextMenu {
                 id: clipMenu
                 onRenameRequested: (clipId, point) => renamePopover.openFor(clipId, point, lanesArea.width)
+                onNoteRequested: (clipId, point) => notePopover.openFor(clipId, point, lanesArea.width)
                 onNestRequested: nestDialog.openForSelection()
             }
 
@@ -1116,8 +1313,12 @@ Panel {
                 id: nestDialog
             }
 
+            ClipKeyframesMenu {
+                id: clipKeyframesMenu
+            }
+
             // UX rework (stream T): the transition menu (Set Duration..., alignment, Replace with Default, Set as Default
-            // Transition, Clear) and the gap menu (Ripple Delete).
+            // Transition, Clear) and the gap menu (Ripple Delete, Close Gaps on the track, Close Gaps in Sequence).
             TransitionContextMenu {
                 id: transitionMenu
                 onDurationRequested: info => transitionDurationDialog.openFor(info)
@@ -1132,6 +1333,9 @@ Panel {
 
             RenameClipPopover {
                 id: renamePopover
+            }
+            ClipNotePopover {
+                id: notePopover
             }
 
             FocusRing {
@@ -1184,6 +1388,8 @@ Panel {
                         lanes.view.revealClip(clip.id)
                 }
                 function handles(event) {
+                    if (root.isMenuKey(event))
+                        return true
                     const mods = event.modifiers & ~Qt.KeypadModifier
                     const arrows = event.key === Qt.Key_Left || event.key === Qt.Key_Right
                     if (arrows && (mods === Qt.NoModifier || mods === trimModifier || mods === (trimModifier | Qt.ShiftModifier)))
@@ -1204,6 +1410,10 @@ Panel {
                 Keys.onPressed: event => {
                     if (!clipList.handles(event))
                         return
+                    if (root.isMenuKey(event)) { // 0.7 (card 008)
+                        event.accepted = root.openContextMenu()
+                        return
+                    }
                     const mods = event.modifiers & ~Qt.KeypadModifier
                     const trimming = (mods & clipList.trimModifier) !== 0
                     const step = (mods & Qt.ShiftModifier) ? 5 : 1
@@ -1253,6 +1463,8 @@ Panel {
             z: 5
             visible: root.listMode
             onCloseRequested: root.listMode = false
+            // 0.7 (card 008): the Menu key on a row: the clip menu, where the row is.
+            onMenuRequested: (clipId, at) => clipMenu.openAt(timelineList, clipId, at)
             onRevealRequested: clipId => {
                 ProjectController.goToSelectedClipStart()
                 lanes.view.revealClip(clipId)
@@ -1343,6 +1555,10 @@ Panel {
     }
     DeleteTrackDialog {
         id: deleteTrackDialog
+    }
+    // 0.7 (card #139): the effect stack of a video track (its header menu's Video Track Effects...).
+    TrackEffectsPopover {
+        id: trackEffectsPopover
     }
     TransitionDurationDialog {
         id: transitionDurationDialog

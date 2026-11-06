@@ -3,6 +3,7 @@
 #include <array>
 #include <charconv>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -15,6 +16,11 @@ constexpr std::int64_t kSecondsPerMinute = 60;
 constexpr std::int64_t kMinutesPerHour = 60;
 constexpr std::int64_t kSecondsPerHour = kSecondsPerMinute * kMinutesPerHour;
 constexpr std::size_t kMaxFieldDigits = 9;
+/// The furthest a typed or imported timecode may reach from zero: 31 days of ticks (about 6.8e17). A timecode is
+/// untrusted input (a typo in a time box, an MCP / CLI "time" parameter, an EDL), and "99999999:00:00:00" is ~1e13
+/// frames: scaled by 8.5e9 ticks per frame it would wrap int64 (UB) into an arbitrary position (card 091). Plain Ticks
+/// arithmetic elsewhere is for values in timeline range (Time.h), and 31 days leaves room for sums of a dozen of them.
+constexpr std::int64_t kMaxTimecodeTicks = 31LL * 24 * 3600 * kTicksPerSecond;
 
 int digitCount(std::int64_t value) {
     int digits = 1;
@@ -228,6 +234,12 @@ std::expected<std::int64_t, Error> parseTimecodeFrames(std::string_view text, Ra
     if (drop > 0) {
         frame -= drop * (totalMinutes - totalMinutes / 10);
     }
+    // Card 091: nine digits of hours are ~1e13 frames; refuse what the tick scale cannot hold (the checked form),
+    // and what lies beyond a month of timeline, before any caller multiplies the frame count into ticks.
+    const std::optional<Ticks> ticks = framesToTicks(frame, rate, Rounding::Floor);
+    if (!ticks || ticks->value > kMaxTimecodeTicks || ticks->value < -kMaxTimecodeTicks) {
+        return std::unexpected(parseError(text, "time out of range"));
+    }
     return negative ? -frame : frame;
 }
 
@@ -236,7 +248,12 @@ std::expected<Ticks, Error> parseTimecode(std::string_view text, Rate rate, bool
     if (!frames) {
         return std::unexpected(std::move(frames.error()));
     }
-    return framesToTicks(*frames, rate);
+    // parseTimecodeFrames bounded the frame count, so the scaling cannot overflow; the checked form keeps it that way.
+    const std::optional<Ticks> ticks = framesToTicks(*frames, rate, Rounding::Floor);
+    if (!ticks) {
+        return std::unexpected(parseError(text, "time out of range"));
+    }
+    return *ticks;
 }
 
 } // namespace wabcut

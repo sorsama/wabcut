@@ -101,8 +101,22 @@ constexpr Ticks toTimelineTicks(Ticks source, Speed speed) { return scaleTicks(s
 /// The part of a clip that edits move around but rarely change: its name, parameters (with their keyframe
 /// curves) and effect stack. It is immutable and shared: a razor cut gives both pieces the same block, and
 /// copying a clip (which ripple edits do for every later clip) never copies strings, curves or effects.
+/// 0.7 (card 125): the longest free-text note a clip carries (UTF-8 bytes; project files and commands are untrusted).
+inline constexpr std::size_t kMaxClipNoteBytes = 2000;
+
+/// 0.7 (card 069): what a clip played before Render and Replace swapped its nested sequence for a rendered file
+/// (RenderReplace.h): the nested sequence, and where the file's first frame lies in that sequence's time. Restore
+/// Unrendered puts the sequence back and moves the clip's In point and every media-time key back by `origin`.
+struct RenderedNest {
+    SequenceId sequence;
+    Ticks origin;
+
+    bool operator==(const RenderedNest&) const = default;
+};
+
 struct ClipContent {
     std::string name;
+
     ClipProperties properties;
     /// Applied in order after the clip's intrinsic effects (Motion/Opacity or Volume/Panner).
     EffectStack effects;
@@ -126,6 +140,11 @@ struct ClipContent {
     /// sequence frame before Motion (FrameScaling.h, scaleToFrameFactor), so Motion > Scale stays 100 % for a fitted
     /// picture. Saved only when set.
     bool scaleToFrame = false;
+    /// 0.7 (card #98), video clips: Clip > Video Options > Nearest Neighbor Scaling. The picture is resized without
+    /// smoothing, so pixel art and low-resolution game captures keep their hard pixel edges at any Motion > Scale or
+    /// Scale to Frame Size (the layer shader samples the luma plane at the centre of the source pixel under each canvas
+    /// pixel). Saved only when set.
+    bool nearestNeighbor = false;
     /// P.2 (E5), frame holds: Premiere's Frame Hold Options > Hold Filters. On a freeze frame the clip's keyframed
     /// parameters and effects hold at their value at the held frame too (curveTimeAt stays at sourceIn); off (the
     /// default), they keep animating through the hold. Saved only when set.
@@ -146,6 +165,14 @@ struct ClipContent {
     /// everything that plays, exports or edits it sees only that one. Immutable and shared; compared by value. Saved
     /// only when set.
     std::shared_ptr<const Audition> audition;
+    /// 0.7 (card 125): a free-text note on this clip (Clip > Clip Note…), read on the timeline when Timeline Display's
+    /// "Clip notes" is on; at most kMaxClipNoteBytes. Part of the clip, not of its media: razor halves and copies carry
+    /// it, other clips of the same media do not. Saved only when set. (Last, so positional initialisers of the fields
+    /// above keep their meaning.)
+    std::string note;
+    /// 0.7 (card 069): set on a clip whose nested sequence was rendered to a file and replaced (it plays that file;
+    /// Clip > Restore Unrendered plays the sequence again). Saved only when set, as "renderedFrom".
+    std::optional<RenderedNest> renderedNest;
 
     bool operator==(const ClipContent& other) const;
 };
@@ -164,6 +191,10 @@ struct Clip {
     LinkGroupId linkGroup;
     /// 0.2, Premiere's Clip > Group (ClipGroups.h): invalid when the clip is not grouped. Saved only when set.
     ClipGroupId group;
+    /// 0.7 (card 064): the clip is locked (Clip > Lock Clip): it cannot be moved, trimmed, split, retimed, deleted,
+    /// overwritten, pushed by a ripple or changed in any other way until it is unlocked (clip.setLocked); it can still be
+    /// selected, copied and played. Independent of Track::locked. Saved only when set; copies are not locked.
+    bool locked = false;
     std::int32_t colorIndex = 0;
     /// Plays its source range backwards: the clip starts on the last frame of [sourceIn, sourceOut).
     bool reversed = false;
@@ -197,6 +228,8 @@ struct Clip {
     std::optional<InputColorSpace> inputColorSpace() const { return content().inputColorSpace; }
     /// 0.6: the clip's other takes when it is an audition (Auditions.h), or null.
     const Audition* audition() const { return content().audition.get(); }
+    /// 0.7 (card 069): the nested sequence this clip was rendered from (Restore Unrendered), or null.
+    const RenderedNest* renderedNest() const { return content().renderedNest ? &*content().renderedNest : nullptr; }
     bool isAudition() const { return content().audition != nullptr; }
     /// Amount of source media the clip plays: [sourceIn, sourceOut). 0 for a freeze frame. A remapped clip: the
     /// curve time it spans (sourceIn is a curve time there).
@@ -256,6 +289,10 @@ struct Clip {
     std::optional<Ticks> timelineTimeOfSourceTime(Ticks source) const;
     /// An intrinsic parameter's value at timeline position `t`.
     double parameterAt(ParamId param, Ticks t) const { return properties().value(param, curveTimeAt(t)); }
+    /// 0.7 (card 120): the curve times of the clip's first and last shown tick: where its keyframes pinned to its start
+    /// or end sit (Keyframe::pin).
+    Ticks startCurveTime() const { return curveTimeAt(start()); }
+    Ticks endCurveTime() const { return curveTimeAt(timelineRange.duration.value > 0 ? end() - Ticks{1} : end()); }
 
     /// Timeline ticks the head can be extended by before running out of source media (`extent` = available
     /// media, nullopt = unbounded; the result nullopt = unbounded).
@@ -280,6 +317,8 @@ struct Clip {
 
     const ClipContent& content() const { return m_content ? *m_content : defaultContent(); }
     const std::string& name() const { return content().name; }
+    /// 0.7 (card 125): the clip's free-text note ("" = none).
+    const std::string& note() const { return content().note; }
     const ClipProperties& properties() const { return content().properties; }
 
     /// Copy-on-write setters: they give this clip a new content block and leave other clips that
@@ -328,7 +367,8 @@ struct Clip {
     bool operator==(const Clip& o) const {
         return id == o.id && media == o.media && stream == o.stream && timelineRange == o.timelineRange &&
                sourceIn == o.sourceIn && speed == o.speed && enabled == o.enabled && linkGroup == o.linkGroup &&
-               group == o.group && colorIndex == o.colorIndex && reversed == o.reversed && maintainPitch == o.maintainPitch &&
+               group == o.group && locked == o.locked && colorIndex == o.colorIndex && reversed == o.reversed &&
+               maintainPitch == o.maintainPitch &&
                sequence == o.sequence && angles == o.angles && (m_content == o.m_content || content() == o.content());
     }
 

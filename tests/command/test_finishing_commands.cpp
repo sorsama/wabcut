@@ -2,6 +2,8 @@
 
 #include "CommandHarness.h"
 
+#include <wabcut/model/ProjectIO.h>
+
 #include <catch2/catch_test_macros.hpp>
 
 using namespace wabcut;
@@ -114,6 +116,74 @@ TEST_CASE("Effect commands", "[command][finishing][effects]") {
     h.ok("clip.removeEffect", Json{{"clip", at("V1", 0)}, {"effect", blur}});
     CHECK(clipOf(h, "V1@0").effects().size() == 1);
     CHECK(h.errorOf("clip.removeEffect", Json{{"clip", at("V1", 0)}, {"effect", blur}}) == "NotFound");
+}
+
+// Card 139: effects on a whole video track (the track's stack is applied to the composite of its clips).
+TEST_CASE("Video track effects: add, set, move, animate and remove on a whole track (card 139)",
+          "[command][finishing][effects][track]") {
+    CommandHarness h(R"(
+        V2 tgt     |Bbbbbbbb|
+        V1 tgt     |Aaaaaaaa|
+        A1 tgt     |Aaaaaaaa|
+    )");
+    const auto stackOf = [&](const char* track) {
+        static ProjectSnapshot keep;
+        keep = h.state();
+        return h.sequence(keep).findTrack(h.tl.track(track))->effects;
+    };
+    const std::size_t undo = h.session.undoCount();
+    const auto grade = h.ok("track.addEffect", Json{{"track", "V1"}, {"effect", "wabcut.color.basic"}, {"params", Json{{"exposure", 0.5}}}});
+    REQUIRE(grade.createdIds.size() == 1);
+    CHECK(h.session.undoCount() == undo + 1); // one undo step
+    CHECK(grade.data["track"] == "V1");
+    const auto blur = h.ok("track.addEffect", Json{{"track", "V1"}, {"effect", "wabcut.blur.gaussian"}, {"index", 0}}).createdIds[0];
+    REQUIRE(stackOf("V1").size() == 2);
+    CHECK(stackOf("V1")[0].id.value == blur);
+    CHECK(stackOf("V2").empty()); // only the track it was added to; its clips keep their own stacks
+    CHECK(clipOf(h, "V1@0").effects().empty());
+
+    h.ok("track.setEffect", Json{{"track", "V1"}, {"effect", grade.createdIds[0]}, {"enabled", false}, {"params", Json{{"tint", 20}}}});
+    h.ok("track.moveEffect", Json{{"track", "V1"}, {"effect", grade.createdIds[0]}, {"index", 0}});
+    h.ok("track.addKeyframe", Json{{"track", "V1"}, {"effect", blur}, {"param", "radius"}, {"time", tc(4)}, {"value", 20}});
+    h.ok("track.addKeyframe", Json{{"track", "V1"}, {"effect", blur}, {"param", "radius"}, {"time", tc(6)}, {"value", 2},
+                                   {"interpolation", "hold"}});
+    const Json listed = h.ok("track.effects", Json{{"track", "V1"}}).data;
+    CHECK(listed["track"] == "V1");
+    REQUIRE(listed["effects"].size() == 2);
+    CHECK(listed["effects"][0]["effect"] == "wabcut.color.basic");
+    CHECK(listed["effects"][0]["enabled"] == false);
+    CHECK(listed["effects"][0]["params"]["tint"] == 20.0);
+    const Json& keys = listed["effects"][1]["params"]["radius"]["keys"]; // timeline time, not media time
+    REQUIRE(keys.size() == 2);
+    CHECK(keys[0]["time"] == f(4).value);
+    CHECK(keys[1]["interpolation"] == "hold");
+    CHECK(h.ok("track.effects", Json{{"track", "V2"}}).data["effects"].empty());
+
+    // It is part of the project: saved and loaded back, the stack is the same.
+    const auto saved = io::toJson(*h.state());
+    REQUIRE(saved);
+    const auto loaded = io::fromJson(*saved);
+    REQUIRE(loaded);
+    const Track* reloaded = loaded->findSequence(h.tl.seq)->findTrack(h.tl.track("V1"));
+    REQUIRE(reloaded);
+    CHECK(reloaded->effects == stackOf("V1"));
+
+    h.ok("track.removeKeyframe", Json{{"track", "V1"}, {"effect", blur}, {"param", "radius"}, {"index", 1}});
+    h.ok("track.removeEffect", Json{{"track", "V1"}, {"effect", blur}});
+    CHECK(stackOf("V1").size() == 1);
+    h.session.undo();
+    CHECK(stackOf("V1").size() == 2); // undone as one step
+
+    // What cannot be done says why: audio tracks and audio effects, unknown effects, out-of-range values, a locked track.
+    CHECK(h.errorOf("track.addEffect", Json{{"track", "A1"}, {"effect", "wabcut.blur.gaussian"}}) == "InvalidParams");
+    CHECK(h.errorOf("track.addEffect", Json{{"track", "V1"}, {"effect", "wabcut.audio.gain"}}) == "EditRejected");
+    CHECK(h.errorOf("track.addEffect", Json{{"track", "V1"}, {"effect", "wabcut.opacity"}}) == "InvalidParams");
+    CHECK(h.errorOf("track.addEffect", Json{{"track", "V9"}, {"effect", "wabcut.blur.gaussian"}}) == "NotFound");
+    CHECK(h.errorOf("track.setEffect", Json{{"track", "V1"}, {"effect", grade.createdIds[0]}, {"params", Json{{"tint", 500}}}}) ==
+          "EditRejected");
+    CHECK(h.errorOf("track.removeEffect", Json{{"track", "V1"}, {"effect", 987654}}) == "NotFound");
+    h.ok("track.setState", Json{{"track", "V2"}, {"locked", true}});
+    CHECK(h.errorOf("track.addEffect", Json{{"track", "V2"}, {"effect", "wabcut.blur.gaussian"}}) == "EditRejected");
 }
 
 TEST_CASE("Effect commands: Simple Text's text and Image Matte Key's image are effect data (0.2)",

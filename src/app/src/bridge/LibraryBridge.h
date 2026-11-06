@@ -89,6 +89,10 @@ class LibraryBridge : public QObject {
     Q_PROPERTY(bool sortAscending READ sortAscending NOTIFY sortChanged FINAL)
     /// Hover scrub on grid cards (Premiere's Shift+H).
     Q_PROPERTY(bool hoverScrub READ hoverScrub WRITE setHoverScrub NOTIFY hoverScrubChanged FINAL)
+    /// 0.7 (card 023), Premiere's Project panel List view > Thumbnails: the list's Name cell shows the item's thumbnail and
+    /// the rows grow with thumbnailScale (the size slider, Ctrl+wheel and the zoom keys then size the list too). Saved
+    /// (QSettings library/listThumbnails); off by default.
+    Q_PROPERTY(bool listThumbnails READ listThumbnails WRITE setListThumbnails NOTIFY listThumbnailsChanged FINAL)
     /// 0.2, Premiere's Project panel zoom (icon and thumbnail size): the grid's card size, 0.5 .. 2 (1 = the default),
     /// in kThumbnailScaleStep steps. Per user (QSettings), like the view and hover scrub.
     Q_PROPERTY(qreal thumbnailScale READ thumbnailScale WRITE setThumbnailScale NOTIFY thumbnailScaleChanged FINAL)
@@ -130,12 +134,19 @@ class LibraryBridge : public QObject {
     /// 0.2 Media Browser Ingest (Premiere's Ingest Settings): with `ingest` on, importing from the Media Browser first
     /// "copy"-s the clips' files into `ingestFolder`, "transcode"-s them there with the export preset `ingestPreset`
     /// (the originals import at once; each item switches to its transcoded file when the export queue has made it: one
-    /// undo step, "Use Transcoded Media"), or makes "proxies" of them (the proxy settings' format). Per user.
+    /// undo step, "Use Transcoded Media"), makes "proxies" of them (the proxy settings' format), or (0.7, card 022)
+    /// "copyProxies": copies the files into `ingestFolder` and makes the proxies of the copies. Per user.
     Q_PROPERTY(bool ingest READ ingest WRITE setIngest NOTIFY ingestChanged FINAL)
     Q_PROPERTY(QString ingestAction READ ingestAction WRITE setIngestAction NOTIFY ingestChanged FINAL)
     /// A local folder ("/"-separated); a file URL is accepted.
     Q_PROPERTY(QString ingestFolder READ ingestFolder WRITE setIngestFolder NOTIFY ingestChanged FINAL)
     Q_PROPERTY(QString ingestPreset READ ingestPreset WRITE setIngestPreset NOTIFY ingestChanged FINAL)
+    /// 0.7 (card 021): a cell of the list view is open for editing (the list sets it). While it is, Tab / Shift+Tab and
+    /// Enter / Shift+Enter (project.nextColumnField, previousColumnField, nextRowField, previousRowField) move to the
+    /// next or previous cell: runCommand emits fieldStepRequested and the list view answers.
+    Q_PROPERTY(bool fieldEditing READ fieldEditing WRITE setFieldEditing NOTIFY fieldEditingChanged FINAL)
+    /// 0.7 (card 144): named column layouts (set, order and widths of the list view's columns), by name.
+    Q_PROPERTY(QStringList columnPresets READ columnPresets NOTIFY columnPresetsChanged FINAL)
     /// The frames of a Media Browser clip's hover-scrub strip (browseFolder's "strip": one image, side by side).
     Q_PROPERTY(int browserStripFrames READ browserStripFrames CONSTANT FINAL)
 
@@ -212,6 +223,8 @@ public:
     bool sortAscending() const { return m_model->sortAscending(); }
     bool hoverScrub() const { return m_hoverScrub; }
     void setHoverScrub(bool on);
+    bool listThumbnails() const { return m_listThumbnails; }
+    void setListThumbnails(bool on);
     bool ingest() const { return m_ingest; }
     void setIngest(bool on);
     QString ingestAction() const { return m_ingestAction; }
@@ -220,6 +233,9 @@ public:
     void setIngestFolder(const QString& folder);
     QString ingestPreset() const { return m_ingestPreset; }
     void setIngestPreset(const QString& preset);
+    bool fieldEditing() const { return m_fieldEditing; }
+    void setFieldEditing(bool editing);
+    QStringList columnPresets() const;
     static constexpr qreal kThumbnailScaleStep = 0.25;
     static constexpr qreal kThumbnailScaleMin = 0.5;
     static constexpr qreal kThumbnailScaleMax = 2.0;
@@ -469,6 +485,11 @@ public:
     /// The rows of a mediaProperties (or browserFileInfo) map: [{ label, value }], translated. The Media Browser's
     /// metadata view shows the same rows.
     Q_INVOKABLE QVariantList propertyLines(const QVariantMap& info) const;
+    /// 0.7 (card 103): what this build does with the newer codecs, asked of the FFmpeg it links: [{ id, name, plays
+    /// (the build has a decoder), exports (it has an encoder for the format), text (a plain sentence: what plays, what is
+    /// decode-only) }] for APV, 4:2:2 HEVC, 4:2:2 AV1 and MV-HEVC. About shows it; Get Properties names the entry that
+    /// applies to a clip.
+    Q_INVOKABLE QVariantList codecSupport() const;
     /// "Label: value" lines of `key`'s properties (Copy all), and that copy onto the clipboard.
     Q_INVOKABLE QString propertiesText(const QString& key) const;
     Q_INVOKABLE bool copyProperties(const QString& key) const;
@@ -486,6 +507,13 @@ public:
     Q_INVOKABLE void selectUnused();
     /// Removes every unused media item: one undo step. Returns how many went.
     Q_INVOKABLE int removeUnused();
+    /// 0.7 (card 025): what Consolidate Duplicates would do, as the confirmation lists it, without changing anything: one
+    /// map per set of duplicates { keeper (item key), keeperName, removed [{ key, name }], clips (clips that move to the
+    /// keeper), skipped [{ name, reason }], notes [text] }. Empty when there is nothing to merge.
+    Q_INVOKABLE QVariantList consolidatePreview() const;
+    /// 0.7 (card 025): merges every set of duplicates (media items that are one file) into one item each: one undo step.
+    /// Returns how many items went; the message says what was merged and what could not be.
+    Q_INVOKABLE int consolidateDuplicates();
     /// Whether a media item passes the Find filters (narrows Smart results).
     Q_INVOKABLE bool passesFilters(const QString& mediaKey) const;
     Q_INVOKABLE void clearFilters();
@@ -502,6 +530,15 @@ public:
     Q_INVOKABLE void moveColumn(int from, int to);
     Q_INVOKABLE void setColumnWidth(const QString& column, int width);
     Q_INVOKABLE void resetColumns();
+    /// 0.7 (card 144): saves the columns as they are now (which show, their order and widths) as a layout called `name`
+    /// (a layout of that name is replaced; at most kMaxColumnPresets), applies a saved one, forgets one. Kept per user.
+    /// saveColumnPreset returns false for an empty name (message set).
+    Q_INVOKABLE bool saveColumnPreset(const QString& name);
+    Q_INVOKABLE bool applyColumnPreset(const QString& name);
+    Q_INVOKABLE bool deleteColumnPreset(const QString& name);
+    static constexpr int kMaxColumnPresets = 20;
+    /// 0.7 (card 112): the bin `key` is (on) or is no longer (off) where Nest… files nested sequences. One undo step.
+    Q_INVOKABLE bool setNestBin(const QString& key, bool on);
 
     // ---- Keyboard (docs/keymap.md: project.*, clip.makeSubclip) ----
     /// UX rework (L): also Premiere's Project panel zoom keys (project.thumbnailSizeNext / Previous, project.zoomIn /
@@ -545,8 +582,14 @@ signals:
     void columnsChanged();
     void sortChanged();
     void hoverScrubChanged();
+    void listThumbnailsChanged();
     void thumbnailScaleChanged();
     void ingestChanged();
+    void fieldEditingChanged();
+    void columnPresetsChanged();
+    /// 0.7 (card 021): a field-step key was pressed while a cell is open: move `columnDelta` cells across and `rowDelta`
+    /// rows down (-1 / +1); the list view commits the open cell and opens the next one.
+    void fieldStepRequested(int columnDelta, int rowDelta);
     void binChanged();
     void tabsChanged();
     void filterChanged();
@@ -565,6 +608,9 @@ signals:
     void findRequested();
     /// QML: ask for the subclip's name (Ctrl/Cmd+U).
     void makeSubclipRequested();
+    /// 0.7 (card 025), QML: open the confirmation of Edit > Consolidate Duplicates ("consolidate") or Remove Unused
+    /// ("removeUnused").
+    void housekeepingRequested(const QString& kind);
     /// UX rework (L), Premiere's Project panel selection keys: move the selection in the view shown. `where`: "up",
     /// "down", "left", "right" (one card / row; up and down are a row of cards in the grid), "home", "end" (the first /
     /// last listed item), "pageUp", "pageDown" (a page of the view). `extend`: Shift (Range selection from the anchor).
@@ -618,6 +664,7 @@ private:
     QPointer<MediaReadinessBridge> m_readiness;
     QPointer<SourceMonitorBridge> m_source;
     QPointer<ExportController> m_export;
+    bool m_fieldEditing = false;
     bool m_ingest = false;
     QString m_ingestAction = QStringLiteral("copy");
     QString m_ingestFolder;
@@ -631,6 +678,7 @@ private:
     QString m_view = QStringLiteral("grid");
     QString m_scope = QStringLiteral("all");
     bool m_hoverScrub = true;
+    bool m_listThumbnails = false; ///< 0.7 (card 023)
     qreal m_thumbnailScale = 1.0;
     bool m_persistent = true;
     bool m_synchronous = false;
@@ -645,6 +693,12 @@ private:
         int width = 120;
     };
     std::vector<ColumnState> m_columns; // display order
+    /// 0.7 (card 144): the saved column layouts, in the order they were made (settings: library/columnPresets).
+    std::vector<std::pair<QString, std::vector<ColumnState>>> m_columnPresets;
+    /// The settings text of a column layout ("id:width:visible" each), and the layout it stands for (columns this build
+    /// does not know are skipped, columns it added since come last as their defaults say); nullopt for an empty list.
+    static QStringList encodeColumns(const std::vector<ColumnState>& columns);
+    static std::optional<std::vector<ColumnState>> decodeColumns(const QStringList& saved);
     std::unordered_set<std::uint64_t> m_used;
     std::unordered_set<std::uint64_t> m_unused;
     std::unordered_map<std::uint64_t, QString> m_thumbnails; // media id -> thumbnail URL (ProjectController's)

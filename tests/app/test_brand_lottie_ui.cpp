@@ -518,9 +518,19 @@ TEST_CASE("Lottie import: lower_third.json becomes a graphic clip at the playhea
     CHECK(imported.back().value(QStringLiteral("summary")).toString().contains(QStringLiteral("template")));
     CHECK_FALSE(r.snap()->templates.get().empty());
 
-    // Refusals: a dotLottie archive, a JSON file that is not an animation.
-    CHECK_FALSE(import.importLottie(QUrl::fromLocalFile(QStringLiteral("C:/nowhere/confetti.lottie"))).isEmpty());
-    CHECK(import.message().contains(QStringLiteral("dotLottie")));
+    // Refusals: a dotLottie archive that is not one (0.7: dotLottie imports), a JSON file that is not an animation.
+    {
+        QTemporaryDir archives;
+        REQUIRE(archives.isValid());
+        QFile fake(QDir(archives.path()).filePath(QStringLiteral("confetti.lottie")));
+        REQUIRE(fake.open(QIODevice::WriteOnly));
+        fake.write(QByteArray("PK\x03\x04", 4) + QByteArray(64, '\0'));
+        fake.close();
+        const std::size_t importedBefore = imported.size();
+        import.importLottie(QUrl::fromLocalFile(fake.fileName()));
+        CHECK(imported.size() == importedBefore);
+        CHECK(import.message().contains(QStringLiteral("dotLottie")));
+    }
     QTemporaryDir dir;
     REQUIRE(dir.isValid());
     QFile bad(QDir(dir.path()).filePath(QStringLiteral("settings.json")));

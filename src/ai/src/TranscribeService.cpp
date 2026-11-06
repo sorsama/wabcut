@@ -431,6 +431,9 @@ struct TranscribeService::Impl {
             request.audioMilliseconds = c.length() * 1000 / kRate;
             request.source = TranscriptSource{id.fingerprint, id.stream, source.mediaPath};
             request.origin = transcriptionSamplesToTicks(c.begin).value_or(Ticks{});
+            // 0.7 (card 061): custom words as key terms, for the providers that take them.
+            request.keyterms.assign(options.vocabulary.begin(),
+                                    options.vocabulary.begin() + static_cast<std::ptrdiff_t>(std::min(options.vocabulary.size(), kMaxKeyTerms)));
             const double before = static_cast<double>(done);
             auto result = transcriber.transcribe(
                 request,
@@ -474,10 +477,17 @@ struct TranscribeService::Impl {
         if (!id) {
             return std::unexpected(id.error());
         }
-        // A transcript made earlier (by any provider) needs no provider at all.
-        if (options.useCache) {
+        // A transcript made earlier (by any provider) needs no provider at all - unless it is a translation that is asked
+        // for: the newest transcript of the audio is in its own language, and the local engine caches translations apart.
+        if (options.useCache && !options.translate) {
             std::string madeBy;
-            if (auto hit = fromCache(*id, source, &madeBy)) {
+            // 0.7 (card 111): asking for mixed languages is not answered by a transcript made as one language.
+            const bool wantsMixed = options.mixedLanguages && options.language == "auto";
+            auto hit = fromCache(*id, source, &madeBy);
+            if (hit && wantsMixed && !hit->provenance.params.contains("mixed")) {
+                hit = nullptr;
+            }
+            if (hit) {
                 report(1.0f);
                 TranscribeOutcome cachedOutcome;
                 cachedOutcome.transcript = *hit;
@@ -491,6 +501,14 @@ struct TranscribeService::Impl {
         if (!provider) {
             return std::unexpected(provider.error());
         }
+        if (options.translate && *provider != kLocal) {
+            return fail(ErrorCode::Unsupported,
+                        "translating to English runs on this computer (whisper's translate task): choose the local transcriber");
+        }
+        if (options.mixedLanguages && options.language == "auto" && !options.translate && *provider != kLocal) {
+            return fail(ErrorCode::Unsupported,
+                        "mixed languages are told apart on this computer (a recogniser listens to every stretch of speech): choose the local transcriber");
+        }
         TranscribeOutcome outcome;
         outcome.provider = *provider;
         if (*provider == kLocal) {
@@ -499,6 +517,11 @@ struct TranscribeService::Impl {
             request.streamIndex = id->stream;
             request.options = options.local;
             request.options.language = options.language;
+            request.options.translate = options.translate;
+            request.options.mixedLanguages = options.mixedLanguages;
+            if (request.options.initialPrompt.empty()) {
+                request.options.initialPrompt = vocabularyPrompt(options.vocabulary); // 0.7 (card 061)
+            }
             request.options.useCache = true;               // the result is always stored ...
             request.options.refresh = !options.useCache;   // ... and only read back when allowed
             request.silence = source.redacted;             // redacted speech is never recognised
@@ -624,6 +647,18 @@ std::shared_ptr<const Transcript> TranscribeService::cached(const TranscribeSour
         return redacted;
     }
     return hit;
+}
+
+std::expected<std::size_t, Error> TranscribeService::forget(const TranscribeSource& source) {
+    auto id = identify(source);
+    if (!id) {
+        return std::unexpected(id.error());
+    }
+    if (m_impl->config.cacheRoot.empty()) {
+        return std::size_t{0};
+    }
+    AnalysisCache cache(m_impl->config.cacheRoot);
+    return cache.removeAnalyzer(id->fingerprint, id->stream, "transcript");
 }
 
 media::Job<TranscribeOutcome> TranscribeService::transcribe(TranscribeSource source, TranscribeJobOptions options) {

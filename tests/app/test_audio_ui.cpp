@@ -597,6 +597,73 @@ TEST_CASE("Value graph: Bezier keys show handles; dragging one shapes the tangen
     CHECK_FALSE(fx.pressHandle(opacity, inX, inY, 0.01, 0.02));
 }
 
+// 0.7 (card #79): Shift while dragging a Bezier handle pins it level with its key (slope 0: a flat ease). Only the
+// handle's length follows the pointer; the other handle of the pair follows the flat slope; letting go of Shift
+// mid-drag frees the height again.
+TEST_CASE("Value graph: Shift pins a dragged Bezier handle level with its key (card 79)", "[app][audio][keyframes]") {
+    ProjectController controller;
+    EffectControlsModel& fx = *controller.effectControls();
+    const ClipId city = controller.primaryClip();
+    const Clip clip = controller.currentSequence()->findClip(city)->clip();
+    const Ticks frame = controller.frameTicks();
+    const QString opacity = QStringLiteral("p:opacity");
+    const auto curve = [&] { return *controller.currentSequence()->findClip(city)->clip().properties()[ParamId::Opacity].curve(); };
+    controller.setPlayhead(clip.start() + frame * 24);
+    fx.setAnimated(opacity, true);
+    controller.setPlayhead(clip.start() + frame * 96);
+    fx.setValue(opacity, 40.0);
+    fx.endEdit();
+    controller.setPlayhead(clip.start() + frame * 168);
+    fx.setValue(opacity, 90.0);
+    fx.endEdit();
+    REQUIRE(curve().keys.size() == 3);
+    const auto keyX = [&](int i) { return fx.row(opacity).value("keys").toList()[i].toMap().value("x").toDouble(); };
+    REQUIRE(fx.pressKey(opacity, keyX(1), 0.01, 0));
+    fx.setKeyInterpolation(QStringLiteral("bezier"));
+    const Keyframe smooth = curve().keys[1];
+    REQUIRE(smooth.out.slope != 0.0);
+    fx.setGraphOpen(opacity, true);
+    QVariantMap key = fx.row(opacity).value("graph").toMap().value("keys").toList()[1].toMap();
+    const double outX = key.value("outX").toDouble();
+    const double outY = key.value("outY").toDouble();
+
+    // Dragging the out handle far above the key with Shift: the slope is 0 whatever the height; the length follows x.
+    REQUIRE(fx.pressHandle(opacity, outX, outY, 0.01, 0.02));
+    for (int step = 1; step <= 4; ++step)
+        fx.dragHandle(outX + 0.01 * step, outY - 0.1 * step, false, true);
+    fx.endHandleDrag();
+    const Keyframe flat = curve().keys[1];
+    CHECK(flat.out.slope == 0.0);
+    CHECK(flat.in.slope == 0.0); // the pair follows (linked)
+    CHECK(flat.out.influence > smooth.out.influence);
+    CHECK(flat.value == smooth.value);
+    CHECK(controller.undoText() == QStringLiteral("Undo Keyframe Handles"));
+    REQUIRE(controller.undo());
+    CHECK(curve().keys[1].out.slope == smooth.out.slope);
+    REQUIRE(controller.redo());
+
+    // The same drag without Shift tilts it; Shift let go of in the middle of a drag frees the height at once.
+    key = fx.row(opacity).value("graph").toMap().value("keys").toList()[1].toMap();
+    const double nextX = key.value("outX").toDouble();
+    const double nextY = key.value("outY").toDouble();
+    REQUIRE(fx.pressHandle(opacity, nextX, nextY, 0.01, 0.02));
+    fx.dragHandle(nextX, nextY - 0.2, false, true);
+    CHECK(curve().keys[1].out.slope == 0.0);
+    fx.dragHandle(nextX, nextY - 0.2, false, false);
+    fx.endHandleDrag();
+    CHECK(curve().keys[1].out.slope > 0.0);
+    CHECK(curve().keys[1].in.slope == curve().keys[1].out.slope);
+
+    // Alt (broken) with Shift: the dragged side goes flat alone, the other side keeps its slope.
+    const double keptSlope = curve().keys[1].out.slope;
+    key = fx.row(opacity).value("graph").toMap().value("keys").toList()[1].toMap();
+    REQUIRE(fx.pressHandle(opacity, key.value("inX").toDouble(), key.value("inY").toDouble(), 0.01, 0.02));
+    fx.dragHandle(key.value("inX").toDouble(), key.value("inY").toDouble() + 0.2, true, true);
+    fx.endHandleDrag();
+    CHECK(curve().keys[1].in.slope == 0.0);
+    CHECK(curve().keys[1].out.slope == keptSlope);
+}
+
 // ---- In the shell -----------------------------------------------------------------------------------------------
 
 TEST_CASE("Timeline volume rubber band: click adds a key, drag moves it (one undo step), Alt-click makes it Bezier",
@@ -728,7 +795,7 @@ TEST_CASE("Audio workspace: mixer strips with meters, tools with a report and an
     CHECK(tools->isVisible());
     CHECK(mixerPanel->width() >= 460);
     CHECK(mixer->isMeterViewer(mixerPanel)); // 0.5: the mixer counts as a meter viewer while it shows
-    CHECK(mixer->meterViewers() == 1);       // (the Audio preset has no Audio Meters panel)
+    CHECK(mixer->meterViewers() == 2);       // the mixer and the Loudness panel (0.7: the Audio preset has no Audio Meters panel)
     auto* view = qobject_cast<TimelineView*>(shell.object("timelineView"));
     REQUIRE(view != nullptr);
     CHECK(view->showVolume());

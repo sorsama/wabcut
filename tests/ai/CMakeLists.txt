@@ -12,11 +12,13 @@ set(wabcut_ai_test_sources
     test_generation.cpp
     test_llm_lifecycle.cpp
     test_tiers.cpp # AI-15: local assistant tiers, admission and launch
+    test_model_library.cpp # r07: the local model library (Hugging Face parsing, benchmarks, index, download queue)
     AiTestUtil.h
     test_cache_store.cpp
     test_chunks.cpp
     test_process.cpp
     test_protocol.cpp
+    test_spoken_languages.cpp # card 073: the languages a recording can be spoken in
     test_transcript.cpp
     test_words.cpp)
 set(wabcut_ai_test_libs wabcut_ai wabcut_ai_llm)
@@ -100,7 +102,7 @@ list(APPEND wabcut_ai_test_libs wabcut_ai_agent)
 # AI-8 smart search (wabcut_ai_search): fixture embeddings and media, a scripted wabcut-embed (fake_embed), never a
 # model download; the real-model smoke test runs only when WABCUT_TEST_SIGLIP_DIR names the downloaded model.
 add_executable(wabcut_fake_embed search/fake_embed.cpp)
-target_link_libraries(wabcut_fake_embed PRIVATE wabcut_ai_search)
+target_link_libraries(wabcut_fake_embed PRIVATE wabcut_ai_search wabcut_ai_video)
 wabcut_target_defaults(wabcut_fake_embed)
 list(APPEND wabcut_ai_test_sources
     search/SearchTestUtil.h
@@ -169,6 +171,8 @@ wabcut_add_test_suite(ai_stabilize
         ../model/TimelineFixture.h
         stabilize/test_stabilize.cpp
         stabilize/test_stabilize_commands.cpp
+        stabilize/test_gyro.cpp # 0.7 (card #130): camera gyro metadata
+        stabilize/test_gyro_commands.cpp
     LIBS wabcut_ai_stabilize wabcut_ai_edit
     PROPERTIES LABELS ai_stabilize)
 target_include_directories(wabcut_ai_stabilize_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests/model ${CMAKE_SOURCE_DIR}/tests/command)
@@ -178,6 +182,7 @@ if(WIN32)
     target_link_libraries(wabcut_ai_tests PRIVATE ws2_32) # review wave 4 P2-2: an impostor loopback listener
 endif()
 target_compile_definitions(wabcut_ai_tests PRIVATE WABCUT_FAKE_LLAMA="$<TARGET_FILE:wabcut_fake_llama>")
+target_compile_definitions(wabcut_ai_tests PRIVATE WABCUT_HF_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/hf") # r07
 if(wabcut_ai_test_vision_media)
     target_compile_definitions(wabcut_ai_tests PRIVATE WABCUT_TEST_VISION_MEDIA=1
                                                        WABCUT_TEST_OUTPUT_DIR="${CMAKE_BINARY_DIR}/test-output")
@@ -246,6 +251,7 @@ wabcut_add_test_suite(ai_global
         AgentTestUtil.h
         EditTestUtil.h
         global/GlobalTestUtil.h
+        global/test_audio_description.cpp
         global/test_dub.cpp
         global/test_global_agent.cpp
         global/test_marian_tokenizer.cpp
@@ -345,6 +351,51 @@ if(TARGET wabcut_ai_segment_media)
     endif()
 endif()
 
+# 0.7 AI video effects (wabcut_ai_video): tiled processing with a model of finite reach (no seams), the model catalogue (pinned,
+# allowed licences), the per-clip cache of processed pictures, the runner with a fake backend and frame source (skip, cancel,
+# resume, chain order, alpha, failures), the process_picture protocol and HelperBackend against the scripted wabcut-embed
+# (crash, CPU fallback, cancel); and the opt-in test of the real models (WABCUT_TEST_VIDEO_MODELS_DIR). Its own suite: no
+# model, no media, no cloud.
+wabcut_add_test_suite(ai_video
+    SOURCES
+        ../model/TimelineFixture.cpp
+        ../model/TimelineFixture.h
+        ../command/CommandHarness.h
+        video/VideoTestUtil.h
+        video/test_faces.cpp
+        video/test_gaze.cpp
+        video/test_helper_backend.cpp
+        video/test_processed_cache.cpp
+        video/test_runner.cpp
+        video/test_side_products.cpp
+        video/test_targets.cpp
+        video/test_tiling.cpp
+        video/test_video_commands.cpp
+        video/test_video_models.cpp
+    LIBS wabcut_ai_video)
+target_include_directories(wabcut_ai_video_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests/model ${CMAKE_SOURCE_DIR}/tests/command
+    ${CMAKE_SOURCE_DIR}/tests/ai)
+add_dependencies(wabcut_ai_video_tests wabcut_fake_embed)
+target_compile_definitions(wabcut_ai_video_tests PRIVATE WABCUT_FAKE_EMBED="$<TARGET_FILE:wabcut_fake_embed>")
+if(TARGET wabcut-embed)
+    add_dependencies(wabcut_ai_video_tests wabcut-embed)
+    target_compile_definitions(wabcut_ai_video_tests PRIVATE WABCUT_EMBED_HELPER="$<TARGET_FILE:wabcut-embed>")
+endif()
+
+# 0.7 AI video effects on media: decoded frames <-> pictures with the stream's matrix and range (8 and 10 bit, 4:2:0 / 4:2:2 /
+# 4:4:4, alpha, RGBA), the processed frame the compositor reads, the cache-backed source processor (hit, miss, Amount) and
+# the decoder-backed frame source on a real file. Full builds.
+if(TARGET wabcut_ai_video_media)
+    wabcut_add_test_suite(ai_video_media
+        SOURCES
+            video/VideoTestUtil.h
+            video/test_frame_convert.cpp
+            video/test_source_processor.cpp
+        LIBS wabcut_ai_video_media wabcut_media
+        PROPERTIES FIXTURES_REQUIRED wabcut_test_media)
+    target_compile_definitions(wabcut_ai_video_media_tests PRIVATE WABCUT_TEST_MEDIA_DIR="${CMAKE_BINARY_DIR}/test-output/media")
+endif()
+
 # AI-12 on media: FFmpeg decoding of the providers' speech, the WSOLA stretch, the dub's WAV; and the opt-in OPUS-MT
 # benchmark on the real wabcut-embed (WABCUT_TEST_TRANSLATION_MODELS=1). Full builds.
 if(TARGET wabcut_ai_dub_media)
@@ -372,6 +423,7 @@ if(TARGET wabcut_ai_net)
             FakeTransport.h
             NetTestSupport.h
             test_agent_providers.cpp
+            test_custom_providers.cpp # r07 (A1): custom providers and provider-scoped ids end to end
             test_net_chat.cpp
             test_net_live.cpp
             test_net_live_speech.cpp # AI-12: the voice providers (WABCUT_LIVE_*_KEY)
@@ -395,7 +447,9 @@ if(TARGET wabcut_uiplugin)
             AgentTestUtil.h
             test_agent_ui.cpp
             test_ai_lock_ui.cpp
+            test_ai_routing.cpp # r07 (A1): routing, per-feature defaults, custom providers
             test_ai_ui.cpp
+            test_local_library_ui.cpp # r07: the local model library (LocalModels, Settings > AI > Local models)
             test_generation_ui.cpp
             search/SearchTestUtil.h
             test_search_ui.cpp # AI-8: smart search in the Library
@@ -420,13 +474,19 @@ if(TARGET wabcut_uiplugin)
     target_include_directories(wabcut_ai_ui_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests/app ${CMAKE_SOURCE_DIR}/src/app/src
         ${CMAKE_SOURCE_DIR}/tests/model ${CMAKE_SOURCE_DIR}/tests/ai)
     target_compile_definitions(wabcut_ai_ui_tests PRIVATE WABCUT_VERSION="${PROJECT_VERSION}")
+    target_compile_definitions(wabcut_ai_ui_tests PRIVATE WABCUT_HF_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/hf") # r07
 endif()
 
 wabcut_add_test_suite(ai_generation_net SOURCES FakeTransport.h test_net_generation.cpp test_net_local.cpp
     test_net_speech.cpp # AI-12: the text-to-speech adapters, voice cloning, translation by the chat model
+    NetTestSupport.h
+    test_net_media.cpp # r07: images (OpenAI-compatible, Stability, BFL, Ideogram), fal.ai, Replicate, xAI and /videos
+    test_net_stt.cpp # r07: OpenAI-compatible transcription, Speechmatics, Gladia
+    test_net_voices.cpp # r07: Deepgram Aura, Cartesia, Fish Audio, DeepL, Google Translation, header auth
     ../model/TimelineFixture.cpp LIBS wabcut_ai_adapters wabcut_ai_agent wabcut_ai_translate)
 target_compile_definitions(wabcut_ai_generation_net_tests PRIVATE WABCUT_AI_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
-target_include_directories(wabcut_ai_generation_net_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests/model)
+target_include_directories(wabcut_ai_generation_net_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests/model
+    ${CMAKE_SOURCE_DIR}/src/ai_net/src) # r07: test_net_media.cpp checks the adapters' shared helpers
 if(TARGET wabcut_ai_generation_media)
     wabcut_add_test_suite(ai_generation_media SOURCES FakeTransport.h test_generation_conform.cpp LIBS wabcut_ai_generation_media)
 endif()

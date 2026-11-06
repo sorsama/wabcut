@@ -1557,7 +1557,7 @@ private:
 bool isAmplitudeEffect(std::string_view id) noexcept {
     return id == kAmplify || id == kChannelMixer || id == kDynamics || id == kHardLimiter || id == kMultibandCompressor ||
            id == kSingleBandCompressor || id == kTubeModeledCompressor || id == kDistortion || id == kGuitarSuite ||
-           id == kMastering || id == kVocalEnhancer || id == kPitchShifter;
+           id == kMastering || id == kVocalEnhancer || id == kPitchShifter || isDynamicsProcessing(id);
 }
 
 std::unique_ptr<EffectProcessor> createAmplitudeProcessor(const EffectDescriptor& descriptor, int channels, int sampleRate,
@@ -1579,6 +1579,9 @@ std::unique_ptr<EffectProcessor> createAmplitudeProcessor(const EffectDescriptor
     }
     if (d.id == kHardLimiter) {
         return std::make_unique<HardLimiterProcessor>(d, channels, sampleRate, values);
+    }
+    if (isDynamicsProcessing(d.id)) {
+        return createDynamicsProcessingProcessor(d, channels, sampleRate, values);
     }
     if (d.id == kMultibandCompressor) {
         return std::make_unique<MultibandCompressorProcessor>(d, channels, sampleRate, values);

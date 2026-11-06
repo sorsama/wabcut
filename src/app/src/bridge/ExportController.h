@@ -45,6 +45,7 @@
 #include <wabcut/export/ExportCommandServices.h>
 #include <wabcut/export/ExportJob.h>
 #include <wabcut/export/ExportPresets.h>
+#include <wabcut/export/PreExportCheck.h>
 #include <wabcut/export/WatchFolders.h>
 #include <wabcut/ai/Chat.h>
 #include <atomic>
@@ -64,7 +65,9 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <stop_token>
 #include <thread>
+#include <utility>
 #include <vector>
 
 class QJSEngine;
@@ -109,8 +112,8 @@ public:
         DetailRole,    ///< done: "0:10 · 5.7× realtime"; failed: the plain-language error
         FinishedRole,  ///< done, failed or cancelled
         /// UX rework (L), "origin": what queued it - "export" (the Export workspace, queueExport), "quick" (Quick
-        /// Export), "queue" (Send to Media Encoder), "transcode" (Media Browser Ingest), "watch" (a watch folder) or
-        /// "command" (the export.* commands, queueRequest).
+        /// Export), "queue" (Send to Media Encoder), "transcode" (Media Browser Ingest), "renderReplace" (Clip > Render and
+        /// Replace), "watch" (a watch folder) or "command" (the export.* commands, queueRequest).
         OriginRole,
         /// 0.4, "errorKind": what stopped a failed job (ExportController::errorKindOf): "offline", "space", "access",
         /// "folder", "encoder" or "" (none, or another problem).
@@ -147,6 +150,9 @@ public:
         QVariantMap overrides;
         bool restored = false; ///< P1 (#20): RestoredRole (it retries from the request kept with it)
         QDateTime queuedAt;    ///< when the row was added (UTC; append() sets it): retry() reuses a file older than it
+        /// 0.7 (card 049): why frames of a smart-rendered export were encoded again, one line per reason (job()'s
+        /// "smartNotes"; the pill shows it in a tooltip).
+        QString smartNotes;
     };
 
     explicit ExportJobModel(QObject* parent = nullptr);
@@ -259,9 +265,36 @@ class ExportController : public QObject {
     /// P1 (#28): the last custom size limit in MB the user typed (export/lastTargetMB; 0 = none): the Size limit row's
     /// custom field starts from it. The limit itself is this export's choice (it starts Off).
     Q_PROPERTY(double lastTargetMB READ lastTargetMB WRITE setLastTargetMB NOTIFY exportMemoryChanged FINAL)
+    /// 0.7 (card #70), Settings > General > Export: where a new export's file goes unless the user picks a place:
+    /// "last" (the folder of the last export with a chosen destination, then next to the project: how it always worked),
+    /// "project" (next to the project), "media" (next to the first clip's source media) or "fixed" (defaultFolder)
+    /// (export/folderMode). Anything else reads "last".
+    Q_PROPERTY(QString defaultFolderMode READ defaultFolderMode WRITE setDefaultFolderMode NOTIFY exportMemoryChanged FINAL)
+    /// The folder of the "fixed" mode (export/defaultFolder; native separators), "" = none chosen yet. Writable (a path or
+    /// URL). A folder that is gone (an unplugged drive) is not used: the export goes next to the project.
+    Q_PROPERTY(QString defaultFolder READ defaultFolder WRITE setDefaultFolder NOTIFY exportMemoryChanged FINAL)
+    /// defaultFolder as a URL for FileDialog.currentFolder (empty when there is none).
+    Q_PROPERTY(QUrl defaultFolderUrl READ defaultFolderUrl NOTIFY exportMemoryChanged FINAL)
+    /// 0.7 (card #2): the "Normalize to -14 LUFS" chip of the YouTube, Shorts and Twitch tiles was left on
+    /// (export/streamingLoudness); off by default. The tiles start with it on while this is true.
+    Q_PROPERTY(bool streamingLoudness READ streamingLoudness WRITE setStreamingLoudness NOTIFY exportMemoryChanged FINAL)
     /// P1 (#20): the queue is kept across restarts (restoreQueue() ran and this Wabcut owns the queue folder): what waits
     /// in it comes back next time (the quit question says so and offers Keep Queue and Quit).
     Q_PROPERTY(bool keepsQueue READ keepsQueue NOTIFY keepsQueueChanged FINAL)
+
+    // ---- 0.7 (card 004): export history; (card 176): the pre-export check ----
+    /// The last 100 exports that finished, newest first (QSettings export/history, JSON): [{ index, when (ISO 8601 UTC),
+    /// whenText (local), title, outputPath (native), folder (native), presetName, sequenceName, projectName, detail,
+    /// exists (the file is still there), canRepeat (exportAgain can queue it again) }]. historyChanged after an export
+    /// finishes, removeHistory, clearHistory and refreshHistory (which looks at the disk again for `exists`).
+    Q_PROPERTY(QVariantList history READ history NOTIFY historyChanged FINAL)
+    /// Whether Export first runs the pre-export check and shows its list when it finds problems or warnings (default on;
+    /// QSettings export/checkBefore).
+    Q_PROPERTY(bool checkBeforeExport READ checkBeforeExport WRITE setCheckBeforeExport NOTIFY checkBeforeExportChanged FINAL)
+    /// The loudness measurement of the pre-export check runs (measureLoudness) / what it measured last
+    /// ({ integratedLufs, truePeakDbtp, ok, error } of the sequence, preset and overrides measured; empty before one).
+    Q_PROPERTY(bool measuringLoudness READ measuringLoudness NOTIFY measuringLoudnessChanged FINAL)
+    Q_PROPERTY(QVariantMap measuredLoudness READ measuredLoudness NOTIFY measuringLoudnessChanged FINAL)
 
 public:
     explicit ExportController(QObject* parent = nullptr);
@@ -373,6 +406,48 @@ public:
     /// project as it is now (relinked media is found), into the same file - or a numbered one when that file exists.
     /// Returns the new job id, or "" with lastError (an unknown, running or built job: not retryable).
     Q_INVOKABLE QString retry(const QString& jobId);
+
+    // ---- 0.7 (card 004): export history (ExportHistory.cpp) ----
+    QVariantList history() const;
+    /// Looks at the disk again for each entry's `exists` (the History tab calls it when it is shown).
+    Q_INVOKABLE void refreshHistory();
+    /// Queues history entry `index` again with the preset and overrides it had, on the project as it is now, into the same
+    /// file - or a numbered one ("name (2).ext") when the file is there. Returns the new job id, or "" with lastError (a
+    /// built request has no preset to repeat; the entry is from another project; its sequence is gone).
+    Q_INVOKABLE QString exportAgain(int index);
+    /// Shows the file in the file manager (its folder when the file is gone); false when neither is there.
+    Q_INVOKABLE bool revealHistory(int index);
+    /// Opens the file with the system's player; false when it is gone.
+    Q_INVOKABLE bool openHistory(int index);
+    Q_INVOKABLE void removeHistory(int index);
+    Q_INVOKABLE void clearHistory();
+
+    // ---- 0.7 (card 176): the pre-export check (ExportHistory.cpp) ----
+    /// What is likely to go wrong when `sequenceId` ("" = the current sequence) is exported with `presetId` and
+    /// `overrides` (as describe() takes them), most serious first: [{ kind, severity ("problem" | "warning" | "note"),
+    /// text, detail, hasPlace, timecode, seconds, fix ("none" | "relink" | "closeGap" | "turnOnLoudness" |
+    /// "matchSequenceSize" | "turnOnCaptions"), fixText, clip, track, more }]. Nothing is rendered; the loudness rows
+    /// appear once measureLoudness() has measured this export's range.
+    /// `platform` ({ name, lufs }) is the destination the Export panel's tile stands for (YouTube, Twitch, ...): the
+    /// loudness it plays at, for the loudness row; empty when the export has none.
+    Q_INVOKABLE QVariantList preExportCheck(const QString& sequenceId, const QString& presetId, const QVariantMap& overrides,
+                                            const QVariantMap& platform = {});
+    /// Puts the playhead on a row's place ("seconds"); false for a row without one.
+    Q_INVOKABLE bool goToCheckRow(const QVariantMap& row);
+    /// Measures the mix of this export's range (integrated loudness and true peak) off the GUI thread; the result is
+    /// measuredLoudness, and the rows come back from preExportCheck. cancelLoudnessMeasure() stops it.
+    Q_INVOKABLE void measureLoudness(const QString& sequenceId, const QString& presetId, const QVariantMap& overrides);
+    Q_INVOKABLE void cancelLoudnessMeasure();
+    bool checkBeforeExport() const;
+    void setCheckBeforeExport(bool on);
+    bool measuringLoudness() const { return m_measuring; }
+    QVariantMap measuredLoudness() const { return m_measuredLoudness; }
+    /// Tests: how the mix is measured instead of rendering it (`LoudnessReading`-like { integratedLufs, truePeakDbtp }),
+    /// run on the measuring thread.
+    void setLoudnessMeasurer(std::function<std::pair<double, double>(const std::stop_token&)> measurer) {
+        m_loudnessMeasurer = std::move(measurer);
+    }
+
     QString lastPreset() const;
     void setLastPreset(const QString& id);
     QString lastGamingPreset() const;
@@ -386,6 +461,16 @@ public:
     void setLastRange(const QString& range);
     double lastTargetMB() const;
     void setLastTargetMB(double megabytes);
+    QString defaultFolderMode() const;
+    void setDefaultFolderMode(const QString& mode);
+    QString defaultFolder() const;
+    void setDefaultFolder(const QString& folder);
+    QUrl defaultFolderUrl() const;
+    bool streamingLoudness() const;
+    void setStreamingLoudness(bool on);
+    /// The folder a new export of `sequenceId` ("" = the current sequence) goes to by default, by defaultFolderMode: the
+    /// mode's folder when it has one, else next to the project, else the Movies folder (or home).
+    Q_INVOKABLE QString defaultFolderFor(const QString& sequenceId = {}) const;
     /// Replaces "open the output" (tests must not launch apps). Receives the native output path.
     void setOpenHandler(std::function<bool(const QString&)> handler) { m_open = std::move(handler); }
 
@@ -485,6 +570,14 @@ public:
     };
     std::expected<Transcode, Error> queueTranscode(const MediaItem& item, const QString& presetId,
                                                    const std::filesystem::path& folder);
+    /// 0.7 (card 069) Render and Replace: queues `range` of the sequence `sequence` (that sequence's time; the live project's
+    /// copy now) with `presetId` + `overrides` (video, audio, alpha, ...) into "<folder>/<baseName><extension>" (numbered when
+    /// taken; the folder is made when it is not there). The job is not kept across a restart: the clips take its file
+    /// over when it is done, which a restart cannot do. Errors: InvalidArgument (preset, settings), NotFound (the
+    /// sequence), IoError (the folder).
+    std::expected<Transcode, Error> queueSequenceRange(SequenceId sequence, TimeRange range, const QString& presetId,
+                                                       const QVariantMap& overrides, const std::filesystem::path& folder,
+                                                       const QString& baseName);
 
 signals:
     void projectChanged();
@@ -508,6 +601,9 @@ signals:
     void relinkRequested();
     /// P1 (#20): keepsQueue changed.
     void keepsQueueChanged();
+    void historyChanged();                ///< 0.7 (card 004)
+    void checkBeforeExportChanged();      ///< 0.7 (card 176)
+    void measuringLoudnessChanged();      ///< 0.7 (card 176): a measurement started, ended or was cancelled
     /// P1 (#22): the Library asks to export sequences (QML emits it; Main acts): `queue` false with one sequence opens it
     /// in the Export workspace; otherwise the Export Sequences dialog opens on them.
     void sequencesExportRequested(const QStringList& sequenceIds, bool queue);
@@ -585,11 +681,39 @@ private:
     QString retryOutputPath(const QString& path, const QDateTime& since, const QDateTime& replaced = {}) const;
     /// persistQueue() once the current event is done (the job model's changes; progress alone writes nothing).
     void schedulePersist();
+    /// 0.7 (card #171): the job model's dataChanged. A running export reports its progress about ten times a second;
+    /// only a change of what the queue file holds (a row's kept state or request) schedules a write.
+    void onJobsChanged();
+    /// What the queue file holds of each row, to tell a change that matters from progress.
+    struct PersistRow {
+        QString jobId;
+        QString state;
+        QString sequenceId;
+        QString presetId;
+        QVariantMap overrides;
+        bool operator==(const PersistRow&) const = default;
+    };
+    std::vector<PersistRow> persistRowsNow() const;
     /// Marks the kept jobs (`unfinishedOnly`: of the unfinished rows) as given up, then writes the queue folder.
     void dropKept(bool unfinishedOnly);
     /// The persisted state of a row ("held", "queued", "running", "paused", "interrupted"; "" = not kept).
     static QString keptStateOf(const ExportJobModel::Row& row);
     std::map<QString, std::shared_ptr<KeptJob>> m_kept;
+
+    // ---- 0.7 (cards 004, 176): ExportHistory.cpp ----
+    /// Appends the finished export `row` to the history (newest first, 100 at most).
+    void recordHistory(const ExportJobModel::Row& row);
+    /// history() as last built; rebuildHistory() reads the settings and the disk (no signal).
+    void rebuildHistory();
+    QVariantList m_history;
+    bool m_historyLoaded = false;
+    bool m_measuring = false;
+    QVariantMap m_measuredLoudness;
+    std::jthread m_measureThread;
+    std::function<std::pair<double, double>(const std::stop_token&)> m_loudnessMeasurer;
+    std::vector<exporter::CheckIssue> m_lastCheck; ///< the rows preExportCheck() last returned
+    const void* m_measuredSnapshot = nullptr;      ///< the project snapshot m_measuredLoudness was measured on
+    QString m_measuredKey;                         ///< "<sequence>|<preset>" it was measured for
     std::filesystem::path m_queueFolder;         ///< "" until restoreQueue() took the folder
     std::filesystem::path m_queueFolderOverride; ///< tests
     std::shared_ptr<void> m_queueLock;           ///< a QLockFile on the folder while this Wabcut keeps it
@@ -597,6 +721,12 @@ private:
     bool m_restoreRan = false;
     bool m_persistPending = false;               ///< schedulePersist() waits for the event loop
     QString m_persistedText;                     ///< the queue.json last written (unchanged: not written again)
+    std::vector<PersistRow> m_persistRows;       ///< the rows as persistQueue() last saw them
+    int m_persistRuns = 0;                       ///< persistQueue() calls (tests: progress must not add any)
+
+public:
+    /// Tests: how many times the queue folder was brought up to date.
+    int persistRuns() const { return m_persistRuns; }
 };
 
 } // namespace wabcut::app

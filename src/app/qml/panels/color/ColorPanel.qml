@@ -533,6 +533,9 @@ Panel {
                     }
                 }
 
+                // 0.7: match the clip to a ColorChecker in the picture.
+                ChartMatchSection {}
+
                 Text {
                     objectName: "colorStatus"
                     Layout.fillWidth: true
@@ -557,6 +560,7 @@ Panel {
     LutMenu {
         id: lutMenu
         onBrowse: lutDialog.open()
+        onBrowseFolder: lutFolderDialog.open()
     }
     MediaColorSpaceMenu {
         id: mediaSpaceMenu
@@ -571,6 +575,17 @@ Panel {
         nameFilters: [qsTr("Cube LUTs (*.cube)")]
         onAccepted: {
             const error = Color.importLut(selectedFile, lutMenu.slot)
+            if (error !== "")
+                console.warn(error)
+        }
+    }
+    // 0.7 (card #85): a folder of LUTs, grouped in the LUT menu by their folders.
+    FolderDialog {
+        id: lutFolderDialog
+        objectName: "lutFolderDialog"
+        title: qsTr("Import a folder of LUTs")
+        onAccepted: {
+            const error = Color.importLutFolder(selectedFolder)
             if (error !== "")
                 console.warn(error)
         }

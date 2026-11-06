@@ -58,6 +58,7 @@ Rectangle {
             Text {
                 Layout.fillWidth: true
                 text: (card.note.author ?? "") + ((card.note.createdText ?? "") !== "" ? "  ·  " + card.note.createdText : "")
+                textFormat: Text.PlainText // 0.7: text a reviewer wrote is never read as rich text
                 elide: Text.ElideRight
                 color: Theme.textSecondary
                 font.family: Theme.fontSans
@@ -88,6 +89,7 @@ Rectangle {
             Layout.fillWidth: true
             visible: Review.allSequences
             text: card.note.sequenceName ?? ""
+            textFormat: Text.PlainText // 0.7: text a reviewer wrote is never read as rich text
             elide: Text.ElideRight
             color: Theme.textTertiary
             font.family: Theme.fontSans
@@ -98,6 +100,7 @@ Rectangle {
             objectName: "reviewNoteText"
             Layout.fillWidth: true
             text: card.note.text ?? ""
+            textFormat: Text.PlainText // 0.7: text a reviewer wrote is never read as rich text
             wrapMode: Text.Wrap
             color: card.note.resolved ? Theme.textSecondary : Theme.textPrimary
             font.family: Theme.fontSans
@@ -124,6 +127,7 @@ Rectangle {
                         Layout.fillWidth: true
                         text: (replyRow.modelData.author ?? "") + ((replyRow.modelData.createdText ?? "") !== ""
                                                                     ? "  ·  " + replyRow.modelData.createdText : "")
+                        textFormat: Text.PlainText // 0.7: text a reviewer wrote is never read as rich text
                         elide: Text.ElideRight
                         color: Theme.textTertiary
                         font.family: Theme.fontSans
@@ -133,6 +137,7 @@ Rectangle {
                     Text {
                         Layout.fillWidth: true
                         text: replyRow.modelData.text ?? ""
+                        textFormat: Text.PlainText // 0.7: text a reviewer wrote is never read as rich text
                         wrapMode: Text.Wrap
                         color: Theme.textSecondary
                         font.family: Theme.fontSans

@@ -45,12 +45,15 @@ class ProjectController;
 
 class AudioChannelsBridge : public QObject {
     Q_OBJECT
-    /// Audio track key -> "mono" | "stereo" | "5.1" | "adaptive".
+    /// Audio track key -> "mono" | "stereo" | "5.1" | "7.1" | "adaptive".
     Q_PROPERTY(QVariantMap trackFormats READ trackFormats NOTIFY tracksChanged FINAL)
     /// Audio track key -> { x, y, lfeDb } (the 5.1 panner; every audio track has one).
     Q_PROPERTY(QVariantMap surround READ surround NOTIFY tracksChanged FINAL)
-    /// "stereo" | "5.1" ("" without a sequence).
+    /// "stereo" | "5.1" | "7.1" ("" without a sequence).
     Q_PROPERTY(QString masterFormat READ masterFormat NOTIFY tracksChanged FINAL)
+    /// 0.7 (card 048): what the last change of the master's format did to the sound ("5.1 became 7.1: the surround channels
+    /// play from the side pair; the rear pair is silent"), or "" (no change since, or nothing to say).
+    Q_PROPERTY(QString masterNote READ masterNote NOTIFY masterNoteChanged FINAL)
     /// The Effect Controls' Channel Volume: { available, clip ("c12"), name, format, channels: [{ channel (1-based),
     /// label ("L"), db, animated, keyed (a key at the playhead), muted }] }.
     Q_PROPERTY(QVariantMap volume READ volume NOTIFY volumeChanged FINAL)
@@ -75,6 +78,7 @@ public:
     QVariantMap volume() const { return m_volume; }
     QVariantMap levels() const { return m_levels; }
     bool busy() const { return m_busy; }
+    QString masterNote() const { return m_masterNote; }
     QString message() const { return m_message; }
 
     /// What `clips` play (the first one's map; the dialog edits them together): { ok, error, clips (count),
@@ -110,9 +114,9 @@ public:
     /// The stopwatch: on keys the channel at the playhead; off makes it the constant it has there.
     Q_INVOKABLE QString setChannelAnimated(int channel, bool animated);
 
-    /// track.setFormat: "mono" | "stereo" | "5.1" | "adaptive".
+    /// track.setFormat: "mono" | "stereo" | "5.1" | "7.1" | "adaptive".
     Q_INVOKABLE QString setTrackFormat(const QString& trackKey, const QString& format);
-    /// sequence.setMasterFormat: "stereo" | "5.1".
+    /// sequence.setMasterFormat: "stereo" | "5.1" | "7.1". Sets masterNote.
     Q_INVOKABLE QString setMasterFormat(const QString& format);
     /// The track's 5.1 panner (x, y in -1..1, the LFE send -144..0 dB). A drag merges until endSurroundPan().
     Q_INVOKABLE QString setSurroundPan(const QString& trackKey, double x, double y, double lfeDb);
@@ -136,6 +140,7 @@ signals:
     void levelsChanged();
     void busyChanged();
     void messageChanged();
+    void masterNoteChanged();
     void dialogRequested(const QString& mode, const QStringList& keys);
 
 private:
@@ -161,6 +166,7 @@ private:
     QVariantMap m_levels;
     bool m_busy = false;
     QString m_message;
+    QString m_masterNote;
 };
 
 struct AudioChannelsBridgeForeign {

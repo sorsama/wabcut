@@ -267,11 +267,12 @@ public:
         }
         SpeechResult result;
         result.audio = bytesOf(response->body);
-        const auto duration = wavMilliseconds(result.audio);
-        if (!duration) {
-            return std::unexpected(AiError(AiErrorCode::ProviderError, "OpenAI sent something that is not a WAV file"));
+        // r07: any OpenAI-compatible server (Together, custom providers); some answer in MP3 whatever was asked for.
+        const auto duration = audioMilliseconds(result.audio);
+        result.mediaType = sniffAudioType(result.audio);
+        if (!duration || (result.mediaType != "audio/wav" && result.mediaType != "audio/mpeg")) {
+            return std::unexpected(AiError(AiErrorCode::ProviderError, m_provider.name + " sent something that is not a WAV or MP3 file"));
         }
-        result.mediaType = "audio/wav";
         result.usage.characters = static_cast<std::int64_t>(codePoints(request.text));
         result.usage.inputTokens = result.usage.characters / 3 + 1;
         result.usage.audioMilliseconds = *duration;

@@ -36,5 +36,8 @@ std::string cameraLogFromTag(std::string_view key, std::string_view value);
 /// The log in a file's own metadata (the MP4 / QuickTime boxes other than the media data, read up to
 /// kMaxMetadataBytes) or in its Sony sidecar ("<stem>M01.XML" beside it). Empty when neither names one.
 std::string cameraLogFromFile(const std::filesystem::path& file);
+/// 0.7 (stabilizing with the camera's gyro): the camera model Sony's NonRealTimeMeta XML names in the file or its sidecar
+/// ("ILCE-7M4"), read the same bounded way; empty when there is none.
+std::string cameraModelFromFile(const std::filesystem::path& file);
 
 } // namespace wabcut::media

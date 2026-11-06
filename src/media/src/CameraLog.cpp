@@ -51,6 +51,34 @@ std::optional<std::string_view> itemValue(std::string_view xml, std::string_view
     return tag.substr(from, to - from);
 }
 
+/// What a metadata box's text is searched for: the camera log, or (0.7) the camera's model.
+using Extract = std::string (*)(std::string_view);
+
+/// The camera model Sony's NonRealTimeMeta XML names: <Device manufacturer="Sony" modelName="ILCE-7M4" .../>.
+std::string modelFromSonyXml(std::string_view xml) {
+    const std::size_t device = xml.find("manufacturer=\"Sony\"");
+    if (device == std::string_view::npos) {
+        return {};
+    }
+    const std::size_t at = xml.find("modelName=\"", device);
+    if (at == std::string_view::npos) {
+        return {};
+    }
+    const std::size_t from = at + 11;
+    const std::size_t to = xml.find('"', from);
+    if (to == std::string_view::npos || to - from > 64) {
+        return {};
+    }
+    // Printable ASCII only: the model is stored in a project (JSON, valid UTF-8), and a camera name is plain ASCII.
+    std::string model;
+    for (const char c : xml.substr(from, to - from)) {
+        if (static_cast<unsigned char>(c) >= 0x20 && static_cast<unsigned char>(c) < 0x7F) {
+            model.push_back(c);
+        }
+    }
+    return model;
+}
+
 /// Reads at most `limit` bytes of `file` at `offset`.
 std::string readAt(std::ifstream& in, std::uint64_t offset, std::size_t limit) {
     std::string out(limit, '\0');
@@ -72,7 +100,7 @@ std::uint64_t be(const unsigned char* p, int bytes) {
 /// Walks the ISO-BMFF (MP4 / QuickTime) boxes in [begin, end): reads the metadata boxes ("meta", "uuid", "XMP_", "xml ")
 /// and descends into "moov" and "udta"; never reads media data or track tables. Sony keeps its NonRealTimeMeta XML in
 /// such a box. `budget`: the bytes still allowed.
-std::string walkBoxes(std::ifstream& in, std::uint64_t begin, std::uint64_t end, int depth, std::size_t& budget) {
+std::string walkBoxes(std::ifstream& in, std::uint64_t begin, std::uint64_t end, int depth, std::size_t& budget, Extract extract) {
     std::uint64_t offset = begin;
     for (int boxes = 0; boxes < 256 && offset + 8 <= end && budget > 0; ++boxes) {
         const std::string header = readAt(in, offset, 16);
@@ -97,14 +125,14 @@ std::string walkBoxes(std::ifstream& in, std::uint64_t begin, std::uint64_t end,
             break; // not an MP4 / QuickTime file
         }
         if ((type == "moov" || type == "udta") && depth < 2) {
-            if (std::string log = walkBoxes(in, offset + headerSize, offset + length, depth + 1, budget); !log.empty()) {
+            if (std::string log = walkBoxes(in, offset + headerSize, offset + length, depth + 1, budget, extract); !log.empty()) {
                 return log;
             }
         } else if (type == "meta" || type == "uuid" || type == "XMP_" || type == "xml ") {
             const std::size_t take = static_cast<std::size_t>(std::min<std::uint64_t>(length - headerSize, budget));
             const std::string body = readAt(in, offset + headerSize, take);
             budget -= std::min(budget, body.size());
-            if (std::string log = cameraLogFromXml(body); !log.empty()) {
+            if (std::string log = extract(body); !log.empty()) {
                 return log;
             }
         }
@@ -114,7 +142,7 @@ std::string walkBoxes(std::ifstream& in, std::uint64_t begin, std::uint64_t end,
 }
 
 /// The camera log in an MP4 / QuickTime file's metadata boxes, reading at most kMaxMetadataBytes of them.
-std::string fromIsoBoxes(const std::filesystem::path& file) {
+std::string fromIsoBoxes(const std::filesystem::path& file, Extract extract = cameraLogFromXml) {
     std::ifstream in(file, std::ios::binary);
     if (!in) {
         return {};
@@ -125,11 +153,11 @@ std::string fromIsoBoxes(const std::filesystem::path& file) {
         return {};
     }
     std::size_t budget = kMaxMetadataBytes;
-    return walkBoxes(in, 0, size, 0, budget);
+    return walkBoxes(in, 0, size, 0, budget, extract);
 }
 
 /// Sony's sidecar: "C0001.MP4" -> "C0001M01.XML" in the same folder (any case).
-std::string fromSonySidecar(const std::filesystem::path& file) {
+std::string fromSonySidecar(const std::filesystem::path& file, Extract extract = cameraLogFromXml) {
     for (const char* suffix : {"M01.XML", "M01.xml"}) {
         std::filesystem::path sidecar = file.parent_path() / file.stem();
         sidecar += suffix;
@@ -141,7 +169,7 @@ std::string fromSonySidecar(const std::filesystem::path& file) {
         std::string xml(kMaxMetadataBytes, '\0');
         in.read(xml.data(), static_cast<std::streamsize>(xml.size()));
         xml.resize(static_cast<std::size_t>(std::max<std::streamsize>(in.gcount(), 0)));
-        if (std::string log = cameraLogFromXml(xml); !log.empty()) {
+        if (std::string log = extract(xml); !log.empty()) {
             return log;
         }
     }
@@ -244,6 +272,13 @@ std::string cameraLogFromFile(const std::filesystem::path& file) {
         return log;
     }
     return fromSonySidecar(file);
+}
+
+std::string cameraModelFromFile(const std::filesystem::path& file) {
+    if (std::string model = fromIsoBoxes(file, modelFromSonyXml); !model.empty()) {
+        return model;
+    }
+    return fromSonySidecar(file, modelFromSonyXml);
 }
 
 } // namespace wabcut::media

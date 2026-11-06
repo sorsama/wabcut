@@ -23,6 +23,9 @@ add_library(wabcut_command STATIC
     src/CatalogQuery.cpp
     src/CatalogRhythm.cpp
     src/CatalogMarkers.cpp
+    src/CatalogSources.cpp
+    src/SourceList.cpp
+    src/MarkerImport.cpp
     src/CatalogMotion.cpp
     src/CatalogNesting.cpp
     src/CatalogAuditions.cpp
@@ -32,6 +35,7 @@ add_library(wabcut_command STATIC
     src/Command.cpp
     src/Engine.cpp
     src/ExecutionContext.cpp
+    src/PythonApi.cpp
     src/Registry.cpp
     src/ReviewPackage.cpp
     src/Schema.cpp
@@ -49,6 +53,10 @@ wabcut_target_defaults(wabcut_command)
 target_sources(wabcut_command PRIVATE src/CatalogMonitor.cpp)
 # P1 (#25): sequence.mediaUsage, the media usage report.
 target_sources(wabcut_command PRIVATE src/CatalogMediaUsage.cpp)
+# 0.7 (card 124): trackGroup.*, track groups.
+target_sources(wabcut_command PRIVATE src/CatalogTrackGroups.cpp)
+# 0.7: VR / 360 video commands.
+target_sources(wabcut_command PRIVATE src/CatalogVr.cpp)
 
 # The MCP server (wabcut-cli mcp).
 add_subdirectory(mcp)

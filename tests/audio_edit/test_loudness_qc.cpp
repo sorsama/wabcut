@@ -54,6 +54,21 @@ public:
     }
 };
 
+/// A very hot programme (card 166): the measurement kept only the blocks above -2 dBTP, one over of them at 5 s.
+class HotLoudness final : public LoudnessAnalyzer {
+public:
+    std::expected<LoudnessStats, Error> measure(const ProjectState&, SequenceId, const LoudnessTarget&,
+                                                std::optional<TimeRange> range, command::ExecutionControl*) override {
+        LoudnessStats stats = withBlocks({{5000, -0.5}, {5100, -1.5}});
+        stats.peakFloorDbtp = -2.0;
+        stats.truePeakDbtp = -0.5;
+        stats.duration = range ? range->duration : s(10);
+        stats.start = range ? range->start : Ticks{};
+        stats.truePeakAt = ms(5000);
+        return stats;
+    }
+};
+
 /// Silence: nothing is anywhere.
 class SilentLoudness final : public LoudnessAnalyzer {
 public:
@@ -158,6 +173,25 @@ TEST_CASE("audio.loudness says where the loudest moments and the true peak are a
     const Json& later = part.data["results"][0];
     CHECK(later["truePeakAt"]["ticks"] == ms(6300).value);
     CHECK(later["overs"][0]["startTicks"] == ms(6200).value);
+}
+
+TEST_CASE("audio.loudness of a very hot programme says when its overs are counted above a higher ceiling", "[audio][edit][loudness][qc]") {
+    CommandHarness h = harness(std::make_shared<HotLoudness>());
+    // The ceiling asked for (the default -1) is above what the measurement kept: exact, nothing flagged.
+    const Json exact = h.ok("audio.loudness").data["results"][0];
+    CHECK(exact["oversTruncated"] == false);
+    CHECK(exact["oversAbove"] == -1.0);
+    CHECK(exact["overCount"] == 1);
+    // A ceiling below the floor (-3 dBTP asked, -2 kept): counted above the floor, and said so.
+    const Json low = h.ok("audio.loudness", {{"oversAbove", -3.0}}).data["results"][0];
+    CHECK(low["oversTruncated"] == true);
+    CHECK(low["oversAbove"] == -2.0);
+    CHECK(low["overCount"] == 1);
+    REQUIRE(low["overs"].size() == 1);
+    CHECK(low["overs"][0]["startTicks"] == s(5).value);
+    // The default analyzers (the -6 dBTP floor) never flag the whole allowed range -6..0.
+    CommandHarness plain = harness(std::make_shared<WhereLoudness>());
+    CHECK(plain.ok("audio.loudness", {{"oversAbove", -6.0}}).data["results"][0]["oversTruncated"] == false);
 }
 
 TEST_CASE("audio.loudness of silence says nowhere and no overs", "[audio][edit][loudness][qc]") {

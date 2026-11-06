@@ -166,6 +166,9 @@ QtObject {
     // rework removed the left rail; the "interface/railLayout" key it left is not read any more.)
     property bool showGpuStatus: false
     property bool showSaveStatus: false
+    // 0.7: the workspace tabs in the middle of the title bar; off gives their room to the menus and the title (the
+    // workspaces stay in Window > Workspaces, their keys and the command palette).
+    property bool showWorkspaceTabs: true
     // AI features (Settings > AI): off hides the AI entry points and turns AiController's offline mode on (no AI
     // request leaves the computer); `aiOfflineBefore` is the offline mode to restore when they are turned back on.
     property bool aiEnabled: true
@@ -182,6 +185,7 @@ QtObject {
         category: "interface"
         property alias showGpuStatus: prefs.showGpuStatus
         property alias showSaveStatus: prefs.showSaveStatus
+        property alias showWorkspaceTabs: prefs.showWorkspaceTabs
     }
     readonly property Settings _aiFeatures: Settings {
         category: "aiFeatures"
@@ -279,6 +283,44 @@ QtObject {
         category: "timeline"
         property alias showBeatGrid: prefs.timelineShowBeatGrid
     }
+    // ---- 0.7, stream A (batch A2) ----
+    // Card 113: what clips, edges and the playhead snap to - a bit mask: 1 clip edges, 2 the playhead, 4 In/Out marks,
+    // 8 markers, 16 beats (timeline/snapTargets; Timeline Display > Snap to, Settings > Timeline & editing). 31 = all.
+    // Card 126: the clip's length after its name (timeline/showClipDuration). Card 142: an audio clip of a multi-track
+    // recording names its track from the file (timeline/showStreamNames). Card 182: whether an edit may add the tracks
+    // it needs (editing/addTracks; EditPreferences.h reads the same key). Card 118: the label colour palette ("echo" or
+    // "classic", appearance/labelPalette), mirrored into Theme.labelPalette; custom label colours still win.
+    property int snapTargetMask: 31
+    property bool timelineShowClipDuration: false
+    // Card 125: a clip's note printed on the clip (timeline/showClipNotes).
+    property bool timelineShowClipNotes: true
+    // Card 180: the pacing heat strip under the ruler (timeline/showPacing); off by default (it measures the footage).
+    property bool timelineShowPacing: false
+    property bool timelineShowStreamNames: true
+    property bool addTracksOnEdit: true
+    property string labelPalette: "echo"
+    readonly property Settings _timelineA2: Settings {
+        category: "timeline"
+        property alias snapTargets: prefs.snapTargetMask
+        property alias showClipDuration: prefs.timelineShowClipDuration
+        property alias showClipNotes: prefs.timelineShowClipNotes
+        property alias showPacing: prefs.timelineShowPacing
+        property alias showStreamNames: prefs.timelineShowStreamNames
+    }
+    readonly property Settings _editingA2: Settings {
+        category: "editing"
+        property alias addTracks: prefs.addTracksOnEdit
+    }
+    readonly property Settings _appearanceA2: Settings {
+        category: "appearance"
+        property alias labelPalette: prefs.labelPalette
+    }
+    readonly property Binding _labelPalette: Binding {
+        target: Theme
+        property: "labelPalette"
+        value: prefs.labelPalette
+    }
+
     // 0.6, stream 1A: Settings > Appearance > Timeline corners ("rounded" | "square", appearance/timelineCorners),
     // mirrored into Theme.squareTimeline; and Settings > Timeline's Clip Mismatch Warning ("ask" | "change" | "keep",
     // editing/clipMismatch): what the first clip dropped into an empty sequence of another size or rate does.

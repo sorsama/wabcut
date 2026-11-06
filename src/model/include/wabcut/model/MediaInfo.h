@@ -4,7 +4,9 @@
 // No FFmpeg types here: enums are Wabcut's own so model stays dependency-free.
 
 #include <wabcut/model/Time.h>
+#include <wabcut/model/Vr.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -35,6 +37,26 @@ struct ColorInfo {
     bool operator==(const ColorInfo&) const = default;
 };
 
+/// 0.7 (card "Dolby Vision 8.4 and HDR10+ dynamic metadata"): the Dolby Vision decoder configuration a video stream's
+/// container declares (the 'dvcC' / 'dvvC' box of MP4 and MOV, Matroska's BlockAdditionMapping), read through FFmpeg's
+/// AVDOVIDecoderConfigurationRecord (libavutil/dovi_meta.h). The values are the file's claim; Wabcut checks the RPUs in the
+/// stream only when asked (media::verifyDynamicHdr).
+struct DolbyVisionInfo {
+    int profile = 0;           ///< 4, 5, 7, 8, 9, 10: 8 is the single-layer one with an HDR10, SDR or HLG base
+    int level = 0;             ///< 1..13 (resolution and frame rate class)
+    int blCompatibilityId = 0; ///< dv_bl_signal_compatibility_id: 0 none (profile 5), 1 HDR10, 2 SDR, 4 HLG
+    bool rpuPresent = false;   ///< the stream carries RPUs (the per-frame metadata)
+    bool elPresent = false;    ///< there is an enhancement layer (profile 7)
+    bool blPresent = true;     ///< there is a base layer
+
+    /// "8.4" for profile 8 with an HLG base ("8.1" HDR10, "8.2" SDR), "5", "7.6" ...: profile . compatibility id when it is
+    /// not 0. Dolby writes profile 8.4 for an HLG base, 8.1 for an HDR10 one.
+    std::string name() const {
+        return blCompatibilityId > 0 ? std::to_string(profile) + "." + std::to_string(blCompatibilityId) : std::to_string(profile);
+    }
+    bool operator==(const DolbyVisionInfo&) const = default;
+};
+
 struct VideoStreamInfo {
     int index = -1;               // container stream index
     std::string codec;            // e.g. "h264", "hevc", "prores"
@@ -50,6 +72,9 @@ struct VideoStreamInfo {
     ColorInfo color{};
     AlphaMode alpha = AlphaMode::None;
     int rotationDegrees = 0;      // display rotation (0/90/180/270)
+    /// The container flags the picture to be shown flipped horizontally after that rotation (a display matrix with a
+    /// reflection: some phone front cameras and screen recordings). Saved only when set (card 154).
+    bool mirrored = false;
     Ticks duration{};
     std::int64_t frameCount = -1; // -1 when unknown
     /// The camera log the file's metadata names (0.2, colour management's "auto-detected log"): an InputColorSpace id
@@ -61,9 +86,22 @@ struct VideoStreamInfo {
     /// says (FFmpeg's field order of the stream; bottom-coded orders count by their first field). Interpret Footage
     /// can override it (MediaInterpretation::fieldOrder). Saved only when not Progressive (schema 18).
     FieldOrder fieldOrder = FieldOrder::Progressive;
+    /// 0.7: the Dolby Vision configuration the container declares, if any. Saved only when set.
+    std::optional<DolbyVisionInfo> dolbyVision;
+    /// 0.7: the first frames of an HEVC PQ stream carry HDR10+ dynamic metadata (SMPTE ST 2094-40 in a T.35 SEI message).
+    /// Looked at when the file is imported. Saved only when set.
+    bool hdr10Plus = false;
+    /// 0.7 (VR / 360 video): what the file's spherical metadata says (Spherical Video V1 XML, V2 sv3d / st3d boxes, Matroska
+    /// Projection): an equirectangular projection and its eye layout. Interpret Footage can override it
+    /// (MediaInterpretation::vr). Saved only when VR.
+    VrFormat vr;
 
     bool operator==(const VideoStreamInfo&) const = default;
 };
+
+/// Bounds on AudioStreamInfo::channelNames (media files and project files are untrusted).
+inline constexpr std::size_t kMaxChannelNames = 256;
+inline constexpr std::size_t kMaxChannelNameLength = 128;
 
 struct AudioStreamInfo {
     int index = -1;
@@ -77,6 +115,11 @@ struct AudioStreamInfo {
     /// ("SoundHandler", ...). Multi-track ingest names timeline tracks after it (EditOps.h: sourceTrackNames). Saved
     /// only when set (schema 15).
     std::string title;
+    /// 0.7 (card 062): the names a polyphonic WAV's recorder gave its channels (iXML TRACK_LIST, else the Broadcast Wave
+    /// description: "Boom", "Lav A"): element i is channel i + 1 of the file, empty when that channel has no name. Empty
+    /// (no element at all) when the file names none. Bounded: at most kMaxNamedChannels (256) of at most 128 bytes of
+    /// UTF-8 text. Saved only when set.
+    std::vector<std::string> channelNames;
 
     bool operator==(const AudioStreamInfo&) const = default;
 };

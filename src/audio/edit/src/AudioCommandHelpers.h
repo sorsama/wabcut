@@ -89,7 +89,10 @@ inline double round3(double v) { return std::round(v * 1000.0) / 1000.0; }
 
 /// 0.6 (P1 round, #54, loudness QC): where the loudest momentary / short-term windows start and the true peak is (a
 /// timecode and ticks on the timeline, null when not known), and the true-peak overs above `oversAbove` dBTP (at most
-/// 200 listed; overCount counts them all).
+/// 200 listed; overCount counts them all). 0.7 (card 166): a measurement of a very hot programme keeps only the blocks
+/// above a floor higher than -6 dBTP (LoudnessStats::peakFloorDbtp); when the ceiling asked for is below it, the overs
+/// are counted above the floor instead: "oversAbove" says the ceiling used and "oversTruncated" is true (quieter overs,
+/// between the ceiling asked for and the floor, are not listed or counted).
 inline Json whereJson(ExecutionContext& c, const LoudnessStats& s, double oversAbove) {
     const auto at = [&](const std::optional<Ticks>& offset) -> Json {
         if (!offset) {
@@ -107,10 +110,12 @@ inline Json whereJson(ExecutionContext& c, const LoudnessStats& s, double oversA
                              {"endTicks", o.range.end().value},
                              {"truePeakDbtp", std::round(o.truePeakDbtp * 100.0) / 100.0}});
     }
+    const bool truncated = oversAbove < s.peakFloorDbtp;
     return Json{{"maxMomentaryAt", at(s.maxMomentaryAt)},
                 {"maxShortTermAt", at(s.maxShortTermAt)},
                 {"truePeakAt", at(s.truePeakAt)},
-                {"oversAbove", oversAbove},
+                {"oversAbove", truncated ? s.peakFloorDbtp : oversAbove},
+                {"oversTruncated", truncated},
                 {"overCount", total},
                 {"overs", std::move(overs)}};
 }
@@ -348,5 +353,10 @@ void registerChannelCommands(command::CommandRegistry& registry);
 void registerSubmixCommands(command::CommandRegistry& registry);
 /// p02 audio (AutoTagCommands.cpp): audio.autoTag, Essential Sound's automatic tagging.
 void registerAutoTagCommands(command::CommandRegistry& registry);
+/// 0.7 (MatchCommands.cpp): audio.eqMatch, audio.eqMatchReset and audio.levelMatch.
+void registerMatchCommands(command::CommandRegistry& registry);
+/// 0.7 (SpectralRepairCommands.cpp): audio.spectralAttenuate, .spectralHeal, .spectralNoiseFloor, .spectralRemoveTone,
+/// .spectralRepairRemove, .spectralRepairOptions and .spectralRepairEdits (card 047).
+void registerSpectralRepairCommands(command::CommandRegistry& registry);
 
 } // namespace wabcut::audio::edit

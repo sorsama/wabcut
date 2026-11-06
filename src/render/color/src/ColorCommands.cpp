@@ -1,6 +1,7 @@
 #include <wabcut/color/ColorCommands.h>
 
 #include <wabcut/color/Cdl.h>
+#include <wabcut/color/ChartMatch.h>
 #include <wabcut/color/Looks.h>
 #include <wabcut/color/Scopes.h>
 #include <wabcut/command/Schema.h>
@@ -15,6 +16,8 @@
 #include <cmath>
 #include <cstdio>
 #include <format>
+#include <fstream>
+#include <tuple>
 
 namespace wabcut::color {
 
@@ -577,6 +580,198 @@ CommandOutput matchSceneCommand(ExecutionContext& c) {
     return out;
 }
 
+// ---- color.chartMatch (0.7) --------------------------------------------------------------------------------------
+
+/// "corners": four [x, y] points, fractions of the picture (y down): the outer corners of the 24-patch area, as the chart
+/// reads upright - above dark skin, above bluish green, below black, below white.
+ChartCorners chartCornersOf(ExecutionContext& c) {
+    const Json& list = c.params()["corners"];
+    ChartCorners corners;
+    if (!list.is_array() || list.size() != 4) {
+        fail(ErrorCode::InvalidParams, "corners are four [x, y] points: top-left, top-right, bottom-right, bottom-left of the chart",
+             Json{{"path", "/corners"}});
+    }
+    for (std::size_t i = 0; i < 4; ++i) {
+        const Json& p = list[i];
+        if (!p.is_array() || p.size() != 2 || !p[0].is_number() || !p[1].is_number()) {
+            fail(ErrorCode::InvalidParams, "a corner is [x, y], fractions of the picture", Json{{"path", "/corners/" + std::to_string(i)}});
+        }
+        corners.p[i] = ChartPoint{p[0].get<double>(), p[1].get<double>()};
+    }
+    if (!chartCornersPlausible(corners)) {
+        fail(ErrorCode::InvalidParams, "the corners do not make a four-sided shape of a usable size inside the picture",
+             Json{{"path", "/corners"}});
+    }
+    return corners;
+}
+
+Json chartCurvesJson(const GradeCurves& curves) {
+    Json out = Json::object();
+    const std::pair<const char*, const std::vector<EffectPoint>*> lists[] = {
+        {"red", &curves.red}, {"green", &curves.green}, {"blue", &curves.blue},
+        {"hueSat", &curves.hueSat}, {"hueHue", &curves.hueHue}, {"hueLuma", &curves.hueLuma}};
+    for (const auto& [name, points] : lists) {
+        if (points->empty()) {
+            continue;
+        }
+        Json pts = Json::array();
+        for (const EffectPoint& p : *points) {
+            pts.push_back(Json::array({rounded(p.x, 0.0001), rounded(p.y, 0.0001)}));
+        }
+        out[name] = std::move(pts);
+    }
+    return out;
+}
+
+CommandOutput chartMatchCommand(ExecutionContext& c) {
+    const ClipId source = c.clip("clip");
+    const auto edition = chartEditionFromId(c.string("edition", "after-2014"));
+    if (!edition) {
+        fail(ErrorCode::InvalidParams, "edition is \"after-2014\" (charts made since November 2014) or \"before-2014\"",
+             Json{{"path", "/edition"}});
+    }
+    const EffectInstanceId preferred{static_cast<std::uint64_t>(c.integer("effect", 0))};
+    ProjectState state = c.state();
+    auto [withGrade, effect] = ensureGrade(c, std::move(state), source, preferred);
+    state = std::move(withGrade);
+    const Clip& cl = clipIn(state, c.sequenceId(), source);
+    const Ticks t = sampleTime(c, cl);
+    c.checkpoint("reading the chart");
+    FrameRequest request{t, source, effect};
+    request.maxWidth = kChartFrameWidth;
+    auto image = servicesOf(c).frame(state, c.sequenceId(), request);
+    if (!image) {
+        fail(image.error().code == wabcut::ErrorCode::Cancelled ? ErrorCode::Cancelled : ErrorCode::EditRejected,
+             "cannot render the clip: " + image.error().message);
+    }
+    ChartCorners corners;
+    bool detected = false;
+    double confidence = 1.0;
+    int seen = kChartPatches;
+    if (c.has("corners")) {
+        corners = chartCornersOf(c);
+    } else {
+        const auto found = detectColorChecker(*image);
+        if (!found) {
+            fail(ErrorCode::EditRejected,
+                 "no ColorChecker was found in the picture at that time: move to a frame where the chart is in focus with all 24 "
+                 "patches showing, or give \"corners\" (the four outer corners of the patches as fractions of the picture)");
+        }
+        corners = found->corners;
+        detected = true;
+        confidence = found->confidence;
+        seen = found->patches;
+    }
+    c.checkpoint("fitting the colours");
+    const ChartMeasurement measurement = measureChart(*image, corners);
+    const GradeSpec base = gradeSpecAt(state, cl, effect, t);
+    const EffectInstance* grade = gradeOf(cl, effect);
+    ChartOptions options;
+    options.edition = *edition;
+    options.colours = !c.boolean("neutralOnly", false);
+    const ChartMatchResult fit = solveChartMatch(measurement, base, grade ? gradeCurvesOf(*grade) : GradeCurves{}, options);
+    if (!fit.ok) {
+        fail(ErrorCode::EditRejected, fit.error);
+    }
+    if (!fit.improved) {
+        fail(ErrorCode::EditRejected,
+             std::format("the correction does not bring the chart closer to its colours (mean delta E {:.1f} -> {:.1f}): check that the "
+                         "corners sit on the 24 patches with dark skin at the top-left and white at the bottom-left, or that it is the "
+                         "{} chart",
+                         fit.meanBefore, fit.meanAfter, *edition == ChartEdition::AfterNov2014 ? "older" : "newer"));
+    }
+
+    CommandOutput out;
+    out.warnings = fit.warnings;
+    // The match owns these parameters and curves; everything else in the grade stays.
+    std::vector<EffectParam> params = clampedParams(basicParams(fit.params, {"basic.temperature", "basic.tint", "basic.exposure",
+                                                                             "basic.contrast", "basic.saturation"}),
+                                                    out.warnings);
+    params.push_back(EffectParam{"curves.enabled", ParamValue(1.0)});
+    const auto writeTo = [&](ProjectState s, ClipId id, EffectInstanceId eff) {
+        std::vector<EffectData> data;
+        const std::pair<std::string_view, const std::vector<EffectPoint>*> lists[] = {
+            {gradekey::master, &fit.curves.master}, {gradekey::red, &fit.curves.red},         {gradekey::green, &fit.curves.green},
+            {gradekey::blue, &fit.curves.blue},     {gradekey::hueSat, &fit.curves.hueSat},   {gradekey::hueHue, &fit.curves.hueHue},
+            {gradekey::hueLuma, &fit.curves.hueLuma}};
+        for (const auto& [key, points] : lists) {
+            data.push_back(EffectData{std::string(key), *points});
+        }
+        std::sort(data.begin(), data.end(), [](const EffectData& a, const EffectData& b) { return a.key < b.key; });
+        return setGrade(c, std::move(s), id, eff, params, std::move(data));
+    };
+    state = writeTo(std::move(state), source, effect);
+    Json applied = Json::array();
+    applied.push_back(Json{{"clip", source.value}, {"effect", effect.value}, {"result", "matched"}});
+    out.createdIds.push_back(effect.value);
+    if (c.has("also")) {
+        for (const ClipId id : c.clips("also")) {
+            const auto skip = [&](const std::string& reason) { applied.push_back(Json{{"clip", id.value}, {"result", "skipped"}, {"reason", reason}}); };
+            const auto loc = state.findSequence(c.sequenceId())->findClip(id);
+            if (!loc) {
+                fail(ErrorCode::NotFound, "clip " + std::to_string(id.value) + " does not exist");
+            }
+            if (id == source) {
+                continue;
+            }
+            if (loc->clip().stream.kind != StreamKind::Video) {
+                skip("not a video clip");
+                continue;
+            }
+            if (loc->track->locked) {
+                skip("on a locked track");
+                continue;
+            }
+            auto [next, targetGrade] = ensureGrade(c, std::move(state), id, {});
+            state = writeTo(std::move(next), id, targetGrade);
+            applied.push_back(Json{{"clip", id.value}, {"effect", targetGrade.value}, {"result", "matched"}});
+            out.createdIds.push_back(targetGrade.value);
+        }
+    }
+
+    Json patches = Json::array();
+    const auto triple = [](const Rgb& v) { return Json::array({rounded(v[0], 0.001), rounded(v[1], 0.001), rounded(v[2], 0.001)}); };
+    for (const ChartPatchReport& p : fit.patches) {
+        patches.push_back(Json{{"patch", p.index + 1},
+                               {"name", p.name},
+                               {"used", p.used},
+                               {"reference", triple(p.reference)},
+                               {"before", triple(p.before)},
+                               {"after", triple(p.after)},
+                               {"deltaBefore", rounded(p.deltaBefore, 0.01)},
+                               {"deltaAfter", rounded(p.deltaAfter, 0.01)}});
+    }
+    Json corner = Json::array();
+    for (const ChartPoint& p : corners.p) {
+        corner.push_back(Json::array({rounded(p.x, 0.0001), rounded(p.y, 0.0001)}));
+    }
+    out.state = std::move(state);
+    out.data = Json{{"clip", source.value},
+                    {"effect", effect.value},
+                    {"time", c.timecode(t)},
+                    {"detected", detected},
+                    {"confidence", rounded(confidence, 0.01)},
+                    {"patchesSeen", seen},
+                    {"corners", std::move(corner)},
+                    {"edition", std::string(chartEditionId(*edition))},
+                    {"params", Json{{"basic.temperature", fit.params.temperature},
+                                    {"basic.tint", fit.params.tint},
+                                    {"basic.exposure", fit.params.exposure},
+                                    {"basic.contrast", fit.params.contrast},
+                                    {"basic.saturation", fit.params.saturation}}},
+                    {"curves", chartCurvesJson(fit.curves)},
+                    {"patchesUsed", fit.used},
+                    {"meanDeltaBefore", rounded(fit.meanBefore, 0.01)},
+                    {"meanDeltaAfter", rounded(fit.meanAfter, 0.01)},
+                    {"maxDeltaBefore", rounded(fit.maxBefore, 0.01)},
+                    {"maxDeltaAfter", rounded(fit.maxAfter, 0.01)},
+                    {"holdOutMeanDelta", rounded(fit.holdOutMean, 0.01)},
+                    {"patches", std::move(patches)},
+                    {"appliedTo", std::move(applied)},
+                    {"summary", fit.summary}};
+    return out;
+}
+
 // ---- color.grade.copy (0.4 Apply Grade) -----------------------------------------------------------------------
 
 /// A key's curve time on `from` as the curve time on `to` at the same time from the clip's start (Paste Attributes'
@@ -754,18 +949,28 @@ CommandOutput lutImport(ExecutionContext& c) {
         fail(ErrorCode::EditRejected, "the LUT cannot be read: " + lut.error().message);
     }
     const std::filesystem::path absolute = std::filesystem::absolute(file, ec);
-    // The same file again: the existing asset.
+    const std::string folder = c.has("group") ? c.string("group") : std::string();
+    if (const auto problem = assetFolderProblem(folder)) {
+        fail(ErrorCode::InvalidParams, *problem, Json{{"path", "/folder"}});
+    }
+    // The same file again: the existing asset (listed under the given folder when one is given: that is how an imported
+    // LUT is moved into a group).
     for (const ProjectAsset& a : c.state().assets) {
         if (a.kind == kAssetKindLut && pathFromUtf8(a.locator.path) == absolute) {
             CommandOutput out;
             out.state = c.state();
-            out.data = Json{{"asset", a.id.value}, {"reference", assetReference(a.id)}, {"name", a.name}, {"existing", true}};
+            if (c.has("group") && a.folder != folder) {
+                out.state = c.take(edit::setAssetFolder(c.state(), a.id, folder));
+            }
+            out.data = Json{{"asset", a.id.value}, {"reference", assetReference(a.id)}, {"name", a.name}, {"existing", true},
+                            {"folder", folder.empty() && !c.has("group") ? a.folder : folder}};
             return out;
         }
     }
     ProjectAsset asset;
     asset.kind = std::string(kAssetKindLut);
     asset.name = c.has("name") ? c.string("name") : pathToUtf8(file.filename());
+    asset.folder = folder;
     asset.locator.path = pathToUtf8(absolute);
     if (auto fp = fingerprintFile(absolute)) {
         asset.locator.fingerprint = *fp;
@@ -780,6 +985,175 @@ CommandOutput lutImport(ExecutionContext& c) {
                     {"title", lut->title},
                     {"size3d", lut->size3d},
                     {"size1d", lut->size1d}};
+    return out;
+}
+
+// ---- Import a folder of LUTs (0.7, card #85) ----------------------------------------------------------------------
+
+constexpr std::size_t kMaxFolderLuts = 500;   ///< .cube files taken from one folder import (the rest is reported)
+constexpr int kMaxFolderDepth = 8;            ///< sub-folder levels looked into
+constexpr std::size_t kMaxFolderNameBytes = 80; ///< one folder name of the group, cut here
+
+/// Whether `file` starts like a .cube LUT: a LUT_1D_SIZE or LUT_3D_SIZE line within its first 16 KB. The folder import
+/// only looks at the head of each file, so a folder of hundreds of 65-point LUTs does not stall the app; a file that
+/// then fails to parse is reported when it is used.
+bool looksLikeCube(const std::filesystem::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    if (!in) {
+        return false;
+    }
+    std::string head(16 * 1024, '\0');
+    in.read(head.data(), static_cast<std::streamsize>(head.size()));
+    head.resize(static_cast<std::size_t>(in.gcount()));
+    return head.find("LUT_3D_SIZE") != std::string::npos || head.find("LUT_1D_SIZE") != std::string::npos;
+}
+
+/// One name of a menu folder from a directory name: no control characters or '/', trimmed, at most
+/// kMaxFolderNameBytes (cut on a UTF-8 boundary); empty when nothing is left.
+std::string folderSegment(std::string name) {
+    std::string out;
+    for (const char ch : name) {
+        const auto u = static_cast<unsigned char>(ch);
+        if (u < 0x20 || u == 0x7F || ch == '/' || ch == '\\') {
+            out += ' ';
+        } else {
+            out += ch;
+        }
+    }
+    while (!out.empty() && out.back() == ' ') {
+        out.pop_back();
+    }
+    out.erase(0, out.find_first_not_of(' ') == std::string::npos ? out.size() : out.find_first_not_of(' '));
+    if (out.size() > kMaxFolderNameBytes) {
+        std::size_t cut = kMaxFolderNameBytes;
+        while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80) {
+            --cut;
+        }
+        out.resize(cut);
+    }
+    return out;
+}
+
+CommandOutput lutImportFolder(ExecutionContext& c) {
+    namespace fs = std::filesystem;
+    const fs::path root = pathFromUtf8(c.string("path"));
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) {
+        fail(ErrorCode::NotFound, "no folder at " + c.string("path"), Json{{"path", "/path"}});
+    }
+    const bool recursive = c.boolean("recursive", true);
+    // The group the LUTs are listed under: "group" when given, else the folder's own name; its sub-folders below it.
+    fs::path rootName = root.filename();
+    if (rootName.empty()) {
+        rootName = root.parent_path().filename(); // "C:/LUTs/": the name before the trailing separator
+    }
+    std::string base = c.has("group") ? c.string("group") : folderSegment(pathToUtf8(rootName));
+    if (const auto problem = assetFolderProblem(base)) {
+        fail(ErrorCode::InvalidParams, *problem, Json{{"path", "/folder"}});
+    }
+
+    struct Found {
+        fs::path file;
+        std::string folder;
+    };
+    std::vector<Found> found;
+    bool truncated = false;
+    fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec);
+    std::error_code query; // asking one entry something must not end the walk
+    for (const fs::recursive_directory_iterator end; !ec && it != end; it.increment(ec)) {
+        const fs::directory_entry& entry = *it;
+        const std::string leaf = pathToUtf8(entry.path().filename());
+        if (entry.is_directory(query)) {
+            if (!recursive || it.depth() >= kMaxFolderDepth || (!leaf.empty() && leaf.front() == '.')) {
+                it.disable_recursion_pending();
+            }
+            continue;
+        }
+        std::string ext = pathToUtf8(entry.path().extension());
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (ext != ".cube" || !entry.is_regular_file(query)) {
+            continue;
+        }
+        if (found.size() >= kMaxFolderLuts) {
+            truncated = true;
+            break;
+        }
+        // The folder of the group: base + the names between the imported folder and the file.
+        std::string group = base;
+        const fs::path relative = entry.path().parent_path().lexically_relative(root);
+        for (const fs::path& part : relative) {
+            const std::string segment = folderSegment(pathToUtf8(part));
+            if (segment.empty() || segment == ".") {
+                continue;
+            }
+            group += group.empty() ? segment : "/" + segment;
+        }
+        if (assetFolderProblem(group)) {
+            group = base; // too deep or too long a path of names: the group of the imported folder itself
+        }
+        found.push_back({entry.path(), std::move(group)});
+    }
+    std::sort(found.begin(), found.end(), [](const Found& a, const Found& b) {
+        return std::tie(a.folder, a.file) < std::tie(b.folder, b.file);
+    });
+
+    ProjectState state = c.state();
+    Json assets = Json::array();
+    Json skipped = Json::array();
+    int added = 0;
+    int existing = 0;
+    int moved = 0;
+    for (const Found& f : found) {
+        const fs::path absolute = fs::absolute(f.file, ec);
+        const auto same = std::find_if(state.assets.begin(), state.assets.end(), [&](const ProjectAsset& a) {
+            return a.kind == kAssetKindLut && pathFromUtf8(a.locator.path) == absolute;
+        });
+        if (same != state.assets.end()) { // already in the project: listed under this group now
+            ++existing;
+            assets.push_back(same->id.value);
+            if (same->folder != f.folder) {
+                state = c.take(edit::setAssetFolder(state, same->id, f.folder));
+                ++moved;
+            }
+            continue;
+        }
+        const auto size = fs::file_size(absolute, ec);
+        if (ec || size > kMaxCubeBytes || !looksLikeCube(absolute)) {
+            if (skipped.size() < 20) {
+                skipped.push_back(Json{{"path", pathToUtf8(absolute)}, {"reason", "not a .cube LUT the app can read"}});
+            }
+            continue;
+        }
+        ProjectAsset asset;
+        asset.kind = std::string(kAssetKindLut);
+        asset.name = pathToUtf8(absolute.filename());
+        asset.folder = f.folder;
+        asset.locator.path = pathToUtf8(absolute);
+        if (auto fp = fingerprintFile(absolute)) {
+            asset.locator.fingerprint = *fp;
+        }
+        auto created = c.take(edit::addAsset(state, std::move(asset)));
+        state = std::move(created.state);
+        assets.push_back(created.id.value);
+        ++added;
+    }
+    if (found.empty()) {
+        fail(ErrorCode::EditRejected, "no .cube LUTs in " + c.string("path") + (recursive ? " or its folders" : ""),
+             Json{{"path", "/path"}});
+    }
+    if (added == 0 && existing == 0) {
+        fail(ErrorCode::EditRejected, "none of the .cube files in " + c.string("path") + " can be used as LUTs",
+             Json{{"path", "/path"}});
+    }
+    CommandOutput out;
+    out.state = std::move(state);
+    out.data = Json{{"folder", base},
+                    {"imported", added},
+                    {"existing", existing},
+                    {"moved", moved},
+                    {"skipped", std::move(skipped)},
+                    {"truncated", truncated},
+                    {"assets", std::move(assets)}};
     return out;
 }
 
@@ -817,6 +1191,7 @@ CommandOutput lutList(ExecutionContext& c) {
                               {"reference", ref},
                               {"name", a.name},
                               {"path", a.locator.path},
+                              {"folder", a.folder},
                               {"offline", a.locator.offline},
                               {"usedBy", uses[ref]}});
     }
@@ -1368,17 +1743,68 @@ void registerColorCommands(command::CommandRegistry& registry) {
                                                          "tones first (needs the face detector). Default false.")}},
                       {"reference"}),
          Json{{"reference", Json{{"track", "V1"}, {"time", "00:00:12:00"}}}}, {}, matchSceneCommand});
+    Json cornersSchema = schema::array(
+        schema::array(schema::number("A fraction of the picture, 0 at the left / top, 1 at the right / bottom."), "One corner: [x, y].", 2),
+        "The chart's four outer corners (the outer edges of the 24-patch area) as fractions of the picture, y down, in the order "
+        "top-left, top-right, bottom-right, bottom-left of the chart read upright: dark skin's top-left corner, bluish green's "
+        "top-right, black's bottom-right, white's bottom-left. Omit to find the chart automatically.",
+        4);
+    cornersSchema["maxItems"] = 4;
+    cornersSchema["items"]["maxItems"] = 2;
+    add(registry,
+        {"color.chartMatch", 1, "Match to Color Chart",
+         "Matches a clip to an X-Rite ColorChecker Classic (24 patches) shown in it: finds the chart in the picture of the clip "
+         "(at \"time\", default its middle; without its grade) or takes the four \"corners\", reads each patch as a trimmed mean "
+         "of its middle, and fits the clip's grade so the patches come out at the chart's published colours (CIE L*a*b* D50 "
+         "of the edition after November 2014 or \"before-2014\", read as sRGB on the monitor): Basic temperature, tint, "
+         "exposure, contrast and saturation, RGB curves through the grey row and hue vs hue / saturation / luma points at the "
+         "hues of the coloured patches (\"neutralOnly\" leaves out saturation and the hue points). The grade's other stages "
+         "stay; its RGB and hue curves are replaced; keyframes of those Basic parameters are replaced by the new values. "
+         "\"also\" gives the same correction to other clips shot in the same light. Reports every patch's delta E 2000 before "
+         "and after. Refused when no chart is found, fewer than 12 patches can be read, or the fit does not lower the mean "
+         "error (a chart placed wrongly). One undo step; dryRun reports the fit without changing anything.",
+         Capability::EditSequence,
+         withSequence({{"clip", clipParam("The clip that shows the chart.")},
+                       {"effect", gradeEffectParam()},
+                       {"time", timeParam("The frame with the chart (inside the clip).")},
+                       {"corners", std::move(cornersSchema)},
+                       {"edition", schema::enumeration({"after-2014", "before-2014"}, "Which print of the chart. Default after-2014.")},
+                       {"neutralOnly", schema::boolean("Only white balance, exposure, contrast and the grey row's curves. Default false.")},
+                       {"also", clipsParam("Other clips shot in the same light that get the same correction.")}},
+                      {"clip"}),
+         Json{{"clip", Json{{"track", "V1"}, {"time", "00:00:03:00"}}}, {"also", Json::array({43, 44})}}, {}, chartMatchCommand});
     add(registry,
         command::touchesFiles({"lut.import", 1, "Import LUT",
          "Adds a .cube LUT file (1D or 3D, up to 65 points per side) to the project as an asset: it relinks and is "
          "collected like media. Returns its reference for color.grade.set's inputLut / look. Importing the same file again "
-         "returns the existing asset.",
+         "returns the existing asset. \"folder\" ('/'-separated names, e.g. \"Film Emulation/Kodak\") lists it under that "
+         "group in the Color panel's LUT menu; given for a LUT already in the project it moves the LUT there.",
          Capability::EditProject,
          Json{{"type", "object"},
-              {"properties", Json{{"path", schema::string("The .cube file.")}, {"name", schema::string("Display name. Default the file name.")}}},
+              {"properties", Json{{"path", schema::string("The .cube file.")},
+                                  {"name", schema::string("Display name. Default the file name.")},
+                                  {"group", schema::string("The LUT menu group, '/'-separated names. Default none (listed "
+                                                            "with the built-ins).")}}},
               {"required", Json::array({"path"})},
               {"additionalProperties", false}},
          Json{{"path", "C:/LUTs/FilmLook.cube"}}, {}, lutImport}, {"path"}));
+    add(registry,
+        command::touchesFiles({"lut.importFolder", 1, "Import LUT Folder",
+         "Adds every .cube LUT in a folder (and, unless \"recursive\" is false, its sub-folders up to 8 levels; hidden "
+         "folders and more than 500 files are left out) to the project as assets and groups them in the Color panel's LUT "
+         "menu by folder: the group is \"folder\" (default the folder's own name) with the sub-folder names below it. "
+         "Only the head of each file is checked, so a large folder imports at once; a file that cannot be read shows "
+         "when it is used. A LUT already in the project is not added again and is listed under its new group. One undo "
+         "step. Returns the counts and the assets' ids.",
+         Capability::EditProject,
+         Json{{"type", "object"},
+              {"properties", Json{{"path", schema::string("The folder.")},
+                                  {"recursive", schema::boolean("Also take the sub-folders' LUTs. Default true.")},
+                                  {"group", schema::string("The top group of the LUT menu, '/'-separated names. Default the "
+                                                            "folder's name.")}}},
+              {"required", Json::array({"path"})},
+              {"additionalProperties", false}},
+         Json{{"path", "C:/LUTs/Film Emulation"}}, {}, lutImportFolder}, {"path"}));
     add(registry,
         command::touchesFiles({"lut.export", 1, "Export .cube",
          "Writes a clip's colour grade as a 3D LUT .cube file (Premiere's Lumetri panel > Export .cube): \"size\" points per "

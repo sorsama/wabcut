@@ -20,7 +20,7 @@ WabcutDialog {
     property var audioPlaces: []
     property string videoPlace: ""
     property string audioPlace: ""
-    readonly property var formats: ["stereo", "mono", "5.1", "adaptive"]
+    readonly property var formats: ["stereo", "mono", "5.1", "7.1", "adaptive"]
 
     // The sequence's tracks (ProjectController.tracks, display order: top video first, then A1 down).
     component TrackRow: QtObject {
@@ -182,7 +182,7 @@ WabcutDialog {
             Layout.fillWidth: true
             compact: true
             enabled: audioCount.value > 0
-            model: [qsTr("Stereo"), qsTr("Mono"), qsTr("5.1"), qsTr("Adaptive")]
+            model: [qsTr("Stereo"), qsTr("Mono"), qsTr("5.1"), qsTr("7.1"), qsTr("Adaptive")]
             Accessible.name: qsTr("Channel format of the new audio tracks")
         }
     }

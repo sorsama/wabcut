@@ -396,6 +396,27 @@ TEST_CASE("shorts.find re-ranks only with consent and never for a no-cloud proje
     }
 }
 
+TEST_CASE("shorts.find re-ranks with a model on this computer in a no-cloud project", "[ai][shorts][rerank][commands][r07]") {
+    // QA-07: the no-cloud lock stops the cloud only; the host says when its chat model runs on this computer.
+    for (const bool onThisComputer : {false, true}) {
+        INFO("on this computer " << onThisComputer);
+        World w;
+        w.tl.state.aiNoCloud = true;
+        int calls = 0;
+        ChatRequest last;
+        const ModelSpec spec = *ModelRegistry::builtin().model("claude-sonnet-5-5"); // only names the model here
+        ShortsServices::ChatOpener opener = [&]() -> std::expected<std::unique_ptr<IChatModel>, AiError> {
+            return std::make_unique<RecordingModel>(spec, kAnswer, calls, last);
+        };
+        auto services = std::make_shared<command::ServiceBundle>(std::vector<std::shared_ptr<command::CommandServices>>{
+            std::make_shared<ai::edit::TranscriptServices>(w.transcripts), std::make_shared<ShortsServices>(opener, onThisComputer)});
+        CommandHarness h(w.tl, command::EnginePolicy{command::CapabilitySet::all(), 64, services}, ai::edit::editingCommands());
+        const auto result = h.ok("shorts.find", Json{{"count", 3}, {"rerank", true}});
+        CHECK(result.data["reranked"] == onThisComputer);
+        CHECK(calls == (onThisComputer ? 1 : 0));
+    }
+}
+
 // --- shorts.create -------------------------------------------------------------------------------------------------------
 
 TEST_CASE("shorts.create makes reframed, captioned, titled shorts in one undo step", "[ai][shorts][commands]") {

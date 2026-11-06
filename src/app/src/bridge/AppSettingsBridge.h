@@ -17,6 +17,11 @@
 //   * openSetting(id) emits openRequested(page, row): the command palette's "Settings" rows (paletteProvider()) and
 //     anything else that wants a setting shown; Main opens the Settings window there.
 //
+//   * 0.7 (card 028) Backup and reset (Settings > General): exportSettings(url) writes every setting and the user's
+//     shortcut / preset / template files to one JSON file (no secrets: API keys stay in the OS keychain), previewImport(url)
+//     says what a file holds, importSettings(url) and resetAllSettings(keepRecents) back the current settings up and stage
+//     the change; Main restarts Wabcut (AppShell.requestRestart) and main() applies it (SettingsBundle.h).
+//
 // Everything is per user and global (QSettings, the same store Preferences.qml writes).
 
 #include <QObject>
@@ -26,6 +31,8 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
+
+#include "SettingsBundle.h"
 
 #include <memory>
 
@@ -45,6 +52,8 @@ class AppSettingsBridge : public QObject {
     Q_PROPERTY(QString launchAction READ launchAction WRITE setLaunchAction NOTIFY launchActionChanged FINAL)
     /// The Settings search index, in page order: [{ id, page, row, title, section, pageTitle, detail, keywords, opens }].
     Q_PROPERTY(QVariantList index READ index CONSTANT FINAL)
+    /// 0.7 (card 028): an import or reset is staged and waits for the restart.
+    Q_PROPERTY(bool changeStaged READ changeStaged NOTIFY changeStagedChanged FINAL)
 
 public:
     explicit AppSettingsBridge(QObject* parent = nullptr);
@@ -64,13 +73,35 @@ public:
     /// Asks the app to show setting `id` (openRequested(page, row)). False for an unknown id.
     Q_INVOKABLE bool openSetting(const QString& id);
 
+    // ---- Backup and reset (0.7, card 028) ----
+    bool changeStaged() const;
+    /// Writes the settings bundle to `file`: { ok, error, file, settings, files, skipped }.
+    Q_INVOKABLE QVariantMap exportSettings(const QUrl& file) const;
+    /// What `file` holds, without changing anything: { ok, error, created, app, settings, files, skipped, skippedWhy,
+    /// areas, lines, text }.
+    Q_INVOKABLE QVariantMap previewImport(const QUrl& file) const;
+    /// Backs the current settings up and stages `file` for the restart: { ok, error, backup, settings, files }.
+    Q_INVOKABLE QVariantMap importSettings(const QUrl& file);
+    /// What a reset would do, for the confirm dialog: { backupName, backupFolder }.
+    Q_INVOKABLE QVariantMap planReset() const;
+    /// Backs the current settings up (under `backupName`, else a timestamped name) and stages a reset: { ok, error, backup }.
+    Q_INVOKABLE QVariantMap resetAllSettings(bool keepRecents, const QString& backupName = {});
+    /// Calls a staged change off (the restart was cancelled).
+    Q_INVOKABLE void discardStagedChange();
+    /// Tests: the folders the bundle's files and backups live in.
+    void setBundleLocations(const SettingsBundleLocations& locations) { m_bundle = SettingsBundle(locations); }
+
     // ---- C++ ----
     /// The command palette's "Settings" rows ("action:settings.<id>"), one per index entry; running one calls
     /// openSetting(id) on `bridge` (CommandPalette::create adds it).
     static std::shared_ptr<PaletteProvider> paletteProvider(AppSettingsBridge* bridge);
 
+private:
+    SettingsBundle m_bundle;
+
 signals:
     void launchActionChanged();
+    void changeStagedChanged();
     /// Show the Settings window on `page` (a SettingsWindow category key) and reveal `row` there ("" = the page).
     void openRequested(const QString& page, const QString& row);
 };

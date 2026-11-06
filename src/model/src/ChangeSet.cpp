@@ -45,7 +45,7 @@ const SequenceChange* ChangeSet::sequence(SequenceId id) const {
 bool ChangeSet::empty() const {
     return sequences.empty() && addedSequences.empty() && removedSequences.empty() && addedMedia.empty() &&
            removedMedia.empty() && modifiedMedia.empty() && !binsChanged && !aiLockChanged && !assetsChanged &&
-           !redactionsChanged && !speakersChanged && !transcriptEditsChanged && !captionPresetsChanged &&
+           !redactionsChanged && !speakersChanged && !transcriptEditsChanged && !captionPresetsChanged && !customWordsChanged &&
            !reviewNotesChanged && !brandKitChanged && !templatesChanged && !colorManagementChanged &&
            !textStylesChanged && !freeformChanged;
 }
@@ -72,7 +72,7 @@ PropertyRoles compareClips(const Clip& a, const Clip& b) {
         roles |= PropertyRole::Link;
     }
     if (!a.sharesContentWith(b)) {
-        if (a.colorIndex != b.colorIndex || a.name() != b.name()) {
+        if (a.colorIndex != b.colorIndex || a.name() != b.name() || a.note() != b.note()) { // 0.7 (125): a note shows on the clip
             roles |= PropertyRole::Label;
         }
         roles |= a.properties().differences(b.properties());
@@ -99,6 +99,9 @@ PropertyRoles compareClips(const Clip& a, const Clip& b) {
         }
         if (a.content().scaleToFrame != b.content().scaleToFrame) {
             roles |= PropertyRole::Motion; // P.2: Scale to Frame Size sizes the picture before Motion
+        }
+        if (a.content().nearestNeighbor != b.content().nearestNeighbor) {
+            roles |= PropertyRole::Effects; // 0.7: the sampling of the placed picture changes, not the decoded frames
         }
         if (a.content().holdFilters != b.content().holdFilters) {
             roles |= PropertyRole::Source; // P.2: Hold Filters changes the curve time a frame hold shows (as a remap)
@@ -354,7 +357,9 @@ SequenceChange diffSequence(const Sequence& before, const Sequence& after) {
                           before.previewFormat != after.previewFormat || before.videoDisplay != after.videoDisplay ||
                           before.audioDisplay != after.audioDisplay ||
                           before.colorIndex != after.colorIndex || // 0.2: the sequence's label
-                          before.rippleMarkers != after.rippleMarkers; // 0.4: Ripple Sequence Markers
+                          before.rippleMarkers != after.rippleMarkers || // 0.4: Ripple Sequence Markers
+                          before.rippleTrackKeyframes != after.rippleTrackKeyframes || // 0.7: Ripple Track Keyframes
+                          before.vr != after.vr;                         // 0.7: VR / 360 video
     out.marksChanged = before.markIn != after.markIn || before.markOut != after.markOut;
     out.markersChanged = before.markers != after.markers;
     out.captionsChanged = before.captionTracks != after.captionTracks;
@@ -364,7 +369,8 @@ SequenceChange diffSequence(const Sequence& before, const Sequence& after) {
     const std::vector<TrackId> beforeOrder = trackOrder(before);
     const std::vector<TrackId> afterOrder = trackOrder(after);
     out.trackListChanged = beforeOrder != afterOrder || before.videoTracks.size() != after.videoTracks.size() ||
-                           before.submixTracks.size() != after.submixTracks.size();
+                           before.submixTracks.size() != after.submixTracks.size() ||
+                           before.trackGroups != after.trackGroups; // 0.7 (card 124): grouped, ungrouped, collapsed, renamed
 
     SequenceDiff d(out);
     std::vector<TrackId> all = beforeOrder;
@@ -411,6 +417,7 @@ ChangeSet diff(const ProjectState& before, const ProjectState& after) {
     out.speakersChanged = before.speakers != after.speakers;
     out.transcriptEditsChanged = before.transcriptEdits != after.transcriptEdits;
     out.captionPresetsChanged = before.captionPresets != after.captionPresets;
+    out.customWordsChanged = before.customWords != after.customWords;
     out.reviewNotesChanged = before.reviewNotes != after.reviewNotes;
     out.brandKitChanged = before.brandKit != after.brandKit;
     out.templatesChanged = before.templates != after.templates;

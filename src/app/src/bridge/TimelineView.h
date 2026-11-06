@@ -52,6 +52,7 @@
 
 #include <wabcut/model/PreviewCache.h>
 #include <wabcut/model/Sequence.h>
+#include <wabcut/model/Snap.h>
 
 #include <QColor>
 #include <QElapsedTimer>
@@ -69,6 +70,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -80,6 +82,15 @@ class NestedMixPeaks;
 class TimelineRootNode;
 
 /// Measurements of the last updatePaintNode (for tests and profiling).
+/// 0.7 (card 041): the property whose keyframes a clip shows on its body: an intrinsic parameter (a ParamId) or one parameter
+/// of an effect instance of the clip's stack.
+struct ShownKeyframeProperty {
+    int param = -1;            ///< ParamId, or -1 for an effect parameter
+    std::uint64_t effect = 0;  ///< the effect instance (EffectInstanceId::value) when `param` is -1
+    std::string key;           ///< that instance's parameter key
+    bool operator==(const ShownKeyframeProperty&) const = default;
+};
+
 struct TimelineStats {
     qint64 updateNs = 0;   // time spent in updatePaintNode
     bool fullRebuild = false;
@@ -112,6 +123,10 @@ struct TimelineStats {
     /// 0.1.3: the dragged (or settling) clips as drawn, in view coordinates: a drag shows them where they will land.
     QHash<quint64, QRectF> liftedRects;
     QHash<quint64, QString> fxBadges; // 0.4: clip id -> "changed" | "effects" (the fx chips drawn)
+    QHash<quint64, QRectF> fxRects;   // 0.7 (card 041): clip id -> where its fx chip is drawn, in view coordinates
+    QHash<quint64, QRectF> lockBadges; // 0.7 (card 064): clip id -> where its padlock is drawn, in view coordinates
+    QHash<quint64, QString> clipNotes; // 0.7 (card 125): clip id -> the note text as printed on the clip (wrapped, elided)
+    QHash<quint64, int> keyframeLines; // 0.7 (card 041): clip id -> the keyframes drawn on its shown property (0: a flat line)
     QHash<quint64, QString> syncBadges; // 0.6: clip id -> its out-of-sync tag ("+5", "-12") as drawn
     // 0.5 (P0, stream A): caption lanes (captionKey(row, cue) keys) and the waveforms of nested audio clips.
     int captionCues = 0;                  // cue blocks drawn (built range)
@@ -129,6 +144,7 @@ struct TimelineStats {
 /// Visual tokens, parsed from the QML `style` map (keys match the member names).
 struct TimelineStyle {
     QColor laneColor{0x0A, 0x0A, 0x0C};
+    qreal laneLabelWash = 0.16; // 0.7: the opacity of a track's label colour over its lane
     QColor clipBorder{16, 16, 19, 64};
     QColor videoLabelColor{0x10, 0x10, 0x13};
     QColor audioLabelColor{0xF4, 0xF3, 0xF7};
@@ -215,6 +231,9 @@ struct TimelineStyle {
     // 0.5: caption lanes - one compact row per caption track above the video tracks, its cues solid blocks in the
     // caption colour with their first line in the caption ink.
     qreal captionTrackHeight = 28;
+    // 0.7 (card 124): a track group's header row (above its tracks; a collapsed group is this row alone) and the wash of
+    // the group's label colour over it.
+    qreal groupHeaderHeight = 26, groupLaneWash = 0.18;
     QColor captionColor{0xBF, 0xB6, 0xD9};
     QColor captionInkColor{0x00, 0x00, 0x00};
     // 0.6: the out-of-sync tag at the start of a linked clip's name (Premiere's red box): clipInk on this colour.
@@ -247,6 +266,9 @@ struct TimelineLaneFacts {
     std::unordered_map<std::uint64_t, TimelineNestInfo> nested; ///< by sequence id
     std::unordered_map<std::uint64_t, QString> badges;          ///< clip id -> "enhanced" | "missingRender"
     std::unordered_map<std::uint64_t, QString> channels;        ///< M5n (A.9): clip id -> channel badge ("SWAP", ...)
+    /// 0.7 (card 142): audio clip id -> the title its stream carries in the file, for recordings with two or more audio
+    /// streams ("Game", "Mic", "Boom"); clips without one have no entry.
+    std::unordered_map<std::uint64_t, QString> streamNames;
     /// 0.4: clip id -> Changed (Motion / Opacity / blend mode / Volume / Pan off their defaults or keyframed, or time
     /// remapping) or Effects (stack effects; wins). Untouched clips have no entry.
     std::unordered_map<std::uint64_t, ClipFx> fx;
@@ -280,6 +302,9 @@ class TimelineView : public QQuickItem {
     /// Sequence In/Out marks in view coordinates (NaN when unset), for the ruler's marked-range bar.
     Q_PROPERTY(double markInX READ markInX NOTIFY viewChanged FINAL)
     Q_PROPERTY(double markOutX READ markOutX NOTIFY viewChanged FINAL)
+    /// 0.7 (card 024): the work area's In and Out in view coordinates (NaN when the sequence has none), for the ruler's bar.
+    Q_PROPERTY(double workAreaInX READ workAreaInX NOTIFY viewChanged FINAL)
+    Q_PROPERTY(double workAreaOutX READ workAreaOutX NOTIFY viewChanged FINAL)
     Q_PROPERTY(QString hoveredClip READ hoveredClip NOTIFY hoveredClipChanged FINAL)
     Q_PROPERTY(bool marqueeActive READ marqueeActive NOTIFY marqueeChanged FINAL)
 
@@ -392,6 +417,19 @@ class TimelineView : public QQuickItem {
     /// In/Out and beats while `snapping` is on.
     Q_PROPERTY(bool snapPlayhead READ snapPlayhead WRITE setSnapPlayhead NOTIFY snappingChanged FINAL)
 
+    // ---- 0.7 (stream A, batch A2; TimelineViewDisplay.cpp) ----
+    /// Card 113: what snapping sticks to, a bit mask: 1 clip edges, 2 the playhead, 4 In/Out marks, 8 markers, 16 beats
+    /// (kSnapAll = all, the default). Drags, drops, ruler scrubs and caption cue drags all follow it; `snapping` stays
+    /// the master switch.
+    Q_PROPERTY(int snapTargetMask READ snapTargetMask WRITE setSnapTargetMask NOTIFY snappingChanged FINAL)
+    /// Card 126: the clip's length (the sequence's time format) after its name on the clip.
+    Q_PROPERTY(bool showClipDuration READ showClipDuration WRITE setShowClipDuration NOTIFY displayChanged FINAL)
+    /// Card 125: a clip's note (Clip > Clip Note…) printed on the clip, on a scrim at its foot (up to three lines).
+    Q_PROPERTY(bool showClipNotes READ showClipNotes WRITE setShowClipNotes NOTIFY displayChanged FINAL)
+    /// Card 142: an audio clip of a recording with two or more audio streams shows its stream's title from the file
+    /// (OBS, ShadowPlay, Game Bar and field recorders name their tracks there) after its name.
+    Q_PROPERTY(bool showStreamNames READ showStreamNames WRITE setShowStreamNames NOTIFY displayChanged FINAL)
+
     // ---- 0.5 (P0, stream A): caption tracks as lanes (TimelineViewCaptions.cpp) ----
     /// Premiere's caption tracks at the top of the timeline (Timeline Display: Show caption tracks): one compact row per
     /// caption track of the sequence above the top video track. On by default; there are no rows without caption tracks.
@@ -402,6 +440,10 @@ class TimelineView : public QQuickItem {
     /// The caption rows for their headers, top first: [{ id ("k…"), label ("C1"), name, language, enabled, targeted,
     /// y (content coordinates), height, cues (count) }].
     Q_PROPERTY(QVariantList captionRows READ captionRowItems NOTIFY captionRowsChanged FINAL)
+    /// 0.7 (card 124): the track groups' header rows, top first: [{ id ("g…"), name, kind, colorIndex (-1: none), collapsed,
+    /// count, y (content coordinates), height, muted, solo, locked, targeted, enabled (each 0 none, 1 some, 2 all of its
+    /// tracks) }]. A group of a sequence with no group shows no row.
+    Q_PROPERTY(QVariantList groupRows READ groupRowItems NOTIFY groupRowsChanged FINAL)
     /// The selected caption cue: { track ("k…"), cue (index) }, or an empty map.
     Q_PROPERTY(QVariantMap selectedCaption READ selectedCaptionItem NOTIFY captionSelectionChanged FINAL)
 
@@ -428,6 +470,8 @@ public:
     double playheadX() const;
     double markInX() const;
     double markOutX() const;
+    double workAreaInX() const;
+    double workAreaOutX() const;
     QString hoveredClip() const { return clipKey(m_hovered); }
     bool marqueeActive() const { return m_marqueeActive; }
     QString tool() const { return toolKey(m_tool); }
@@ -446,6 +490,11 @@ public:
     void stepAutoScroll(double seconds);
     /// Scrolls so the clip is in view (keyboard selection).
     Q_INVOKABLE void revealClip(const QString& clipId);
+    /// 0.7 (card 008): where the keyboard's context menu (Menu key, Shift+F10) opens for the selection: the selected
+    /// transition, else the selected gap, else the primary clip. { kind ("transition" | "gap" | "clip"), id (the
+    /// transition's key, the gap's track key, the clip's key), x, y } in view coordinates: the middle of the part of its
+    /// rectangle that is in view (it scrolls into view first). {} when nothing is selected.
+    Q_INVOKABLE QVariantMap menuAnchor();
     double rulerStepPx() const;
     double rulerFirstX() const;
     int rulerFirstIndex() const;
@@ -464,8 +513,14 @@ public:
 
     // ---- M5i: track heights (view state, per track) ----
     int layoutRevision() const { return m_layoutRevision; }
-    /// The height of a track's row in px.
+    /// The height of a track's row in px (a track folded into a collapsed group keeps the height it has when shown).
     Q_INVOKABLE double trackHeightOf(const QString& trackId) const;
+    /// 0.7 (card 124): where a track's row starts (content coordinates; the headers sit at these y), and whether it is
+    /// shown (false while its group is collapsed).
+    Q_INVOKABLE double trackYOf(const QString& trackId) const;
+    Q_INVOKABLE bool trackVisible(const QString& trackId) const;
+    /// Sets the height of every track of a group (setTrackHeight for each; the group's key "g…").
+    Q_INVOKABLE void setGroupTrackHeight(const QString& groupId, double height);
     /// Sets one track's height (clamped to the style's min/max).
     Q_INVOKABLE void setTrackHeight(const QString& trackId, double height);
     /// Changes every "video", "audio" or "all" track by `steps` steps (Ctrl/Alt +/-, Shift+=).
@@ -536,6 +591,23 @@ public:
     void setShowFxBadges(bool on);
     bool snapPlayhead() const { return m_snapPlayhead; }
     void setSnapPlayhead(bool on);
+    // ---- 0.7 (stream A, batch A2; TimelineViewDisplay.cpp) ----
+    static constexpr int kSnapClipEdges = 1;
+    static constexpr int kSnapPlayhead = 2;
+    static constexpr int kSnapMarks = 4;
+    static constexpr int kSnapMarkers = 8;
+    static constexpr int kSnapBeats = 16;
+    static constexpr int kSnapAll = 31;
+    int snapTargetMask() const { return m_snapTargetMask; }
+    void setSnapTargetMask(int mask);
+    /// The model's snap options for the mask (a drag's targets: edit::snapTargets).
+    edit::SnapOptions snapOptions() const;
+    bool showClipDuration() const { return m_showClipDuration; }
+    void setShowClipDuration(bool on);
+    bool showClipNotes() const { return m_showClipNotes; }
+    void setShowClipNotes(bool on);
+    bool showStreamNames() const { return m_showStreamNames; }
+    void setShowStreamNames(bool on);
     /// The time quantum of drags of the material: an audio sample with audio time units on and only audio clips in
     /// `clips` (Premiere: sample edits never move video), else a frame.
     Rate editRate(std::span<const ClipId> clips) const;
@@ -641,6 +713,18 @@ public:
     Q_INVOKABLE QVariantMap clipHoverInfo(const QString& clipId) const;
     /// 0.4: where the pointer last hovered the lanes (view coordinates).
     Q_INVOKABLE QPointF hoverPosition() const { return m_hoverPos; }
+    /// 0.7 (card 041), Premiere's Show Clip Keyframes: the clip's properties that can show their keyframes on the clip, for
+    /// the menu its fx badge opens: [{ id, label, group, keyed (it has keyframes), shown }] - Motion and Opacity (a video
+    /// clip), Volume and Pan (an audio clip), then each effect's animatable parameters. Empty for an unknown clip.
+    Q_INVOKABLE QVariantList clipKeyframeProperties(const QString& clipId) const;
+    /// Draws the property `propertyId` (an id of clipKeyframeProperties) of the clip as a value line with its keyframes over
+    /// the clip; "" hides it again. One property per clip; view state only (nothing is saved or edited).
+    Q_INVOKABLE void showClipKeyframes(const QString& clipId, const QString& propertyId);
+    /// The id of the property the clip shows keyframes of, "" for none.
+    Q_INVOKABLE QString shownClipKeyframes(const QString& clipId) const;
+    /// Moves the playhead to the keyframe of the shown property that follows (`forward`) or precedes the playhead on the
+    /// clip; false when there is none (or the clip shows no property).
+    Q_INVOKABLE bool seekClipKeyframe(const QString& clipId, bool forward);
     /// Scrolls the tracks so the audio tracks are in view (the Audio workspace).
     Q_INVOKABLE void revealAudioTracks();
     /// Click selection: modifiers = Qt.KeyboardModifiers of the click.
@@ -727,8 +811,19 @@ public:
         qreal y = 0;
         qreal height = 0;
         bool audio = false;
+        bool hidden = false; ///< 0.7 (card 124): folded into a collapsed track group (height 0, nothing drawn)
     };
     const std::vector<Row>& rows() const { return m_rows; }
+    /// 0.7 (card 124): a track group's header row above its tracks (the first of them in the display).
+    struct GroupRow {
+        TrackGroupId id;
+        qreal y = 0;
+        qreal height = 0;
+        bool collapsed = false;
+        int colorIndex = -1; ///< the group's label colour (a change redraws the lane)
+    };
+    const std::vector<GroupRow>& groupRows() const { return m_groupRows; }
+    QVariantList groupRowItems() const { return m_groupRowItems; }
 
     // ---- External preview (AI assistant; owner: AI platform engineer; TimelineViewPreview.cpp) ----
     // A read-only picture of an edit that is not applied yet, drawn over the current sequence by an overlay child
@@ -772,6 +867,8 @@ signals:
     void gestureChanged();
     /// Right click on a clip (already selected): QML opens the clip context menu at (x, y).
     void contextMenuRequested(const QString& clipId, double x, double y);
+    /// 0.7 (card 041): a click on a clip's fx badge (the clip is selected): QML opens the menu of its properties at (x, y).
+    void fxBadgeClicked(const QString& clipId, double x, double y);
     /// 0.2 UX (stream T): right click on a transition (already selected: ProjectController.selectedTransition): QML opens
     /// the transition menu at (x, y) (ProjectController.transitionInfo describes it).
     void transitionContextMenuRequested(const QString& transitionId, double x, double y);
@@ -800,6 +897,7 @@ signals:
     // ---- 0.5: caption lanes ----
     void captionsChanged();
     void captionRowsChanged();
+    void groupRowsChanged(); // 0.7 (card 124)
     void captionSelectionChanged();
     /// A double-click on cue `cue` of caption track `track` ("k…"): QML opens its text in the Captions page.
     void captionDoubleClicked(const QString& track, int cue);
@@ -843,7 +941,7 @@ private:
     void setHovered(ClipId clip);
 
     // ---- Gestures (TimelineViewInput.cpp) ----
-    enum class Zone { None, Body, Head, Tail, VolumeLine, VolumeKey, SpeedLine, SpeedKey, FadeHandle };
+    enum class Zone { None, Body, Head, Tail, VolumeLine, VolumeKey, SpeedLine, SpeedKey, FadeHandle, FxBadge };
     struct Hit {
         ClipId clip;
         int row = -1;
@@ -945,6 +1043,8 @@ private:
     ClipId clipIdAt(double x, double y) const;
     Ticks ticksAtX(double x) const;
     double xOfTicks(Ticks t) const; // view coordinates
+    /// Scrolls so the span [start, end) of `track` is in view (revealClip's rule; menuAnchor's too).
+    void revealSpan(Ticks start, Ticks end, const Track* track);
     std::vector<ClipId> clipsInRect(const QRectF& rect) const;
     struct RulerStep {
         std::int64_t frames = 24;
@@ -1046,6 +1146,9 @@ private:
         std::unordered_set<std::uint64_t> moving; // the dragged material at the press (the lifted set of a move)
         std::vector<Ticks> copyTargets;           // snap targets of a copy: `targets` plus the originals' edges
         std::vector<ClipId> created;              // the copies of the last valid copy preview
+        // 0.7 (card 040): Alt went down before Ctrl, so Ctrl on top of Alt inserts the copy; Ctrl held first (or both from
+        // the same moment) keeps meaning rearrange.
+        bool altFirst = false;
     } m_gesture;
     QString m_gestureReadout;
     QPointF m_gesturePoint;
@@ -1193,7 +1296,13 @@ private:
     // ---- 0.4 (stream A) ----
     bool m_showClipSpeed = true;
     bool m_showFxBadges = true;
+    // 0.7 (card 041): the property each clip shows the keyframes of (TimelineViewKeyframes.cpp). View state, not saved.
+    std::unordered_map<std::uint64_t, ShownKeyframeProperty> m_clipKeyframes;
     bool m_snapPlayhead = true;
+    int m_snapTargetMask = kSnapAll;       // 0.7 (card 113)
+    bool m_showClipDuration = false;       // 0.7 (card 126)
+    bool m_showClipNotes = true;           // 0.7 (card 125)
+    bool m_showStreamNames = true;         // 0.7 (card 142)
     /// A ruler scrub snapped the playhead here (snapX, the snap line) until endScrub().
     std::optional<Ticks> m_playheadSnapAt;
     /// The zoom and scroll before Zoom to Sequence fitted `sequence`, and the fit it made (toggleZoomToSequence).
@@ -1236,6 +1345,10 @@ private:
     CaptionSelection m_localCaptionSelection;
     std::vector<CaptionRow> m_captionRows;
     QVariantList m_captionRowItems;
+    // 0.7 (card 124): the track groups' header rows (relayoutRows) and their items for the headers (refreshGroupRowItems).
+    void refreshGroupRowItems();
+    std::vector<GroupRow> m_groupRows;
+    QVariantList m_groupRowItems;
     bool m_showCaptionTracks = true;
     std::unordered_set<std::uint64_t> m_captionTargets; ///< targeted caption tracks (view state)
     int m_captionRevision = 0; ///< selection, drag or hover changed: the caption layer is drawn again

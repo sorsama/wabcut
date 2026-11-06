@@ -13,6 +13,11 @@ is checked, and what still needs a person with a screen reader to try.
   control says why in its description ("Undo: Nothing to undo").
 - **The Timeline list** (the list button in the Timeline's toolbar) shows the timeline as tracks and clips in time
   order, each clip with its name, track, start, length, effects and whether it is selected.
+- **Context menus from the keyboard** (0.7). The Menu key and Shift+F10 open the right-click menu of what is focused: in the
+  Timeline the menu of the selected clip, transition or gap (the first targeted track's header menu with nothing
+  selected; in the Timeline list, of the current row), on a track header's name its track menu, on a panel's tab its tab
+  menu. **Select Label Group**, the 16 named label colours (Edit > Label, a clip's menu, a track header's menu) and a
+  gap's selection (Sequence > Go to Gap > Next / Previous in Track, then Delete) need no pointer either.
 - **High contrast** (Settings > Appearance): black or white surfaces, text at 7:1 or more, strong borders.
 - **Interface size** (Settings > Appearance): 90, 100, 125 or 150 %. Sizes that would leave less than 1100 x 700 for the
   window on your screen are greyed. The new size applies when Wabcut restarts; "Restart now" does that (it asks about

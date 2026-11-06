@@ -3,6 +3,7 @@
 #include "CommandPalette.h"
 #include "EffectControls.h"
 #include "EffectPresetsBridge.h"
+#include "OfxUi.h"
 #include "PluginBridge.h"
 #include "ProjectController.h"
 
@@ -115,6 +116,21 @@ QVariantMap pluginRow(const QVariantMap& p) {
     return row;
 }
 
+/// 0.7: an item row of an OpenFX video plug-in (OfxUi::plugins: the same fields): a video effect like the built-in ones.
+QVariantMap openFxRow(const QVariantMap& p) {
+    QVariantMap row = itemRow(p);
+    QStringList about;
+    for (const QString& part : {str(p, "vendor"), (QStringLiteral("OpenFX ") + str(p, "version")).trimmed()}) {
+        if (!part.isEmpty())
+            about << part;
+    }
+    row.insert(QStringLiteral("description"), about.join(QStringLiteral(" · ")));
+    row.insert(QStringLiteral("icon"), QStringLiteral("sparkles"));
+    row.insert(QStringLiteral("kind"), QStringLiteral("video"));
+    row.insert(QStringLiteral("plugin"), false);
+    return row;
+}
+
 } // namespace
 
 EffectsTreeModel::EffectsTreeModel(QObject* parent) : QAbstractListModel(parent) { load(); }
@@ -140,6 +156,8 @@ void EffectsTreeModel::setSources(ProjectController* controller, EffectPresetsBr
         });
         connect(m_plugins, &PluginBridge::availableChanged, this, &EffectsTreeModel::rebuild);
     }
+    // 0.7: a scan of OpenFX plug-ins finished.
+    connect(&OfxUi::instance(), &OfxUi::changed, this, &EffectsTreeModel::rebuild, Qt::UniqueConnection);
     rebuild();
 }
 
@@ -320,6 +338,45 @@ void EffectsTreeModel::addPlugins(std::vector<Node>& top) const {
     top.push_back(std::move(folder));
 }
 
+void EffectsTreeModel::addOpenFx(std::vector<Node>& top) const {
+    if (!m_showPlugins || !OfxUi::instance().available())
+        return;
+    const QString q = m_query.trimmed();
+    std::set<std::string> favorites;
+    if (m_presets) {
+        const EffectsLibrary library = sharedEffectLibrary()->library();
+        favorites.insert(library.favorites.begin(), library.favorites.end());
+    }
+    Node folder;
+    folder.key = QStringLiteral("ofx");
+    folder.folder = folderRow(tx("OpenFX Plug-ins"), QStringLiteral("sparkles"), QStringLiteral("video")); // not "plugins": that kind shows the audio plug-ins' tools
+    std::map<QString, Node> groups; // by case-folded title, as the audio plug-ins' vendors
+    for (const QVariant& v : OfxUi::instance().plugins()) {
+        const QVariantMap p = v.toMap();
+        if (!q.isEmpty() && std::max({fuzzyScore(q, str(p, "name")) * 3, fuzzyScore(q, str(p, "vendor"))}) <= 0)
+            continue;
+        QString title = str(p, "category");
+        if (title.isEmpty())
+            title = tx("Other");
+        Node& node = groups[title.toCaseFolded()];
+        if (node.key.isEmpty()) {
+            QString safe = title; // a folder key holds no '/' of its own
+            safe.replace(QLatin1Char('/'), QLatin1Char('|'));
+            node.key = QStringLiteral("ofx/") + safe;
+            node.folder = folderRow(title, QStringLiteral("folder"), QStringLiteral("category"));
+        }
+        QVariantMap row = openFxRow(p);
+        row.insert(QStringLiteral("home"), true);
+        row.insert(QStringLiteral("favorite"), favorites.contains(str(row, "item").toStdString()));
+        node.items.append(row);
+    }
+    if (groups.empty() && q.isEmpty() && OfxUi::instance().unusable().isEmpty())
+        return; // no OpenFX plug-ins on this computer: no empty folder
+    for (auto& [folded, node] : groups)
+        folder.children.push_back(std::move(node));
+    top.push_back(std::move(folder));
+}
+
 std::vector<EffectsTreeModel::Node> EffectsTreeModel::buildTree() const {
     std::vector<Node> top;
     const QString q = m_query.trimmed();
@@ -423,6 +480,7 @@ std::vector<EffectsTreeModel::Node> EffectsTreeModel::buildTree() const {
     }
 
     addPlugins(top);
+    addOpenFx(top);
 
     // The custom bins, in the order they were made.
     for (const QVariant& g : custom) {
@@ -866,6 +924,8 @@ QVariantMap EffectsTreeModel::applyToSelection(const QString& itemId) {
     QString id = itemId.trimmed();
     if (id.startsWith(QLatin1String("effect:")))
         id = id.mid(7);
+    if (id.startsWith(QLatin1String("plugin.ofx.")))
+        return OfxUi::instance().applyToSelectedClips(m_controller, id); // 0.7: an OpenFX video plug-in
     if (id.startsWith(QLatin1String("plugin."))) {
         if (!m_plugins)
             return failed(tx("Audio plugins are not available here"));

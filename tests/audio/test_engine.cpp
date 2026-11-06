@@ -6,12 +6,17 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <thread>
 #include <vector>
 
 #if defined(_M_X64) || defined(__x86_64__)
 #include <xmmintrin.h> // _mm_getcsr
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h> // _ReadStatusReg
+#endif
 #endif
 
 using namespace wabcut;
@@ -228,24 +233,42 @@ TEST_CASE("NullRealtime runs the real device path and survives a reopen with a m
     CHECK(engine.clock() == frozen);
 }
 
+#if defined(_M_X64) || defined(__x86_64__) || defined(__aarch64__) || defined(_M_ARM64)
+namespace {
+// The thread's floating-point mode bits that flush denormals: x86-64 MXCSR's FTZ and DAZ, AArch64 FPCR's FZ.
 #if defined(_M_X64) || defined(__x86_64__)
+constexpr unsigned int kFtzDaz = 0x8000u | 0x0040u;
+unsigned int denormalMode() { return _mm_getcsr(); }
+#else
+constexpr unsigned int kFtzDaz = 1u << 24;
+unsigned int denormalMode() {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return static_cast<unsigned int>(_ReadStatusReg(0x5A20)); // FPCR
+#else
+    std::uint64_t value = 0;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(value));
+    return static_cast<unsigned int>(value);
+#endif
+}
+#endif
+} // namespace
+
 // Review wave 5, A5-P2-9. A filter ringing down in a long silence reaches the denormal range, where x86 spends about 100
-// cycles an operation: the callback runs with denormals flushed (MXCSR's FTZ and DAZ bits, rt::ScopedDenormalsOff) and
-// gives the thread its own mode back. Fails today: the source sees the thread's default mode (both bits clear), and the
-// product below is a denormal instead of 0.
+// cycles an operation: the callback runs with denormals flushed (MXCSR's FTZ and DAZ bits, or FPCR's FZ on ARM64;
+// rt::ScopedDenormalsOff) and gives the thread its own mode back. Fails today: the source sees the thread's default mode
+// (the bits clear), and the product below is a denormal instead of 0.
 TEST_CASE("The audio callback flushes denormals to zero and restores the thread mode", "[audio][engine]") {
-    constexpr unsigned int kFtzDaz = 0x8000u | 0x0040u;
     struct ModeSource final : AudioSource {
         unsigned int csr = 0;
         float product = 1.0f;
         void render(std::span<float> out, int, Rate, Ticks) noexcept override {
-            csr = _mm_getcsr();
+            csr = denormalMode();
             volatile float smallest = std::numeric_limits<float>::min();
             product = smallest * 0.25f; // a denormal result
             std::ranges::fill(out, 0.0f);
         }
     };
-    const unsigned int before = _mm_getcsr() & kFtzDaz;
+    const unsigned int before = denormalMode() & kFtzDaz;
     auto source = std::make_shared<ModeSource>();
     AudioEngine engine;
     REQUIRE(engine.start(exactConfig()));
@@ -255,6 +278,6 @@ TEST_CASE("The audio callback flushes denormals to zero and restores the thread 
     REQUIRE(engine.pull(buffer));
     CHECK((source->csr & kFtzDaz) == kFtzDaz);
     CHECK(source->product == 0.0f);
-    CHECK((_mm_getcsr() & kFtzDaz) == before);
+    CHECK((denormalMode() & kFtzDaz) == before);
 }
 #endif

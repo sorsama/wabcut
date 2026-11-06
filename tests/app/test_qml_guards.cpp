@@ -73,7 +73,9 @@ TEST_CASE("QML labels are sentence case: all caps only for acronyms and micro-ta
                                  // 0.2 export: loudness standards (EBU R 128, ATSC A/85).
                                  QStringLiteral("ATSC"),
                                  // 0.6: colour-management operators and Sony's MXF codec family.
-                                 QStringLiteral("ACES"), QStringLiteral("XDCAM")};
+                                 QStringLiteral("ACES"), QStringLiteral("XDCAM"),
+                                 // 0.7: the date format hint of the rights log's fields.
+                                 QStringLiteral("YYYY")};
     const QRegularExpression label(QStringLiteral(R"(qsTr\("([^"]+)\")"));
     const QRegularExpression capsWord(QStringLiteral(R"(\b[A-Z]{4,}\b)"));
     const QRegularExpression lower(QStringLiteral("[a-z]"));

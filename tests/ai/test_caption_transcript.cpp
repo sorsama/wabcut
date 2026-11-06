@@ -332,3 +332,35 @@ TEST_CASE("transcript.find lists the matches and transcript.findReplace replaces
     fx.h.ok("transcript.correctWord", Json{{"word", 1}, {"text", "\xC3\x89""cole"}});
     CHECK(fx.h.ok("transcript.find", Json{{"find", "\xC3\xA9""COLE"}}).data["count"] == 1);
 }
+
+// Card #84 follow-up: a transcript word or a speaker name that starts with = + - @ must not run as a formula when the
+// CSV is opened in a spreadsheet.
+TEST_CASE("transcript.export neutralises spreadsheet formulas in the CSV", "[ai][edit][captions][transcriptExport][csv]") {
+    namespace fs = std::filesystem;
+    Fixture fx;
+    const Json paragraphs = fx.h.ok("transcript.text").data["paragraphs"];
+    REQUIRE(paragraphs.size() == 2);
+    const std::string s0 = paragraphs[0][2];
+    const std::string e0 = paragraphs[0][3];
+    fx.h.ok("transcript.correctWord", Json{{"word", 0}, {"text", "=HYPERLINK(\"http://evil\")"}});
+    fx.h.ok("transcript.correctWord", Json{{"word", 5}, {"text", "-2 dB"}});
+    const fs::path dir = fs::path(WABCUT_TEST_OUTPUT_DIR) / "transcript-export-csv";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const fs::path csv = dir / "talk.csv";
+    fx.h.ok("transcript.export", Json{{"path", csv.generic_string()}});
+    std::ifstream in(csv, std::ios::binary);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    const std::string text = ss.str();
+    // The words start the cell: guarded, then quoted as before. The timecode and speaker columns are untouched.
+    CHECK(text.find(s0 + "," + e0 + ",Speaker 1,\"'=HYPERLINK(\"\"http://evil\"\")") != std::string::npos);
+    CHECK(text.find(",Speaker 2,'-2 dB for having me.") != std::string::npos);
+    // No data row starts a text cell with a formula character.
+    CHECK(text.find(",Speaker 1,=") == std::string::npos);
+    CHECK(text.find(",Speaker 2,-") == std::string::npos);
+    // The .txt layout is not a spreadsheet and is left as it was.
+    const auto plain = fx.h.ok("transcript.export");
+    CHECK(plain.data["text"].get<std::string>().find("=HYPERLINK") != std::string::npos);
+    CHECK(plain.data["text"].get<std::string>().find("'=HYPERLINK") == std::string::npos);
+}

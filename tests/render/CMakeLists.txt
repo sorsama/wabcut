@@ -12,7 +12,9 @@ wabcut_add_test_suite(render
         test_effects.cpp
         test_flowmix.cpp # P.2: the flow mix (Optical Flow, Morph Cut) and the stabilizers' layer warp
         test_transitions.cpp # 0.2: Premiere's transition library
+        test_vr.cpp # 0.7 (card 38): the VR viewer of the monitors
         test_library_effects.cpp # 0.2: Premiere's video effect library
+        test_motion_blur.cpp # 0.7: Motion Blur - a layer drawn at the instants of the shutter and averaged
         test_grade.cpp
         test_masks.cpp
         test_nested.cpp
@@ -24,12 +26,21 @@ wabcut_add_test_suite(render
         test_offscreen_async.cpp
         test_texture_pool.cpp
         test_captions.cpp
+        test_caption_stack.cpp # 0.7 (card 116): bilingual caption blocks stack
         test_titles.cpp
         test_graphics.cpp # C.13 motion graphics rasterised (I.9 Part 0.5)
         test_graphics_text.cpp # 0.6: text strokes, faux styles, capitals, vertical alignment, shadow size
         test_hdr_capture.cpp # I.9 (gaming): HDR game captures tone-mapped into SDR projects
+        test_vector_image.cpp # 0.7 (card #86): SVG, Illustrator and EPS drawn at the size shown
+        test_typography.cpp # 0.7 (card #138): OpenType features and Optical kerning
     LIBS wabcut_render wabcut_render_reference wabcut_media wabcut_interchange Qt6::Gui
     PROPERTIES FIXTURES_REQUIRED wabcut_test_media LABELS render)
+# 0.7 (card #86): a stand-in for Ghostscript that records its arguments (tests/render/fake_gs.cpp).
+add_executable(wabcut_fake_gs fake_gs.cpp)
+wabcut_target_defaults(wabcut_fake_gs)
+add_dependencies(wabcut_render_tests wabcut_fake_gs)
+target_compile_definitions(wabcut_render_tests PRIVATE
+    WABCUT_FAKE_GS="$<TARGET_FILE:wabcut_fake_gs>")
 target_compile_definitions(wabcut_render_tests PRIVATE
     WABCUT_TEST_MEDIA_DIR="${CMAKE_BINARY_DIR}/test-output/media"
     WABCUT_FFMPEG_EXECUTABLE="${WABCUT_FFMPEG_EXECUTABLE}"

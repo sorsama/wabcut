@@ -31,12 +31,99 @@ double TimelineView::trackHeightOf(const QString& trackId) const {
     if (!id)
         return m_style.videoTrackHeight;
     for (const Row& row : m_rows) {
-        if (row.track->id == *id)
-            return row.height;
+        if (row.track->id == *id) {
+            if (!row.hidden)
+                return row.height;
+            // 0.7 (card 124): folded into a collapsed group: the height it has when shown
+            const auto stored = m_trackHeights.find(id->value);
+            return stored != m_trackHeights.end() ? stored->second : defaultTrackHeight(row.audio);
+        }
     }
     if (const auto it = m_trackHeights.find(id->value); it != m_trackHeights.end())
         return it->second;
     return m_style.videoTrackHeight;
+}
+
+double TimelineView::trackYOf(const QString& trackId) const {
+    const auto id = parseTrackKey(trackId);
+    if (!id)
+        return 0;
+    for (const Row& row : m_rows) {
+        if (row.track->id == *id)
+            return row.y;
+    }
+    return 0;
+}
+
+bool TimelineView::trackVisible(const QString& trackId) const {
+    const auto id = parseTrackKey(trackId);
+    if (!id)
+        return false;
+    for (const Row& row : m_rows) {
+        if (row.track->id == *id)
+            return !row.hidden;
+    }
+    return false;
+}
+
+void TimelineView::setGroupTrackHeight(const QString& groupId, double height) {
+    const auto id = parseTrackGroupKey(groupId);
+    const TrackGroup* group = m_sequence && id ? m_sequence->findTrackGroup(*id) : nullptr;
+    if (!group || !std::isfinite(height))
+        return;
+    const qreal clamped = std::clamp<qreal>(std::round(height), m_style.minTrackHeight, m_style.maxTrackHeight);
+    bool changed = false;
+    for (const TrackId member : group->members) {
+        const auto it = m_trackHeights.find(member.value);
+        if (it == m_trackHeights.end() || it->second != clamped) {
+            m_trackHeights[member.value] = clamped;
+            changed = true;
+        }
+    }
+    if (!changed)
+        return;
+    relayoutRows();
+    clampScroll();
+    emit viewChanged();
+    update();
+}
+
+void TimelineView::refreshGroupRowItems() {
+    QVariantList items;
+    if (m_sequence) {
+        for (const GroupRow& row : m_groupRows) {
+            const TrackGroup* group = m_sequence->findTrackGroup(row.id);
+            if (!group)
+                continue;
+            // 0: no track of the group has the flag, 1: some do, 2: all do.
+            const auto state = [&](bool (*has)(const Track&)) {
+                int count = 0;
+                for (const TrackId id : group->members) {
+                    const Track* t = m_sequence->findTrack(id);
+                    if (t && has(*t))
+                        ++count;
+                }
+                return count == 0 ? 0 : count == static_cast<int>(group->members.size()) ? 2 : 1;
+            };
+            items << QVariantMap{{QStringLiteral("id"), trackGroupKey(group->id)},
+                                 {QStringLiteral("name"), QString::fromStdString(group->name)},
+                                 {QStringLiteral("kind"), group->kind == TrackKind::Video ? QStringLiteral("video") : QStringLiteral("audio")},
+                                 {QStringLiteral("colorIndex"), group->colorIndex},
+                                 {QStringLiteral("collapsed"), group->collapsed},
+                                 {QStringLiteral("count"), static_cast<int>(group->members.size())},
+                                 {QStringLiteral("y"), row.y},
+                                 {QStringLiteral("height"), row.height},
+                                 {QStringLiteral("muted"), state([](const Track& t) { return t.muted; })},
+                                 {QStringLiteral("solo"), state([](const Track& t) { return t.solo; })},
+                                 {QStringLiteral("locked"), state([](const Track& t) { return t.locked; })},
+                                 {QStringLiteral("targeted"), state([](const Track& t) { return t.targeted; })},
+                                 {QStringLiteral("enabled"), state([](const Track& t) { return t.enabled; })}};
+        }
+    }
+    if (items == m_groupRowItems)
+        return;
+    m_groupRowItems = std::move(items);
+    emit groupRowsChanged();
 }
 
 void TimelineView::setTrackHeight(const QString& trackId, double height) {
@@ -60,7 +147,7 @@ void TimelineView::changeTrackHeights(const QString& kind, int steps) {
     const bool video = kind != QLatin1String("audio");
     const bool audio = kind != QLatin1String("video");
     for (const Row& row : m_rows) {
-        if (row.audio ? !audio : !video)
+        if (row.hidden || (row.audio ? !audio : !video)) // 0.7: a folded track keeps the height it has when shown
             continue;
         const qreal h = std::clamp(row.height + steps * m_style.trackHeightStep, m_style.minTrackHeight,
                                    m_style.maxTrackHeight);
@@ -241,6 +328,47 @@ void TimelineView::setSnapPlayhead(bool on) {
         return;
     m_snapPlayhead = on;
     emit snappingChanged();
+}
+
+// ---- 0.7 (stream A, batch A2) ----
+
+void TimelineView::setSnapTargetMask(int mask) {
+    mask &= kSnapAll;
+    if (mask == m_snapTargetMask)
+        return;
+    m_snapTargetMask = mask;
+    emit snappingChanged();
+}
+
+edit::SnapOptions TimelineView::snapOptions() const {
+    edit::SnapOptions options;
+    options.clipEdges = (m_snapTargetMask & kSnapClipEdges) != 0;
+    options.playhead = (m_snapTargetMask & kSnapPlayhead) != 0;
+    options.marks = (m_snapTargetMask & kSnapMarks) != 0;
+    options.markers = (m_snapTargetMask & kSnapMarkers) != 0;
+    options.beats = (m_snapTargetMask & kSnapBeats) != 0;
+    return options;
+}
+
+void TimelineView::setShowClipDuration(bool on) {
+    if (on == m_showClipDuration)
+        return;
+    m_showClipDuration = on;
+    bumpDisplay();
+}
+
+void TimelineView::setShowClipNotes(bool on) {
+    if (on == m_showClipNotes)
+        return;
+    m_showClipNotes = on;
+    bumpDisplay();
+}
+
+void TimelineView::setShowStreamNames(bool on) {
+    if (on == m_showStreamNames)
+        return;
+    m_showStreamNames = on;
+    bumpDisplay();
 }
 
 void TimelineView::setFilmstripSource(std::shared_ptr<const FilmstripSource> source) {

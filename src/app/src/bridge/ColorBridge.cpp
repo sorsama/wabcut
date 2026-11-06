@@ -16,6 +16,8 @@
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/Timecode.h>
 
+#include <QColor>
+#include <QCoreApplication>
 #include <QJSValue>
 #include <QJsonDocument>
 #include <QQmlEngine>
@@ -166,6 +168,10 @@ void ColorBridge::refresh() {
         }
     }
     m_clip = target;
+    // 0.7: a chart belongs to one clip at one time; another clip or another frame is another picture.
+    if (m_chartActive && (m_clip != m_chartClip || !c || c->playhead() != m_chartTime)) {
+        clearChart();
+    }
     m_grade = {};
     m_clipName.clear();
     m_animated.clear();
@@ -382,6 +388,7 @@ QVariantList ColorBridge::lutChoices() const {
                 out.append(QVariantMap{{QStringLiteral("reference"), toQString(assetReference(a.id))},
                                        {QStringLiteral("name"), toQString(a.name)},
                                        {QStringLiteral("kind"), QStringLiteral("file")},
+                                       {QStringLiteral("folder"), toQString(a.folder)}, // 0.7 (card #85): the menu group
                                        {QStringLiteral("offline"), a.locator.offline}});
             }
         }
@@ -759,7 +766,12 @@ bool ColorBridge::runCommand(const char* name, const QVariantMap& params, QStrin
     command::EnginePolicy policy;
     // The colour tools' frames and (0.2) Color Match's face detector, when it is downloaded: one helper kept for the
     // bridge's lifetime once it was needed.
-    std::vector<std::shared_ptr<command::CommandServices>> services{std::make_shared<editor::ColorFrameService>(projectFile)};
+    std::vector<std::shared_ptr<command::CommandServices>> services;
+    if (m_pictures) {
+        services.push_back(m_pictures); // the tests' pictures
+    } else {
+        services.push_back(std::make_shared<editor::ColorFrameService>(projectFile));
+    }
     if (params.value(QStringLiteral("faceDetection")).toBool()) {
         if (!m_faces) {
             m_faces = ai::vision::installedFaceFinder();
@@ -950,6 +962,32 @@ QString ColorBridge::importLut(const QUrl& file, const QString& slot) {
     return {};
 }
 
+QString ColorBridge::importLutFolder(const QUrl& folder) {
+    QString data;
+    if (!runCommand("lut.importFolder", {{QStringLiteral("path"), folder.toLocalFile()}}, &data)) {
+        return m_status;
+    }
+    const auto json = command::Json::parse(data.toStdString(), nullptr, false);
+    if (!json.is_object()) {
+        return tr("The folder was not imported");
+    }
+    refresh();
+    const int imported = json.value("imported", 0);
+    const int existing = json.value("existing", 0);
+    const int skipped = static_cast<int>(json.contains("skipped") && json["skipped"].is_array() ? json["skipped"].size() : 0);
+    const QString name = toQString(json.value("folder", std::string()));
+    QString text = imported == 1 ? tr("1 LUT added to the folder \"%1\"").arg(name)
+                                 : tr("%1 LUTs added to the folder \"%2\"").arg(imported).arg(name);
+    if (existing > 0) {
+        text += existing == 1 ? tr(" (1 was already in the project)") : tr(" (%1 were already in the project)").arg(existing);
+    }
+    if (skipped > 0) {
+        text += skipped == 1 ? tr("; 1 file could not be used") : tr("; %1 files could not be used").arg(skipped);
+    }
+    setStatus(text);
+    return {};
+}
+
 QString ColorBridge::exportCdl(const QUrl& file) {
     if (!m_clip.isValid()) {
         return tr("No clip");
@@ -1070,6 +1108,283 @@ bool ColorBridge::pickColor(double nx, double ny) {
                       .arg(luma, 0, 'f', 0));
     }
     return ok;
+}
+
+// ---- 0.7: Match to a colour chart (color.chartMatch) -----------------------------------------------------------------
+
+namespace {
+
+// The ColorChecker's patch names, in chart order (translated where the panel shows them).
+constexpr std::array<const char*, color::kChartPatches> kPatchNames{{
+    QT_TRANSLATE_NOOP("ColorChart", "Dark skin"), QT_TRANSLATE_NOOP("ColorChart", "Light skin"),
+    QT_TRANSLATE_NOOP("ColorChart", "Blue sky"), QT_TRANSLATE_NOOP("ColorChart", "Foliage"),
+    QT_TRANSLATE_NOOP("ColorChart", "Blue flower"), QT_TRANSLATE_NOOP("ColorChart", "Bluish green"),
+    QT_TRANSLATE_NOOP("ColorChart", "Orange"), QT_TRANSLATE_NOOP("ColorChart", "Purplish blue"),
+    QT_TRANSLATE_NOOP("ColorChart", "Moderate red"), QT_TRANSLATE_NOOP("ColorChart", "Purple"),
+    QT_TRANSLATE_NOOP("ColorChart", "Yellow green"), QT_TRANSLATE_NOOP("ColorChart", "Orange yellow"),
+    QT_TRANSLATE_NOOP("ColorChart", "Blue"), QT_TRANSLATE_NOOP("ColorChart", "Green"),
+    QT_TRANSLATE_NOOP("ColorChart", "Red"), QT_TRANSLATE_NOOP("ColorChart", "Yellow"),
+    QT_TRANSLATE_NOOP("ColorChart", "Magenta"), QT_TRANSLATE_NOOP("ColorChart", "Cyan"),
+    QT_TRANSLATE_NOOP("ColorChart", "White"), QT_TRANSLATE_NOOP("ColorChart", "Neutral 8"),
+    QT_TRANSLATE_NOOP("ColorChart", "Neutral 6.5"), QT_TRANSLATE_NOOP("ColorChart", "Neutral 5"),
+    QT_TRANSLATE_NOOP("ColorChart", "Neutral 3.5"), QT_TRANSLATE_NOOP("ColorChart", "Black"),
+}};
+
+QString codeColor(const color::Rgb& code) {
+    return QColor::fromRgbF(static_cast<float>(std::clamp(code[0], 0.0, 1.0)), static_cast<float>(std::clamp(code[1], 0.0, 1.0)),
+                            static_cast<float>(std::clamp(code[2], 0.0, 1.0)))
+        .name();
+}
+
+QVariantList pointOf(const color::ChartPoint& p) { return {p.x, p.y}; }
+
+} // namespace
+
+bool ColorBridge::findChart() {
+    ProjectController* c = controller();
+    QQmlEngine* engine = qmlEngine(this);
+    const SequencePtr seq = c ? c->currentSequence() : nullptr;
+    if (!seq || !engine || !m_clip.isValid()) {
+        setStatus(tr("Select the clip that shows the chart first"));
+        return false;
+    }
+    const auto loc = seq->findClip(m_clip);
+    const Ticks t = c->playhead();
+    if (!loc || t < loc->clip().start() || t >= loc->clip().end()) {
+        setStatus(tr("Put the playhead over the clip that shows the chart"));
+        return false;
+    }
+    std::filesystem::path projectFile;
+    if (auto* file = engine->singletonInstance<ProjectLifecycle*>("Wabcut", "ProjectFile")) {
+        projectFile = file->document().file();
+    }
+    // The clip as the grade receives it: the chart's colours before this grade, at a size a small chart can be found in.
+    color::FrameRequest request{t, m_clip, m_grade};
+    request.maxWidth = color::kChartFrameWidth;
+    m_busy = true;
+    emit busyChanged();
+    auto frame = editor::ColorFrameService(projectFile).frame(*c->session().snapshot(), seq->id, request);
+    m_busy = false;
+    emit busyChanged();
+    if (!frame) {
+        setStatus(tr("Cannot read the picture: %1").arg(toQString(frame.error().message)));
+        return false;
+    }
+    return showChart(std::make_shared<const color::ColorImage>(std::move(*frame)));
+}
+
+bool ColorBridge::showChart(std::shared_ptr<const color::ColorImage> picture) {
+    ProjectController* c = controller();
+    if (!c || !m_clip.isValid() || !picture || picture->width <= 0 || picture->height <= 0) {
+        return false;
+    }
+    const double aspect = static_cast<double>(picture->width) / picture->height;
+    m_chartImage = std::move(picture);
+    m_chartClip = m_clip;
+    m_chartTime = c->playhead();
+    m_chartActive = true;
+    m_chartStale = false;
+    const auto found = color::detectColorChecker(*m_chartImage);
+    m_chartFound = found.has_value();
+    m_chartCorners = found ? found->corners : color::defaultChartCorners(aspect);
+    m_chartMessage = found ? tr("Found a ColorChecker (%n patch(es) seen). Drag a corner to correct it.", nullptr, found->patches)
+                           : tr("No chart found. Drag the four corners onto the outer corners of the 24 patches.");
+    updateChart(true);
+    setStatus(QString());
+    return true;
+}
+
+void ColorBridge::setChartCorners(const QVariantList& corners, bool final) {
+    if (!m_chartActive || corners.size() != 4) {
+        return;
+    }
+    color::ChartCorners next;
+    for (int i = 0; i < 4; ++i) {
+        const QVariantList p = corners.at(i).toList();
+        if (p.size() != 2) {
+            return;
+        }
+        next.p[static_cast<std::size_t>(i)] = {std::clamp(p.at(0).toDouble(), -0.25, 1.25), std::clamp(p.at(1).toDouble(), -0.25, 1.25)};
+    }
+    // A release at the place of the last move still has to read the patches there.
+    if (!color::chartCornersPlausible(next) || (next == m_chartCorners && !(final && m_chartStale))) {
+        return;
+    }
+    m_chartCorners = next;
+    m_chartFound = false;
+    m_chartMessage = tr("Corners placed by hand.");
+    m_chartStale = !final;
+    updateChart(final);
+}
+
+void ColorBridge::rotateChart() {
+    if (!m_chartActive) {
+        return;
+    }
+    m_chartCorners = color::rotatedCorners(m_chartCorners, 1);
+    m_chartStale = false;
+    updateChart(true);
+}
+
+void ColorBridge::mirrorChart() {
+    if (!m_chartActive) {
+        return;
+    }
+    m_chartCorners = color::mirroredCorners(m_chartCorners);
+    m_chartStale = false;
+    updateChart(true);
+}
+
+void ColorBridge::setChartEdition(const QString& edition) {
+    const auto parsed = color::chartEditionFromId(edition.toStdString());
+    if (!parsed || *parsed == m_chartEdition) {
+        return;
+    }
+    m_chartEdition = *parsed;
+    updateChart(m_chartActive);
+}
+
+void ColorBridge::setChartColours(bool on) {
+    if (on == m_chartColours) {
+        return;
+    }
+    m_chartColours = on;
+    updateChart(m_chartActive);
+}
+
+void ColorBridge::clearChart() {
+    m_chartActive = false;
+    m_chartImage.reset();
+    m_chartResult = {};
+    m_chartStale = false;
+    updateChart(false);
+}
+
+void ColorBridge::updateChart(bool fit) {
+    if (!m_chartActive) {
+        m_chart = {{QStringLiteral("active"), false}};
+        emit chartChanged();
+        return;
+    }
+    if (fit && m_chartImage) {
+        ProjectController* c = controller();
+        const SequencePtr seq = c ? c->currentSequence() : nullptr;
+        const auto loc = seq ? seq->findClip(m_chartClip) : std::nullopt;
+        color::GradeSpec base;
+        color::GradeCurves baseCurves;
+        if (loc) {
+            if (const EffectInstance* g = color::gradeOf(loc->clip())) {
+                base = color::evaluateGrade(*g, loc->clip().curveTimeAt(m_chartTime), color::LutLibrary::shared().resolver(*c->session().snapshot()));
+                baseCurves = color::gradeCurvesOf(*g);
+            }
+        }
+        color::ChartOptions options;
+        options.edition = m_chartEdition;
+        options.colours = m_chartColours;
+        m_chartResult = color::solveChartMatch(color::measureChart(*m_chartImage, m_chartCorners), base, baseCurves, options);
+        m_chartStale = false;
+    }
+    QVariantList corners, quads;
+    for (const color::ChartPoint& p : m_chartCorners.p) {
+        corners.append(QVariant(pointOf(p)));
+    }
+    for (int i = 0; i < color::kChartPatches; ++i) {
+        QVariantList quad;
+        for (const color::ChartPoint& p : color::chartPatchQuad(m_chartCorners, i, 0.5)) {
+            quad.append(QVariant(pointOf(p)));
+        }
+        quads.append(QVariant(quad));
+    }
+    const color::ChartMatchResult& r = m_chartResult;
+    QVariantMap chart{{QStringLiteral("active"), true},
+                      {QStringLiteral("found"), m_chartFound},
+                      {QStringLiteral("message"), m_chartMessage},
+                      {QStringLiteral("corners"), corners},
+                      {QStringLiteral("quads"), quads},
+                      {QStringLiteral("edition"), QString::fromLatin1(color::chartEditionId(m_chartEdition).data())},
+                      {QStringLiteral("colours"), m_chartColours},
+                      {QStringLiteral("others"), gradeCopyTargets().value(QStringLiteral("selection")).toInt()},
+                      {QStringLiteral("stale"), m_chartStale},
+                      {QStringLiteral("canApply"), r.ok && r.improved && !m_chartStale},
+                      {QStringLiteral("error"), QString::fromStdString(r.error)}};
+    if (r.ok) {
+        QVariantList patches;
+        for (const color::ChartPatchReport& p : r.patches) {
+            patches.append(QVariantMap{{QStringLiteral("index"), p.index + 1},
+                                       {QStringLiteral("name"), QCoreApplication::translate("ColorChart", kPatchNames[static_cast<std::size_t>(p.index)])},
+                                       {QStringLiteral("used"), p.used},
+                                       {QStringLiteral("reference"), codeColor(p.reference)},
+                                       {QStringLiteral("before"), codeColor(p.before)},
+                                       {QStringLiteral("after"), codeColor(p.after)},
+                                       {QStringLiteral("deltaBefore"), p.deltaBefore},
+                                       {QStringLiteral("deltaAfter"), p.deltaAfter}});
+        }
+        chart.insert(QStringLiteral("patches"), patches);
+        chart.insert(QStringLiteral("used"), r.used);
+        chart.insert(QStringLiteral("meanBefore"), r.meanBefore);
+        chart.insert(QStringLiteral("meanAfter"), r.meanAfter);
+        chart.insert(QStringLiteral("maxBefore"), r.maxBefore);
+        chart.insert(QStringLiteral("maxAfter"), r.maxAfter);
+        chart.insert(QStringLiteral("holdOut"), r.holdOutMean);
+        chart.insert(QStringLiteral("hueCurvePoints"), r.hueCurvePoints);
+        chart.insert(QStringLiteral("improved"), r.improved);
+        chart.insert(QStringLiteral("summary"), QString::fromStdString(r.summary));
+    }
+    m_chart = chart;
+    emit chartChanged();
+}
+
+bool ColorBridge::applyChart(bool toSelected) {
+    ProjectController* c = controller();
+    const SequencePtr seq = c ? c->currentSequence() : nullptr;
+    if (!seq || !m_chartActive || !m_chartClip.isValid()) {
+        setStatus(tr("Find the chart first"));
+        return false;
+    }
+    if (!m_chartResult.ok || !m_chartResult.improved) {
+        setStatus(m_chartResult.ok ? tr("The match does not bring the chart closer to its colours: check the corners")
+                                   : QString::fromStdString(m_chartResult.error));
+        return false;
+    }
+    QVariantList corners;
+    for (const color::ChartPoint& p : m_chartCorners.p) {
+        corners.append(QVariant(pointOf(p)));
+    }
+    QVariantMap params{{QStringLiteral("clip"), static_cast<qulonglong>(m_chartClip.value)},
+                       {QStringLiteral("time"), static_cast<qlonglong>(m_chartTime.value)},
+                       {QStringLiteral("corners"), corners},
+                       {QStringLiteral("edition"), QString::fromLatin1(color::chartEditionId(m_chartEdition).data())},
+                       {QStringLiteral("neutralOnly"), !m_chartColours}};
+    if (toSelected) {
+        QVariantList also;
+        for (const ClipId id : c->selection()) {
+            const auto other = id == m_chartClip ? std::nullopt : seq->findClip(id);
+            if (other && other->clip().stream.kind == StreamKind::Video) {
+                also.append(static_cast<qulonglong>(id.value));
+            }
+        }
+        if (!also.isEmpty()) {
+            params.insert(QStringLiteral("also"), also);
+        }
+    }
+    QString data;
+    if (!runCommand("color.chartMatch", params, &data)) {
+        return false; // runCommand put the refusal in status
+    }
+    const auto json = command::Json::parse(data.toStdString(), nullptr, false);
+    int clips = 1;
+    if (json.is_object() && json.contains("appliedTo") && json["appliedTo"].is_array()) {
+        clips = 0;
+        for (const auto& item : json["appliedTo"]) {
+            clips += item.value("result", std::string()) == "matched" ? 1 : 0;
+        }
+    }
+    const QString text = tr("Matched to the chart: mean ΔE %1 → %2 on %n clip(s)", nullptr, clips)
+                             .arg(m_chartResult.meanBefore, 0, 'f', 1)
+                             .arg(m_chartResult.meanAfter, 0, 'f', 1);
+    clearChart();
+    setStatus(text);
+    return true;
 }
 
 } // namespace wabcut::app

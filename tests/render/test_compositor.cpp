@@ -461,3 +461,94 @@ TEST_CASE("Every compositor shader pack ships DXBC so no first picture waits for
     SKIP("DXBC is the D3D backends' format (Windows only)");
 #endif
 }
+
+TEST_CASE("Nearest neighbor scaling keeps hard pixel edges when a small picture is enlarged (card 98)",
+          "[render][gpu][scale][nearest]") {
+    auto renderer = makeRenderer();
+    ColorPipeline srgb;
+    srgb.exportTransform = OutputTransform::SRGB;
+    // A 4x4 picture, one column each of red, green, blue and white, shown 16 times as large on a 64x64 canvas.
+    const media::VideoFrame frame = makeRgbaFrame(4, 4, [](int x, int) {
+        switch (x) {
+        case 0:
+            return std::array<std::uint8_t, 4>{255, 0, 0, 255};
+        case 1:
+            return std::array<std::uint8_t, 4>{0, 255, 0, 255};
+        case 2:
+            return std::array<std::uint8_t, 4>{0, 0, 255, 255};
+        default:
+            return std::array<std::uint8_t, 4>{255, 255, 255, 255};
+        }
+    });
+    LayerTransform enlarge;
+    enlarge.scale = 16.0;
+    const auto shown = [&](bool nearest) {
+        CompositeLayer layer = layerOf(frame, enlarge);
+        layer.nearest = nearest;
+        return renderOne(*renderer, compositeOf({64, 64}, {layer}, srgb));
+    };
+
+    // Smooth scaling blends the neighbours across a source pixel's edge (the control: the check below would not tell
+    // the two apart otherwise).
+    const RenderedImage smooth = shown(false);
+    CHECK(maxDiff(pixelOf(smooth, 15, 32), Rgb{1, 0, 0}) > 0.15);
+    CHECK(maxDiff(pixelOf(smooth, 16, 32), Rgb{0, 1, 0}) > 0.15);
+
+    // Nearest neighbor: every canvas pixel is the colour of the source pixel under it, right up to the boundary.
+    const RenderedImage sharp = shown(true);
+    CHECK(savePng(sharp, QStringLiteral("nearest_neighbor_rgba.png")));
+    for (const int y : {1, 32, 62}) {
+        checkPixel(sharp, 1, y, {1, 0, 0});
+        checkPixel(sharp, 15, y, {1, 0, 0});
+        checkPixel(sharp, 16, y, {0, 1, 0});
+        checkPixel(sharp, 31, y, {0, 1, 0});
+        checkPixel(sharp, 32, y, {0, 0, 1});
+        checkPixel(sharp, 47, y, {0, 0, 1});
+        checkPixel(sharp, 48, y, {1, 1, 1});
+        checkPixel(sharp, 62, y, {1, 1, 1});
+    }
+
+    // A layer without the flag is unchanged by it existing; so is a 1:1 layer with it.
+    LayerTransform same;
+    CompositeLayer exact = layerOf(frame, same);
+    exact.nearest = true;
+    const RenderedImage one = renderOne(*renderer, compositeOf({4, 4}, {exact}, srgb));
+    checkPixel(one, 0, 1, {1, 0, 0});
+    checkPixel(one, 1, 1, {0, 1, 0});
+    checkPixel(one, 2, 1, {0, 0, 1});
+    checkPixel(one, 3, 1, {1, 1, 1});
+}
+
+TEST_CASE("Nearest neighbor scaling of subsampled pictures and nested canvases keeps the luma edges hard (card 98)",
+          "[render][gpu][scale][nearest]") {
+    auto renderer = makeRenderer();
+    const PixelFormat format = GENERATE(PixelFormat::NV12, PixelFormat::YUV420P);
+    INFO("format " << media::pixelFormatName(format));
+    // 8x8: black and white columns (neutral chroma), shown 8 times as large on a 64x64 canvas.
+    const media::VideoFrame frame =
+        makeFrame(format, 8, 8, kRec709Limited, [](int x, int) { return x % 2 == 0 ? Rgb{1, 1, 1} : Rgb{0, 0, 0}; });
+    LayerTransform enlarge;
+    enlarge.scale = 8.0;
+    CompositeLayer layer = layerOf(frame, enlarge);
+    layer.nearest = true;
+    const RenderedImage sharp = renderOne(*renderer, compositeOf({64, 64}, {layer}));
+    checkPixel(sharp, 7, 32, {1, 1, 1}, 3.0 / 255.0);
+    checkPixel(sharp, 8, 32, {0, 0, 0}, 3.0 / 255.0);
+    checkPixel(sharp, 15, 32, {0, 0, 0}, 3.0 / 255.0);
+    checkPixel(sharp, 16, 32, {1, 1, 1}, 3.0 / 255.0);
+
+    // A nested canvas (a nested clip's picture) is enlarged the same way.
+    const media::VideoFrame stripes = makeRgbaFrame(4, 4, [](int x, int) {
+        return x % 2 == 0 ? std::array<std::uint8_t, 4>{255, 255, 255, 255} : std::array<std::uint8_t, 4>{0, 0, 0, 255};
+    });
+    ColorPipeline srgb;
+    srgb.exportTransform = OutputTransform::SRGB;
+    auto inner = compositeOf({4, 4}, {layerOf(stripes)}, srgb);
+    CompositeLayer nested;
+    nested.nested = inner;
+    nested.transform.scale = 16.0;
+    nested.nearest = true;
+    const RenderedImage canvas = renderOne(*renderer, compositeOf({64, 64}, {nested}, srgb));
+    checkPixel(canvas, 15, 32, {1, 1, 1}, 3.0 / 255.0);
+    checkPixel(canvas, 16, 32, {0, 0, 0}, 3.0 / 255.0);
+}

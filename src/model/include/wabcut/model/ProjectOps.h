@@ -13,6 +13,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace wabcut::edit {
 
@@ -42,6 +43,9 @@ std::expected<ProjectState, Error> removeAudioTake(const ProjectState& state, Me
 std::expected<Created<AssetId>, Error> addAsset(const ProjectState& state, ProjectAsset asset);
 /// Points an asset at another file (relink), or records a check's fingerprint / offline state.
 std::expected<ProjectState, Error> relinkAsset(const ProjectState& state, AssetId asset, MediaLocator locator);
+/// Lists an asset under another LUT menu folder ("" = with the built-ins; ProjectAsset::folder, 0.7 card #85).
+/// Errors: NotFound, InvalidArgument (assetFolderProblem).
+std::expected<ProjectState, Error> setAssetFolder(const ProjectState& state, AssetId asset, std::string folder);
 /// Removes an asset. Refuses while an effect refers to it ("asset:<id>") unless `clearReferences`: those data entries
 /// are then removed in the same edit.
 std::expected<ProjectState, Error> removeAsset(const ProjectState& state, AssetId asset, bool clearReferences = false);
@@ -96,6 +100,13 @@ std::expected<Created<TrackId>, Error> addTrack(const ProjectState& state, Seque
                                                 std::string name = {});
 /// Deletes a track and its clips (unlinking their partners). The track must be unlocked.
 EditOutcome removeTrack(const ProjectState& state, SequenceId sequence, TrackId track);
+/// 0.7 (card 067): moves a video or audio track to another place of its own stack, so it becomes track number
+/// `position` (1-based: V1 / A1 = 1; a position past the last one means the last). The track keeps its id, its clips,
+/// settings and links; the tracks between shift by one. A locked track can be moved (its clips are not touched). No change
+/// (an unchanged outcome) when it is already there. InvalidArgument for a submix track; NotFound for an unknown track.
+/// 0.7 (card 124): a track dropped between two tracks of a track group joins the group, and a member that no longer touches
+/// another member of its group leaves it (TrackGroups.h regroupAfterMove).
+EditOutcome moveTrack(const ProjectState& state, SequenceId sequence, TrackId track, std::size_t position);
 
 /// Fields to change on a track; unset fields keep their value.
 struct TrackStateChange {
@@ -110,6 +121,8 @@ struct TrackStateChange {
     std::optional<TrackRole> role;
     /// A.8, audio tracks only (arming a video track is an error).
     std::optional<bool> recordArmed;
+    /// 0.7: the track's label colour, 0..15 (the label palette), or -1 for none. Any track (a submix too).
+    std::optional<std::int32_t> colorIndex;
     /// A.9, audio tracks only: the channel format (mono, stereo, 5.1, adaptive) and the 5.1 panner (x, y in -1..1, the
     /// LFE send in -144..0 dB).
     std::optional<ChannelFormat> format;
@@ -125,6 +138,8 @@ EditOutcome setTrackState(const ProjectState& state, SequenceId sequence, TrackI
 /// Fields to change on clips; unset fields keep their value.
 struct ClipAttributeChange {
     std::optional<std::string> name;
+    /// 0.7 (card 125): the clip's free-text note ("" clears it); at most kMaxClipNoteBytes.
+    std::optional<std::string> note;
     std::optional<std::int32_t> colorIndex;
     std::optional<bool> enabled;
     std::optional<ClipProperties> properties;
@@ -141,6 +156,12 @@ EditOutcome setClipAttributes(const ProjectState& state, SequenceId sequence, st
 
 /// Renames a bin. The name may not be empty (InvalidArgument).
 std::expected<ProjectState, Error> renameBin(const ProjectState& state, BinId bin, std::string name);
+/// 0.7 (card 112): makes `bin` the bin nested sequences are filed in (`on`), or turns that off. At most one bin has it:
+/// turning it on takes it from the other one. Errors: NotFound, InvalidArgument (a search bin holds nothing). Setting
+/// what already holds returns the state unchanged.
+std::expected<ProjectState, Error> setNestBin(const ProjectState& state, BinId bin, bool on);
+/// The bin Nest… files new nested sequences in (setNestBin), or invalid (none: beside the sequence they come from).
+BinId nestBinOf(const ProjectState& state);
 /// Moves bins, media items and sequences into `target` (invalid = the root bin). A bin cannot move into itself or
 /// one of its sub-bins (InvalidArgument); unknown ids are NotFound. Items already in `target` stay; moving nothing
 /// returns the state unchanged.
@@ -180,6 +201,76 @@ struct MediaAttributeChange {
 /// One undo step for any number of items (rename one, label many). NotFound for unknown ids.
 std::expected<ProjectState, Error> setMediaAttributes(const ProjectState& state, std::span<const MediaId> media,
                                                       const MediaAttributeChange& change);
+
+/// 0.7 (card 179): fields to change on the rights and clearance record (Rights.h) of media items; unset fields keep
+/// their value, an empty text clears one.
+struct MediaRightsChange {
+    std::optional<std::string> source;
+    std::optional<std::string> licence;
+    std::optional<std::string> reference;
+    std::optional<std::string> territory;
+    std::optional<std::string> expiry; ///< "YYYY-MM-DD" or empty
+    std::optional<std::string> currency; ///< three capital letters or empty
+    std::optional<std::string> creditLine;
+    std::optional<std::string> notes;
+    /// The cost in hundredths; an inner nullopt clears it.
+    std::optional<std::optional<std::int64_t>> costMinor;
+    std::optional<ClearanceStatus> status;
+
+    bool isEmpty() const {
+        return !source && !licence && !reference && !territory && !expiry && !currency && !creditLine && !notes &&
+               !costMinor && !status;
+    }
+};
+/// Sets rights and clearance fields of any number of media items in one undo step. Errors: NotFound, InvalidArgument
+/// (a title or graphic: it has no file to clear; a value rightsProblem refuses). A record left with nothing in it is
+/// removed. Changing nothing returns the state unchanged.
+std::expected<ProjectState, Error> setMediaRights(const ProjectState& state, std::span<const MediaId> media,
+                                                  const MediaRightsChange& change);
+
+// ---- Consolidate Duplicates (0.7, card 025) ----
+
+/// The groups of media items that are one file imported more than once: the same size and sample hash. Subclips (they
+/// share their master's file on purpose), generated items and items whose file has no fingerprint are left out. Only
+/// groups of two or more; ordered by (size, hash), the ids of a group ascending. The Library's duplicate filter, the
+/// search bins and Consolidate Duplicates all use this one definition.
+std::vector<std::vector<MediaId>> duplicateMediaGroups(const ProjectState& state);
+
+/// A duplicate that stayed, and why.
+struct ConsolidateSkip {
+    MediaId media;
+    std::string name;
+    std::string reason;
+};
+
+/// One set of duplicates folded into one item.
+struct ConsolidateGroup {
+    MediaId keeper;
+    std::string keeperName;
+    std::vector<MediaId> removed;
+    std::vector<std::string> removedNames;
+    int repointedClips = 0; ///< clips (and audition takes) that played a removed item and now play the keeper
+    std::vector<ConsolidateSkip> skipped; ///< duplicates of the same file that could not be folded in
+    std::vector<std::string> notes;       ///< conflicts: rights or transcript corrections the keeper already had
+};
+
+struct ConsolidateResult {
+    ProjectState state;                  ///< the project after (unchanged when nothing was merged)
+    std::vector<ConsolidateGroup> groups; ///< one per keeper; a group where nothing merged lists only its skipped items
+
+    int removedItems() const;
+    int repointedClips() const;
+};
+
+/// Folds every group of duplicates (`only` empty) - or the groups of the items in `only` - into one item each. Within a
+/// group only items with equal interpretation, timecode, audio channels, frame scaling, camera RAW settings and Master
+/// Clip Effects merge; the others stay and are listed as skipped with the reason. The keeper is the item that is online
+/// (else offline), has the most clips, has the lowest id. Everything that named a removed item names the keeper: clips
+/// and audition takes in every sequence, graphic images, matte masks, redactions, subclips' masters, provenance, brand
+/// logos. Transcript corrections move to the keeper when it has none for that stream. The keeper's empty comment,
+/// description, label, metadata, rights, proxy and provenance are filled from the removed items, their markers
+/// are added (a marker with the same start and name once). Errors: NotFound (an item of `only` does not exist).
+std::expected<ConsolidateResult, Error> consolidateDuplicates(const ProjectState& state, std::span<const MediaId> only = {});
 
 /// Make Subclip: a new item in `bin` named `name` that plays `range` (media time, non-empty, inside the media's
 /// sourceBounds) of `master`'s file. Copies the master's locator, info and label; sets its markIn/markOut to `range`.

@@ -30,6 +30,12 @@ void registerSourceCommands(CommandRegistry& registry);
 void registerMarkerCommands(CommandRegistry& registry);
 /// Caption workshop (C.7): caption tracks and cues, styles and presets, speakers.
 void registerCaptionCommands(CommandRegistry& registry);
+/// 0.7 (card 177): sources and citations on the timeline - sources.* (CatalogSources.cpp).
+void registerSourceCitationCommands(CommandRegistry& registry);
+/// 0.7: `text` as a graphic in the look of a caption style (the graphic captions.toGraphics makes of a cue), on a
+/// width x height canvas: a lower third, pinned to the frame's edge like a caption.
+Graphic captionTextGraphic(const std::string& text, const CaptionStyle& style, std::int32_t width, std::int32_t height,
+                           const std::string& name);
 /// captions.import (one command, CatalogInterchange.cpp; 0.2 graphics folded in): a .srt, .vtt or timed .txt file
 /// read leniently into a new caption track (nullopt: none of them, or no cue in it), and the placing of a
 /// reader's cues by the same rules: "offset", overlaps trimmed to the next cue, 4096-byte cues, at most
@@ -42,6 +48,8 @@ CommandOutput placeImportedCaptions(ExecutionContext& c, const std::filesystem::
 void registerNestingCommands(CommandRegistry& registry);
 /// 0.6 (card #74): auditions, take stacks at a cut - audition.* (CatalogAuditions.cpp).
 void registerAuditionCommands(CommandRegistry& registry);
+/// 0.7 (card 124): track groups - trackGroup.* (CatalogTrackGroups.cpp).
+void registerTrackGroupCommands(CommandRegistry& registry);
 /// Version history, review notes and packages, project merge (C.9): history.*, review.*, project.merge.
 void registerCollaborationCommands(CommandRegistry& registry);
 /// Clipboard (C.11): clipboard.copy / cut / paste / get, clip.pasteAttributes / removeAttributes.
@@ -67,6 +75,12 @@ void registerGamingCommands(CommandRegistry& registry);
 void registerEditingCommands(CommandRegistry& registry);
 /// P.2: clip.setTimeInterpolation (CatalogMotion.cpp).
 void registerMotionCommands(CommandRegistry& registry);
+/// 0.7 (VR / 360 video): vr.info, vr.reorient (CatalogVr.cpp), and the VR format param / value helpers the sequence and
+/// footage commands share.
+void registerVrCommands(CommandRegistry& registry);
+Json vrParam(std::string description);
+VrFormat vrFormatValue(const Json& value, const std::string& path);
+Json vrFormatJson(const VrFormat& format);
 /// P.2: the Time Interpolation "method" param ("frameSampling", "frameBlending", "opticalFlow") and its value (fails
 /// with InvalidParams on another name).
 Json timeInterpolationParam(std::string description);

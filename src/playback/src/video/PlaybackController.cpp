@@ -312,6 +312,7 @@ PlaybackStats PlaybackController::stats() const {
     s.activeSessions = sch.activeSessions;
     s.decodeBackends = sch.decodeBackends;
     s.bypassedEffects = sch.bypassedEffects;
+    s.aiUnprocessedLayers = sch.aiUnprocessedLayers;
     s.proxyLayers = sch.proxyLayers;
     s.originalLayers = sch.originalLayers;
     s.offlineProxyLayers = sch.offlineProxyLayers;

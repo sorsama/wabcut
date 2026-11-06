@@ -11,6 +11,7 @@ ContextMenu {
     objectName: "libraryToolsMenu"
 
     signal removeUnusedRequested()
+    signal consolidateRequested()
     signal makeSubclipRequested()
     signal importImageSequenceRequested()
     // 0.2 (P.3)
@@ -71,6 +72,14 @@ ContextMenu {
         command: "project.hoverScrub"
         onTriggered: Library.hoverScrub = !Library.hoverScrub
     }
+    // 0.7 (card 023): Premiere's List view > Thumbnails: pictures in the list's Name column, sized by the thumbnail slider.
+    ContextMenuItem {
+        objectName: "libraryListThumbnailsItem"
+        text: qsTr("Thumbnails in list view")
+        checkable: true
+        checked: Library.listThumbnails
+        onTriggered: Library.listThumbnails = !Library.listThumbnails
+    }
     ContextMenuItem {
         objectName: "libraryLargerThumbnails"
         text: qsTr("Larger thumbnails")
@@ -104,6 +113,14 @@ ContextMenu {
         iconName: "copy"
         enabled: Library.duplicateGroups.length > 0
         onTriggered: Library.filters = { duplicates: true }
+    }
+    // 0.7 (card 025): merge the duplicates into one item each (the panel's popover lists them first).
+    ContextMenuItem {
+        objectName: "libraryConsolidateDuplicates"
+        text: qsTr("Consolidate duplicates…")
+        iconName: "copy"
+        enabled: Library.duplicateGroups.length > 0
+        onTriggered: menu.consolidateRequested()
     }
     ContextMenuSeparator {}
     ContextMenu {

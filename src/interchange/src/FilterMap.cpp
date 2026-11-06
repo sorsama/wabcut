@@ -4,6 +4,7 @@
 
 #include "TextUtil.h"
 
+#include <wabcut/model/Plural.h>
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -611,7 +612,8 @@ std::optional<MappedFilter> lumetri(const FcpFilter& f) {
         for (std::size_t i = 0; i < unmapped.size() && i < 8; ++i) {
             list += (i ? ", " : "") + unmapped[i];
         }
-        m.dropped(std::to_string(unmapped.size()) + " parameter(s) Wabcut cannot place (" + list + (unmapped.size() > 8 ? ", ..." : "") + ")");
+        m.dropped(counted(static_cast<std::int64_t>(unmapped.size()), "parameter") + " Wabcut cannot place (" + list +
+                  (unmapped.size() > 8 ? ", ..." : "") + ")");
     }
     return m.take();
 }

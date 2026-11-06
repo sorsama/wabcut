@@ -33,6 +33,9 @@ public:
     /// `cacheRoot`: the analysis cache (AnalysisCache::defaultRoot()); `projectFile` resolves relative media paths.
     CachedTranscriptProvider(std::filesystem::path cacheRoot, std::filesystem::path projectFile);
     std::shared_ptr<const Transcript> transcript(const MediaItem& media, int audioStream) const override;
+    /// Deletes the cached transcripts of the media's stream (card 080: every model and language; no other analysis);
+    /// how many entries went. Lookups made earlier forget what they found.
+    std::expected<std::size_t, Error> remove(const MediaItem& media, int audioStream) const;
 
 private:
     std::filesystem::path m_root;
@@ -69,6 +72,7 @@ public:
     std::expected<Result, Error> transcribe(const MediaItem& media, int audioStream, const Options& options,
                                             const std::function<bool(double)>& progress) override;
     bool hasTranscript(const MediaItem& media, int audioStream) const override;
+    std::expected<std::size_t, Error> forget(const MediaItem& media, int audioStream) override;
     std::vector<Provider> providers() const override;
     std::expected<std::string, Error> resolve(std::string_view provider) const override;
 

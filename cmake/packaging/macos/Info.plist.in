@@ -41,5 +41,58 @@
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>Wabcut records voice-over from your microphone when you start a recording.</string>
+    <!-- Finder: a double-click on a .wabcut project opens it here (the app receives a file-open event: FileOpenRelay), and
+         recordings, audio and pictures list Wabcut under Open With. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Wabcut project</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>io.github.sorsama.wabcut.project</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Media</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.movie</string>
+                <string>public.audio</string>
+                <string>public.image</string>
+            </array>
+        </dict>
+    </array>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>io.github.sorsama.wabcut.project</string>
+            <key>UTTypeDescription</key>
+            <string>Wabcut project</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>wabcut</string>
+                </array>
+                <key>public.mime-type</key>
+                <string>application/x-wabcut-project</string>
+            </dict>
+        </dict>
+    </array>
 </dict>
 </plist>

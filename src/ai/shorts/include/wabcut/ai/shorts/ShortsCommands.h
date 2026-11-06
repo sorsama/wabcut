@@ -32,8 +32,10 @@ class ShortsServices : public command::CommandServices {
 public:
     using ChatOpener = std::function<std::expected<std::unique_ptr<IChatModel>, AiError>()>;
     /// `chat`: the user's chat model through AiPlatform::chat (guarded); null = no cloud re-rank here.
-    explicit ShortsServices(ChatOpener chat) : chat(std::move(chat)) {}
+    explicit ShortsServices(ChatOpener chat, bool chatLocal = false) : chat(std::move(chat)), chatLocal(chatLocal) {}
     ChatOpener chat;
+    /// r07 (QA-07): `chat` runs on this computer, so a no-cloud project may use it.
+    bool chatLocal = false;
 };
 
 /// A new sequence holding [range) of `source` (clips trimmed, transitions, captions and markers inside kept, links

@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <format>
+#include <set>
 #include <system_error>
 
 namespace wabcut::editor {
@@ -77,26 +79,28 @@ ProjectSummary summarizeProjectFile(const std::filesystem::path& file) {
 }
 
 std::vector<RecoveryEntry> recoveryEntries(const std::filesystem::path& projectFile, const std::filesystem::path& untitledDir,
-                                           int autosaveCopies) {
+                                           int autosaveCopies, const io::BackupLocation& location) {
     std::vector<RecoveryEntry> versions;
     std::error_code ec;
     if (!projectFile.empty()) {
         const bool exists = isFile(projectFile);
         const auto projectTime =
             exists ? std::filesystem::last_write_time(projectFile, ec) : std::filesystem::file_time_type::min();
-        for (int n = 1; n <= std::max(1, autosaveCopies); ++n) {
-            std::filesystem::path file = io::autosavePath(projectFile);
-            if (n > 1) {
-                file += std::to_string(n);
+        for (const std::filesystem::path& dir : io::backupDirectories(projectFile, location)) {
+            for (int n = 1; n <= std::max(autosaveCopies, io::kMaxAutosaveCopies); ++n) {
+                std::filesystem::path file = io::autosavePath(projectFile, dir);
+                if (n > 1) {
+                    file += std::to_string(n);
+                }
+                if (isFile(file)) {
+                    versions.push_back(entryOf(file, RecoveryEntry::Kind::Autosave, n, projectFile, projectTime));
+                }
             }
-            if (isFile(file)) {
-                versions.push_back(entryOf(file, RecoveryEntry::Kind::Autosave, n, projectFile, projectTime));
-            }
-        }
-        for (int n = 1; n <= io::kDefaultBackupCount; ++n) {
-            const std::filesystem::path file = io::backupPath(projectFile, n);
-            if (isFile(file)) {
-                versions.push_back(entryOf(file, RecoveryEntry::Kind::Backup, n, projectFile, projectTime));
+            for (int n = 1; n <= io::kMaxBackupCount; ++n) {
+                const std::filesystem::path file = io::backupPath(projectFile, n, dir);
+                if (isFile(file)) {
+                    versions.push_back(entryOf(file, RecoveryEntry::Kind::Backup, n, projectFile, projectTime));
+                }
             }
         }
         std::ranges::stable_sort(versions, [](const RecoveryEntry& a, const RecoveryEntry& b) {
@@ -163,6 +167,60 @@ std::expected<PosterImage, Error> renderPoster(const ProjectState& state, const 
                     plane.data + static_cast<std::ptrdiff_t>(y) * plane.stride, static_cast<std::size_t>(poster.width) * 4);
     }
     return poster;
+}
+
+namespace {
+
+/// The first half of a poster's file name: a hash of the version's path (FNV-1a, stable across runs and builds).
+std::string posterPrefix(const std::filesystem::path& versionFile) {
+    std::uint64_t hash = 14695981039346656037ull;
+    for (const char c : pathToUtf8(versionFile)) {
+        hash = (hash ^ static_cast<unsigned char>(c)) * 1099511628211ull;
+    }
+    return std::format("{:016x}-", hash);
+}
+
+} // namespace
+
+std::filesystem::path recoveryPosterFile(const std::filesystem::path& folder, const RecoveryEntry& entry) {
+    // long long: libc++'s file clock counts in an __int128, which to_string does not take.
+    return folder / pathFromUtf8(posterPrefix(entry.file) +
+                                 std::to_string(static_cast<long long>(entry.summary.modified.time_since_epoch().count())) + ".png");
+}
+
+std::size_t pruneRecoveryPosters(const std::filesystem::path& folder, const std::vector<RecoveryEntry>& entries,
+                                 std::chrono::hours maxAge) {
+    std::set<std::string> wanted;   // file names of the posters these versions use
+    std::set<std::string> prefixes; // their versions' prefixes: any other poster with one is out of date
+    for (const RecoveryEntry& e : entries) {
+        wanted.insert(pathToUtf8(recoveryPosterFile(folder, e).filename()));
+        prefixes.insert(posterPrefix(e.file));
+    }
+    std::size_t removed = 0;
+    std::error_code ec;
+    const auto now = std::filesystem::file_time_type::clock::now();
+    std::vector<std::filesystem::path> doomed;
+    for (const auto& item : std::filesystem::directory_iterator(folder, ec)) {
+        std::error_code itemEc;
+        if (!item.is_regular_file(itemEc) || item.path().extension() != ".png") {
+            continue; // only our own posters are ever deleted
+        }
+        const std::string name = pathToUtf8(item.path().filename());
+        if (wanted.contains(name)) {
+            continue;
+        }
+        const bool outOfDate = std::ranges::any_of(prefixes, [&](const std::string& prefix) { return name.starts_with(prefix); });
+        const auto written = item.last_write_time(itemEc);
+        if (outOfDate || (!itemEc && now - written > maxAge)) {
+            doomed.push_back(item.path());
+        }
+    }
+    for (const std::filesystem::path& file : doomed) {
+        if (std::filesystem::remove(file, ec)) {
+            ++removed;
+        }
+    }
+    return removed;
 }
 
 } // namespace wabcut::editor

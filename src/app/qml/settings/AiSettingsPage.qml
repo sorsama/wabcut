@@ -1,12 +1,15 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import QtQuick.Layouts
 
-// Settings > AI (0.1.3; it replaces the Preferences > AI popup): one switch for every AI feature, the assistant's model
-// with a field for any model by name (a provider's newest model, an OpenRouter or Ollama id), then the AI platform's
-// pages: Providers (keys, checked and kept in the OS keychain, never shown; server addresses), Models, Privacy, Usage
-// and the local assistant. Turning AI off hides the AI entry points (the Window menu's Generate, the sequence menu's script
-// tools) and turns AiController's offline mode on, so no AI request leaves the computer; turning it back on restores
-// the offline mode it had. objectName and currentTab keep the old popup's names (tests, the transcript's "set up").
+// Settings > AI (0.1.3; r07 rework): one switch for every AI feature with a summary of what runs on this computer and
+// what goes to the cloud, then five tabs. Features: what each AI part (assistant, transcription, translation, voice,
+// image, video, sound effects) uses, with a picker per part. Providers: 50+ providers as a searchable, filterable list
+// with a detail pane (keys, checked and kept in the OS keychain, never shown; server addresses; models; custom
+// providers). Local models: the models that run on this computer (LocalLlmPage). Privacy and Usage. Turning AI off
+// hides the AI entry points (the Window menu's Generate, the sequence menu's script tools) and turns AiController's
+// offline mode on, so no AI request leaves the computer; turning it back on restores the offline mode it had.
+// objectName and currentTab keep the old popup's names (tests, the transcript's "set up").
 Item {
     id: page
     objectName: "aiPreferences"
@@ -14,21 +17,24 @@ Item {
     /// The Settings window is open (the old popup's `opened`: true while this page shows).
     property bool settingsOpen: false
     readonly property bool opened: settingsOpen && visible
+    /// 0 Features, 1 Providers, 2 Local models, 3 Privacy, 4 Usage.
     property alias currentTab: tabs.currentIndex
     property string message: ""
     property bool messageOk: true
-    // The provider the custom model field adds to.
+    // The provider useCustomModel adds to.
     property string customProvider: ""
-
-    readonly property var providerList: AiController.providers
+    readonly property alias catalog: catalog
+    readonly property alias customProviderDialog: customDialog
+    // Features and Providers stay alive once shown (their scroll position, filter and chosen provider).
+    property bool keepFeatures: false
+    property bool keepProviders: false
     readonly property var currentModel: AiController.chatModels.find(m => m.id === AiController.chatModel) ?? null
-    readonly property var userModels: AiController.chatModels.filter(m => m.userAdded === true)
-    readonly property string customProviderName: {
-        const p = page.providerList.find(p => p.id === page.customProvider)
-        return p ? p.name : qsTr("Provider")
-    }
 
     signal actionRequested(string what)
+
+    AiCatalog {
+        id: catalog
+    }
 
     /// AI on or off (see the header).
     function setAiEnabled(on: bool) {
@@ -42,54 +48,99 @@ Item {
         }
         Preferences.aiEnabled = on
     }
-    /// Adds `modelId` to the chosen provider (when it is not listed yet) and makes it the assistant's model.
+    /// Adds `modelId` to `customProvider` (when it is not listed yet) and makes it the assistant's model.
     function useCustomModel(modelId: string): bool {
-        const id = modelId.trim()
-        if (id === "" || page.customProvider === "") {
-            page.setMessage(false, qsTr("Choose a provider and type the model's id."))
-            return false
-        }
-        const known = AiController.chatModels.find(m => m.id === id)
-        if (!known && !AiController.addModel(page.customProvider, id)) {
-            page.setMessage(false, qsTr("%1 cannot take that model id.").arg(page.customProviderName))
-            return false
-        }
-        AiController.chatModel = id
-        page.setMessage(true, qsTr("The assistant now uses %1.").arg(id))
-        return true
+        if (page.customProvider === "")
+            page.customProvider = (page.currentModel?.provider ?? "") !== "" ? page.currentModel.provider
+                                : (AiController.providers.length > 0 ? AiController.providers[0].id : "")
+        const problem = catalog.useModelId("chat", page.customProvider, modelId)
+        page.setMessage(problem === "", problem === "" ? qsTr("The assistant now uses %1.").arg(modelId.trim()) : problem)
+        return problem === ""
     }
     function setMessage(ok: bool, text: string) {
         page.messageOk = ok
         page.message = text
     }
-    /// The Settings search (SettingsPage.reveal's counterpart; AppSettings.index rows of page "ai"): "aiFeatures" and
-    /// "assistantModel" flash their row and focus its control; "aiProviders", "aiModels", "aiPrivacy", "aiUsage" and
-    /// "localAssistant" show that tab. False for another key.
+    /// Shows Providers with the filter chip `filterId` ("all", "connected", "local", "custom" or a capability id).
+    function showProviders(filterId: string) {
+        tabs.currentIndex = 1
+        const providers = providersLoader.item as AiProvidersPage
+        if (providers)
+            providers.showFilter(filterId)
+    }
+    /// Shows Providers with `providerId`'s detail.
+    function showProvider(providerId: string) {
+        tabs.currentIndex = 1
+        const providers = providersLoader.item as AiProvidersPage
+        if (providers)
+            providers.select(providerId)
+    }
+    /// Opens the custom provider dialog: "" for a new provider, else the custom provider to edit.
+    function openCustomProvider(providerId: string) {
+        customDialog.openFor(providerId)
+    }
+    /// Asks before deleting a custom provider.
+    function requestDelete(providerId: string) {
+        deleteDialog.providerId = providerId
+        deleteDialog.open()
+    }
+    /// The Settings search (SettingsPage.reveal's counterpart; AppSettings.index rows of page "ai"): "aiFeatures" flashes
+    /// the switch; "assistantModel" shows Features and flashes the assistant's row; "aiDefaults" and "aiModels" show
+    /// Features, "aiProviders" Providers, "aiCustomProvider" Providers with the custom provider button focused,
+    /// "localAssistant" Local models, "aiPrivacy" and "aiUsage" their tabs. A capability id ("chat", "transcribe",
+    /// "translate", "speak", "image", "video", "sound") shows Features and flashes that row (QA-12: the transcript
+    /// panel's "Set up" reveals "transcribe"). False for another key.
     function reveal(target: var): bool {
-        const tab = ["aiProviders", "aiModels", "aiPrivacy", "aiUsage", "localAssistant"].indexOf(target)
-        if (tab >= 0) {
-            tabs.currentIndex = tab
-            if (tabs.enabled)
-                tabs.forceActiveFocus(Qt.TabFocusReason)
+        const capability = String(target)
+        if (catalog.capabilities.some(c => c.id === capability)) {
+            tabs.currentIndex = 0
+            Qt.callLater(() => (featuresLoader.item as AiFeaturesPage)?.reveal(capability))
             return true
         }
-        const row = target === "aiFeatures" ? featuresRow : target === "assistantModel" ? modelRow : null
-        if (!row)
-            return false
-        row.flash()
-        const control = row.nextItemInFocusChain(true)
-        for (let p = control; p; p = p.parent) {
-            if (p === row) {
-                control.forceActiveFocus(Qt.TabFocusReason)
-                break
+        const tab = ({ aiDefaults: 0, aiModels: 0, assistantModel: 0, aiProviders: 1, aiCustomProvider: 1, localAssistant: 2,
+                       aiPrivacy: 3, aiUsage: 4 })[target]
+        if (tab !== undefined) {
+            tabs.currentIndex = tab
+            if (target === "assistantModel") {
+                Qt.callLater(() => (featuresLoader.item as AiFeaturesPage)?.reveal("chat"))
+            } else if (target === "aiCustomProvider") {
+                Qt.callLater(() => (providersLoader.item as AiProvidersPage)?.focusCustomButton())
+            } else if (tabs.enabled) {
+                tabs.forceActiveFocus(Qt.TabFocusReason)
             }
+            return true
         }
+        if (target !== "aiFeatures")
+            return false
+        featuresRow.flash()
+        featuresToggle.forceActiveFocus(Qt.TabFocusReason)
         return true
     }
 
-    Component.onCompleted: {
-        if (page.customProvider === "" && page.providerList.length > 0)
-            page.customProvider = (page.currentModel?.provider ?? "") !== "" ? page.currentModel.provider : page.providerList[0].id
+    /// What runs where, for the header: "On this computer: …. Cloud: …. Not set up: …."
+    readonly property string routingSummary: {
+        const local = []
+        const cloud = []
+        const missing = []
+        const routes = catalog.routing
+        for (let i = 0; i < routes.length; ++i) {
+            const r = routes[i]
+            const name = catalog.capabilityName(r.capability)
+            if (!r.usable)
+                missing.push(name)
+            else if (r.local)
+                local.push(name)
+            else
+                cloud.push(r.providerName !== "" ? qsTr("%1 (%2)").arg(name).arg(r.providerName) : name)
+        }
+        const parts = []
+        if (local.length > 0)
+            parts.push(qsTr("On this computer: %1.").arg(local.join(", ")))
+        if (cloud.length > 0)
+            parts.push(qsTr("Cloud: %1.").arg(cloud.join(", ")))
+        if (missing.length > 0)
+            parts.push(qsTr("Not set up: %1.").arg(missing.join(", ")))
+        return parts.join(" ")
     }
 
     // ---- Header ----
@@ -98,24 +149,73 @@ Item {
         x: Theme.space(6)
         y: Theme.space(5)
         width: parent.width - Theme.space(12)
-        spacing: Theme.space(4)
+        spacing: Theme.space(3)
 
-        Column {
-            width: parent.width
-            spacing: Theme.space(1)
+        // The title with the switch for every AI feature beside it (r07: one line instead of a card, so the tabs below
+        // get the room), then what runs where.
+        Item {
+            id: featuresRow
+            objectName: "aiFeaturesRow"
+            width: parent.width - Theme.space(10) // the Settings window's close button sits at the top right
+            height: titleLine.height + Theme.space(1) + summary.implicitHeight
 
-            Text {
-                text: qsTr("AI")
-                color: Theme.textPrimary
-                font.family: Theme.fontDisplay
-                font.pixelSize: Theme.textTitle
-                font.weight: Font.DemiBold
-                Accessible.role: Accessible.Heading
-                Accessible.name: text
+            /// Draws the eye to the switch (the Settings search's "aiFeatures").
+            function flash() {
+                highlight.opacity = 1
+                flashFade.restart()
+            }
+
+            Rectangle {
+                id: highlight
+                objectName: "aiFeaturesFlash"
+                anchors.fill: parent
+                anchors.margins: -Theme.space(2)
+                radius: Theme.radiusField
+                color: Theme.accentWash
+                border.width: Theme.hairline
+                border.color: Theme.accentStroke
+                opacity: 0
+                visible: opacity > 0
+            }
+            SequentialAnimation {
+                id: flashFade
+                PauseAnimation { duration: 1200 }
+                NumberAnimation { target: highlight; property: "opacity"; to: 0; duration: Theme.durCollapse * 2; easing.type: Easing.OutCubic }
+            }
+
+            Row {
+                id: titleLine
+                spacing: Theme.space(5)
+
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("AI")
+                    color: Theme.textPrimary
+                    font.family: Theme.fontDisplay
+                    font.pixelSize: Theme.textTitle
+                    font.weight: Font.DemiBold
+                    Accessible.role: Accessible.Heading
+                    Accessible.name: text
+                }
+                Toggle {
+                    id: featuresToggle
+                    objectName: "aiFeaturesToggle"
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("AI features")
+                    tooltip: qsTr("Turn every AI feature on or off")
+                    checked: Preferences.aiEnabled
+                    onToggled: page.setAiEnabled(checked)
+                }
             }
             Text {
-                width: parent.width - Theme.space(10)
-                text: qsTr("Transcription, the assistant, generation and the other AI tools: which providers they use, your keys, and what may leave this computer.")
+                id: summary
+                objectName: "aiRoutingSummary"
+                anchors.top: titleLine.bottom
+                anchors.topMargin: Theme.space(1)
+                width: parent.width
+                text: !Preferences.aiEnabled ? qsTr("Off: the AI tools are hidden and nothing is sent to AI providers.")
+                      : AiController.offlineMode ? qsTr("Offline: only AI on this computer runs. %1").arg(page.routingSummary)
+                      : page.routingSummary
                 wrapMode: Text.WordWrap
                 color: Theme.textTertiary
                 font.family: Theme.fontSans
@@ -123,153 +223,31 @@ Item {
             }
         }
 
-        SettingsSection {
-            SettingsRow {
-                id: featuresRow
-                rowKey: "aiFeatures"
-                label: qsTr("AI features")
-                description: Preferences.aiEnabled
-                             ? qsTr("On. %1").arg(AiController.statusLabel)
-                             : qsTr("Off: the AI tools are hidden and nothing is sent to AI providers.")
-                Toggle {
-                    objectName: "aiFeaturesToggle"
-                    tooltip: qsTr("AI features")
-                    checked: Preferences.aiEnabled
-                    onToggled: page.setAiEnabled(checked)
-                }
-            }
-            SettingsRow {
-                id: modelRow
-                objectName: "aiAssistantModelRow"
-                rowKey: "assistantModel"
-                enabled: Preferences.aiEnabled
-                opacity: enabled ? 1 : Theme.disabledOpacity
-                label: qsTr("Assistant model")
-                description: page.currentModel ? qsTr("%1 · %2").arg(page.currentModel.name).arg(page.currentModel.providerName)
-                                               : qsTr("None chosen yet: pick one in Models, or use one by name.")
-
-                PillButton {
-                    id: providerButton
-                    objectName: "aiCustomModelProvider"
-                    compact: true
-                    variant: "secondary"
-                    iconName: "chevron-down"
-                    text: page.customProviderName
-                    LayoutMirroring.enabled: true
-                    LayoutMirroring.childrenInherit: true
-                    tooltip: qsTr("The provider the model belongs to")
-                    onClicked: providerMenu.popup(providerButton, 0, providerButton.height + Theme.space(1))
-
-                    ContextMenu {
-                        id: providerMenu
-                        objectName: "aiCustomModelProviderMenu"
-
-                        Instantiator {
-                            model: page.providerList
-                            delegate: ContextMenuItem {
-                                required property var modelData
-                                text: modelData.name
-                                checkable: true
-                                checked: modelData.id === page.customProvider
-                                onTriggered: page.customProvider = modelData.id
-                            }
-                            onObjectAdded: (index, object) => providerMenu.insertItem(index, object as ContextMenuItem)
-                            onObjectRemoved: (index, object) => providerMenu.removeItem(object as ContextMenuItem)
-                        }
-                    }
-                }
-                FieldInput {
-                    id: customModelField
-                    objectName: "aiCustomModelField"
-                    width: Theme.space(52)
-                    font.family: Theme.fontMono
-                    placeholderText: qsTr("Model id, e.g. claude-sonnet-5-5")
-                    Accessible.name: qsTr("Model id to use")
-                    onAccepted: useButton.clicked()
-                }
-                PillButton {
-                    id: useButton
-                    objectName: "aiCustomModelUse"
-                    compact: true
-                    variant: "primary"
-                    text: qsTr("Use")
-                    enabled: customModelField.text.trim() !== ""
-                    onClicked: {
-                        if (page.useCustomModel(customModelField.text))
-                            customModelField.clear()
-                    }
-                }
-            }
-            // Models added by name, removable.
-            Flow {
-                width: parent.width
-                visible: page.userModels.length > 0 || page.message !== ""
-                spacing: Theme.space(1)
-                bottomPadding: Theme.space(2)
-
-                Text {
-                    visible: page.message !== ""
-                    height: Theme.controlHeightSmall
-                    verticalAlignment: Text.AlignVCenter
-                    rightPadding: Theme.space(2)
-                    text: page.message
-                    color: page.messageOk ? Theme.textSecondary : Theme.danger
-                    font.family: Theme.fontSans
-                    font.pixelSize: Theme.textSm
-                }
-                Repeater {
-                    model: page.userModels
-                    delegate: Rectangle {
-                        id: chip
-                        required property var modelData
-                        objectName: "aiUserModel_" + modelData.id
-                        height: Theme.controlHeightSmall
-                        width: chipText.implicitWidth + chipRemove.width + Theme.space(3)
-                        radius: Theme.radiusPill
-                        color: Theme.sunken
-                        border.width: Theme.hairline
-                        border.color: modelData.id === AiController.chatModel ? Theme.accentStroke : Theme.border
-
-                        Text {
-                            id: chipText
-                            x: Theme.space(2.5)
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: qsTr("%1 · %2").arg(chip.modelData.id).arg(chip.modelData.providerName)
-                            color: Theme.textSecondary
-                            font.family: Theme.fontMono
-                            font.pixelSize: Theme.textXs
-                        }
-                        IconButton {
-                            id: chipRemove
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            compact: true
-                            iconName: "x"
-                            iconSize: Theme.iconXs
-                            tooltip: qsTr("Remove %1").arg(chip.modelData.id)
-                            onClicked: AiController.removeModel(chip.modelData.id)
-                        }
-                    }
-                }
-            }
-        }
-
         PillTabs {
             id: tabs
             objectName: "aiPreferencesTabs"
-            width: Math.min(parent.width, Theme.space(150))
+            width: Math.min(parent.width, Theme.space(140))
             tabs: true
             enabled: Preferences.aiEnabled
-            model: [qsTr("Providers and keys"), qsTr("Models"), qsTr("Privacy"), qsTr("Usage"), qsTr("Local assistant")]
+            model: [qsTr("Features"), qsTr("Providers"), qsTr("Local models"), qsTr("Privacy"), qsTr("Usage")]
             Accessible.name: qsTr("AI settings pages")
+        }
+        Text {
+            width: parent.width
+            visible: page.message !== ""
+            text: page.message
+            wrapMode: Text.WordWrap
+            color: page.messageOk ? Theme.textSecondary : Theme.dangerText
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.textSm
         }
     }
 
-    // ---- The AI platform's pages ----
+    // ---- The tabs' pages (each created when first shown, then kept) ----
     Item {
         id: body
         anchors.top: header.bottom
-        anchors.topMargin: Theme.space(3)
+        anchors.topMargin: Theme.space(4)
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
@@ -280,29 +258,88 @@ Item {
         opacity: enabled ? 1 : Theme.disabledOpacity
 
         Loader {
+            id: featuresLoader
+            objectName: "aiFeaturesLoader"
             anchors.fill: parent
-            active: tabs.currentIndex === 0
-            sourceComponent: AiProvidersPage {}
+            active: tabs.currentIndex === 0 || page.keepFeatures
+            visible: tabs.currentIndex === 0
+            onLoaded: page.keepFeatures = true
+            sourceComponent: AiFeaturesPage {
+                catalog: catalog
+                onAddProviderRequested: capabilityId => page.showProviders(capabilityId)
+            }
         }
         Loader {
+            id: providersLoader
+            objectName: "aiProvidersLoader"
             anchors.fill: parent
-            active: tabs.currentIndex === 1
-            sourceComponent: AiModelsPage {}
+            active: tabs.currentIndex === 1 || page.keepProviders
+            visible: tabs.currentIndex === 1
+            onLoaded: page.keepProviders = true
+            sourceComponent: AiProvidersPage {
+                catalog: catalog
+                onCustomProviderRequested: providerId => page.openCustomProvider(providerId)
+                onDeleteRequested: providerId => page.requestDelete(providerId)
+                onUsageRequested: tabs.currentIndex = 4
+            }
         }
         Loader {
             anchors.fill: parent
             active: tabs.currentIndex === 2
-            sourceComponent: AiPrivacyPage {}
+            sourceComponent: LocalLlmPage {}
         }
         Loader {
             anchors.fill: parent
             active: tabs.currentIndex === 3
-            sourceComponent: AiUsagePage {}
+            sourceComponent: AiPrivacyPage {}
         }
         Loader {
             anchors.fill: parent
             active: tabs.currentIndex === 4
-            sourceComponent: LocalLlmPage {}
+            sourceComponent: AiUsagePage {}
         }
+    }
+
+    AiCustomProviderDialog {
+        id: customDialog
+        catalog: catalog
+        onSaved: id => page.showProvider(id)
+        onDeleteRequested: id => page.requestDelete(id)
+    }
+
+    WabcutDialog {
+        id: deleteDialog
+        objectName: "aiDeleteProviderDialog"
+        property string providerId: ""
+        readonly property string providerName: catalog.provider(deleteDialog.providerId)?.name ?? deleteDialog.providerId
+        title: qsTr("Delete %1?").arg(deleteDialog.providerName)
+        width: Math.min(parent ? parent.width - Theme.space(16) : Theme.space(110), Theme.space(110))
+
+        Text {
+            Layout.fillWidth: true
+            text: qsTr("Its key, its models and the features that used it are cleared; those features go back to Automatic.")
+            wrapMode: Text.WordWrap
+            color: Theme.textSecondary
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.textMd
+        }
+        footerData: [
+            PillButton {
+                objectName: "aiDeleteProviderCancel"
+                text: qsTr("Cancel")
+                onClicked: deleteDialog.close()
+            },
+            PillButton {
+                objectName: "aiDeleteProviderConfirm"
+                variant: "danger"
+                text: qsTr("Delete")
+                onClicked: {
+                    const ok = AiController.removeCustomProvider(deleteDialog.providerId)
+                    page.setMessage(ok, ok ? qsTr("%1 was deleted.").arg(deleteDialog.providerName)
+                                           : qsTr("%1 could not be deleted.").arg(deleteDialog.providerName))
+                    deleteDialog.close()
+                }
+            }
+        ]
     }
 }

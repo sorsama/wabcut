@@ -7,6 +7,7 @@
 
 #include "PlaybackTestSupport.h"
 #include "../../motion/MovingTexture.h"
+#include "../../motion/SyntheticFace.h"
 
 #include <wabcut/editor/PreviewRender.h>
 #include <wabcut/export/RenderedVideoSource.h>
@@ -27,6 +28,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -502,6 +504,96 @@ TEST_CASE("Warp Stabilizer and Rolling Shutter Repair warp the frame inside a gr
     REQUIRE(evaluateWith({warp}).size() == 1);
 }
 
+// 0.7 (card #107): a stabilized clip in slow motion. Frame Sampling shows each source frame for several timeline frames, so
+// the compensation analysed for that frame applies to all of them (it is not interpolated with the next frame's: that would
+// leave half the shake in the picture); Frame Blending shows in-between pictures and interpolates the keys.
+TEST_CASE("A stabilized clip at half speed holds each frame's compensation under Frame Sampling (card 107)",
+          "[playback][motion][stabilize]") {
+    ProjectState s;
+    auto media = fakeMedia(s, kRate30);
+    s.media = {media};
+    Clip clip = videoClip(s, media->id, Ticks{}, framesToTicks(20, kRate30), Ticks{});
+    clip.speed = Speed{1, 2}; // 50 %: source frames 0..9 over timeline frames 0..19
+    EffectInstance warp;
+    warp.id = EffectInstanceId{1};
+    warp.effect = std::string(kWarpStabilizerEffect);
+    warp.set("method", ParamValue(0.0)); // Position
+    warp.set("framing", ParamValue(0.0)); // Stabilize Only: no crop
+    // The analysis keys the compensation per source frame: 10 px at frame 2, 30 px at frame 3 (at the frames' own times).
+    Curve x;
+    x.keys = {Keyframe{framesToTicks(2, kRate30), 10.0}, Keyframe{framesToTicks(3, kRate30), 30.0}};
+    warp.set("transform.x", ParamValue(std::move(x)));
+    Sequence seq;
+    seq.id = s.ids.allocate<SequenceId>();
+    seq.frameRate = kRate30;
+    seq.width = 1920;
+    seq.height = 1080;
+    const auto shift = [&](std::int64_t timelineFrame, TimeInterpolation mode) {
+        Clip c = clip;
+        ClipContent content = c.content();
+        content.timeInterpolation = mode;
+        c.setContent(std::move(content));
+        c.setEffects({warp});
+        seq.videoTracks = {trackOf(s, {c})};
+        std::vector<LayerSpec> layers;
+        evaluateVideoLayers(s, seq, framesToTicks(timelineFrame, kRate30), layers);
+        // The warp the stabilizer gave the picture (on the decoded frame, or on its interpolation group's layers).
+        for (const LayerSpec& layer : layers) {
+            if (layer.warp != motion::kIdentity3) {
+                return layer.warp[2] * 1920.0; // pixels to the right, from the warp's x translation (fractions of the frame)
+            }
+        }
+        return 0.0;
+    };
+    // Timeline frames 4 and 5 show source frame 2 (at 2.0 and 2.5): the same compensation, frame 2's.
+    CHECK(shift(4, TimeInterpolation::FrameSampling) == Approx(10.0).margin(1e-6));
+    CHECK(shift(5, TimeInterpolation::FrameSampling) == Approx(10.0).margin(1e-6));
+    // Frame 6 is source frame 3: its own.
+    CHECK(shift(6, TimeInterpolation::FrameSampling) == Approx(30.0).margin(1e-6));
+    CHECK(shift(7, TimeInterpolation::FrameSampling) == Approx(30.0).margin(1e-6));
+    // Frame Blending mixes frames 2 and 3 at 2.5: the compensation is in between there.
+    CHECK(shift(5, TimeInterpolation::FrameBlending) == Approx(20.0).margin(1e-6));
+}
+
+// 0.7 (card #130): Method Gyro (camera metadata) keys the same corner pin Perspective does, so preview and export (one evaluator)
+// draw the camera's rotation exactly as they draw a picture-based Perspective stabilization.
+TEST_CASE("A Warp Stabilizer on the Gyro method draws its corner pin like Perspective does (card 130)", "[playback][motion][stabilize]") {
+    ProjectState s;
+    auto media = fakeMedia(s, kRate30);
+    s.media = {media};
+    Clip clip = videoClip(s, media->id, Ticks{}, Ticks::fromSeconds(2), Ticks{});
+    Sequence seq;
+    seq.id = s.ids.allocate<SequenceId>();
+    seq.frameRate = kRate30;
+    seq.width = 1920;
+    seq.height = 1080;
+    const auto warpOf = [&](double method) {
+        EffectInstance warp;
+        warp.id = EffectInstanceId{1};
+        warp.effect = std::string(kWarpStabilizerEffect);
+        warp.set("method", ParamValue(method));
+        warp.set("framing", ParamValue(0.0)); // Stabilize Only
+        warp.set("corner.tl.x", ParamValue(12.0));
+        warp.set("corner.tl.y", ParamValue(-4.0));
+        warp.set("corner.tr.x", ParamValue(30.0));
+        warp.set("corner.br.y", ParamValue(8.0));
+        warp.set("corner.bl.x", ParamValue(-6.0));
+        Clip c = clip;
+        c.setEffects({warp});
+        seq.videoTracks = {trackOf(s, {c})};
+        std::vector<LayerSpec> layers;
+        evaluateVideoLayers(s, seq, framesToTicks(3, kRate30), layers);
+        return layers;
+    };
+    const std::vector<LayerSpec> perspective = warpOf(2.0);
+    const std::vector<LayerSpec> gyro = warpOf(4.0);
+    REQUIRE(perspective.size() == 2);
+    REQUIRE(gyro.size() == 2);
+    CHECK(gyro[1].warp != motion::kIdentity3);
+    CHECK(gyro[1].warp == perspective[1].warp); // the same warp, to the last bit
+    CHECK(gyro[0].nested);
+}
+
 // ---- End to end over synthetic media --------------------------------------------------------------------------------
 
 TEST_CASE("Optical Flow beats Frame Blending which beats Frame Sampling on 24 fps footage at 48 fps",
@@ -820,4 +912,188 @@ TEST_CASE("A clip's input colour space reaches the frames inside its interpolati
     REQUIRE(out[0].nested);
     REQUIRE(out[0].nested->layers.size() == 1);
     CHECK(out[0].nested->layers[0].inputSpace == InputColorSpace::SLog3SGamut3);
+}
+
+// ---- Face-aware Morph Cut (card 131) -------------------------------------------------------------------------------
+
+namespace {
+
+/// A face finder that knows the faces of two synthetic pictures: for an analysis plane that looks like one of them (the same picture, correlated
+/// above 0.995: the video file has its luma on another scale and 8 bits) it reports the faces it was told, else none. Counts its calls.
+class ScriptedFaces final : public FaceFinder {
+public:
+    struct Known {
+        motion::Plane picture;
+        std::vector<motion::FaceFeatures> faces;
+    };
+    std::vector<Known> known;
+    std::atomic<int> calls{0};
+    std::string name = "scripted-faces-1";
+
+    std::vector<motion::FaceFeatures> find(const motion::Plane& grey) override {
+        ++calls;
+        for (const Known& k : known) {
+            if (k.picture.width != grey.width || k.picture.height != grey.height) {
+                continue;
+            }
+            // The video's limited-range luma is the synthetic picture on another scale: compare by correlation, which does not mind it.
+            double sa = 0.0, sb = 0.0, saa = 0.0, sbb = 0.0, sab = 0.0;
+            std::size_t n = 0;
+            for (std::size_t i = 0; i < grey.px.size(); i += 7, ++n) {
+                const double a = grey.px[i];
+                const double b = k.picture.px[i];
+                sa += a;
+                sb += b;
+                saa += a * a;
+                sbb += b * b;
+                sab += a * b;
+            }
+            const double dn = static_cast<double>(std::max<std::size_t>(n, 1));
+            const double cov = sab / dn - (sa / dn) * (sb / dn);
+            const double va = saa / dn - (sa / dn) * (sa / dn);
+            const double vb = sbb / dn - (sb / dn) * (sb / dn);
+            if (va > 1e-9 && vb > 1e-9 && cov / std::sqrt(va * vb) > 0.995) {
+                return k.faces;
+            }
+        }
+        return {};
+    }
+    std::string version() const override { return name; }
+};
+
+struct FinderInstalled {
+    explicit FinderInstalled(std::shared_ptr<FaceFinder> f) { setFaceFinder(std::move(f)); }
+    ~FinderInstalled() { setFaceFinder(nullptr); }
+};
+
+/// PSNR of the luma of two RGBA8 pictures over the box (x0, y0)..(x1, y1).
+double boxPsnr(const std::vector<std::uint8_t>& a, const std::vector<std::uint8_t>& b, int x0, int y0, int x1, int y1, int w = 320) {
+    double se = 0.0;
+    int n = 0;
+    for (int y = y0; y < y1; ++y) {
+        for (int x = x0; x < x1; ++x) {
+            const std::size_t i = 4 * (static_cast<std::size_t>(y) * w + x);
+            const double la = 0.2126 * a[i] + 0.7152 * a[i + 1] + 0.0722 * a[i + 2];
+            const double lb = 0.2126 * b[i] + 0.7152 * b[i + 1] + 0.0722 * b[i + 2];
+            se += (la - lb) * (la - lb);
+            ++n;
+        }
+    }
+    const double mse = se / std::max(1, n);
+    return mse <= 0.0 ? 99.0 : 10.0 * std::log10(255.0 * 255.0 / mse);
+}
+
+} // namespace
+
+TEST_CASE("A face-aware Morph Cut lines the two heads up where the plain one ghosts the face (card 131)", "[playback][motion][gpu][faces]") {
+    // Shot A: a head in front of a still background; shot B: the same head 32 px to the right, a little larger, turned 6 degrees, its mouth open
+    // (a jump cut in an interview). Half way through the transition the truth is the head half way between the poses.
+    const motion::test::SyntheticFace face(21);
+    const int w = 320;
+    const int h = 180;
+    const motion::test::HeadPose poseA{140.0, 92.0, 32.0, 0.0, 0.0};
+    const motion::test::HeadPose poseB{172.0, 86.0, 35.0, 6.0, 0.8};
+    const motion::test::HeadPose poseHalf = motion::test::midPose(poseA, poseB, 0.5);
+    const auto still = [&](const motion::test::HeadPose& pose) { return std::vector<motion::Plane>(48, face.picture(w, h, pose)); };
+    const fs::path shotA = motionDir() / "faceA.mkv";
+    const fs::path shotB = motionDir() / "faceB.mkv";
+    const fs::path half = motionDir() / "faceHalf.mkv";
+    REQUIRE(encodeGrey(shotA, still(poseA), Rate{48, 1}));
+    REQUIRE(encodeGrey(shotB, still(poseB), Rate{48, 1}));
+    REQUIRE(encodeGrey(half, still(poseHalf), Rate{48, 1}));
+    const auto cutWith = [&](bool faceAwareParam) {
+        ProjectState state;
+        const MediaId a = addFile(state, shotA);
+        const MediaId b = addFile(state, shotB);
+        const Rate r{48, 1};
+        Clip ca = videoClip(state, a, Ticks{}, framesToTicks(24, r), Ticks{});
+        Clip cb = videoClip(state, b, framesToTicks(24, r), framesToTicks(24, r), framesToTicks(24, r));
+        Transition t;
+        t.id = state.ids.allocate<TransitionId>();
+        t.outgoing = ca.id;
+        t.incoming = cb.id;
+        t.before = framesToTicks(4, r);
+        t.after = framesToTicks(4, r);
+        t.effect = std::string(kMorphCutTransition);
+        if (!faceAwareParam) {
+            t.params.push_back(EffectParam{"faceAware", ParamValue(0.0)});
+        }
+        return projectWith(std::move(state), r, {ca, cb}, {t});
+    };
+    ProjectState truthState;
+    const MediaId truthMedia = addFile(truthState, half);
+    const Clip truthClip = videoClip(truthState, truthMedia, Ticks{}, framesToTicks(48, Rate{48, 1}), Ticks{});
+    const MotionProject truth = projectWith(std::move(truthState), Rate{48, 1}, {truthClip});
+    const std::vector<std::uint8_t> expected = exportFrame(truth, Rate{48, 1}, 24);
+    const int fx0 = static_cast<int>(poseHalf.cx - 1.1 * poseHalf.halfWidth);
+    const int fy0 = static_cast<int>(poseHalf.cy - 1.4 * poseHalf.halfWidth);
+    const int fx1 = static_cast<int>(poseHalf.cx + 1.1 * poseHalf.halfWidth);
+    const int fy1 = static_cast<int>(poseHalf.cy + 1.4 * poseHalf.halfWidth);
+    const Rate r{48, 1};
+    const auto morph = [&](bool faceAware) {
+        MotionAnalyzer::shared().clear();
+        return exportFrame(cutWith(faceAware), r, 24);
+    };
+
+    // The plain Morph Cut: no face finder is installed.
+    const std::vector<std::uint8_t> plain = morph(true);
+    CHECK(MotionAnalyzer::shared().stats().facesAligned == 0);
+
+    auto finder = std::make_shared<ScriptedFaces>();
+    finder->known = {{face.picture(w, h, poseA), {motion::test::SyntheticFace::features(poseA)}},
+                     {face.picture(w, h, poseB), {motion::test::SyntheticFace::features(poseB)}}};
+    FinderInstalled installed(finder);
+    // Face Aware (the default) with the finder: the heads are lined up; nothing outside the faces' windows needs to differ much.
+    const std::vector<std::uint8_t> aware = morph(true);
+    const std::uint64_t alignedAfter = MotionAnalyzer::shared().stats().facesAligned;
+    CHECK(alignedAfter >= 1);
+    CHECK(finder->calls.load() >= 2); // both sides were looked at
+    const double plainPsnr = boxPsnr(expected, plain, fx0, fy0, fx1, fy1);
+    const double awarePsnr = boxPsnr(expected, aware, fx0, fy0, fx1, fy1);
+    WARN("over the face: plain Morph Cut " << plainPsnr << " dB, face aware " << awarePsnr << " dB");
+    {
+        // For people: the truth, the plain Morph Cut and the face-aware one side by side, and the figures.
+        std::ofstream figures(motionDir() / "face_morph.txt");
+        figures << "over the face at the mid point: plain Morph Cut " << plainPsnr << " dB, face aware " << awarePsnr << " dB\n";
+        std::ofstream picture(motionDir() / "face_morph.ppm", std::ios::binary);
+        picture << "P6\n" << w * 3 << " " << h << "\n255\n";
+        for (int y = 0; y < h; ++y) {
+            for (const std::vector<std::uint8_t>* pixels : {&expected, &plain, &aware}) {
+                for (int x = 0; x < w; ++x) {
+                    const std::uint8_t* p = &(*pixels)[4 * (static_cast<std::size_t>(y) * w + x)];
+                    picture.write(reinterpret_cast<const char*>(p), 3);
+                }
+            }
+        }
+    }
+    CHECK(awarePsnr > plainPsnr + 2.0);
+    // The switch off: the same pictures with the finder installed are the plain flow's, bit for bit, and no face was aligned.
+    const int callsBefore = finder->calls.load();
+    const std::vector<std::uint8_t> off = morph(false);
+    CHECK(off == plain);
+    CHECK(MotionAnalyzer::shared().stats().facesAligned == alignedAfter);
+    CHECK(finder->calls.load() == callsBefore); // Face Aware off never asks the detector
+    // No face on one side (the detector knows only shot A): the plain flow.
+    finder->known.pop_back();
+    const std::vector<std::uint8_t> oneSide = morph(true);
+    CHECK(oneSide == plain);
+    // A detector that finds nothing, or is not there: the plain flow too, and the cache tells the two apart (a finder that changes is another motion).
+    finder->known.clear();
+    CHECK(morph(true) == plain);
+    // The request's key follows the switch and the detector: the same pictures with and without alignment are two motions, and a new detector is another.
+    const MotionProject project = cutWith(true);
+    const std::vector<MotionRequest> requests = morphCutRequests(project.state, *project.state.findSequence(project.sequence));
+    REQUIRE(requests.size() == 1);
+    CHECK(requests[0].faceAware);
+    MotionRequest unaware = requests[0];
+    unaware.faceAware = false;
+    CHECK(unaware.key() != requests[0].key());
+    const std::uint64_t withFinder = requests[0].key();
+    finder->name = "scripted-faces-2";
+    CHECK(requests[0].key() != withFinder);
+    CHECK(unaware.key() == unaware.key());
+    const MotionProject off2 = cutWith(false);
+    const std::vector<MotionRequest> offRequests = morphCutRequests(off2.state, *off2.state.findSequence(off2.sequence));
+    REQUIRE(offRequests.size() == 1);
+    CHECK_FALSE(offRequests[0].faceAware);
 }

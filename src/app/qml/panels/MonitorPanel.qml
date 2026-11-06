@@ -78,8 +78,14 @@ Panel {
         case "overlay": label = qsTr("Overlay"); break
         case "replace": label = qsTr("Replace"); break
         case "append": label = qsTr("Append at End"); break
+        // 0.7 (card 109): the keys Insert Before / After Clip at Playhead (Main's clip.insertBefore / clip.insertAfter);
+        // the overlay's drop zones do not offer them.
+        case "insertBefore": label = qsTr("Insert Before"); break
+        case "insertAfter": label = qsTr("Insert After"); break
         default: return false
         }
+        const nextToClip = zone === "insertBefore" || zone === "insertAfter"
+        let noFreeTrack = false
         const kind = streams === "" ? "av" : streams
         const place = (time, track, overwrite) => fromSource ? SourceMonitor.dropAt(time, track, overwrite, kind)
                                                              : ProjectFile.dropMedia(mediaKey, time, track, overwrite)
@@ -94,7 +100,15 @@ Panel {
                     return place(ProjectController.playheadText, "", zone === "overwrite")
                 if (zone === "append")
                     return place(Monitors.sequenceEndText(), "", true)
+                if (nextToClip) {
+                    const at = Monitors.clipEdgeText(zone === "insertAfter")
+                    return at !== "" && place(at, "", false)
+                }
                 let track = Monitors.overlayTrack(mediaKey, fromSource)
+                if (track === "" && !Preferences.addTracksOnEdit) {
+                    noFreeTrack = true // 0.7 (card 182): the setting keeps edits from adding the track
+                    return false
+                }
                 if (track === "") {
                     const made = ProjectController.addTracks({ video: 1, audio: 0, videoPlacement: "last" })
                     track = made.length > 0 ? made[0] : ""
@@ -107,8 +121,11 @@ Panel {
             return true
         }
         ProjectController.cancelGesture()
-        const why = zone === "replace" ? (Monitors.replaceTarget() === "" ? qsTr("There is no clip under the playhead to replace")
+        const why = noFreeTrack ? qsTr("There is no free video track for the overlay, and adding tracks automatically is off (Settings > Timeline & editing)")
+                  : zone === "replace" ? (Monitors.replaceTarget() === "" ? qsTr("There is no clip under the playhead to replace")
                                                                            : Editing.message)
+                  : nextToClip && Monitors.clipEdgeText(false) === "" ? (zone === "insertAfter" ? qsTr("There is no clip under the playhead to insert after")
+                                                                                                : qsTr("There is no clip under the playhead to insert before"))
                   : fromSource ? SourceMonitor.message : ProjectFile.lastError
         root.messageRequested(why !== "" ? why : qsTr("%1 did not place anything").arg(label))
         return false
@@ -122,6 +139,8 @@ Panel {
 
     // 0 = fit the well; otherwise monitor pixels per sequence pixel (Premiere's zoom levels).
     property real zoom: 0
+    // 0.7 (VR / 360 video): the VR viewer (wrench > VR Video View) on a VR sequence: the picture is a view you look around in.
+    readonly property bool vrViewing: Monitors.programVrView && ProjectController.sequenceVrProjection !== "none"
     // P.2: a zoomed picture's scroll (Premiere's scroll bars): the wheel scrolls it, Shift+wheel sideways.
     property real panX: 0
     property real panY: 0
@@ -209,6 +228,15 @@ Panel {
             label: qsTr("%n effect(s) bypassed", "", Playback.bypassedEffects)
             dotColor: Theme.warning
             tooltip: qsTr("These effects are unknown or come from a newer version of Wabcut; the picture is shown without them.")
+        },
+        // 0.7: AI Restore / AI Denoise: this frame shows the unprocessed picture of a layer (Process makes the pictures).
+        StatusPill {
+            objectName: "aiUnprocessedBadge"
+            visible: Playback.aiUnprocessedLayers > 0
+            label: qsTr("AI: %n layer(s) not processed", "", Playback.aiUnprocessedLayers)
+            dotColor: Theme.warning
+            tooltip: qsTr("A layer has AI effects whose pictures are not processed for this frame, so the original picture is shown. "
+                          + "Process them in Effect Controls (the playhead frame shows processed pictures once they are made); an export processes what is missing first.")
         },
         // P.2: Morph Cut and Optical Flow motion being analysed (Premiere's banner on the Program Monitor).
         StatusPill {
@@ -334,14 +362,20 @@ Panel {
             Item {
                 id: frameArea
                 objectName: "programFrameArea"
-                readonly property real aspect: ProjectController.frameWidth / Math.max(1, ProjectController.frameHeight)
+                // 156: the shape the picture is SEEN in - the canvas widened by the sequence's pixel aspect ratio (HDV,
+                // DV wide, anamorphic), as the compositor letterboxes it (Compositor::letterboxRect).
+                // 0.7: the VR viewer's view has the shape of the well, not of the equirectangular sequence.
+                readonly property real aspect: root.vrViewing
+                                               ? Math.max(0.2, (areaWidth - Theme.space(4)) / Math.max(1, well.height - Theme.space(4)))
+                                               : ProjectController.frameWidth * ProjectController.framePixelAspect
+                                                 / Math.max(1, ProjectController.frameHeight)
                 readonly property real areaX: Multicam.viewOn ? well.width / 2 : 0
                 readonly property real areaWidth: Multicam.viewOn ? well.width / 2 : well.width
                 readonly property real fitWidth: Math.min(areaWidth - Theme.space(4), (well.height - Theme.space(4)) * aspect)
                 x: areaX + (areaWidth - width) / 2 + (root.zoom > 0 ? root.panX : 0)
                 y: (well.height - height) / 2 + (root.zoom > 0 ? root.panY : 0)
                 visible: !Trim.viewOpen // M5i: the Trim view takes the well
-                width: root.zoom > 0 ? ProjectController.frameWidth * root.zoom / Screen.devicePixelRatio : fitWidth
+                width: root.zoom > 0 ? ProjectController.frameWidth * ProjectController.framePixelAspect * root.zoom / Screen.devicePixelRatio : fitWidth
                 height: width / aspect
 
                 // Mock frame, shown until the ProgramMonitor presents its first frame
@@ -388,11 +422,15 @@ Panel {
                     id: slot
                     objectName: "programMonitorSlot"
                     anchors.fill: parent
+                    z: root.vrViewing ? 100 : 0 // 0.7: the VR view covers the overlays that measure the flat frame
                     ProgramMonitor {
                         id: programMonitor
                         objectName: "programMonitor"
                         anchors.fill: parent
                         surroundColor: Theme.videoBlack
+                        vrView: root.vrViewing
+                        vrProjection: ProjectController.sequenceVrProjection
+                        vrStereo: ProjectController.sequenceVrStereo
                         transparencyGrid: Monitors.programTransparencyGrid
                         scopes: true // feeds the Scopes panel (I.5) while it is open
                         // Composite at the preview resolution (the decoders follow the same divisor).
@@ -402,7 +440,8 @@ Panel {
                     // a workspace glide resizes the monitor every frame, and a new preview resolution restarts the
                     // decoders. The first size applies at once.
                     readonly property real wantedScale: frameArea.width > 0 && ProjectController.frameWidth > 0
-                                                        ? frameArea.width * Screen.devicePixelRatio / ProjectController.frameWidth : 0
+                                                        ? frameArea.width * Screen.devicePixelRatio
+                                                          / (ProjectController.frameWidth * ProjectController.framePixelAspect) : 0
                     property real settledScale: 0
                     onWantedScaleChanged: {
                         if (wantedScale > 0 && settledScale > 0)
@@ -422,6 +461,13 @@ Panel {
                         when: slot.settledScale > 0
                         value: slot.settledScale
                     }
+                }
+                // 0.7: drag to look around, wheel to zoom, double-click to reset (qml/monitor/VrViewOverlay.qml).
+                VrViewOverlay {
+                    anchors.fill: parent
+                    monitor: programMonitor
+                    visible: root.vrViewing
+                    z: 101
                 }
 
                 // Picking (0.1.3): clicks and double-clicks on the picture that no overlay above takes. The picked
@@ -577,12 +623,20 @@ Panel {
                 PlatformSafeZoneOverlay {
                     anchors.fill: parent
                 }
+                // 0.7: rule of thirds, golden ratio and diagonal guides (wrench > Composition Guides, View menu; no input).
+                CompositionOverlay {
+                    anchors.fill: parent
+                }
                 // Color workspace (I.5): before/after split handle, side-by-side labels, the HSL eyedropper.
                 ColorCompareOverlay {
                     anchors.fill: frameArea
                 }
                 // Masks (I.6): the Effect Controls target's outlines, the selected mask's handles, the drawing tools.
                 MaskOverlay {
+                    anchors.fill: parent
+                }
+                // Track Motion (0.7, card #83): the subject box the Effect Controls section tracks from.
+                TrackMotionOverlay {
                     anchors.fill: parent
                 }
                 // Review notes (M5m, C.9): the note's mark; a spot or a rectangle drawn for the next note.
@@ -637,6 +691,10 @@ Panel {
                     id: motionOverlay
                     anchors.fill: parent
                     suspended: root.typeTool || editDrop.containsDrag // P1 (#17): not while a clip is dragged over
+                }
+                // 0.7: the colour chart's outline and four corner handles (Color panel > Color Chart); on top so they can be grabbed.
+                ColorChartOverlay {
+                    anchors.fill: parent
                 }
             }
 
@@ -1244,6 +1302,23 @@ Panel {
                     command: "file.exportFrame"
                     enabled: !ProjectFile.demo
                     onClicked: Monitors.requestExportFrame(false)
+
+                    // 0.7: right-click for Copy Frame (the picture on the clipboard, no dialog).
+                    TapHandler {
+                        acceptedButtons: Qt.RightButton
+                        onTapped: programCopyFrameMenu.popup(exportFrameButton, 0, -programCopyFrameMenu.implicitHeight - Theme.space(1))
+                    }
+                    ContextMenu {
+                        id: programCopyFrameMenu
+                        objectName: "programCopyFrameMenu"
+                        ContextMenuItem {
+                            objectName: "programCopyFrameItem"
+                            text: qsTr("Copy Frame")
+                            iconName: "copy"
+                            command: "monitor.copyFrame"
+                            onTriggered: Monitors.copyFrame(false)
+                        }
+                    }
                 }
                 // M5l: Premiere's Toggle Multi-Camera View (Shift+0).
                 IconButton {

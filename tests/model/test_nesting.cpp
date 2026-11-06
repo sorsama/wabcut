@@ -512,6 +512,52 @@ TEST_CASE("Changing an angle's sync moves its clips in the source", "[model][mul
     CHECK_FALSE(edit::removeTrack(synced.state, m.source, mc.multicam->angles[0].video));
 }
 
+TEST_CASE("A hand-nudged angle remembers the offset its sync measured (card 009)", "[model][multicam]") {
+    Multicam m;
+    const auto angleOf = [&](const ProjectState& state, std::size_t i) -> const MulticamAngle& {
+        return state.findSequence(m.source)->multicam->angles[i];
+    };
+    const Ticks measured = angleOf(m.state, 1).offset;
+    CHECK_FALSE(angleOf(m.state, 1).autoOffset.has_value());
+
+    // The first nudge records where the sync had put the angle.
+    const ProjectState a = ok(edit::setMulticamSync(m.state, m.source, 1, measured + f(2))).state;
+    requireValid(a);
+    REQUIRE(angleOf(a, 1).autoOffset.has_value());
+    CHECK(*angleOf(a, 1).autoOffset == measured);
+    CHECK(angleOf(a, 1).offset == measured + f(2));
+    CHECK_FALSE(angleOf(a, 0).autoOffset.has_value()); // the other angles are not touched
+    // Nudged again: the measured value stays the baseline.
+    const ProjectState b = ok(edit::setMulticamSync(a, m.source, 1, measured + f(5))).state;
+    CHECK(*angleOf(b, 1).autoOffset == measured);
+    CHECK(angleOf(b, 1).offset == measured + f(5));
+    // The same offset is not a nudge.
+    const ProjectState same = ok(edit::setMulticamSync(m.state, m.source, 1, measured)).state;
+    CHECK_FALSE(angleOf(same, 1).autoOffset.has_value());
+    // Back on the measured offset: nothing is remembered, the angle is as it was created.
+    const ProjectState c = ok(edit::setMulticamSync(b, m.source, 1, measured)).state;
+    CHECK_FALSE(angleOf(c, 1).autoOffset.has_value());
+    CHECK(angleOf(c, 1).offset == measured);
+
+    // Saved only when set, and read back; an older file has none; a value outside 0 to 24 hours is refused.
+    const auto plain = io::toJson(m.state);
+    REQUIRE(plain);
+    CHECK(plain->find("autoOffset") == std::string::npos);
+    const auto nudged = io::toJson(a);
+    REQUIRE(nudged);
+    CHECK(nudged->find("autoOffset") != std::string::npos);
+    const auto loaded = io::fromJson(*nudged);
+    REQUIRE(loaded);
+    CHECK(*loaded == a);
+    CHECK(*loaded->findSequence(m.source)->multicam->angles[1].autoOffset == measured);
+    const std::string key = "\"autoOffset\": " + std::to_string(measured.value);
+    const std::size_t at = nudged->find(key);
+    REQUIRE(at != std::string::npos);
+    std::string negative = *nudged;
+    negative.replace(at, key.size(), "\"autoOffset\": -5");
+    CHECK_FALSE(io::fromJson(negative));
+}
+
 TEST_CASE("Nested and multicam clips round-trip through project files; unknown sources are kept", "[model][nesting][io]") {
     Multicam m;
     const auto nested = edit::nestClips(m.state, m.tl.seq, std::vector<ClipId>{clipAt(m.state, m.tl.seq, "V1@0")}, "N");

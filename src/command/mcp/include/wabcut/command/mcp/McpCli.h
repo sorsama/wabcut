@@ -27,6 +27,10 @@ struct McpCliOptions {
     /// Serve the commands that read or write files, confined to the project's folder and `filesFolders` (S5-P1-1).
     bool allowFiles = false;
     std::vector<std::filesystem::path> filesFolders; ///< --files-folder (each implies allowFiles)
+    /// --transactions (0.7): serve edit_transaction, so a script's edits are one undo step (the Python package asks for it).
+    bool transactions = false;
+    /// --audit-log <file> (0.7): one JSON line per tool call (time, tool, outcome, revision), appended; no parameters.
+    std::filesystem::path auditLog;
     SaveMode saveMode = SaveMode::Manual;
     std::chrono::milliseconds timeout{30'000};
 };

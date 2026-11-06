@@ -669,6 +669,74 @@ first, every file SHA-256 verified) and run by `wabcut-embed` on ONNX Runtime. S
 - Both are used under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0); no NOTICE files are published
   with them. The AI Object Mask also asks YOLOX-Tiny (above, AI-9) for every COCO class when a subject is named.
 
+## AI video effect models (0.7; verified 2026-11-05)
+
+Optional downloads for AI Restore, AI Denoise, AI Frame Interpolation, AI Refocus, AI Face Retouch and AI Eye Contact, never bundled: downloaded on request (`wabcut::ai::ModelStore`, licence card
+first, every file SHA-256 verified, pinned to the revision below) and run by `wabcut-embed` on ONNX Runtime
+([docs/ai.md](docs/ai.md#ai-video-effects-restore-and-denoise-07)). Sizes and digests are in `src/ai/src/ModelStore.cpp`.
+
+- **Real-ESRGAN** (Xintao Wang, Liangbin Xie, Chao Dong, Ying Shan; Tencent ARC Lab),
+  [github.com/xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN): BSD 3-Clause License (Copyright (c) 2021, Xintao
+  Wang). ONNX exports without changed weights: `realesr-general-x4v3.onnx` from
+  [huggingface.co/Heliosoph/realesrgan-onnx](https://huggingface.co/Heliosoph/realesrgan-onnx) at
+  `488e5dda07333179f229a6205d92135eea4c25e9` (SHA-256 `09b757accd747d7e423c1d352b3e8f23e77cc5742d04bae958d4eb8082b76fa4`);
+  `real_esrgan_x2.onnx` and `real_esrgan_x4.onnx` (RealESRGAN_x2plus / x4plus) from
+  [huggingface.co/SceneWorks/real-esrgan-onnx](https://huggingface.co/SceneWorks/real-esrgan-onnx) at
+  `09f741bac80a246b407da3ee902bf5f3291b602f` (SHA-256 `7115ba92e8a1bfa63d68558ef006ef3d91273a068d321b1439f8bb1c9179002c` and
+  `5c586662929cbc686c1a5c38d9c060dbdb4ea5863a1f7672b8c0761e6b89c033`).
+- **NAFNet** GoPro deblurring (Liangyu Chen, Xiaojie Chu, Xiangyu Zhang, Jian Sun; Megvii),
+  [github.com/megvii-research/NAFNet](https://github.com/megvii-research/NAFNet): MIT License (Copyright (c) 2022 megvii-model),
+  as the OpenCV Zoo publishes the ONNX export,
+  [huggingface.co/opencv/deblurring_nafnet](https://huggingface.co/opencv/deblurring_nafnet) at
+  `f1f255116cdb628a311d2b5749871189a4639d84` (SHA-256 `07263f416febecce10193dd648e950b22e397cf521eedab1a114ef77b2bc9587`).
+- **DRUNet** colour denoiser (Kai Zhang, Yawei Li, Wangmeng Zuo, Lei Zhang, Luc Van Gool, Radu Timofte; KAIR),
+  [github.com/cszn/KAIR](https://github.com/cszn/KAIR): MIT License (Copyright (c) 2019 Kai Zhang); the original `drunet_color.pth`
+  weights exported to ONNX unchanged by synthscript,
+  [huggingface.co/synthscript/drunet-color-onnx](https://huggingface.co/synthscript/drunet-color-onnx) at
+  `a2b9fccfa27b197f44a3876c567f5e48970c44a7` (SHA-256 `2ae3ab5eb15daac2ee79be984d584b908ce7f0f60b27be87d005f728c2aa0087`).
+  The model was trained on public image collections published for research (DIV2K, Flickr2K, Waterloo Exploration); the
+  author's licence for the weights is MIT, which is what Wabcut relies on.
+- **RIFE** 4.25 lite (Zhewei Huang, Tianyuan Zhang, Wen Heng, Boxin Shi, Shuchang Zhou; Practical-RIFE by hzwer, ECCV 2022),
+  [github.com/hzwer/Practical-RIFE](https://github.com/hzwer/Practical-RIFE): MIT License (Copyright (c) 2021 hzwer), for AI Frame
+  Interpolation. The author's own 4.25 lite weights converted to ONNX (opset 17, a stateless warp layer is the only change to the
+  network; the export scripts are in the repository) by t9749,
+  [huggingface.co/t9749/rife-4.25-lite-onnx](https://huggingface.co/t9749/rife-4.25-lite-onnx) at
+  `8d1488a82e19fd2f2ca5b3ee1d1bfacd6787b9df`, `rife_v425lite.onnx` (22,677,513 bytes, SHA-256
+  `702802d0862ab78f2d72133c6bc3768e7e89b81756f7cd51d1055a2fe3d06577`). Inputs `img0`, `img1` (1 x 3 x H x W float32, 0..1, H and W
+  multiples of 64) and `timestep` (1 x 1 x 1 x 1); output `frame`.
+- **Depth Anything V2 Small** (Lihe Yang, Bingyi Kang, Zilong Huang, Zhen Zhao, Xiaogang Xu, Jiashi Feng, Hengshuang Zhao;
+  arXiv:2406.09414), [github.com/DepthAnything/Depth-Anything-V2](https://github.com/DepthAnything/Depth-Anything-V2): Apache License
+  2.0 for the Small model (the Base, Large and Giant models are CC-BY-NC-4.0 and are not used), for AI Refocus. ONNX weights as the
+  ONNX Community publishes them,
+  [huggingface.co/onnx-community/depth-anything-v2-small](https://huggingface.co/onnx-community/depth-anything-v2-small) at
+  `4472b7362082ad9968fee890ca0f1e5aca36b93d`, `onnx/model.onnx` (99,060,839 bytes, SHA-256
+  `afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c`). Input `pixel_values` (batch x 3 x H x W float32, ImageNet mean and
+  deviation, H and W multiples of 14); output `predicted_depth` (relative inverse depth).
+- **BiSeNet face parsing** (ResNet-18; Yakhyokhuja Valikhujaev,
+  [github.com/yakhyo/face-parsing](https://github.com/yakhyo/face-parsing)): MIT License (Copyright (c) 2024 Yakhyokhuja Valikhujaev),
+  built on zllrunning's [face-parsing.PyTorch](https://github.com/zllrunning/face-parsing.PyTorch) (MIT) and the BiSeNet paper
+  (Changqian Yu et al., 2018); for AI Face Retouch. The author's trained weights exported to ONNX, the release asset
+  `resnet18.onnx` of the tag `v0.0.2`
+  (`https://github.com/yakhyo/face-parsing/releases/download/v0.0.2/resnet18.onnx`, 53,205,364 bytes, SHA-256
+  `0d9bd318e46987c3bdbfacae9e2c0f461cae1c6ac6ea6d43bbe541a91727e33f`, the digest GitHub shows for the release asset). Input `input`
+  (1 x 3 x 512 x 512 float32, RGB 0..1 with the ImageNet mean and deviation), output `output` (1 x 19 x 512 x 512 class scores,
+  the CelebAMask-HQ labels). The weights were trained on CelebAMask-HQ, a face-parsing image collection published for
+  non-commercial research; the weights' author publishes them under the MIT licence, which is what Wabcut relies on (the same
+  position as the DRUNet entry above). AI Face Retouch also uses **YuNet** (OpenCV Zoo, MIT) to find the faces, listed with the
+  Auto Reframe models.
+- **MediaPipe Face Landmarker, landmark network** (Google LLC; [MediaPipe Face Mesh V2 model card](https://storage.googleapis.com/mediapipe-assets/Model%20Card%20MediaPipe%20Face%20Mesh%20V2.pdf)):
+  Apache License 2.0 (the repository carries MediaPipe's licence file); for AI Eye Contact. The TFLite network of the Face Landmarker
+  bundle (`face_landmarker.task`, float16 v1, SHA-256 `64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff`) converted to ONNX by
+  naklitechie (format change only, no retraining): `face_landmarks.onnx` from
+  [huggingface.co/naklitechie/face-landmarks-onnx](https://huggingface.co/naklitechie/face-landmarks-onnx) at
+  `575c33816c840c5b156398adb485e4f8d138adc2` (4,920,995 bytes, SHA-256 `f38c3321ceffbc9e95103480ad38cc3f52e7e1bde2bcee7cd9355d0b9138ac0c`, the
+  digest the model card states, re-computed on the download). Input `input_12` (1 x 256 x 256 x 3 float32, NHWC, RGB 0..1, a face crop rolled so
+  the eyes are level), outputs `Identity` (478 x (x, y, z) in input pixels: the face mesh and ten iris points) and `Identity_1` (the face-presence
+  logit). The model card places identification and life-critical decisions outside the model's intended use; Wabcut uses the eyelid and
+  iris points only, to move an iris inside its eye. No gaze-redirection network with a licence that allows this use was found (searched
+  2026-11-05); the landmarks measure, the effect repaints nothing. It also uses **YuNet** to find the faces, and the face-aware
+  Morph Cut uses YuNet alone.
+
 ## Audio plugin SDKs (A.6; verified 2026-10-12)
 
 The audio plugin host (`src/plughost`, [docs/plugins.md](docs/plugins.md)) is built against two SDKs. Both come from vcpkg at
@@ -690,6 +758,22 @@ the installed `THIRD-PARTY-NOTICES.txt` with their licence files.
 
 The plugins a user hosts are their own software under their own licences; Wabcut neither bundles nor redistributes any.
 
+## OpenFX API headers (0.7; verified 2026-11-05)
+
+The OpenFX video plug-in host (`src/ofxhost`, [docs/plugins.md](docs/plugins.md), "OpenFX video plug-ins") is built against the
+OpenFX image effect API headers, vendored unmodified in `src/ofxhost/third_party/openfx` from
+[github.com/AcademySoftwareFoundation/openfx](https://github.com/AcademySoftwareFoundation/openfx), tag `OFX_Release_1.5.1`
+(commit `ab779510b2655b4d11a7e01e5c521f9aa8c88976`).
+
+- **BSD 3-Clause License**, Copyright (c) 2025, OpenFX and contributors to the OpenFX project. The licence text is
+  `src/ofxhost/third_party/openfx/LICENSE.md` (and `cmake/licenses/openfx.txt`, installed as `licenses/openfx.txt`).
+- Only the `include/*.h` headers are vendored (not `ofxColour.h` and its generated OCIO header: the colour-space suite is not
+  hosted). Nothing is downloaded at build time; the OpenFX SDK's support library and examples are not used.
+- "OpenFX" and the OpenFX logo belong to the OpenFX project (a project of the Academy Software Foundation); Wabcut names the
+  standard and shows no logo.
+
+The OpenFX plug-ins a user hosts are their own software under their own licences; Wabcut neither bundles nor redistributes any.
+
 ## AAF object model tables (P.2; verified 2026-10-15)
 
 AAF export ([docs/interchange.md](docs/interchange.md)) writes the AAF baseline object model into every file's MetaDictionary.
@@ -702,3 +786,16 @@ AAF export ([docs/interchange.md](docs/interchange.md)) writes the AAF baseline 
 - Only the identifiers and definitions are taken (the AAF Object Specification's data, tabulated by pyaaf2); no pyaaf2 code is
   compiled into Wabcut, and pyaaf2 is not needed to build or test it.
 - The writer, the compound file (MS-CFB) layer, the OMF (Bento) writer and the caption formats are Wabcut's own code.
+
+## Camera gyro formats and test payloads (0.7)
+
+Warp Stabilizer's gyro method ([docs/motion.md](docs/motion.md)) reads the gyroscope of GoPro and Sony cameras out of the video
+file. Both parsers are Wabcut's own code; what they follow is documentation:
+
+- **GoPro GPMF**: GoPro's published format, [github.com/gopro/gpmf-parser](https://github.com/gopro/gpmf-parser) (README, "GPMF
+  Deeper Dive"; Apache-2.0 or MIT, Copyright 2017 GoPro, Inc.). No GoPro code is compiled into Wabcut. Two single-payload samples
+  from that repository are kept as test data in `tests/data/gpmf/` (not shipped); the MIT licence text is in that folder's README.
+- **Sony rtmd**: Sony does not publish the layout. The tag numbers and the sample structure were read from the open-source parser of
+  the Gyroflow project, [github.com/AdrianEddy/telemetry-parser](https://github.com/AdrianEddy/telemetry-parser)
+  (`src/sony/mod.rs`, `src/sony/rtmd_tags.rs`; MIT or Apache-2.0, Copyright 2021-2023 Adrian Eddy), which in turn follows SMPTE
+  RDD 18. Only the facts (tag ids, units, orientation codes) are used; no code was copied.

@@ -37,6 +37,7 @@ QString formatName(ChannelFormat format) {
     case ChannelFormat::Mono: return tx("Mono");
     case ChannelFormat::Stereo: return tx("Stereo");
     case ChannelFormat::Surround51: return tx("5.1");
+    case ChannelFormat::Surround71: return tx("7.1");
     case ChannelFormat::Adaptive: return tx("Adaptive");
     }
     return {};
@@ -124,6 +125,7 @@ QVariantList AudioMixerBridge::submixFormats() const {
     return {QVariantMap{{QStringLiteral("id"), QStringLiteral("new:mono")}, {QStringLiteral("name"), tx("Create Mono Submix")}},
             QVariantMap{{QStringLiteral("id"), QStringLiteral("new:stereo")}, {QStringLiteral("name"), tx("Create Stereo Submix")}},
             QVariantMap{{QStringLiteral("id"), QStringLiteral("new:5.1")}, {QStringLiteral("name"), tx("Create 5.1 Submix")}},
+            QVariantMap{{QStringLiteral("id"), QStringLiteral("new:7.1")}, {QStringLiteral("name"), tx("Create 7.1 Submix")}},
             QVariantMap{{QStringLiteral("id"), QStringLiteral("new:adaptive")}, {QStringLiteral("name"), tx("Create Adaptive Submix")}}};
 }
 

@@ -255,12 +255,22 @@ vec4 samplePlane(sampler2DArray tex, vec2 uv, int fieldMode)
     return mix(a, b, y - r0);
 }
 
+// 0.7 (card #98), mode.z bit 5: Nearest Neighbor Scaling (see layer.frag).
+const int SCALE_NEAREST = 32;
+
+vec2 pixelCentreUv()
+{
+    vec2 centre = clamp(floor(v_src), vec2(0.0), p.srcRect.xy - 1.0) + 0.5;
+    return centre / p.srcRect.xy * p.params.zw;
+}
+
 void main()
 {
-    vec2 cuv = v_uv * p.chromaXform.xy + p.chromaXform.zw;
+    vec2 uv = (p.mode.z & SCALE_NEAREST) != 0 ? pixelCentreUv() : v_uv;
+    vec2 cuv = uv * p.chromaXform.xy + p.chromaXform.zw;
     vec4 s = vec4(0.0, 0.0, 0.0, 1.0);
     int fieldMode = (p.mode.z >> 3) & 3;
-    s.x = samplePlane(plane0, v_uv, fieldMode).r;
+    s.x = samplePlane(plane0, uv, fieldMode).r;
     s.yz = samplePlane(plane1, cuv, fieldMode).rg;
 
     int alphaMode = p.mode.z & 3; // bit 2: ALPHA_INVERT, bits 3-4: the field mode

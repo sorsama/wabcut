@@ -1,6 +1,7 @@
 #include <wabcut/audio/edit/MediaAnalysis.h>
 
 #include <wabcut/audio/dsp/Loudness.h>
+#include <wabcut/audio/dsp/Match.h>
 #include <wabcut/model/EditSession.h>
 #include <wabcut/model/Resolve.h>
 #include <wabcut/playback/audio/AudioRedactions.h>
@@ -340,6 +341,12 @@ Json toJson(const LoudnessStats& s) {
         blocks.push_back(Json::array({b.at.value, b.duration.value, std::llround(b.truePeakDbtp * 100.0)}));
     }
     j["peakBlocks"] = std::move(blocks);
+    // 0.7: the short-term loudness once a second, in tenths of a LU (-100000 where unknown).
+    Json series = Json::array();
+    for (const float v : s.shortTerm) {
+        series.push_back(std::isfinite(v) ? std::llround(static_cast<double>(v) * 10.0) : std::int64_t{-100000});
+    }
+    j["shortTerm"] = std::move(series);
     return j;
 }
 
@@ -370,6 +377,12 @@ std::optional<LoudnessStats> fromJson(std::string_view text) {
             s.peakBlocks.push_back({Ticks{b[0].get<std::int64_t>()}, Ticks{b[1].get<std::int64_t>()}, b[2].get<double>() / 100.0});
         }
     }
+    for (const Json& v : j.value("shortTerm", Json::array())) {
+        if (v.is_number()) {
+            const double tenths = v.get<double>();
+            s.shortTerm.push_back(tenths <= -99999.0 ? -std::numeric_limits<float>::infinity() : static_cast<float>(tenths / 10.0));
+        }
+    }
     return s;
 }
 
@@ -388,6 +401,28 @@ int rateOf(const Sequence& seq, const RenderAnalysisOptions& o) {
         return o.sampleRate;
     }
     return seq.audioRate.isExact() && seq.audioRate.den == 1 ? seq.audioRate.num : 48000;
+}
+
+/// The statistics of a finished measurement; `rate` turns its frames into ticks.
+void fillStats(LoudnessStats& stats, const dsp::LoudnessResult& r, int rate) {
+    stats.integratedLufs = r.integratedLufs;
+    stats.rangeLu = r.rangeLu;
+    stats.truePeakDbtp = r.truePeakDbtp;
+    stats.samplePeakDbfs = r.samplePeakDbfs;
+    stats.maxMomentaryLufs = r.maxMomentaryLufs;
+    stats.maxShortTermLufs = r.maxShortTermLufs;
+    // 0.6 (#54): where, as offsets from the range's start.
+    const std::int64_t tpf = Rate{rate, 1}.ticksPerUnit();
+    const auto at = [&](std::int64_t frame) { return frame >= 0 ? std::optional<Ticks>(Ticks{frame * tpf}) : std::nullopt; };
+    stats.maxMomentaryAt = at(r.maxMomentaryFrame);
+    stats.maxShortTermAt = at(r.maxShortTermFrame);
+    stats.truePeakAt = at(r.truePeakFrame);
+    stats.peakFloorDbtp = r.peakFloorDbtp; // -6 dBTP, or higher when a very hot programme filled the block list (card 166)
+    stats.shortTerm = r.shortTermSeries;
+    stats.peakBlocks.reserve(r.peakBlocks.size());
+    for (const dsp::PeakBlock& b : r.peakBlocks) {
+        stats.peakBlocks.push_back({Ticks{b.frame * tpf}, Ticks{b.frames * tpf}, b.truePeakDbtp});
+    }
 }
 
 /// Renders `s` over its range in blocks, calling `sink` with each block. Stops (an Error) when asked to.
@@ -446,14 +481,17 @@ std::expected<LoudnessStats, Error> RenderLoudnessAnalyzer::measure(const Projec
         return std::unexpected(scoped.error());
     }
     // A.9: a 5.1 master is measured in 5.1 (libebur128 weighs the surround channels, ignores the LFE), not downmixed.
-    const int channels = scoped->sequence->masterFormat == ChannelFormat::Surround51 ? 6 : std::max(m_options.channels, 1);
+    const int channels = masterMixChannels(scoped->sequence->masterFormat, std::max(m_options.channels, 1));
     const int rate = rateOf(*scoped->sequence, m_options);
     std::optional<ai::AnalysisKey> key;
     if (m_options.cache) {
         static constexpr std::string_view kScopes[] = {"loudness.clip", "loudness.track", "loudness.mix"};
         key = ai::AnalysisKey{fingerprintOf(state, *scoped, target, channels, rate), 0,
-                              std::string(kScopes[static_cast<int>(target.scope)]), std::string(kModelVersion), "v2"};
+                              std::string(kScopes[static_cast<int>(target.scope)]), std::string(kModelVersion), "v4"};
         // 0.6 (#54): "v2" adds where the maxima and the true-peak overs are; older entries are measured again.
+        // 0.7 (card 166): "v3" keeps every block above a floor that rises on a very hot programme (v2 cut the list off
+        // after 100,000 blocks, losing the last overs); older entries are measured again.
+        // 0.7 (Loudness Radar): "v4" adds the short-term loudness once a second; older entries are measured again.
         if (const auto hit = m_options.cache->get(*key); hit && *hit) {
             if (auto stats = fromJson(**hit)) {
                 m_hits.fetch_add(1);
@@ -475,29 +513,59 @@ std::expected<LoudnessStats, Error> RenderLoudnessAnalyzer::measure(const Projec
             return std::unexpected(*stop);
         }
         m_renders.fetch_add(1);
-        const dsp::LoudnessResult r = meter.result();
-        stats.integratedLufs = r.integratedLufs;
-        stats.rangeLu = r.rangeLu;
-        stats.truePeakDbtp = r.truePeakDbtp;
-        stats.samplePeakDbfs = r.samplePeakDbfs;
-        stats.maxMomentaryLufs = r.maxMomentaryLufs;
-        stats.maxShortTermLufs = r.maxShortTermLufs;
-        // 0.6 (#54): where, as offsets from the range's start.
-        const std::int64_t tpf = Rate{rate, 1}.ticksPerUnit();
-        const auto at = [&](std::int64_t frame) { return frame >= 0 ? std::optional<Ticks>(Ticks{frame * tpf}) : std::nullopt; };
-        stats.maxMomentaryAt = at(r.maxMomentaryFrame);
-        stats.maxShortTermAt = at(r.maxShortTermFrame);
-        stats.truePeakAt = at(r.truePeakFrame);
-        stats.peakFloorDbtp = dsp::kPeakBlockFloorDbtp;
-        stats.peakBlocks.reserve(r.peakBlocks.size());
-        for (const dsp::PeakBlock& b : r.peakBlocks) {
-            stats.peakBlocks.push_back({Ticks{b.frame * tpf}, Ticks{b.frames * tpf}, b.truePeakDbtp});
-        }
+        fillStats(stats, meter.result(), rate);
     }
     if (key) {
         [[maybe_unused]] const auto stored = m_options.cache->put(*key, toJson(stats).dump());
     }
     return stats;
+}
+
+std::expected<MatchStats, Error> RenderLoudnessAnalyzer::measureMatch(const ProjectState& state, SequenceId sequence,
+                                                                      const LoudnessTarget& target,
+                                                                      std::optional<TimeRange> range,
+                                                                      command::ExecutionControl* control) {
+    auto scoped = scope(state, sequence, target, range);
+    if (!scoped) {
+        return std::unexpected(scoped.error());
+    }
+    const int channels = masterMixChannels(scoped->sequence->masterFormat, std::max(m_options.channels, 1));
+    const int rate = rateOf(*scoped->sequence, m_options);
+    MatchStats out;
+    out.channels = channels;
+    out.sampleRate = rate;
+    out.loudness.duration = scoped->range.duration;
+    out.loudness.start = scoped->range.start;
+    if (scoped->range.duration.value <= 0) {
+        return out;
+    }
+    // Up to 5 minutes are analysed frame by frame; a longer signal is sampled evenly (the average of a sample is the average).
+    const double seconds = scoped->range.duration.toSeconds();
+    const int stride = std::clamp(static_cast<int>(std::ceil(seconds / 300.0)), 1, 16);
+    const auto feed = m_feeds(state);
+    dsp::LoudnessMeter meter(channels, rate);
+    dsp::SpectrumAverager spectrum(channels, rate, stride);
+    dsp::LevelAccumulator levels(channels);
+    if (auto stop = renderScoped(*scoped, *feed, channels, rate, control, "measuring the signal",
+                                 [&](std::span<const float> block, std::int64_t frames) {
+                                     const auto n = static_cast<std::size_t>(frames);
+                                     meter.add(block.data(), n);
+                                     spectrum.add(block.data(), n);
+                                     levels.add(block.data(), n);
+                                 })) {
+        return std::unexpected(*stop);
+    }
+    m_renders.fetch_add(1);
+    fillStats(out.loudness, meter.result(), rate);
+    const dsp::SpectrumAverage average = spectrum.result();
+    static_assert(dsp::kSpectrumBands == kMatchBandCount);
+    out.spectrum.levelDb = average.levelDb;
+    out.spectrum.seconds = average.seconds;
+    out.spectrum.activeSeconds = average.activeSeconds;
+    out.spectrum.sampleRate = average.sampleRate;
+    out.rmsDbfs = levels.rmsDbfs();
+    out.crestDb = levels.crestDb();
+    return out;
 }
 
 // ---- Speech ------------------------------------------------------------------------------------------------------

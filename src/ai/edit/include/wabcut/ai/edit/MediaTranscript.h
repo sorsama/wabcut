@@ -57,6 +57,9 @@ public:
     std::string_view text(std::size_t i) const;
     /// The transcript's language ("" without one).
     std::string_view language() const;
+    /// 0.7 (card 111): the language word i is spoken in (its segment's own in a transcript of mixed languages, else the
+    /// transcript's).
+    std::string_view wordLanguage(std::size_t i) const;
     /// Words first..last (inclusive) as text, joined the way the language writes them (no spaces in Thai).
     std::string textOf(std::size_t first, std::size_t last) const;
     /// [begin, end): from the first to the last word that overlaps `range` (a zero-length word: its instant inside it).

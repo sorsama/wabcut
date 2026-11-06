@@ -50,6 +50,14 @@ Panel {
                                       + ProjectController.frameHeight
     /// P1 (#27): the original media this export reads that is offline (it waits until they are relinked).
     readonly property int offlineCount: summary.offlineCount ?? 0
+    /// 0.7 (#107): the Warp Stabilizer and Rolling Shutter Repair effects in the exported range that are not analysed (or
+    /// out of date): an export renders them unstabilized, so the panel says so first (Stabilizer.exportNeeds).
+    readonly property var stabilizerNeeds: ProjectController.revision >= 0 && Stabilizer.busy >= 0 ? Stabilizer.exportNeeds(root.range) : ({})
+    readonly property int stabilizerCount: stabilizerNeeds.count ?? 0
+    /// 0.7: the AI Restore / AI Denoise clips in the exported range whose pictures are not all processed: the export makes what is
+    /// missing first (slower), or cannot when a model is not on this computer (AiVideo.exportNeeds).
+    readonly property var aiNeeds: ProjectController.revision >= 0 && AiVideo.revision >= 0 ? AiVideo.exportNeeds(root.range) : ({})
+    readonly property int aiCount: aiNeeds.count ?? 0
     /// The range this export covers ("whole", "inOut", "workArea", "custom").
     readonly property string range: overrides.range ?? "whole"
     /// The exporter's presets the gaming tiles already offer (I.9): left out of the built-in ones.
@@ -61,6 +69,14 @@ Panel {
                                                           overrides.range ?? "whole")
                                       : ({})
     readonly property string effectivePresetId: gamingPlan.ok === true ? gamingPlan.presetId : presetId
+    /// 0.7 (card #2): the YouTube, Shorts and Twitch tiles offer a one-click "Normalize to -14 LUFS" (the Streaming
+    /// standard of Loudness Normalization), so a long video and its Shorts go out at the same level.
+    readonly property var streamingGroups: ["youtube", "vertical", "twitch"]
+    readonly property bool offersStreamingLoudness: gamingPreset !== "" && streamingGroups.indexOf(gamingGroupOf(gamingPreset)) >= 0
+    readonly property var loudnessOverride: (overrides.effects ?? {}).loudness ?? ({})
+    readonly property bool streamingLoudnessOn: loudnessOverride.applied === true && loudnessOverride.standard === "streaming"
+    /// The chip is there while Loudness Normalization is off, and while it is on from this chip (to turn it off again).
+    readonly property bool showsStreamingChip: offersStreamingLoudness && (streamingLoudnessOn || loudnessOverride.applied !== true)
 
     readonly property var effectiveOverrides: Object.assign({}, gamingPlan.ok === true ? gamingPlan.overrides : {},
                                                             overrides, outputPath !== "" ? { output: outputPath } : {})
@@ -116,6 +132,36 @@ Panel {
         const two = n => (n < 10 ? "0" : "") + n
         return h > 0 ? h + ":" + two(m) + ":" + two(s) : m + ":" + two(s)
     }
+    /// The destination group ("youtube", "vertical", "twitch", ...) of a gaming preset id; "" for none.
+    function gamingGroupOf(id: string): string {
+        const p = GamingExport.presets.find(g => g.id === id)
+        return p ? p.group : ""
+    }
+    /// 0.7 (card #2): Normalize to -14 LUFS on or off for this export. `remember` keeps the choice for the next ones
+    /// (export/streamingLoudness); a preset change that re-applies a remembered choice does not write it again.
+    function setStreamingLoudness(on: bool, remember: bool) {
+        const effects = Object.assign({}, overrides.effects ?? {})
+        if (on) {
+            effects.loudness = Object.assign({}, effects.loudness ?? {}, { applied: true, standard: "streaming" })
+        } else {
+            const loudness = Object.assign({}, effects.loudness ?? {})
+            delete loudness.applied
+            delete loudness.standard
+            if (Object.keys(loudness).length === 0)
+                delete effects.loudness
+            else
+                effects.loudness = loudness
+        }
+        setOverride("effects", Object.keys(effects).length === 0 ? undefined : effects)
+        if (remember)
+            ExportController.streamingLoudness = on
+    }
+    /// A remembered "Normalize to -14 LUFS" starts on for the YouTube, Shorts and Twitch tiles.
+    function applyRememberedLoudness() {
+        if (ExportController.streamingLoudness && offersStreamingLoudness && !streamingLoudnessOn
+                && loudnessOverride.applied !== true)
+            setStreamingLoudness(true, false)
+    }
     function setOverride(key, value) {
         const next = Object.assign({}, overrides)
         if (value === undefined)
@@ -147,6 +193,7 @@ Panel {
         gamingPreset = id
         overrides = rangeOverrides()
         ExportController.lastGamingPreset = id
+        applyRememberedLoudness()
         rememberPick()
     }
     /// P1 (#21): this sequence's pick, for coming back to it in this session.
@@ -167,6 +214,7 @@ Panel {
         presetId = preset
         gamingPreset = gaming
         overrides = rangeOverrides()
+        applyRememberedLoudness()
     }
     /// The drawer's range picker: this export's range, remembered for the next one ("custom" is not).
     function chooseRange(value) {
@@ -198,8 +246,47 @@ Panel {
     function startExport() {
         if ((gamingPreset !== "" && gamingPlan.ok !== true) || offlineCount > 0)
             return
+        // 0.7 (card 176): the pre-export check first, while it is on: a problem or a warning shows its list, with Export
+        // anyway; notes alone do not stop the export.
+        if (ExportController.checkBeforeExport) {
+            const rows = ExportController.preExportCheck(ProjectController.sequenceId, effectivePresetId, effectiveOverrides,
+                                                         checkPlatform)
+            if (rows.some(r => r.severity !== "note")) {
+                openCheck(true)
+                return
+            }
+        }
+        queueNow()
+    }
+    function queueNow() {
         if (ExportController.queueExport(ProjectController.sequenceId, effectivePresetId, effectiveOverrides) !== "")
             outputPath = "" // the next export gets a fresh default name
+    }
+    /// 0.7 (card 176): the destination the tile stands for, for the loudness row: { name, lufs } or {}.
+    readonly property var checkPlatform: {
+        if (!offersStreamingLoudness)
+            return ({})
+        const names = { youtube: "YouTube", vertical: "Shorts, TikTok and Reels", twitch: "Twitch" }
+        return { name: names[gamingGroupOf(gamingPreset)] ?? "", lufs: -14 }
+    }
+    function openCheck(forExport: bool) {
+        checkDialog.openFor(ProjectController.sequenceId, effectivePresetId, effectiveOverrides, checkPlatform, forExport)
+    }
+    /// A fix of the check that changes this export's settings.
+    function applyCheckFix(fix: string) {
+        if (fix === "turnOnLoudness") {
+            if (offersStreamingLoudness)
+                setStreamingLoudness(true, false)
+            else
+                setOverride("effects", Object.assign({}, overrides.effects ?? {},
+                                                     { loudness: Object.assign({}, loudnessOverride, { applied: true, standard: "ebuR128" }) }))
+        } else if (fix === "matchSequenceSize") {
+            setOverride("width", ProjectController.frameWidth + ProjectController.frameWidth % 2)
+            setOverride("height", ProjectController.frameHeight + ProjectController.frameHeight % 2)
+        } else if (fix === "turnOnCaptions") {
+            setOverride("captions", "burnIn")
+        }
+        checkDialog.overrides = root.effectiveOverrides
     }
     // 0.2, Premiere's Send to Media Encoder (Alt+Shift+M): the export waits in the queue for Start Queue.
     function sendToQueue() {
@@ -535,6 +622,23 @@ Panel {
                         }
                     }
 
+                    // 0.7 (card #2): the Streaming loudness chip of the YouTube, Shorts and Twitch tiles.
+                    PillButton {
+                        objectName: "exportStreamingLoudnessChip"
+                        visible: root.showsStreamingChip
+                        compact: true
+                        variant: root.streamingLoudnessOn ? "primary" : "secondary"
+                        iconName: root.streamingLoudnessOn ? "check" : "volume-2"
+                        text: qsTr("Normalize to -14 LUFS")
+                        tooltip: root.streamingLoudnessOn
+                                 ? qsTr("The mix is measured and set to -14 LUFS (-1 dBTP), the level YouTube, Shorts and Twitch play at. Click to turn it off.")
+                                 : qsTr("Measure the mix and set it to -14 LUFS (-1 dBTP), the level YouTube, Shorts and Twitch play at, so a long video and its Shorts match.")
+                        Accessible.name: qsTr("Normalize to -14 LUFS")
+                        Accessible.checkable: true
+                        Accessible.checked: root.streamingLoudnessOn
+                        onClicked: root.setStreamingLoudness(!root.streamingLoudnessOn, true)
+                    }
+
                     // M5o: the estimate - the file size and the export time - and what to know about this export.
                     ColumnLayout {
                         objectName: "exportEstimate"
@@ -816,6 +920,43 @@ Panel {
                 actionTooltip: qsTr("Find the offline files (Relink Media)")
                 onActionClicked: ExportController.relinkRequested()
             }
+            // 0.7 (#107): a stabilizer that is not analysed exports unstabilized: warn, with the job that fixes it. The export
+            // stays allowed.
+            WarningLine {
+                objectName: "exportStabilizerWarning"
+                visible: root.summary.ok === true && root.stabilizerCount > 0
+                //: The Export panel's stabilizer warning, e.g. "2 stabilizers are not analyzed, so they will export unstabilized: V1: A (Warp Stabilizer)."
+                text: (root.stabilizerCount === 1
+                       ? qsTr("1 stabilizer is not analyzed, so it will export unstabilized: %1.")
+                       : qsTr("%1 stabilizers are not analyzed, so they will export unstabilized: %2.").arg(root.stabilizerCount))
+                          .arg((root.stabilizerNeeds.names ?? []).slice(0, 3).join(", ") + (root.stabilizerCount > 3 ? ", …" : ""))
+                actionText: Stabilizer.busy ? qsTr("Analyzing %1%").arg(Math.round(Stabilizer.progress * 100)) : qsTr("Analyze now")
+                actionName: "exportAnalyze"
+                actionTooltip: qsTr("Analyze every stabilizer in the sequence (Sequence > Analyze All Stabilizers)")
+                onActionClicked: {
+                    if (!Stabilizer.busy)
+                        Stabilizer.analyzeAll(false)
+                }
+            }
+            // 0.7: clips with AI effects whose pictures are not processed: the export processes them first (the estimate says how
+            // long), or says why it cannot - a model that is not downloaded.
+            WarningLine {
+                objectName: "exportAiNotice"
+                visible: root.summary.ok === true && root.aiCount > 0
+                //: The Export panel's AI notice, e.g. "AI effects not processed on 2 clips: the export processes them first (about 4 min): V1: A (Restore 2x)."
+                text: root.aiNeeds.canMake === false
+                      ? qsTr("AI effects not processed on %n clip(s). The export cannot make them: %1", "", root.aiCount).arg(root.aiNeeds.why ?? "")
+                      : qsTr("AI effects not processed on %n clip(s): the export processes them first (%1): %2.", "", root.aiCount)
+                            .arg(root.aiNeeds.estimate ?? "")
+                            .arg((root.aiNeeds.names ?? []).slice(0, 3).join(", ") + (root.aiCount > 3 ? ", …" : ""))
+                actionText: root.aiNeeds.canMake === false ? "" : AiVideo.busy ? qsTr("Processing %1%").arg(Math.round(AiVideo.progress * 100)) : qsTr("Process now")
+                actionName: "exportAiProcess"
+                actionTooltip: qsTr("Process every AI effect in the sequence now, in the background (Effect Controls shows each clip's progress)")
+                onActionClicked: {
+                    if (!AiVideo.busy && root.aiNeeds.canMake !== false)
+                        AiVideo.processAll()
+                }
+            }
             // P1 (#29): the drive is short of space for the file (a warning: the export stays allowed).
             WarningLine {
                 objectName: "exportLowSpaceWarning"
@@ -930,6 +1071,19 @@ Panel {
                 }
             }
 
+            // 0.7 (card 176): everything likely to go wrong with this export, in one list.
+            PillButton {
+                objectName: "exportCheck"
+                Layout.alignment: Qt.AlignRight
+                compact: true
+                variant: "ghost"
+                iconName: "shield-check"
+                enabled: root.summary.ok === true
+                text: qsTr("Check before export…")
+                tooltip: qsTr("List what is likely to go wrong with this export: offline media, gaps, frame rates, captions, loudness…")
+                onClicked: root.openCheck(false)
+            }
+
             // ---- Queue: progress stays in view while the next export is set up ----
             RowLayout {
                 Layout.fillWidth: true
@@ -1006,5 +1160,11 @@ Panel {
     ExportPresetManager {
         id: presetManager
         onPresetSaved: id => root.choosePreset(id)
+    }
+    // 0.7 (card 176)
+    PreExportCheckDialog {
+        id: checkDialog
+        onExportRequested: root.queueNow()
+        onFixRequested: fix => root.applyCheckFix(fix)
     }
 }

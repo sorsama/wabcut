@@ -3,18 +3,22 @@
 #include "AppSettingsBridge.h"
 #include "BeatBridge.h"
 #include "AuditionsBridge.h"
+#include "RenderReplaceBridge.h"
 #include "CaptionsBridge.h"
 #include "ClipAudioBridge.h"
 #include "CommandBridge.h"
 #include "EditingBridge.h"
 #include "EffectControls.h"
 #include "ExtensionsBridge.h"
+#include "ScriptsBridge.h"
 #include "HighlightsBridge.h"
+#include "HistoryBridge.h"
 #include "KeymapDispatcher.h"
 #include "LibraryBridge.h"
 #include "MarkersBridge.h"
 #include "MediaReadinessBridge.h"
 #include "MomentsBridge.h"
+#include "ProjectLifecycle.h"
 #include "MonitorBridge.h"
 #include "MulticamEditBridge.h"
 #include "ProgramToolsBridge.h"
@@ -77,12 +81,37 @@ QVariantMap routedAvailability(QQmlEngine& engine, const QString& id) {
         auto* beats = engine.singletonInstance<BeatBridge*>("Wabcut", "Beats");
         return beats ? beats->commandAvailability(id) : QVariantMap{};
     }
+    // 0.7 (card 006): File > Save Version… and Version History… need a saved project (the version history lives next to
+    // its file): the history bridge says why not.
+    if (id == QLatin1String("file.saveVersion") || id == QLatin1String("file.versionHistory")) {
+        auto* history = engine.singletonInstance<HistoryBridge*>("Wabcut", "History");
+        const bool ok = history && history->available();
+        return {{QStringLiteral("handled"), true},
+                {QStringLiteral("enabled"), ok},
+                {QStringLiteral("reason"), ok ? QString() : (history ? history->reason() : QString())}};
+    }
+    // 0.7 (card 078): File > Capture… imports into a project: the sample project is not one.
+    if (id == QLatin1String("file.cloudProject") || id == QLatin1String("file.reviewLinks")) { // 0.7 (card 035): they work on a project
+        auto* file = engine.singletonInstance<ProjectLifecycle*>("Wabcut", "ProjectFile");
+        const bool ok = file && !file->demo();
+        return {{QStringLiteral("handled"), true},
+                {QStringLiteral("enabled"), ok},
+                {QStringLiteral("reason"), ok ? QString() : CommandPalette::tr("Open or start a project first")}};
+    }
+    if (id == QLatin1String("file.capture")) {
+        auto* file = engine.singletonInstance<ProjectLifecycle*>("Wabcut", "ProjectFile");
+        const bool ok = file && !file->demo();
+        return {{QStringLiteral("handled"), true},
+                {QStringLiteral("enabled"), ok},
+                {QStringLiteral("reason"), ok ? QString() : CommandPalette::tr("Open or start a project to capture into")}};
+    }
     static const QSet<QString> kRouted{
         QStringLiteral("sequence.lift"),         QStringLiteral("sequence.extract"),
         QStringLiteral("clip.insert"),           QStringLiteral("clip.overwrite"),
         QStringLiteral("clip.speedDuration"),    QStringLiteral("clip.audioGain"),
         QStringLiteral("clip.audioChannels"),    QStringLiteral("transport.playInToOut"),
-        QStringLiteral("file.exportFrame"),
+        QStringLiteral("file.exportFrame"),      QStringLiteral("monitor.copyFrame"),
+        QStringLiteral("transport.playInToOutAround"),
         QStringLiteral("sequence.creatorAutopilot"), // 0.6 (3A #62): "Open a sequence first"
     };
     if (!kRouted.contains(id))
@@ -103,13 +132,13 @@ QVariantMap routedAvailability(QQmlEngine& engine, const QString& id) {
         auto* source = engine.singletonInstance<SourceMonitorBridge*>("Wabcut", "SourceMonitor");
         return state(source && source->loaded(), CommandPalette::tr("No clip is open in the Source Monitor"));
     }
-    if (id == QLatin1String("transport.playInToOut")) {
+    if (id == QLatin1String("transport.playInToOut") || id == QLatin1String("transport.playInToOutAround")) {
         // A missing mark is the sequence's start or end (PlaybackBridge::loopRange).
         const Ticks start = seq->markIn.value_or(Ticks{});
         const Ticks end = seq->markOut.value_or(std::max(seq->duration, seq->contentEnd()));
         return state(end > start, CommandPalette::tr("There is nothing to play between In and Out"));
     }
-    if (id == QLatin1String("file.exportFrame"))
+    if (id == QLatin1String("file.exportFrame") || id == QLatin1String("monitor.copyFrame"))
         return state(true, {});
     if (id == QLatin1String("sequence.creatorAutopilot")) // 0.6 (3A #62): any open sequence
         return state(true, {});
@@ -184,6 +213,9 @@ bool KeymapCommandProvider::viewHandles(const QString& id) {
         // The Source Monitor and the Program Monitor's buttons (M5h). Add Marker (M) is routed too, but the palette
         // keeps the typed marker.add, which asks for a name and a colour.
         QStringLiteral("clip.insert"),               QStringLiteral("clip.overwrite"),
+        // 0.7 (card 109): Overlay, Append at End, Insert Before / After Clip at Playhead (Main.sourceEditAs).
+        QStringLiteral("clip.overlayEdit"),          QStringLiteral("clip.appendEdit"),
+        QStringLiteral("clip.insertBefore"),         QStringLiteral("clip.insertAfter"),
         QStringLiteral("sequence.lift"),             QStringLiteral("sequence.extract"),
         QStringLiteral("sequence.matchFrame"),       QStringLiteral("sequence.reverseMatchFrame"),
         QStringLiteral("window.sourceMonitor"),      QStringLiteral("window.programMonitor"),
@@ -211,6 +243,7 @@ bool KeymapCommandProvider::viewHandles(const QString& id) {
         // ... Sequence > Render In to Out, Trim Edit and the trim keys (Trim), the timeline's display, track height
         // and sequence tab keys (TimelinePanel.runCommand) ...
         QStringLiteral("sequence.renderInToOut"),    QStringLiteral("sequence.trimEdit"),
+        QStringLiteral("sequence.slipTrim"), // 0.7 (card 127)
         QStringLiteral("sequence.toggleTrimType"),   QStringLiteral("sequence.trimBackward"),
         QStringLiteral("sequence.trimForward"),      QStringLiteral("sequence.trimBackwardMany"),
         QStringLiteral("sequence.trimForwardMany"),  QStringLiteral("timeline.showVideoFadeHandles"),
@@ -231,20 +264,40 @@ bool KeymapCommandProvider::viewHandles(const QString& id) {
         // 0.4 (stream B): slow shuttle (Shift+J / Shift+L: KeymapDispatcher's gesture), Play Around (Shift+K: Main.qml),
         // Show Next / Previous Screen (PageDown / PageUp: TimelinePanel.runCommand) ...
         QStringLiteral("transport.shuttleSlowBackward"), QStringLiteral("transport.shuttleSlowForward"),
-        QStringLiteral("transport.playAround"),
+        QStringLiteral("transport.playAround"),      QStringLiteral("transport.playInToOutAround"),
         QStringLiteral("timeline.showNextScreen"),   QStringLiteral("timeline.showPreviousScreen"),
         // ... File > Import Folder... and Import from Media Browser (stream D) and Background Tasks (stream E: the top
         // bar's activity popover), all routed by Main.qml.
         QStringLiteral("file.importFolder"),         QStringLiteral("file.importFromMediaBrowser"),
+        QStringLiteral("file.capture"), // 0.7 (card 078)
+        QStringLiteral("file.cloudProject"), QStringLiteral("file.reviewLinks"), // 0.7 (card 035)
         QStringLiteral("window.backgroundTasks"),
+        // 0.7 (card 024): the Media Browser's three keys, Loop in Effect Controls and in the Audio Track Mixer (all Main.qml).
+        QStringLiteral("mediaBrowser.openInSourceMonitor"), QStringLiteral("mediaBrowser.selectDirectoryList"),
+        QStringLiteral("mediaBrowser.selectMediaList"),     QStringLiteral("effectControls.loopAudioPlayback"),
+        QStringLiteral("audioMixer.loop"),
+        // 0.7 (card 006): File > Save Version… (a name prompt) and Version History… (the Review panel's Versions page).
+        QStringLiteral("file.saveVersion"),          QStringLiteral("file.versionHistory"),
+        // 0.7 (card 059): File > Save for an Older Version… (a dialog), routed by Main.qml.
+        QStringLiteral("file.saveForOlderVersion"), QStringLiteral("sequence.generateAudioDescription"),
         // 0.5 (P0 round, stream B): Window > Audio Meters and Toggle Audio Scrubbing (Shift+S), routed by Main.qml.
         QStringLiteral("window.audioMeters"),        QStringLiteral("transport.toggleAudioScrubbing"),
+        // 0.7 (cards 032, 104): the Audio Track Mixer's menu (Main.qml routes Show/Hide Tracks and Meter Input(s) Only,
+        // MonitorBridge Loop) and Window > Loudness.
+        QStringLiteral("audioMixer.showHideTracks"), QStringLiteral("audioMixer.meterInputsOnly"),
+        QStringLiteral("audioMixer.loop"),           QStringLiteral("window.loudness"),
+        // 0.7 (card 177): Window > Sources.
+        QStringLiteral("window.sources"),
         // 0.6 (stream 1A): Edit Marker... and Add Chapter Marker... (Main.qml opens the marker editor; the Markers
         // bridge says when they can run) and Toggle All Video / Audio Sources (TimelinePanel.runCommand).
         QStringLiteral("marker.edit"),               QStringLiteral("marker.addChapter"),
         QStringLiteral("timeline.toggleAllVideoSources"), QStringLiteral("timeline.toggleAllAudioSources"),
         // 0.6 (P1 round, 1E): Next / Previous Panel Group (Ctrl+F6 / Ctrl+Shift+F6), routed by Main.qml.
         QStringLiteral("window.nextPanelGroup"),     QStringLiteral("window.previousPanelGroup"),
+        // 0.7: Mute Source Sound (the Source Monitor's button), routed by Main.qml.
+        QStringLiteral("sourceMonitor.toggleMute"),
+        // 0.7: Next / Previous Workspace (the tab bar's order), routed by Main.qml.
+        QStringLiteral("window.nextWorkspace"),      QStringLiteral("window.previousWorkspace"),
         // 0.6 (P1 round, D2 #34, #9): every gaming Moments preset and the Short from In to Out, so the palette lists the
         // keymap commands themselves instead of the catalog edits that can fail there; Moments says when one can act.
         QStringLiteral("moments.slowMo"),            QStringLiteral("moments.punchIn"),
@@ -254,12 +307,20 @@ bool KeymapCommandProvider::viewHandles(const QString& id) {
         QStringLiteral("moments.shortsVersion"),     QStringLiteral("moments.squareVersion"),
         QStringLiteral("moments.findDeadTime"),      QStringLiteral("moments.findHighlights"),
         QStringLiteral("sequence.makeShortFromInOut"), QStringLiteral("sequence.autoReframe"),
+        // 0.7 (card #128): Analyze All Stabilizers (Main.qml runs it through the Stabilizer bridge).
+        QStringLiteral("sequence.analyzeStabilizers"),
+        // 0.7 (card #83): Track Motion… opens Effect Controls' section (Main.qml).
+        QStringLiteral("clip.trackMotion"),
+        // 0.7 (card 047): Spectral Repair… shows the Spectral tab of Audio Tools (Main.qml routes it; the tab says what to select).
+        QStringLiteral("clip.spectralRepair"),
         // 0.6 (P1 round, 3A #62): Creator Autopilot… (Main.qml opens the sheet; routedAvailability: a sequence is open).
         QStringLiteral("sequence.creatorAutopilot"),
         // 0.6 (P1 round, 2A #7 #58): Render Selection and Delete Render Files (In to Out), run by Main.qml (the delete
         // asks first); MediaReadiness says when each can act.
         QStringLiteral("sequence.renderSelection"), QStringLiteral("sequence.deleteRenderFiles"),
         QStringLiteral("sequence.deleteRenderFilesInToOut"),
+        // 0.7: Sequence > Background Rendering (toggles MediaReadiness.backgroundRender; Main.qml runs it).
+        QStringLiteral("sequence.backgroundRender"),
         // 0.6 (P1 round, D9 #8): the beat tools. Main.qml opens their dialogs; Beats runs the edits and says when each
         // can act. edit.snapToBeats would otherwise also be listed as the catalog command of the same work.
         QStringLiteral("sequence.detectBeats"), QStringLiteral("edit.snapToBeats"),
@@ -273,7 +334,8 @@ bool KeymapCommandProvider::viewHandles(const QString& id) {
            EffectControlsModel::handlesCommand(id) || ClipAudioBridge::handlesCommand(id) ||
            SceneDetectBridge::handlesCommand(id) || // 0.5 (stream C): Scene Edit Detection… (the dialog)
            CaptionsBridge::handlesCommand(id) ||    // 0.6 (P1 round, 2E): the caption keys (Ctrl+Alt+A / C / Up / Down)
-           AuditionsBridge::handlesCommand(id);     // 0.6 (card #74): Clip > Auditions and the Take Selector
+           AuditionsBridge::handlesCommand(id) ||   // 0.6 (card #74): Clip > Auditions and the Take Selector
+           RenderReplaceBridge::handlesCommand(id); // 0.7 (card 069): Render and Replace…, Restore Unrendered
 }
 
 std::shared_ptr<KeymapCommandProvider> KeymapCommandProvider::forApp(KeymapDispatcher* dispatcher,
@@ -506,6 +568,10 @@ CommandPalette* CommandPalette::create(QQmlEngine* qmlEngine, QJSEngine*) {
                 auto* auditions = engine->singletonInstance<AuditionsBridge*>("Wabcut", "Auditions");
                 return auditions ? auditions->commandAvailability(id) : QVariantMap{};
             }
+            if (RenderReplaceBridge::handlesCommand(id)) { // 0.7 (card 069): "Select a nested sequence clip first"
+                auto* renders = engine->singletonInstance<RenderReplaceBridge*>("Wabcut", "RenderReplace");
+                return renders ? renders->commandAvailability(id) : QVariantMap{};
+            }
             if (MarkersBridge::handlesCommand(id)) { // 0.6 (stream 1A): "No marker at the playhead"
                 auto* markers = engine->singletonInstance<MarkersBridge*>("Wabcut", "Markers");
                 return markers ? markers->commandAvailability(id) : QVariantMap{};
@@ -540,6 +606,9 @@ CommandPalette* CommandPalette::create(QQmlEngine* qmlEngine, QJSEngine*) {
         // C.12 (M5n): the extensions' commands ("ext:<extension>/<command>"), an "Extensions" group.
         if (auto* extensions = qmlEngine->singletonInstance<ExtensionsBridge*>("Wabcut", "Extensions"))
             palette->addProvider(extensions->paletteProvider());
+        // 0.7 (card 050): "Run Python Script…" and the recent scripts, a "Scripts" group.
+        if (auto* scripts = qmlEngine->singletonInstance<ScriptsBridge*>("Wabcut", "Scripts"))
+            palette->addProvider(scripts->paletteProvider());
         // UX rework (L): every row of the Settings window ("action:settings.<id>", a "Settings" group); running one
         // asks Main to show it (AppSettings.openRequested).
         if (auto* settings = qmlEngine->singletonInstance<AppSettingsBridge*>("Wabcut", "AppSettings"))

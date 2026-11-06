@@ -1,0 +1,130 @@
+{
+ "_id": "6815b8d70e2525074c399975",
+ "id": "Qwen/Qwen3-8B-GGUF",
+ "private": false,
+ "pipeline_tag": "text-generation",
+ "tags": [
+  "gguf",
+  "text-generation",
+  "arxiv:2309.00071",
+  "arxiv:2505.09388",
+  "base_model:Qwen/Qwen3-8B",
+  "base_model:quantized:Qwen/Qwen3-8B",
+  "license:apache-2.0",
+  "endpoints_compatible",
+  "region:us",
+  "conversational"
+ ],
+ "downloads": 749653,
+ "likes": 368,
+ "modelId": "Qwen/Qwen3-8B-GGUF",
+ "author": "Qwen",
+ "sha": "7c41481f57cb95916b40956ab2f0b139b296d974",
+ "lastModified": "2025-05-21T06:31:50.000Z",
+ "gated": false,
+ "disabled": false,
+ "widgetData": [
+  {
+   "text": "Hi, what can you help me with?"
+  },
+  {
+   "text": "What is 84 * 3 / 2?"
+  },
+  {
+   "text": "Tell me an interesting fact about the universe!"
+  },
+  {
+   "text": "Explain quantum computing in simple terms."
+  }
+ ],
+ "model-index": null,
+ "config": {},
+ "cardData": {
+  "license": "apache-2.0",
+  "license_link": "https://huggingface.co/Qwen/Qwen3-8B-GGUF/blob/main/LICENSE",
+  "pipeline_tag": "text-generation",
+  "base_model": "Qwen/Qwen3-8B"
+ },
+ "gguf": {
+  "total": 8190735360,
+  "architecture": "qwen3",
+  "context_length": 40960,
+  "bos_token": "<|endoftext|>",
+  "eos_token": "<|im_end|>",
+  "totalFileSize": 5027783488
+ },
+ "siblings": [
+  {
+   "rfilename": ".gitattributes",
+   "blobId": "92b6af94db2a0d4f69ea557374186e4e63df7b01",
+   "size": 1798
+  },
+  {
+   "rfilename": "LICENSE",
+   "blobId": "6f9739bb281a3d2ade8fb5f6dd6dde597a739c80",
+   "size": 11544
+  },
+  {
+   "rfilename": "Qwen3-8B-Q4_K_M.gguf",
+   "blobId": "d4ee8ae7f4de3a5046b1a29776a3f011ba28017e",
+   "size": 5027783488,
+   "lfs": {
+    "sha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+    "size": 5027783488,
+    "pointerSize": 135
+   }
+  },
+  {
+   "rfilename": "Qwen3-8B-Q5_0.gguf",
+   "blobId": "30579e89cbc651608cbceb3cfe3214adad1cfead",
+   "size": 5720761152,
+   "lfs": {
+    "sha256": "c034cdfb0ad5b3edc5cf4ac07bff3b1b214aa541e633b37191c19c3a7b119727",
+    "size": 5720761152,
+    "pointerSize": 135
+   }
+  },
+  {
+   "rfilename": "Qwen3-8B-Q5_K_M.gguf",
+   "blobId": "d07d0f09f9be1d32eae9af8649341bf3daac7d0b",
+   "size": 5851112224,
+   "lfs": {
+    "sha256": "068bae163faa96ad48032daf4e071a6a28fe67d8dcc95367609c2ff165e52738",
+    "size": 5851112224,
+    "pointerSize": 135
+   }
+  },
+  {
+   "rfilename": "Qwen3-8B-Q6_K.gguf",
+   "blobId": "cc106e2fa13d91c507999ceacf0b4ea87fcc708b",
+   "size": 6725899040,
+   "lfs": {
+    "sha256": "cb042ccd76795a8830d6be6bd4165245847cc68e41797b13bd61aed4c2cfbce6",
+    "size": 6725899040,
+    "pointerSize": 135
+   }
+  },
+  {
+   "rfilename": "Qwen3-8B-Q8_0.gguf",
+   "blobId": "954c5db9f4cce8f400022addeb8d7baa1f5e30f6",
+   "size": 8709518112,
+   "lfs": {
+    "sha256": "408b955510e196121c1c375201744783b5c9a43c7956d73fc78df54c66e883d6",
+    "size": 8709518112,
+    "pointerSize": 135
+   }
+  },
+  {
+   "rfilename": "README.md",
+   "blobId": "3b55dd0ba5cb12c559f87dea67edf8c48154ec62",
+   "size": 7577
+  },
+  {
+   "rfilename": "params",
+   "blobId": "b79a3bdde8373ca566bd404904abbd5270d7825d",
+   "size": 270
+  }
+ ],
+ "createdAt": "2025-05-03T06:33:59.000Z",
+ "usedStorage": 32035074016
+}

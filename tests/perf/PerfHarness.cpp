@@ -21,7 +21,6 @@
 #endif
 #include <windows.h>
 
-#include <intrin.h>
 #include <psapi.h>
 #include <tlhelp32.h>
 #endif
@@ -425,14 +424,13 @@ const MachineInfo& machine() {
         MachineInfo m;
         m.logicalCores = static_cast<int>(std::thread::hardware_concurrency());
 #ifdef _WIN32
-        int regs[4] = {};
-        char brand[49] = {};
-        __cpuid(regs, 0x80000000);
-        if (static_cast<unsigned>(regs[0]) >= 0x80000004u) {
-            for (int i = 0; i < 3; ++i) {
-                __cpuid(regs, static_cast<int>(0x80000002u + static_cast<unsigned>(i)));
-                std::memcpy(brand + 16 * i, regs, 16);
-            }
+        // The processor's name as Windows records it: the text CPUID's brand string gives on x64, and the only source on
+        // ARM64, which has no CPUID instruction (MSVC's ARM64 <intrin.h> has no __cpuid).
+        char brand[128] = {};
+        DWORD brandSize = sizeof brand - 1;
+        if (RegGetValueA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", "ProcessorNameString",
+                         RRF_RT_REG_SZ, nullptr, brand, &brandSize) != ERROR_SUCCESS) {
+            brand[0] = '\0';
         }
         m.cpu = brand;
         MEMORYSTATUSEX mem{};

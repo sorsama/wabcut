@@ -13,6 +13,8 @@ Item {
     objectName: "graphicsBrowsePage"
 
     property string query: ""
+    /// 0.7 (card #87): how the cards are ordered ("name", "nameDesc", "length", "lengthDesc", "fields").
+    property string sortKey: "name"
     signal saveRequested()
 
     /// P1 round (#30, stream 1E): Edit > Find (Ctrl+F) - the search, its text selected.
@@ -50,6 +52,48 @@ Item {
             return true
         return (t.fields ?? []).some(f => (f.label ?? "").toLowerCase().includes(q))
     }
+    /// 0.7 (card #87): `list` in the chosen order (names break ties).
+    function sortList(list) {
+        const copy = list.slice()
+        const byName = (a, b) => String(a.name ?? "").localeCompare(String(b.name ?? ""))
+        switch (root.sortKey) {
+        case "nameDesc":
+            copy.sort((a, b) => byName(b, a))
+            break
+        case "length":
+            copy.sort((a, b) => ((a.seconds ?? 0) - (b.seconds ?? 0)) || byName(a, b))
+            break
+        case "lengthDesc":
+            copy.sort((a, b) => ((b.seconds ?? 0) - (a.seconds ?? 0)) || byName(a, b))
+            break
+        case "fields":
+            copy.sort((a, b) => ((b.fields ?? []).length - (a.fields ?? []).length) || byName(a, b))
+            break
+        default:
+            copy.sort(byName)
+        }
+        return copy
+    }
+    readonly property var sortNames: ({
+        "name": qsTr("Name"),
+        "nameDesc": qsTr("Name, Z to A"),
+        "length": qsTr("Shortest"),
+        "lengthDesc": qsTr("Longest"),
+        "fields": qsTr("Most fields")
+    })
+    /// 0.7 (card #87): `list` split by the folder its templates are filed in: [{ name, templates }], by name.
+    function foldersOf(list) {
+        const byFolder = {}
+        for (const t of list) {
+            const name = String(t.folder ?? "")
+            if (name === "")
+                continue
+            if (byFolder[name] === undefined)
+                byFolder[name] = []
+            byFolder[name].push(t)
+        }
+        return Object.keys(byFolder).sort((a, b) => a.localeCompare(b)).map(name => ({ name: name, templates: byFolder[name] }))
+    }
     function isSticker(t) {
         return t.library === "project" && String(t.id ?? "").startsWith("lottie.")
     }
@@ -57,15 +101,15 @@ Item {
         templateMenu.key = key
         templateMenu.popup()
     }
-    readonly property var builtinTemplates: Graphics.templates.filter(t => t.library === "builtin")
-        .map(t => Object.assign({}, t, { name: root.builtinNames[t.id] ?? t.name })).filter(t => root.matches(t))
+    readonly property var builtinTemplates: root.sortList(Graphics.templates.filter(t => t.library === "builtin")
+        .map(t => Object.assign({}, t, { name: root.builtinNames[t.id] ?? t.name })).filter(t => root.matches(t)))
     readonly property var gamingTemplates: root.builtinTemplates.filter(t => t.category === "gaming")
     readonly property var essayTemplates: root.builtinTemplates.filter(t => t.category === "essay")
     readonly property var otherBuiltinTemplates: root.builtinTemplates.filter(t => t.category !== "gaming" && t.category !== "essay")
-    readonly property var stickerTemplates: Graphics.templates.filter(t => root.isSticker(t) && root.matches(t))
-    readonly property var projectTemplates: Graphics.templates.filter(t => t.library === "project" && !root.isSticker(t)
-                                                                           && root.matches(t))
-    readonly property var userTemplates: Graphics.templates.filter(t => t.library === "user" && root.matches(t))
+    readonly property var stickerTemplates: root.sortList(Graphics.templates.filter(t => root.isSticker(t) && root.matches(t)))
+    readonly property var projectTemplates: root.sortList(Graphics.templates.filter(t => t.library === "project" && !root.isSticker(t)
+                                                                                      && root.matches(t)))
+    readonly property var userTemplates: root.sortList(Graphics.templates.filter(t => t.library === "user" && root.matches(t)))
 
     // A group of cards under its label; `empty` shows when it has none.
     component TemplateGroup: ColumnLayout {
@@ -74,7 +118,18 @@ Item {
         property string empty: ""
         property string listName: ""
         property var templates: []
+        /// 0.7 (card #87): the group lists the templates filed in folders under their folder's name (a fold you can close).
+        property bool foldered: false
+        property var collapsed: ({})
+        readonly property var loose: group.foldered ? group.templates.filter(t => (t.folder ?? "") === "") : group.templates
+        readonly property var folders: group.foldered ? root.foldersOf(group.templates) : []
         signal menuRequested(string key)
+
+        function toggle(name) {
+            const next = Object.assign({}, group.collapsed)
+            next[name] = next[name] !== true
+            group.collapsed = next
+        }
 
         Layout.fillWidth: true
         spacing: Theme.space(2)
@@ -95,14 +150,50 @@ Item {
         Flow {
             objectName: group.listName
             Layout.fillWidth: true
-            visible: group.templates.length > 0
+            visible: group.loose.length > 0
             spacing: Theme.space(2)
             Repeater {
-                model: group.templates
+                model: group.loose
                 delegate: GraphicTemplateCard {
                     width: Math.max(Theme.space(32), (group.width - Theme.space(2)) / 2)
                     onAddRequested: key => Graphics.instantiateAtPlayhead(key)
                     onMenuRequested: (key, at) => group.menuRequested(key)
+                }
+            }
+        }
+        // 0.7 (card #87): the folders the templates are filed in (Move to Folder…, Install folder…).
+        Repeater {
+            model: group.folders
+            delegate: ColumnLayout {
+                id: fold
+                required property var modelData
+                readonly property bool open: group.collapsed[fold.modelData.name] !== true
+                objectName: group.listName + "Folder_" + fold.modelData.name
+                Layout.fillWidth: true
+                spacing: Theme.space(1.5)
+
+                PillButton {
+                    objectName: group.listName + "FolderToggle_" + fold.modelData.name
+                    compact: true
+                    variant: "ghost"
+                    iconName: fold.open ? "chevron-down" : "chevron-right"
+                    text: qsTr("%1 (%2)").arg(fold.modelData.name).arg(fold.modelData.templates.length)
+                    tooltip: fold.open ? qsTr("Close this folder") : qsTr("Open this folder")
+                    onClicked: group.toggle(fold.modelData.name)
+                }
+                Flow {
+                    objectName: group.listName + "FolderCards_" + fold.modelData.name
+                    Layout.fillWidth: true
+                    visible: fold.open
+                    spacing: Theme.space(2)
+                    Repeater {
+                        model: fold.modelData.templates
+                        delegate: GraphicTemplateCard {
+                            width: Math.max(Theme.space(32), (group.width - Theme.space(2)) / 2)
+                            onAddRequested: key => Graphics.instantiateAtPlayhead(key)
+                            onMenuRequested: (key, at) => group.menuRequested(key)
+                        }
+                    }
                 }
             }
         }
@@ -125,6 +216,16 @@ Item {
                 Accessible.name: qsTr("Search graphics")
                 onTextChanged: root.query = text
             }
+            PillButton {
+                id: sortButton
+                objectName: "graphicsSort"
+                compact: true
+                variant: "ghost"
+                iconName: "chevron-down"
+                text: qsTr("Sort: %1").arg(root.sortNames[root.sortKey] ?? "")
+                tooltip: qsTr("How the templates are ordered")
+                onClicked: sortMenu.popup(sortButton, 0, sortButton.height + Theme.space(1))
+            }
             IconButton {
                 objectName: "graphicsRefresh"
                 compact: true
@@ -136,6 +237,7 @@ Item {
 
         Flickable {
             id: flick
+            objectName: "graphicsBrowseFlick"
             Layout.fillWidth: true
             Layout.fillHeight: true
             contentHeight: column.implicitHeight
@@ -199,6 +301,7 @@ Item {
                     objectName: "calloutsProject"
                     title: qsTr("This project")
                     listName: "graphicsProjectTemplates"
+                    foldered: true
                     templates: root.projectTemplates
                     empty: root.query !== "" ? qsTr("No project template matches.")
                                              : qsTr("Save a graphic as a template to reuse it in this project.")
@@ -227,15 +330,37 @@ Item {
                     tooltip: qsTr("Add a Motion Graphics template (.mogrt) or a Wabcut template file to this project")
                     onClicked: Graphics.openInstallDialog("project")
                 }
+                // 0.7 (card #87): a whole folder of templates, filed under folders named after where they were.
+                PillButton {
+                    objectName: "graphicsInstallFolder"
+                    Layout.fillWidth: true
+                    compact: true
+                    variant: "ghost"
+                    iconName: "folder-plus"
+                    text: qsTr("Install folder…")
+                    tooltip: qsTr("Add every Motion Graphics template (.mogrt) and Wabcut template file in a folder and its subfolders to this project, filed in folders named after theirs")
+                    onClicked: Graphics.openInstallFolderDialog("project")
+                }
 
                 TemplateGroup {
                     objectName: "calloutsUser"
                     title: qsTr("My templates")
                     listName: "graphicsUserTemplates"
+                    foldered: true
                     templates: root.userTemplates
                     empty: root.query !== "" ? qsTr("None of your templates matches.")
                                              : qsTr("Templates you save to your library show here in every project.")
                     onMenuRequested: key => root.openMenu(key)
+                }
+                PillButton {
+                    objectName: "graphicsInstallFolderUser"
+                    Layout.fillWidth: true
+                    compact: true
+                    variant: "ghost"
+                    iconName: "folder-plus"
+                    text: qsTr("Install folder into My templates…")
+                    tooltip: qsTr("Add a folder of template files to your library, for every project")
+                    onClicked: Graphics.openInstallFolderDialog("user")
                 }
                 Repeater {
                     model: Graphics.libraryErrors
@@ -256,5 +381,19 @@ Item {
     // A template's menu: add it, or delete it from its library (not a built-in one).
     GraphicTemplateMenu {
         id: templateMenu
+        // 0.7 (card #87): Move to Folder...: the folder's name, "" for none.
+        onMoveRequested: key => {
+            const t = Graphics.templates.find(x => x.key === key)
+            folderNames.ask(qsTr("Move to Folder"), t ? (t.folder ?? "") : "", qsTr("Move"), text => Graphics.setTemplateFolder(key, text))
+        }
+    }
+    GraphicSortMenu {
+        id: sortMenu
+        current: root.sortKey
+        onChosen: key => root.sortKey = key
+    }
+    EffectNameDialog {
+        id: folderNames
+        objectName: "templateFolderDialog"
     }
 }

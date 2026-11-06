@@ -8,9 +8,13 @@
 #include <wabcut/keymap/KysImport.h>
 #include <wabcut/keymap/Scope.h>
 
+#include <QClipboard>
+#include <QCoreApplication>
+#include <QDate>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QQmlEngine>
 #include <QSaveFile>
 #include <QSettings>
@@ -28,6 +32,8 @@ namespace {
 
 const QString kPresetKey = QStringLiteral("shortcuts/preset");
 const QString kUserPrefix = QStringLiteral("user:");
+/// The scope filter's "Changed by me" choice: the commands whose keys differ from the defaults.
+const QString kModifiedScope = QStringLiteral("modified");
 
 QString fromView(std::string_view text) {
     return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
@@ -323,8 +329,10 @@ void ShortcutsBridge::rebuild() {
     for (const km::CommandInfo& info : keys->registry().all()) {
         const bool application = info.scope == km::Scope::Application;
         const QString scope = fromView(km::scopeId(info.scope));
+        const bool overridden = keys->isOverridden(info.id);
         if (m_scopeFilter == QLatin1String("application") ? !application
             : m_scopeFilter == QLatin1String("panels")    ? application
+            : m_scopeFilter == kModifiedScope             ? !overridden // the user's own changes
             : !m_scopeFilter.isEmpty()                    ? scope != m_scopeFilter
                                                           : false) {
             continue;
@@ -360,7 +368,7 @@ void ShortcutsBridge::rebuild() {
             {QStringLiteral("application"), application},
             {QStringLiteral("shortcuts"), shortcuts},
             {QStringLiteral("chords"), chords},
-            {QStringLiteral("overridden"), keys->isOverridden(info.id)},
+            {QStringLiteral("overridden"), overridden},
             {QStringLiteral("available"), available},
         });
     }
@@ -369,9 +377,13 @@ void ShortcutsBridge::rebuild() {
 
 QVariantList ShortcutsBridge::scopes() const {
     std::map<km::Scope, int> counts;
+    int changed = 0;
     if (const km::KeymapManager* keys = keymap()) {
         for (const km::CommandInfo& info : keys->registry().all()) {
             ++counts[info.scope];
+            if (keys->isOverridden(info.id)) {
+                ++changed;
+            }
         }
     }
     int panels = 0;
@@ -382,6 +394,9 @@ QVariantList ShortcutsBridge::scopes() const {
     }
     QVariantList out{
         QVariantMap{{QStringLiteral("id"), QString()}, {QStringLiteral("name"), tr("All commands")}},
+        QVariantMap{{QStringLiteral("id"), kModifiedScope},
+                    {QStringLiteral("name"), tr("Changed by me")},
+                    {QStringLiteral("count"), changed}},
         QVariantMap{{QStringLiteral("id"), QStringLiteral("application")},
                     {QStringLiteral("name"), tr("Application")},
                     {QStringLiteral("count"), counts[km::Scope::Application]}},
@@ -931,6 +946,136 @@ QString ShortcutsBridge::exportOverrides(const QUrl& url) const {
     QSaveFile file(path);
     const std::string json = kys ? km::exportKys(*keys).xml : keys->saveOverrides();
     if (!file.open(QIODevice::WriteOnly) || file.write(json.data(), static_cast<qint64>(json.size())) < 0 || !file.commit()) {
+        return tr("Cannot write %1: %2").arg(QFileInfo(path).fileName(), file.errorString());
+    }
+    return {};
+}
+
+QString ShortcutsBridge::copyToClipboard() const {
+    const auto plain = [](QString text) { return text.replace(QLatin1Char('\t'), QLatin1Char(' ')).simplified(); };
+    const int count = m_commands.rowCount();
+    if (count == 0) {
+        return {};
+    }
+    QClipboard* clipboard = qobject_cast<QGuiApplication*>(QCoreApplication::instance()) ? QGuiApplication::clipboard() : nullptr;
+    if (!clipboard) {
+        return {};
+    }
+    QString text = tr("Command") + QLatin1Char('\t') + tr("Panel") + QLatin1Char('\t') + tr("Shortcut") + QLatin1Char('\n');
+    for (int i = 0; i < count; ++i) {
+        const QVariantMap row = m_commands.get(i);
+        text += plain(row.value(QStringLiteral("name")).toString()) + QLatin1Char('\t') +
+                plain(row.value(QStringLiteral("scopeName")).toString()) + QLatin1Char('\t') +
+                plain(row.value(QStringLiteral("shortcuts")).toStringList().join(QStringLiteral(", "))) + QLatin1Char('\n');
+    }
+    clipboard->setText(text);
+    return text;
+}
+
+QString ShortcutsBridge::cheatSheetHtml() const {
+    // One page, nothing else to load: the style is inline, the policy below refuses scripts and remote files, and the
+    // print style sheet lays the groups out in two columns on white.
+    struct Row {
+        QString name;
+        QString panel;
+        QStringList chords;
+        bool changed = false;
+    };
+    struct Group {
+        QString name;
+        std::vector<Row> rows;
+    };
+    std::vector<Group> groups;
+    int total = 0;
+    if (const km::KeymapManager* keys = keymap()) {
+        const km::Platform p = platform();
+        for (const km::CommandInfo& info : keys->registry().all()) {
+            QStringList chords;
+            for (const km::KeyChord& chord : keys->chordsFor(info.id)) {
+                chords << QString::fromStdString(km::formatKeyChord(chord, p, km::ChordFormat::Native));
+            }
+            if (chords.isEmpty()) {
+                continue;
+            }
+            const QString groupName = fromView(info.group);
+            auto at = std::ranges::find_if(groups, [&](const Group& g) { return g.name == groupName; });
+            if (at == groups.end()) {
+                groups.push_back(Group{groupName, {}});
+                at = groups.end() - 1;
+            }
+            at->rows.push_back(Row{fromView(info.displayName),
+                                   info.scope == km::Scope::Application ? QString() : fromView(km::scopeDisplayName(info.scope)),
+                                   chords, keys->isOverridden(info.id)});
+            ++total;
+        }
+    }
+    const auto esc = [](const QString& text) { return text.toHtmlEscaped(); };
+    QString html;
+    html += QStringLiteral("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n");
+    html += QStringLiteral("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
+    html += QStringLiteral("<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\">\n");
+    html += QStringLiteral("<title>") + esc(tr("Wabcut keyboard shortcuts")) + QStringLiteral("</title>\n<style>\n");
+    html += QStringLiteral(
+        ":root{color-scheme:light dark}\n"
+        "body{margin:2rem auto;padding:0 1.25rem;max-width:62rem;font:14px/1.45 system-ui,'Segoe UI',Roboto,sans-serif;"
+        "color:#18171d;background:#fff}\n"
+        "h1{margin:0 0 .25rem;font-size:1.6rem}\n"
+        "p.meta{margin:0 0 1.5rem;color:#5d5b6a}\n"
+        "h2{margin:1.5rem 0 .35rem;padding-bottom:.2rem;font-size:1.05rem;border-bottom:2px solid #7c5cff;break-after:avoid}\n"
+        "table{width:100%;border-collapse:collapse}\n"
+        "td{padding:.18rem .4rem;vertical-align:top;border-bottom:1px solid #e3e1ec}\n"
+        "td.panel{width:22%;color:#5d5b6a;font-size:.85em}\n"
+        "td.keys{width:34%;text-align:right}\n"
+        "tr{break-inside:avoid}\n"
+        "kbd{display:inline-block;margin:.08rem 0 .08rem .25rem;padding:.02rem .45rem;border:1px solid #9a98a8;"
+        "border-radius:.45rem;background:#f3f2f8;font:600 .86em ui-monospace,Consolas,Menlo,monospace;white-space:nowrap}\n"
+        "span.tag{margin-left:.4rem;padding:0 .4rem;border-radius:.6rem;background:#7c5cff;color:#000;font-size:.72em;"
+        "font-weight:600}\n"
+        "@media (prefers-color-scheme:dark){body{color:#ecebf3;background:#16151b}p.meta,td.panel{color:#a9a7b8}"
+        "td{border-bottom-color:#33313f}kbd{background:#27252f;border-color:#5a5868}}\n"
+        "@media print{body{max-width:none;margin:0;padding:0;font-size:9.5pt;color:#000;background:#fff}"
+        "p.meta,td.panel{color:#333}td{border-bottom-color:#bbb}kbd{background:#fff;border-color:#000}"
+        "span.tag{background:#fff;border:1px solid #000;color:#000}"
+        "main{column-count:2;column-gap:2rem}h2{margin-top:.9rem}}\n");
+    html += QStringLiteral("</style>\n</head>\n<body>\n<header>\n<h1>") + esc(tr("Wabcut keyboard shortcuts")) +
+            QStringLiteral("</h1>\n<p class=\"meta\">") +
+            esc(tr("Key set: %1 · %2 keys · %3").arg(presetName(), macModifiers() ? tr("macOS") : tr("Windows"),
+                                                     QDate::currentDate().toString(Qt::ISODate))) +
+            QStringLiteral("</p>\n</header>\n<main>\n");
+    const QString changedTag = esc(tr("changed"));
+    for (const Group& group : groups) {
+        html += QStringLiteral("<section>\n<h2>") + esc(group.name) + QStringLiteral("</h2>\n<table>\n");
+        for (const Row& row : group.rows) {
+            html += QStringLiteral("<tr><td>") + esc(row.name);
+            if (row.changed) {
+                html += QStringLiteral("<span class=\"tag\">") + changedTag + QStringLiteral("</span>");
+            }
+            html += QStringLiteral("</td><td class=\"panel\">") + esc(row.panel) + QStringLiteral("</td><td class=\"keys\">");
+            for (const QString& chord : row.chords) {
+                html += QStringLiteral("<kbd>") + esc(chord) + QStringLiteral("</kbd>");
+            }
+            html += QStringLiteral("</td></tr>\n");
+        }
+        html += QStringLiteral("</table>\n</section>\n");
+    }
+    if (total == 0) {
+        html += QStringLiteral("<p>") + esc(tr("No command has a shortcut.")) + QStringLiteral("</p>\n");
+    }
+    html += QStringLiteral("</main>\n</body>\n</html>\n");
+    return html;
+}
+
+QString ShortcutsBridge::exportCheatSheet(const QUrl& url) const {
+    if (!keymap()) {
+        return tr("Keyboard shortcuts are not available");
+    }
+    QString path = url.isLocalFile() ? url.toLocalFile() : url.toString();
+    if (!path.endsWith(QLatin1String(".html"), Qt::CaseInsensitive) && !path.endsWith(QLatin1String(".htm"), Qt::CaseInsensitive)) {
+        path += QStringLiteral(".html");
+    }
+    const QByteArray html = cheatSheetHtml().toUtf8();
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly) || file.write(html) < 0 || !file.commit()) {
         return tr("Cannot write %1: %2").arg(QFileInfo(path).fileName(), file.errorString());
     }
     return {};

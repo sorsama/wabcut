@@ -7,6 +7,9 @@
 
 #include <charconv>
 #include <cstdio>
+#include <ctime>
+#include <fstream>
+#include <memory>
 
 namespace wabcut::command::mcp {
 
@@ -17,17 +20,33 @@ void logLine(std::string_view message) {
     std::fflush(stderr);
 }
 
+std::string isoNow() {
+    const std::time_t now = std::time(nullptr);
+    std::tm utc{};
+#ifdef _WIN32
+    gmtime_s(&utc, &now);
+#else
+    gmtime_r(&now, &utc);
+#endif
+    char text[32];
+    std::strftime(text, sizeof text, "%Y-%m-%dT%H:%M:%SZ", &utc);
+    return text;
+}
+
 } // namespace
 
 std::string_view mcpUsage() {
     return "usage: wabcut-cli mcp --project <file.wabcut> [--allow-edit] [--allow-analysis] [--allow-files] "
-           "[--files-folder <dir>]... [--save-on-exit | --autosave] [--timeout-ms <n>]\n"
+           "[--files-folder <dir>]... [--save-on-exit | --autosave] [--timeout-ms <n>] [--transactions] "
+           "[--audit-log <file>]\n"
            "Serves the project to MCP clients (Claude Desktop/Code, Codex, ...) on stdin/stdout. Read-only unless\n"
            "--allow-edit. --allow-analysis also serves the analysis commands (transcript.transcribe on this computer,\n"
            "audio.loudness), which decode media: raise --timeout-ms for long files. Commands that read or write files\n"
            "(review packages, CDL/LUT files, project.merge, lottie.import) are served only with --allow-files, and then\n"
            "only inside the project's folder and each --files-folder; plug-in scans never. --save-on-exit saves when\n"
-           "the client disconnects, --autosave after every change. See docs/mcp.md.\n";
+           "the client disconnects, --autosave after every change. --transactions adds edit_transaction (the Python\n"
+           "package's `with session.transaction():`: one undo step, all or nothing); --audit-log appends one JSON line\n"
+           "per tool call (no parameters). See docs/mcp.md.\n";
 }
 
 std::expected<McpCliOptions, std::string> parseMcpArguments(std::span<const std::string_view> args) {
@@ -46,6 +65,10 @@ std::expected<McpCliOptions, std::string> parseMcpArguments(std::span<const std:
         } else if (arg == "--files-folder" && i + 1 < args.size()) {
             options.allowFiles = true;
             options.filesFolders.push_back(pathFromUtf8(std::string(args[++i])));
+        } else if (arg == "--transactions") {
+            options.transactions = true;
+        } else if (arg == "--audit-log" && i + 1 < args.size()) {
+            options.auditLog = pathFromUtf8(std::string(args[++i]));
         } else if (arg == "--save-on-exit" || arg == "--autosave") {
             if (saveFlag) {
                 return std::unexpected(std::string("--save-on-exit and --autosave exclude each other"));
@@ -98,6 +121,22 @@ int runMcpStdio(const McpCliOptions& options, std::string serverVersion, const C
         }
     }
     serverOptions.saveMode = options.saveMode;
+    serverOptions.transactions = options.transactions;
+    std::shared_ptr<std::ofstream> auditFile;
+    if (!options.auditLog.empty()) {
+        auditFile = std::make_shared<std::ofstream>(options.auditLog, std::ios::app | std::ios::binary);
+        if (!*auditFile) {
+            logLine("cannot write the audit log " + pathToUtf8(options.auditLog));
+            return 2;
+        }
+        serverOptions.audit = [auditFile](const McpAuditEntry& e) {
+            const Json line{{"time", isoNow()},       {"tool", e.tool},           {"ok", e.ok},
+                            {"code", e.code},         {"revision", e.revision},   {"committed", e.committed},
+                            {"dryRun", e.dryRun},     {"commands", e.commands}};
+            *auditFile << line.dump() << '\n';
+            auditFile->flush();
+        };
+    }
     serverOptions.callTimeout = options.timeout;
     serverOptions.serverVersion = std::move(serverVersion);
     serverOptions.log = logLine;

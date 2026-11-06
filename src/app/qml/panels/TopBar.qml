@@ -15,12 +15,16 @@ import QtQuick.Layouts
 // controls.
 Item {
     id: root
+    objectName: "titleBar"
 
     required property MockProject project
     // The active workspace (Main's ids); the tabs ask for another through workspaceRequested.
     property int workspace: 0
     signal workspaceRequested(int workspace)
     readonly property bool customFrame: !Preferences.nativeFrame
+    /// 0.7 (card 017): another screen (Home) covers this bar: its maximize pill is not the window's maximize button then
+    /// (the Snap Layouts hit test would answer for it through Home).
+    property bool covered: false
     readonly property bool maximized: Window.window !== null
                                       && (Window.window.visibility === Window.Maximized
                                           || Window.window.visibility === Window.FullScreen)
@@ -56,18 +60,21 @@ Item {
 
     /// Where Export is (the onboarding tour points at it; M5j): the tab of a workspace made from the Export preset, else
     /// the Export button.
-    readonly property Item exportTab: workspaceTabs.exportTab ?? exportButton
+    readonly property Item exportTab: (workspaceTabs.visible ? workspaceTabs.exportTab : null) ?? exportButton
 
     /// The mark and the project's name: Main lays the File menu's target over it.
     readonly property Item brandArea: brandBlock
 
     /// Keyboard focus to the workspace tabs (M5j).
     function focusWorkspaceTabs() {
-        workspaceTabs.focusCurrent()
+        if (workspaceTabs.visible)
+            workspaceTabs.focusCurrent()
     }
-    /// The workspace `id`'s tab is renamed in place (Window > Workspaces > Rename Workspace…).
+    /// The workspace `id`'s tab is renamed in place (Window > Workspaces > Rename Workspace…); nothing while the tabs
+    /// are hidden (Settings > Interface; the menu item is off then).
     function renameWorkspace(id: int) {
-        workspaceTabs.startRename(id)
+        if (workspaceTabs.visible)
+            workspaceTabs.startRename(id)
     }
     /// 0.4: Export Queue… in the Background tasks popover (Main.showExportQueue).
     signal exportQueueRequested()
@@ -107,6 +114,12 @@ Item {
             items.push({ icon: "film", percent: MediaReadiness.renderProgress, warn: false, count: 1,
                          text: MediaReadiness.renderProgress >= 0 ? qsTr("Rendering %1 %").arg(pct(MediaReadiness.renderProgress))
                                                                   : qsTr("Rendering…") })
+        // 0.7: the render the editor starts by itself while idle (it waits, in the warning hue, while you work); it never
+        // keeps the computer awake or asks before Wabcut closes.
+        if (MediaReadiness.backgroundActive && !MediaReadiness.rendering)
+            items.push({ icon: "film", percent: MediaReadiness.backgroundState === "rendering" ? MediaReadiness.backgroundProgress : -1,
+                         warn: MediaReadiness.backgroundState === "paused", count: 1,
+                         text: MediaReadiness.backgroundState === "paused" ? qsTr("Background render paused") : qsTr("Rendering in the background") })
         if (MediaReadiness.working)
             items.push({ icon: "layers", percent: -1, warn: false, count: 1,
                          text: MediaReadiness.statusText !== "" ? MediaReadiness.statusText : qsTr("Proxies") })
@@ -166,6 +179,14 @@ Item {
             gesturePolicy: TapHandler.DragThreshold
             onDoubleTapped: root.toggleMaximized()
         }
+        // 0.7 (card 017): the window's system menu (Restore, Move, Size, Minimize, Maximize, Close) on a right-click of
+        // the empty title bar, as the OS title bar has it (Windows; AppShell.systemMenuAvailable).
+        TapHandler {
+            objectName: "titleBarSystemMenuTap"
+            acceptedButtons: Qt.RightButton
+            enabled: AppShell.systemMenuAvailable
+            onTapped: eventPoint => AppShell.showSystemMenu(root.Window.window, eventPoint.globalPosition)
+        }
         DragHandler {
             target: null
             onActiveChanged: {
@@ -212,16 +233,38 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 1
 
-                Text {
-                    objectName: "projectTitle"
-                    width: Math.min(implicitWidth, projectText.maxWidth)
-                    text: ProjectFile.name !== "" ? ProjectFile.name : qsTr("Untitled project")
-                    elide: Text.ElideRight
-                    color: Theme.textPrimary
-                    font.family: Theme.fontDisplay
-                    font.pixelSize: Theme.compact ? Theme.textLg : Theme.textTitle
-                    font.weight: Theme.weightTitle
-                    font.letterSpacing: -0.01 * (Theme.compact ? Theme.textLg : Theme.textTitle)
+                Row {
+                    spacing: Theme.space(2)
+
+                    Text {
+                        objectName: "projectTitle"
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Math.min(implicitWidth, projectText.maxWidth
+                                        - (readOnlyBadge.visible ? readOnlyBadge.width + parent.spacing : 0))
+                        text: ProjectFile.name !== "" ? ProjectFile.name : qsTr("Untitled project")
+                        elide: Text.ElideRight
+                        color: Theme.textPrimary
+                        font.family: Theme.fontDisplay
+                        font.pixelSize: Theme.compact ? Theme.textLg : Theme.textTitle
+                        font.weight: Theme.weightTitle
+                        font.letterSpacing: -0.01 * (Theme.compact ? Theme.textLg : Theme.textTitle)
+                    }
+                    // 0.7 (card 018): the project opened read-only because another session has it open (project
+                    // locking): Save is refused and nothing is autosaved, so say so where the name is, not only in a
+                    // tooltip. Save As keeps the changes in another file.
+                    StatusPill {
+                        id: readOnlyBadge
+                        objectName: "readOnlyBadge"
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: ProjectFile.readOnly
+                        implicitHeight: Theme.controlHeightSmall - Theme.space(2)
+                        label: qsTr("Read-only")
+                        dotColor: Theme.warning
+                        tooltip: ProjectFile.lockOwner !== ""
+                                 ? qsTr("%1 has this project open. Changes here are not autosaved; use Save As to keep them.")
+                                   .arg(ProjectFile.lockOwner)
+                                 : qsTr("Another session has this project open. Changes here are not autosaved; use Save As to keep them.")
+                    }
                 }
                 Text {
                     objectName: "projectFormat"
@@ -440,9 +483,11 @@ Item {
 
         Item { Layout.fillWidth: true }
 
-        // The workspaces: a segmented pill group in the middle of the bar.
+        // The workspaces: a segmented pill group in the middle of the bar (0.7: Settings > Interface and Window >
+        // Workspaces can hide it to give the menus and the title the room).
         WorkspaceTabs {
             id: workspaceTabs
+            visible: Preferences.showWorkspaceTabs
             Layout.alignment: Qt.AlignVCenter
             current: root.workspace
 
@@ -467,6 +512,16 @@ Item {
                 label: VoiceOver.recording ? qsTr("Recording") : qsTr("Microphone")
                 dotColor: Theme.danger
                 tooltip: qsTr("The microphone is open: %1").arg(VoiceOver.inputName)
+            }
+
+            // 0.7 (card 078): shown while File > Capture… has a camera or capture card open (the preview or a capture).
+            StatusPill {
+                objectName: "capturePill"
+                Layout.alignment: Qt.AlignVCenter
+                visible: Capture.deviceOpen
+                label: Capture.recording ? qsTr("Capturing") : qsTr("Camera")
+                dotColor: Theme.danger
+                tooltip: qsTr("A video device is open: %1").arg(Capture.status.deviceName ?? "")
             }
 
             // 0.1.3: shown when Settings > Interface turns them on (the same facts are in Settings).
@@ -604,6 +659,7 @@ Item {
                 visible: root.customFrame
                 Layout.alignment: Qt.AlignVCenter
                 maximized: root.maximized
+                snapEnabled: !root.covered
                 onMinimizeRequested: root.Window.window?.showMinimized()
                 onMaximizeRequested: root.toggleMaximized()
                 onCloseRequested: root.Window.window?.close()

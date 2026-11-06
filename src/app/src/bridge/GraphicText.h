@@ -46,6 +46,8 @@ struct TextBlockRun {
     double leading = 0.0;  ///< line height, pixels; 0 = automatic
     bool kerning = true;   ///< 0.6
     TextCaps caps = TextCaps::Normal;
+    bool optical = false;  ///< 0.7 (card #138): Optical kerning (render/TextTypography.h)
+    std::string features;  ///< 0.7 (card #138): OpenType features (parseFontFeatures)
 };
 
 class TextBlock {

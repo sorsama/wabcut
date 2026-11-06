@@ -454,6 +454,39 @@ TEST_CASE("Tracks: header state, add and delete", "[command][edit][tracks]") {
     CHECK(h.errorOf("sequence.removeTrack", Json{{"track", "V1"}}) == "EditRejected");
 }
 
+TEST_CASE("track.setState sets a track's label colour in one undo step and sequence.summary lists it (card 077)",
+          "[command][edit][tracks]") {
+    CommandHarness h(R"(
+        V1 tgt |Aaaa|
+        A1 tgt |Aaaa|
+    )");
+    const ProjectSnapshot before = h.state();
+    h.ok("track.setState", Json{{"track", "V1"}, {"colorIndex", 6}});
+    CHECK(h.sequence(h.state()).videoTracks[0]->colorIndex == 6);
+    CHECK(h.sequence(h.state()).audioTracks[0]->colorIndex == -1);
+    CHECK(h.session.undoCount() == 1);
+
+    const auto summary = h.ok("sequence.summary");
+    bool listed = false;
+    for (const Json& track : summary.data["tracks"]) {
+        if (track["track"] == "V1") {
+            listed = true;
+            CHECK(track["colorIndex"] == 6);
+        } else {
+            CHECK_FALSE(track.contains("colorIndex")); // listed only when set
+        }
+    }
+    CHECK(listed);
+
+    REQUIRE(h.session.undo().has_value());
+    CHECK(*h.state() == *before);
+    h.ok("track.setState", Json{{"track", "V1"}, {"colorIndex", 6}});
+    h.ok("track.setState", Json{{"track", "V1"}, {"colorIndex", -1}}); // -1 clears it
+    CHECK(h.sequence(h.state()).videoTracks[0]->colorIndex == -1);
+    CHECK(h.errorOf("track.setState", Json{{"track", "V1"}, {"colorIndex", 16}}) == "InvalidParams");
+    CHECK(h.errorOf("track.setState", Json{{"track", "V1"}, {"colorIndex", -2}}) == "InvalidParams");
+}
+
 TEST_CASE("Integer params above int64 are refused, never wrapped into an index", "[command][edit]") {
     CommandHarness h(R"(
         V1 tgt |Aaaaaaaaaa|
@@ -465,6 +498,26 @@ TEST_CASE("Integer params above int64 are refused, never wrapped into an index",
     CHECK(r.error->code == command::ErrorCode::InvalidParams);
     CHECK(h.errorOf("marker.remove", Json{{"index", 9223372036854775807LL}}) == "NotFound"); // fits: just no such marker
     CHECK(*h.state() == *before);
+}
+
+TEST_CASE("A time parameter above int64 or beyond a month is refused, never wrapped into a position (card 091)",
+          "[command][edit]") {
+    CommandHarness h(R"(
+        V1 tgt |Aaaaaaaaaa|
+    )");
+    const ProjectSnapshot before = h.state();
+    for (const char* time : {"18446744073709551615", "9223372036854775807", "-9223372036854775807", "9223372036854775808",
+                             "2000000000000000000", "\"99999999:00:00:00\"", "\"-99999999:00:00:00\""}) {
+        INFO(time);
+        const auto r = h.run(Json::parse(std::string(R"({"command":"marker.add","params":{"time":)") + time + "}}"));
+        REQUIRE_FALSE(r.ok());
+        CHECK(r.error->code == command::ErrorCode::InvalidParams);
+        CHECK(*h.state() == *before); // nothing was placed anywhere
+    }
+    // What a sequence can hold still works, as ticks and as a timecode.
+    h.ok("marker.add", Json{{"time", tc(2)}});
+    h.ok("marker.add", Json{{"time", 8LL * 254'016'000'000LL / 25}}); // 8 frames at 25 fps, as ticks
+    CHECK(h.sequence(h.state()).markers.size() == 2);
 }
 
 TEST_CASE("clip.move copies with copy true and rearranges with mode rearrange", "[command][edit][move]") {

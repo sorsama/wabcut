@@ -177,6 +177,7 @@ struct VoiceOverRecorder::Impl {
     std::atomic<std::int64_t> stopNs{std::numeric_limits<std::int64_t>::max()};
     std::atomic<std::int64_t> written{0};
     std::atomic<bool> punchedOut{false};
+    std::atomic<bool> limitReached{false}; ///< the WAV is full (4 GiB, or Options::maxTakeFrames): the take ends here
     std::atomic<bool> recording{false};
     std::atomic<int> state{static_cast<int>(VoiceOverState::Idle)};
     std::atomic<std::uint64_t> dropped0{0};
@@ -230,7 +231,8 @@ struct VoiceOverRecorder::Impl {
             run.clear();
             for (std::size_t i = 0; i < n; ++i) {
                 const std::int64_t mic = line.hostTimeNs(first + static_cast<std::int64_t>(i)) - latencyNs;
-                if ((!all && mic >= stopAt) || punchedOut.load(std::memory_order_relaxed)) {
+                if ((!all && mic >= stopAt) || punchedOut.load(std::memory_order_relaxed) ||
+                    limitReached.load(std::memory_order_relaxed)) {
                     continue;
                 }
                 const Ticks at = snapToFrame(map.transportTime(mic), ticksPerFrame);
@@ -253,6 +255,13 @@ struct VoiceOverRecorder::Impl {
             }
             if (!run.empty()) {
                 if (auto w = wav->write(run); !w) {
+                    written.store(wav->frames(), std::memory_order_release);
+                    if (wav->full()) {
+                        // Card 161: a WAV holds at most 4 GiB. What fits is in the file (its header describes it); the
+                        // take ends here cleanly instead of failing, and the pass finishes at the next tick().
+                        limitReached.store(true, std::memory_order_release);
+                        continue;
+                    }
                     error = w.error().message;
                     setState(VoiceOverState::Failed);
                     return;
@@ -326,6 +335,9 @@ std::expected<void, Error> VoiceOverRecorder::start(const VoiceOverOptions& opti
     d.pass = options;
     d.pass.countIn = std::clamp(options.countIn, 0, 10);
     d.wav = std::move(*wav);
+    if (d.options.maxTakeFrames > 0) {
+        d.wav->limitFrames(d.options.maxTakeFrames);
+    }
     d.buffer.assign(static_cast<std::size_t>(4096 * inputConfig.channels), 0.0f);
     d.run.clear();
     d.run.reserve(d.buffer.size());
@@ -338,6 +350,7 @@ std::expected<void, Error> VoiceOverRecorder::start(const VoiceOverOptions& opti
     d.stopNs.store(std::numeric_limits<std::int64_t>::max());
     d.written.store(0);
     d.punchedOut.store(false);
+    d.limitReached.store(false);
     d.recording.store(false);
     d.dropped0.store(d.input.stats().framesDropped);
     d.latency = d.input.latency().total + options.calibration;
@@ -387,6 +400,11 @@ void VoiceOverRecorder::tick() {
     }
     const VoiceOverState s = d.currentState();
     if (s == VoiceOverState::Failed || s == VoiceOverState::Finished) {
+        return;
+    }
+    if (d.limitReached.load(std::memory_order_acquire)) {
+        d.pause(); // the WAV is full: the take ends here, whatever the punch range says
+        d.setState(VoiceOverState::Finished);
         return;
     }
     const Ticks now = d.position();
@@ -445,6 +463,7 @@ std::expected<VoiceOverResult, Error> VoiceOverRecorder::stop() {
     result.latencyCompensation = d.latency;
     result.droppedFrames = d.input.stats().framesDropped - d.dropped0.load();
     result.punchedOut = d.punchedOut.load();
+    result.reachedLimit = d.limitReached.load();
     result.device = d.device;
     if (d.pass.loopback) {
         // Where the clicks came back on the timeline, against where they were played (every period from the punch-in).

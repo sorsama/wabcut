@@ -152,6 +152,21 @@ MenuBarMenu {
         on: Monitors.overlays
     }
     SwitchItem {
+        text: qsTr("Rule of Thirds Guides")
+        command: "programMonitor.ruleOfThirds"
+        on: (Monitors.compositionGuides & 1) !== 0
+    }
+    SwitchItem {
+        text: qsTr("Golden Ratio Guides")
+        command: "programMonitor.goldenRatio"
+        on: (Monitors.compositionGuides & 2) !== 0
+    }
+    SwitchItem {
+        text: qsTr("Diagonal Guides")
+        command: "programMonitor.diagonalGuides"
+        on: (Monitors.compositionGuides & 4) !== 0
+    }
+    SwitchItem {
         text: qsTr("Show Dropped Frame Indicator")
         command: "programMonitor.droppedFrameIndicator"
         on: Monitors.droppedFrameIndicator

@@ -341,11 +341,20 @@ Item {
         id: editor
         canvasWidth: root.width
         canvasHeight: root.height
+        // 0.7 (card #81): the text styles to apply to the selected characters.
+        styleNames: GraphicTools.textStyles.length >= 0 ? GraphicTools.textStyleItems() : []
         onCommitted: text => {
             GraphicCanvas.setLayerText(editor.layerId, text)
             root.forceActiveFocus()
         }
         onCancelled: root.forceActiveFocus()
+        onStyleRangeRequested: (from, to, name) => {
+            // The typing so far first (one edit), then the style on the selection (another); the editor closes so the
+            // styled text shows on the monitor.
+            GraphicCanvas.setLayerText(editor.layerId, editor.text)
+            GraphicTools.applyTextStyleToRange(Graphics.clip, editor.layerId, from, to, name)
+            editor.finish(false)
+        }
     }
 
     // The keyboard path (the overlay has the focus after a click on a layer).

@@ -46,8 +46,22 @@ constexpr std::array kIndex{
     IndexEntry{"lockProjects", "general", "lockProjects", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Enable project locking"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Projects"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "lock|locking|shared|read-only|collaboration|team"), ""},
     IndexEntry{"saveStatus", "general", "saveStatus", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Project save status"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Projects"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "saved|unsaved|file|path"), ""},
     IndexEntry{"autosave", "general", "autosave", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Autosave interval"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Projects"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "autosave|backup|recover|recovery|minutes"), ""},
+    // 0.7 (card 029): where autosaves and backups go, and how many are kept.
+    IndexEntry{"backupLocation", "general", "backupLocation", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Autosaves and backups"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Projects"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "auto-save folder|autosave|backup|bak|recover|recovery|versions|location|folder|next to the project"), ""},
+    IndexEntry{"backupCount", "general", "backupCount", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Backups to keep"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Projects"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "backup|bak|versions|copies|how many|recover|maximum project versions"), ""},
+    IndexEntry{"autosaveCopies", "general", "autosaveCopies", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Autosave versions to keep"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Projects"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "autosave|versions|copies|how many|recover|maximum project versions"), ""},
+    // 0.7 (card 028): export, import and reset of the settings.
+    IndexEntry{"exportSettings", "general", "settingsBackup", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Export settings"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Backup and reset"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "backup|save|export|bundle|move to another computer|sync settings|preferences"), ""},
+    IndexEntry{"importSettings", "general", "settingsBackup", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Import settings"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Backup and reset"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "restore|load|import|bundle|another computer|sync settings|preferences"), ""},
+    IndexEntry{"resetSettings", "general", "settingsBackup", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Reset all settings"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Backup and reset"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "reset|defaults|factory|start over|preferences|clear|alt at launch"), ""},
+    // 0.7 (card 030): the Windows taskbar's jump list.
+    IndexEntry{"jumpList", "general", "jumpList", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Recent projects in the taskbar jump list"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Projects"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "jump list|taskbar|recent|starred|windows|right-click|pinned"), ""},
+    // 0.7 (card 006): how often a checkpoint of the version history is kept while editing (History.autoIntervalSeconds).
+    IndexEntry{"versionInterval", "general", "versionInterval", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Keep versions every"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Projects"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "version|versions|history|checkpoint|auto-version|snapshot|restore|minutes"), ""},
     IndexEntry{"reviewAuthor", "general", "reviewAuthor", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Sign review notes as"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Review"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "review|notes|name|author|comments"), ""},
     IndexEntry{"keepAwake", "general", "keepAwake", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Keep the computer awake while exporting"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Background work"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "sleep|power|awake|standby|export|render|long jobs"), ""},
+    // 0.7 (C2, card #70): where a new export's file goes.
+    IndexEntry{"exportFolder", "general", "exportFolder", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Where exports are saved"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Export"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "default export folder|folder|directory|path|output|destination|render|next to project|source media|last used"), ""},
     // P0 round (stream E): opt-in update checks (Updates).
     IndexEntry{"autoUpdate", "general", "autoUpdate", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Check for updates automatically"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Updates"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "update|updates|upgrade|new version|automatic|check"), ""},
     IndexEntry{"checkUpdates", "general", "checkUpdates", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Check for updates now"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Updates"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "update|updates|upgrade|new version|version|download|install"), ""},
@@ -62,9 +76,13 @@ constexpr std::array kIndex{
     // 0.6 (stream 1A): Timeline corners (Rounded / Square).
     IndexEntry{"timelineCorners", "appearance", "timelineCorners", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Timeline corners"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Mode and accent"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "square|rounded|corners|clips|timeline|premiere look|sharp"), ""},
     IndexEntry{"customColors", "appearance", "customColors", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Custom colours"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Custom colours"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "colors|colours|clip colors|label colors|palette"), ""},
+    // 0.7 (card 118): the label colour palette (Echo / Classic).
+    IndexEntry{"labelPalette", "appearance", "labelPalette", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Label colours"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Mode and accent"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "label|colour|color|palette|classic|clips|premiere"), ""},
     // Interface
     IndexEntry{"gpuStatus", "interface", "gpuStatus", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "GPU status in the title bar"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Title bar"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "gpu|graphics|adapter|pill"), ""},
     IndexEntry{"saveStatusPill", "interface", "saveStatusPill", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Save status in the title bar"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Title bar"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "saved|autosave|pill"), ""},
+    // 0.7: hide the workspace tabs.
+    IndexEntry{"workspaceTabs", "interface", "workspaceTabs", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Workspace tabs in the title bar"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Title bar"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "workspace|tabs|header|bar|hide|layout"), ""},
     IndexEntry{"liveResize", "interface", "liveResize", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Resize panels live"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Panels"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "panels|resize|docking|layout"), ""},
     // Timeline & editing
     IndexEntry{"linkedSelection", "timeline", "linkedSelection", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Linked selection"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Editing"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "link|linked|audio and video|select"), ""},
@@ -93,6 +111,17 @@ constexpr std::array kIndex{
     IndexEntry{"defaultVideoTransition", "timeline", "defaultVideoTransition", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Default video transition"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Media and timeline defaults"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "transition|cross dissolve|dissolve|dip|wipe|apply video transition|ctrl+d"), ""},
     IndexEntry{"defaultAudioTransition", "timeline", "defaultAudioTransition", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Default audio transition"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Media and timeline defaults"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "transition|crossfade|constant power|constant gain|audio fade|apply audio transition"), ""},
     IndexEntry{"editingDefaults", "timeline", "editingDefaults", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Media scaling and default durations"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Media and timeline defaults"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "scale to frame size|set to frame size|transition duration|still image duration|xmp|preferences|media|timeline"), "editing"},
+    // 0.7 (batch A2): snap targets (113), clip duration (126), audio track names (142), automatic tracks (182).
+    IndexEntry{"snapClipEdges", "timeline", "snapClipEdges", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Snap to clip edges"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Editing"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "snap|snapping|targets|clip edges|cuts|transitions"), ""},
+    IndexEntry{"snapToPlayhead", "timeline", "snapToPlayhead", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Snap to the playhead"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Editing"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "snap|snapping|targets|playhead"), ""},
+    IndexEntry{"snapToMarks", "timeline", "snapToMarks", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Snap to In and Out"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Editing"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "snap|snapping|targets|in|out|marks"), ""},
+    IndexEntry{"snapToMarkers", "timeline", "snapToMarkers", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Snap to markers"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Editing"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "snap|snapping|targets|markers"), ""},
+    IndexEntry{"snapToBeats", "timeline", "snapToBeats", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Snap to beats"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Editing"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "snap|snapping|targets|beats|beat grid|music"), ""},
+    IndexEntry{"addTracks", "timeline", "addTracks", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Add tracks when editing clips in"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Editing"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "tracks|automatic|insert|overwrite|paste|overlay|new track"), ""},
+    IndexEntry{"pacingStrip", "timeline", "pacingStrip", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Pacing strip"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Tracks"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "pacing|boring|retention|shots|silence|heat"), ""},
+    IndexEntry{"clipNotes", "timeline", "clipNotes", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Clip notes"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Tracks"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "note|notes|comment|clip|label|text"), ""},
+    IndexEntry{"clipDuration", "timeline", "clipDuration", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Clip duration"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Tracks"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "duration|length|clip|label|timecode"), ""},
+    IndexEntry{"streamNames", "timeline", "streamNames", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Audio track names"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Tracks"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "audio|track names|stream|boom|lav|obs|shadowplay|recorder"), ""},
     // Playback & performance
     IndexEntry{"rendering", "performance", "rendering", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Rendering"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Graphics"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "gpu|graphics|direct3d|d3d11|d3d12|vulkan|metal|opengl"), ""},
     IndexEntry{"decoding", "performance", "decoding", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Video decoding"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Graphics"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "hardware decoding|nvdec|gpu|decoder"), ""},
@@ -109,11 +138,14 @@ constexpr std::array kIndex{
     // AI
     IndexEntry{"aiFeatures", "ai", "aiFeatures", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI features"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "ai|offline|turn off|disable"), ""},
     IndexEntry{"assistantModel", "ai", "assistantModel", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Assistant model"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "assistant|model|llm|chat"), ""},
-    IndexEntry{"aiProviders", "ai", "aiProviders", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI providers and keys"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "api key|provider|account|cloud|openai|anthropic"), ""},
-    IndexEntry{"aiModels", "ai", "aiModels", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI models"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "models|download|transcription|whisper"), ""},
+    IndexEntry{"aiProviders", "ai", "aiProviders", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI providers and keys"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "api key|provider|account|cloud|openai|anthropic|gemini|mistral|groq|openrouter|elevenlabs"), ""},
+    IndexEntry{"aiModels", "ai", "aiModels", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI models"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "models|model id"), ""},
     IndexEntry{"aiPrivacy", "ai", "aiPrivacy", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI privacy"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "privacy|data|upload|local only"), ""},
     IndexEntry{"aiUsage", "ai", "aiUsage", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI usage"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "usage|cost|tokens|spending"), ""},
-    IndexEntry{"localAssistant", "ai", "localAssistant", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Local assistant"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "local|offline|llm|on device"), ""},
+    IndexEntry{"localAssistant", "ai", "localAssistant", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Local AI models"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "local|offline|llm|on device|local assistant|download|gguf|hugging face|whisper"), ""},
+    // r07: Settings > AI > Features (what each AI part uses) and the custom provider dialog.
+    IndexEntry{"aiDefaults", "ai", "aiDefaults", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "What each AI feature uses"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "features|default model|routing|transcription model|voice|translation|image|video|sound effects|dub|narration"), ""},
+    IndexEntry{"aiCustomProvider", "ai", "aiCustomProvider", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Custom AI provider"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "AI"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "custom|own provider|self-hosted|openai compatible|proxy|gateway|base url|endpoint|vllm|litellm"), ""},
     // Keyboard
     IndexEntry{"shortcuts", "keyboard", "shortcuts", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Keyboard shortcuts"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Shortcuts"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "keys|hotkeys|keymap|premiere|kys|bindings"), "shortcuts"},
     IndexEntry{"trainer", "keyboard", "trainer", QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Keyboard trainer"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "Shortcuts"), QT_TRANSLATE_NOOP("wabcut::app::AppSettingsBridge", "learn|practice|game|keys"), "trainer"},
@@ -303,6 +335,46 @@ bool AppSettingsBridge::openSetting(const QString& id) {
         return false;
     emit openRequested(QString::fromLatin1(e->page), QString::fromLatin1(e->row));
     return true;
+}
+
+// ---- Backup and reset (0.7, card 028) ---------------------------------------------------------------------------------
+
+bool AppSettingsBridge::changeStaged() const {
+    return m_bundle.hasStaged();
+}
+
+QVariantMap AppSettingsBridge::exportSettings(const QUrl& file) const {
+    return m_bundle.exportTo(file.isLocalFile() ? file.toLocalFile() : QString());
+}
+
+QVariantMap AppSettingsBridge::previewImport(const QUrl& file) const {
+    if (!file.isLocalFile())
+        return {{QStringLiteral("ok"), false}, {QStringLiteral("error"), tx("Choose a settings file on this computer.")}};
+    return SettingsBundle::previewMap(SettingsBundle::parseFile(file.toLocalFile()));
+}
+
+QVariantMap AppSettingsBridge::importSettings(const QUrl& file) {
+    if (!file.isLocalFile())
+        return {{QStringLiteral("ok"), false}, {QStringLiteral("error"), tx("Choose a settings file on this computer.")}};
+    const QVariantMap result = m_bundle.stageImport(file.toLocalFile());
+    emit changeStagedChanged();
+    return result;
+}
+
+QVariantMap AppSettingsBridge::planReset() const {
+    return {{QStringLiteral("backupName"), m_bundle.nextBackupName()},
+            {QStringLiteral("backupFolder"), QDir::toNativeSeparators(m_bundle.locations().backupsDir())}};
+}
+
+QVariantMap AppSettingsBridge::resetAllSettings(bool keepRecents, const QString& backupName) {
+    const QVariantMap result = m_bundle.stageReset(keepRecents, backupName);
+    emit changeStagedChanged();
+    return result;
+}
+
+void AppSettingsBridge::discardStagedChange() {
+    m_bundle.discardStaged();
+    emit changeStagedChanged();
 }
 
 std::shared_ptr<PaletteProvider> AppSettingsBridge::paletteProvider(AppSettingsBridge* bridge) {

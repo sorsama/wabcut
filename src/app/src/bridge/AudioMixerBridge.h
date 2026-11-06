@@ -32,6 +32,7 @@
 #include "MixerAutomation.h"
 
 #include <wabcut/audio/LoudnessTap.h>
+#include <wabcut/audio/edit/MatchCurve.h>
 #include <wabcut/command/Command.h>
 #include <wabcut/model/Ids.h>
 #include <wabcut/model/ProjectState.h>
@@ -51,7 +52,9 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <thread>
+#include <vector>
 
 class QJSEngine;
 class QQmlEngine;
@@ -65,11 +68,14 @@ namespace wabcut::app {
 class PlaybackBridge;
 class ProjectController;
 class TranscriptBridge;
+class VoiceOverBridge;
 
 class AudioMixerBridge : public QObject {
     Q_OBJECT
     /// [{ key ("t12"), name, shortName, colorIndex, role, roleName, muted, solo, gainDb, pan, meter (its index),
-    ///    effects: [{ key ("e5"), effect, name, enabled, summary }] }], in track order (A1 first).
+    ///    effects: [{ key ("e5"), effect, name, enabled, summary, details (r07: the main values, for the hover tip) }],
+    ///    clipEffects (r07: clip effects on the track's clips that the "+ Effect" menu adds, Enhance Speech:
+    ///    [{ effect, name, enabled, count, total, clips, summary, details }]) }], in track order (A1 first).
     Q_PROPERTY(QVariantList strips READ strips NOTIFY stripsChanged FINAL)
     /// { effects: [...as above], hasLimiter, gainDb }
     Q_PROPERTY(QVariantMap master READ master NOTIFY stripsChanged FINAL)
@@ -135,16 +141,49 @@ class AudioMixerBridge : public QObject {
     Q_PROPERTY(double duckHold READ duckHold WRITE setDuckHold NOTIFY toolSettingsChanged FINAL)
     Q_PROPERTY(double denoiseAmount READ denoiseAmount WRITE setDenoiseAmount NOTIFY toolSettingsChanged FINAL)
     /// 0.4: "default" (music under dialogue, by role) or "gameUnderVoice" (audio.autoDuck's gaming preset, by name).
+    /// card 137: or "autoMix" (audio.autoMix: the microphones of the voices that are not speaking go down while
+    /// another voice speaks; the voices are the dialogue-role tracks).
     Q_PROPERTY(QString duckMode READ duckMode WRITE setDuckMode NOTIFY duckChanged FINAL)
+    /// card 137, autoMix: also lower a microphone while nobody speaks (a gate on each voice).
+    Q_PROPERTY(bool duckGate READ duckGate WRITE setDuckGate NOTIFY duckChanged FINAL)
     /// 0.4, gameUnderVoice: the music tracks duck with the game (default true).
     Q_PROPERTY(bool duckIncludeMusic READ duckIncludeMusic WRITE setDuckIncludeMusic NOTIFY duckChanged FINAL)
     /// 0.4: what gameUnderVoice would use on the current sequence: { voice: [names], game: [names] } (the ducked
-    /// tracks: game, then music with duckIncludeMusic; audio::edit::chooseGameVoiceTracks).
+    /// tracks: game, then music with duckIncludeMusic; audio::edit::chooseGameVoiceTracks); 0.7: `mix`: the names of the
+    /// dialogue-role tracks autoMix mixes.
     Q_PROPERTY(QVariantMap gameTracks READ gameTracks NOTIFY duckChanged FINAL)
 
+    /// 0.7 (card 032, Premiere's Audio Track Mixer menu > Meter Input(s) Only): while on and the microphone is open
+    /// (VoiceOver.inputOpen), the meter of a record-armed track shows the input's level and the other tracks' meters read
+    /// the floor; the master keeps metering the mix.
+    Q_PROPERTY(bool meterInputsOnly READ meterInputsOnly WRITE setMeterInputsOnly NOTIFY meterInputsOnlyChanged FINAL)
+    /// 0.7 (card 032, Show/Hide Tracks): strips hidden in the current sequence (every strip and submix map has `hidden`).
+    Q_PROPERTY(int hiddenCount READ hiddenCount NOTIFY stripsChanged FINAL)
+
+    /// 0.7 (cards 104 and 141, the Loudness panel): the Loudness Radar, one revolution of the short-term loudness:
+    /// { valid, mode ("live" | "programme"), lap (seconds of one revolution, live), slots, values ([LUFS or null] per slot, in
+    /// time order from the top, clockwise), secondsPerSlot, head (live: the slot being written; -1), seconds (measured),
+    /// target (LUFS), lra (LU or null), lowLufs / highLufs (the range band, null when unknown), stale (programme: the
+    /// project changed since the analysis), text (a one-line summary) }.
+    Q_PROPERTY(QVariantMap radar READ radar NOTIFY radarChanged FINAL)
+    /// Seconds of one revolution of the live radar: 60, 300, 600, 1800 or 3600.
+    Q_PROPERTY(int radarLap READ radarLap WRITE setRadarLap NOTIFY radarChanged FINAL)
+    /// "live" (what is playing since the play started or Reset) or "programme" (the last analysis of the mix, one revolution).
+    Q_PROPERTY(QString radarMode READ radarMode WRITE setRadarMode NOTIFY radarChanged FINAL)
+    /// The radar is on screen: the history is folded for it (about once a second) only while true.
+    Q_PROPERTY(bool radarShown READ radarShown WRITE setRadarShown NOTIFY radarChanged FINAL)
+
+    /// 0.7 (card 045, the Audio Tools panel's Match tab): the state of EQ Match and Level Match: { reference: { set, label },
+    /// target: { count, label }, options: { amount, smoothing (percent), mode ("loudness" | "peak"), headroom, limit },
+    /// busy, learned (false until Learn ran on these), bands: [{ hz, referenceDb, targetDb, gainDb }] (the curve with the
+    /// options, refitted whenever they change), levelOffsetDb, referenceStats / targetStats: { integrated, truePeak, rms,
+    /// crest, seconds }, levelGainDb (the gain Level Match would apply), applied (clips that have an EQ Match), bypassed
+    /// (of them, switched off), message, report: [{ target, gainDb, before, after, ... }] of the last Level Match }.
+    Q_PROPERTY(QVariantMap match READ match NOTIFY matchChanged FINAL)
+
 public:
-    /// Channels a meter shows: stereo strips 2; a 5.1 master 6 (M5n, A.9: L, R, C, LFE, Ls, Rs).
-    static constexpr int kMeterChannels = 6;
+    /// Channels a meter shows: stereo strips 2; a 5.1 master 6 (M5n, A.9: L, R, C, LFE, Ls, Rs); a 7.1 master 8 (0.7).
+    static constexpr int kMeterChannels = 8;
     /// One meter reading, linear (1.0 = 0 dBFS), as TimelineAudioPlayer's LevelMeter gives it.
     struct MeterReading {
         int channels = 0;
@@ -172,6 +211,8 @@ public:
     void setController(ProjectController* controller);
     void setPlayback(PlaybackBridge* playback);
     void setTranscripts(TranscriptBridge* transcripts);
+    /// 0.7 (card 032): the microphone input Meter Input(s) Only shows.
+    void setVoiceOver(VoiceOverBridge* voiceOver);
     /// The analysis services of the audio commands (tests inject fakes; by default media-backed ones).
     void setServices(std::shared_ptr<command::CommandServices> services);
     /// The meter feed (tests); by default TimelineAudioPlayer's meters.
@@ -183,6 +224,13 @@ public:
     /// The live loudness feed (tests); by default TimelineAudioPlayer::loudness().
     using LoudnessSource = std::function<std::optional<audio::LoudnessReading>()>;
     void setLoudnessSource(LoudnessSource source) { m_loudnessSource = std::move(source); }
+    /// The microphone's levels for Meter Input(s) Only (tests): nullopt while the input is closed. By default the
+    /// VoiceOver bridge's input.
+    using InputSource = std::function<std::optional<MeterLevels>()>;
+    void setInputSource(InputSource source) { m_inputSource = std::move(source); }
+    /// The short-term loudness history of the live radar (tests); by default TimelineAudioPlayer::loudnessHistory().
+    using LoudnessHistorySource = std::function<std::vector<float>()>;
+    void setLoudnessHistorySource(LoudnessHistorySource source) { m_loudnessHistorySource = std::move(source); }
     /// M5m: what an automation pass sounds like while it records. Called with a strip's live fader / pan while a
     /// Touch, Latch or Write pass writes it, and with (nullopt, nullopt) when it stops writing (release, stop). Without
     /// one set (the app), the player's RT-safe override does it: TimelineAudioPlayer::setLiveTrackMix (A.8). Returns
@@ -233,6 +281,8 @@ public:
     void setDuckMode(const QString& mode);
     bool duckIncludeMusic() const { return m_duckIncludeMusic; }
     void setDuckIncludeMusic(bool on);
+    bool duckGate() const { return m_duckGate; }
+    void setDuckGate(bool on);
     QVariantMap gameTracks() const { return m_gameTracks; }
 
     /// The levels of a strip ("t12" or "master"); channels 0 when there is nothing to show.
@@ -241,6 +291,46 @@ public:
     bool automationActive() const { return m_pass.has_value(); }
     QVariantList automationModes() const;
     QVariantMap liveLoudness() const { return m_liveLoudness; }
+
+    // ---- 0.7 (card 032): Show/Hide Tracks, Meter Input(s) Only ----
+    bool meterInputsOnly() const { return m_meterInputsOnly; }
+    void setMeterInputsOnly(bool on);
+    int hiddenCount() const;
+    /// Hides (or shows again) a strip of the current sequence, a track ("t12") or a submix, for this session. A hidden strip
+    /// stays in the mix: hiding is only about the mixer's room (mute and solo are separate).
+    Q_INVOKABLE void setTrackHidden(const QString& key, bool hidden);
+    Q_INVOKABLE bool isTrackHidden(const QString& key) const;
+    Q_INVOKABLE void showAllTracks();
+
+    // ---- 0.7 (cards 104, 141): the Loudness Radar ----
+    QVariantMap radar() const { return m_radar; }
+    int radarLap() const { return m_radarLap; }
+    void setRadarLap(int seconds);
+    QString radarMode() const { return m_radarMode; }
+    void setRadarMode(const QString& mode);
+    bool radarShown() const { return m_radarShown; }
+    void setRadarShown(bool shown);
+
+    // ---- 0.7 (card 045): EQ Match and Level Match (AudioMixerMatch.cpp) ----
+    QVariantMap match() const;
+    /// The reference: the first selected audio clip (as it renders), the mix between the sequence's In and Out points, or an
+    /// audio file of the project (`matchMedia`: [{ id, name, seconds }]). Each returns "" or why not.
+    Q_INVOKABLE QString matchUseSelectedClip();
+    Q_INVOKABLE QString matchUseRange();
+    Q_INVOKABLE QString matchUseMedia(const QString& mediaId);
+    Q_INVOKABLE QVariantList matchMedia() const;
+    /// The target: the audio clips selected on the timeline now.
+    Q_INVOKABLE QString matchUseSelectedTargets();
+    /// amount / smoothing (percent), headroom (dB), mode ("loudness" | "peak"), limit (bool).
+    Q_INVOKABLE void setMatchOption(const QString& name, const QVariant& value);
+    /// Learns: measures the reference and the targets in the background (Cancel stops it). The result fills `match`.
+    Q_INVOKABLE QString matchLearn();
+    /// Adds the EQ Match to the target clips (one undo step) / matches the level (one undo step) / takes the EQ Match off.
+    Q_INVOKABLE QString matchApplyEq();
+    Q_INVOKABLE QString matchApplyLevel();
+    Q_INVOKABLE QString matchReset();
+    /// Preview: switches the EQ Match of the target clips on or off (one undo step) to compare by ear while playing.
+    Q_INVOKABLE QString matchTogglePreview();
 
     // ---- Strips ----
     /// Sets a track's role ("none", "dialogue", "music", "effects"). Returns "" or the error.
@@ -272,6 +362,39 @@ public:
     Q_INVOKABLE QString moveEffect(const QString& target, const QString& effect, int index);
     /// The master limiter preset (-1 dBTP ceiling), or its update when the master already ends with a limiter.
     Q_INVOKABLE QString addMasterLimiter();
+
+    // ---- r07: effect settings (AudioMixerEffects.cpp; the strips' effect settings popup) ----
+    /// A track, submix or master effect ("e5") of `target`: { key, target, effect, name, description, enabled, known
+    /// (the registry can run it), plugin, details, params: [{ key, name, kind ("slider" | "toggle" | "choice"), value,
+    /// defaultValue, from, to, step, decimals, origin, unit, animated, animatable, valueText, options ([{ id, name }]) and
+    /// current (choices) }] }, values in UI units (ParameterUi.h) at the playhead. An empty map when there is no such effect.
+    Q_INVOKABLE QVariantMap effectSettings(const QString& target, const QString& effect) const;
+    /// Sets parameter `param` of an effect (UI units, clamped): the constant, or on an animated parameter the key at the
+    /// playhead. A `gesture` (a slider drag, a scrub) merges into one undo step until endEffectGesture().
+    /// 0.7 (card 044): the Dynamics Processing graph in an effect's settings: the live levels of the effect `effect` ("e5") and
+    /// a band's static curve (EffectControlsModel::dynamicsMeters / dynamicsCurve have the shapes).
+    Q_INVOKABLE QVariantMap dynamicsMeters(const QString& effect);
+    Q_INVOKABLE QVariantList dynamicsCurve(int mode, double threshold, double ratio, double range, double knee, double makeup,
+                                           double fromDb, double toDb, int points) const;
+    Q_INVOKABLE QString setEffectParam(const QString& target, const QString& effect, const QString& param, double value,
+                                       bool gesture = false);
+    Q_INVOKABLE void endEffectGesture();
+    /// Every parameter of the effect back to its default (keys too), one undo step.
+    Q_INVOKABLE QString resetEffect(const QString& target, const QString& effect);
+    /// A clip effect the "+ Effect" menu put on a track's clips (Enhance Speech; a strip's `clipEffects`): on or bypassed
+    /// on every clip of the track that has it, or removed from all of them; one undo step each.
+    Q_INVOKABLE QString setClipEffectEnabled(const QString& track, const QString& effectId, bool enabled);
+    Q_INVOKABLE QString removeClipEffect(const QString& track, const QString& effectId);
+    /// A strip asks for an effect's settings: the mixer panel opens its one popup (effectSettingsRequested). The strips
+    /// are made again on every change, so the popup cannot live in one.
+    Q_INVOKABLE void openEffectSettings(const QString& target, const QString& effect, const QString& stripName) {
+        emit effectSettingsRequested(target, effect, stripName);
+    }
+    /// 0.7 (card 101): a strip asks to save its effect chain as a preset: the mixer panel opens its Save Preset dialog
+    /// (savePresetRequested), for the same reason as openEffectSettings.
+    Q_INVOKABLE void openSavePreset(const QString& target, const QString& suggestedName) {
+        emit savePresetRequested(target, suggestedName);
+    }
     /// Clears a strip's clip indicator.
     Q_INVOKABLE void clearClip(const QString& key);
     /// 0.5: `viewer` (the mixer, the Audio Meters panel) shows meters now, or no longer: the meters poll while any viewer
@@ -307,7 +430,8 @@ public:
     Q_INVOKABLE QString addOverMarkers();
     /// Dry run of normalizing "mix", "tracks" or "clips" to the target; applyPending() applies it.
     Q_INVOKABLE QString previewNormalize(const QString& scope);
-    /// Dry run of ducking the music tracks under the dialogue tracks (roles); its keys show on the timeline. 0.4: in
+    /// Dry run of ducking the music tracks under the dialogue tracks (roles); its keys show on the timeline. 0.7: in
+    /// autoMix mode the dialogue tracks against each other (audio.autoMix). 0.4: in
     /// gameUnderVoice mode the game (and music, duckIncludeMusic) under the voice tracks, by track name.
     Q_INVOKABLE QString previewAutoDuck();
     /// Adds the Reduce Noise effect to the selected audio clips, or sets its amount where it is: one undo step.
@@ -322,6 +446,10 @@ signals:
     void metersUpdated();
     /// Enhance Speech picked on a track: Main.qml opens the Enhance Speech dialog for these clips (ClipAudio).
     void enhanceClipsRequested(const QStringList& clips);
+    /// r07: openEffectSettings().
+    void effectSettingsRequested(const QString& target, const QString& effect, const QString& stripName);
+    /// 0.7 (card 101): openSavePreset().
+    void savePresetRequested(const QString& target, const QString& suggestedName);
     void targetChanged();
     void loudnessChanged();
     void reportChanged();
@@ -331,6 +459,9 @@ signals:
     void toolSettingsChanged();
     void faderValuesChanged();
     void liveLoudnessChanged();
+    void meterInputsOnlyChanged();
+    void radarChanged();
+    void matchChanged();
     /// 0.4: duckMode, duckIncludeMusic or gameTracks changed.
     void duckChanged();
 
@@ -395,6 +526,7 @@ private:
     QPointer<ProjectController> m_controller;
     QPointer<PlaybackBridge> m_playback;
     QPointer<TranscriptBridge> m_transcripts;
+    QPointer<VoiceOverBridge> m_voiceOver;
     std::shared_ptr<command::CommandServices> m_services;
     MeterSource m_meterSource;
     LoudnessSource m_loudnessSource;
@@ -428,6 +560,8 @@ private:
     std::vector<TrackId> m_submixOrder; ///< p02 audio: submix tracks, S1 first (meter index -2 - position)
     std::map<QString, MeterLevels> m_levels;
     std::map<QString, std::array<qint64, kMeterChannels>> m_holdSince; ///< ms timestamps of the peak holds
+    /// 0.7 (card 044): each Dynamics Processing instance's meter block counter at the last look (is audio going through it?).
+    std::map<std::uint64_t, std::uint64_t> m_dynamicsBlocks;
     QString m_target = QStringLiteral("youtube");
     double m_customLufs = -14.0;
     std::optional<std::pair<QVariantMap, std::uint64_t>> m_mixLoudness; ///< row + the revision it measured
@@ -435,8 +569,10 @@ private:
     QString m_busy;
     std::optional<Pending> m_pending;
     QString m_message;
-    /// 0.4: per duck mode (0 "default", 1 "gameUnderVoice"; audio::edit's music and gaming ducking defaults).
-    std::array<DuckTiming, 2> m_duckTiming{{{-12.0, 0.25, 0.75, 0.25}, {-10.0, 0.12, 0.8, 0.35}}};
+    /// 0.4: per duck mode (0 "default", 1 "gameUnderVoice"; audio::edit's music and gaming ducking defaults); 0.7: 2
+    /// "autoMix" (AutoMixOptions' defaults).
+    std::array<DuckTiming, 3> m_duckTiming{{{-12.0, 0.25, 0.75, 0.25}, {-10.0, 0.12, 0.8, 0.35}, {-12.0, 0.1, 0.5, 0.4}}};
+    bool m_duckGate = false;
     int m_duckIndex = 0;
     bool m_duckModeChosen = false; ///< the user picked the mode for m_duckSequence
     bool m_duckIncludeMusic = true;
@@ -445,6 +581,59 @@ private:
     double m_denoiseAmount = 1.0;
     std::unique_ptr<Job> m_job;
     bool m_duckPreviewShown = false;
+
+    // ---- 0.7 (card 032) ----
+    bool m_meterInputsOnly = false;
+    std::map<std::uint64_t, std::set<QString>> m_hiddenStrips; ///< by sequence id: the strip keys hidden (this session)
+    bool isArmedStrip(const QString& key) const;
+    MeterLevels inputLevels() const;
+    /// The input's levels while it is open (Meter Input(s) Only reads them), else nullopt.
+    std::optional<MeterLevels> inputNow() const;
+    InputSource m_inputSource;
+
+    // ---- 0.7 (cards 104, 141) ----
+    LoudnessHistorySource m_loudnessHistorySource;
+    QVariantMap m_radar;
+    int m_radarLap = 300;
+    QString m_radarMode = QStringLiteral("live");
+    bool m_radarShown = false;
+    std::size_t m_radarSeen = 0;       ///< live history entries folded last
+    qint64 m_radarLastMs = 0;          ///< when the live history was last looked at
+    std::vector<float> m_mixSeries;    ///< the last analysis of the mix: short-term loudness once a second
+    double m_mixRange = 0.0;           ///< ... and its loudness range (LU)
+    std::uint64_t m_mixSeriesRevision = 0;
+    double m_liveRange = 0.0;
+    void updateRadar(bool force);
+
+    // ---- 0.7 (card 045): AudioMixerMatch.cpp ----
+    struct MatchState {
+        bool referenceSet = false;
+        QString referenceLabel;
+        QString referenceKind;                       ///< "clip", "range" or "media"
+        std::uint64_t referenceId = 0;               ///< the clip or the media item
+        std::optional<std::int64_t> referenceFrom;   ///< ticks: the range of the mix, or of the clip / file
+        std::optional<std::int64_t> referenceTo;
+        std::vector<ClipId> targets;
+        QString targetLabel;
+        double amount = 100.0;                       ///< percent
+        double smoothing = 50.0;                     ///< percent
+        double headroom = 1.0;                       ///< dB under full scale
+        QString mode = QStringLiteral("loudness");
+        bool limit = false;
+        bool learned = false;
+        std::uint64_t learnedRevision = 0;
+        audio::edit::SpectrumProfile reference;
+        audio::edit::SpectrumProfile target;
+        QVariantMap referenceStats;
+        QVariantMap targetStats;
+        QVariantList report;
+        QString message;
+    };
+    MatchState m_match;
+    void matchFinish(const QString& kind, const std::vector<command::CommandResult>& results, std::uint64_t baseRevision);
+    void refitMatch();
+    QString runMatch(const QString& kind, const char* command, bool apply);
+    command::CommandRequest matchRequest(const char* command) const;
 };
 
 /// QML: the singleton `AudioMixer`.

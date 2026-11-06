@@ -17,6 +17,7 @@ Premiere: *Clip > Video Options > Time Interpolation*, also in the *Speed/Durati
 | Frame Sampling (default) | the frame nearest below the source time: frames repeat or drop (what every clip did before) |
 | Frame Blending | the two frames around the source time, cross-dissolved by where the source time lies between them |
 | Optical Flow | both frames warped along their motion toward the source time and blended, each side weighted by how surely it sees the point (occlusions) |
+| AI Frame Interpolation (0.7) | the frame between made by a neural model (RIFE, run on this computer, downloaded on request): Process makes the pictures ahead of time; where one is missing the clip plays with Optical Flow and the monitor says so; an export makes it. See [ai.md](ai.md#ai-frame-interpolation-and-ai-refocus-07) |
 
 It applies wherever a clip's video is retimed (`retimesFrames`, `model/TimeInterpolation.h`): a speed other than 100 %
 (Speed/Duration, Rate Stretch), Reverse Speed, Time Remapping ramps, and footage at another frame rate than the sequence
@@ -42,7 +43,10 @@ options hold inside the interpolation and stabilizer groups too.
   (`interpolationWeight`, snapped to a frame within 1/1024) and mixes them: a cross dissolve, or a flow mix along the
   motion between them. The group is then placed with the clip's Motion, Opacity, effects, redactions and transition,
   exactly like the frame would be.
-- **Render bar.** Retimed clips with Optical Flow are red ("optical flow"), with Frame Blending yellow ("frame
+- **AI Frame Interpolation (0.7).** The same group, with the model's picture alone on its canvas instead of the mix
+  (`SourceFrameProcessor::interpolate`, keyed by the exact source time in 1/64 frame); while it is missing the Optical Flow
+  mix stands in and the layer is flagged `aiUnprocessed`. Saved as `opticalFlow` + `"aiInterpolation": true`.
+- **Render bar.** Retimed clips with Optical Flow (and AI Frame Interpolation) are red ("optical flow"), with Frame Blending yellow ("frame
   blending"): render them (Sequence > Render In to Out) for real-time playback, as in Premiere. The setting is part of
   the segment's content hash, so changing it drops the preview file.
 
@@ -66,8 +70,27 @@ canvas** (each with its own Motion: a punch-in on the second shot is part of the
   it runs; until a frame's motion is there the monitor holds the frame. Export always computes it. A side that is not
   plain media (a title, a nested sequence) dissolves instead.
 - **Render bar.** Red ("Morph Cut") over the transition.
-- Not done: face-aware weighting. The flow follows the whole picture; on a talking head before a still background the
-  face dominates the motion anyway.
+- **Face Aware (0.7).** A talking head is the hardest part of a jump cut for optical flow: cheeks and forehead have no
+  texture to follow, the mouth opens and closes, and a head that moved by more than a few patches loses its way, so the
+  face ghosts or tears. The Morph Cut's **Face Aware** switch (Effect Controls, on by default; `faceAware` in
+  `transition.set`) lines the two sides' faces up first: a face detector (YuNet, 0.2 MB, the one Auto Reframe uses; the
+  header says **Face detector needed** with a **Download** and its licence until it is on this computer) finds the faces on
+  both sides, and where it finds the same face on both (matched by place and size) its five landmarks (eyes, nose tip,
+  mouth corners) give the head's own motion - the shift, turn and size that carry one side's landmarks onto the other's
+  (`motion/FaceAlign.h`). Inside the face's window (the face box 1.7 times as large, feathered at its edge) the flow is
+  estimated again as a *residual* on the pictures aligned by that transform, so even a large move is within the
+  estimator's reach, and each pixel takes the flow, plain or face-aligned, whose pictures agree better there (the error
+  over 5 x 5 pixels), in proportion to the window's weight. Outside the windows nothing changes. On the test material
+  (`tests/motion/test_face_align.cpp`: a synthetic head that moves a tenth of the picture, grows, turns and opens its
+  mouth) the face at the mid point is 2.6 times closer to the true in-between picture than the plain flow gives and 3.8
+  times closer than a dissolve; `tests/playback/video/test_motion.cpp` does it end to end through the export path.
+  **Fallbacks, silently and always to the old Morph Cut:** the switch off, the detector not downloaded, no AI helper in
+  this build, no face on one side, faces that do not match (a head that moved by more than itself, or twice its size),
+  landmarks that make no sense (a head that grew by more than two thirds or turned by more than 35 degrees in the
+  picture's plane). The detector looks at the luma the flow is estimated on, so preview, Render In to Out and export
+  agree, and what it finds is part of the motion's cache key (a Morph Cut analysed before the download is analysed again
+  after it). Limits: one detection per side (a face that is only turned away on one side is not matched), and the
+  alignment is a similarity: a head that turns in depth (profile to frontal) morphs as the plain flow does.
 
 ## Motion analysis
 
@@ -107,13 +130,14 @@ Premiere's settings; their analysis is a command, so the CLI, MCP and the assist
 | Warp Stabilizer setting | Values (default) |
 |---|---|
 | Result | Smooth Motion (default), No Motion |
-| Smoothness | 50 % (0..1000) |
-| Method | Position; Position, Scale, Rotation; Perspective; Subspace Warp (default; computed as Perspective) |
+| Smoothness | 50 % (0..1000); can be keyframed (0.7, see below) |
+| Method | Position; Position, Scale, Rotation; Perspective; Subspace Warp (default; computed as Perspective); **Gyro (camera metadata)** (0.7, for footage with gyro data) |
 | Preserve Scale | off |
 | Framing | Stabilize Only; Stabilize, Crop; Stabilize, Crop, Auto-scale (default); Stabilize, Synthesize Edges |
 | Auto-scale | Maximum Scale 150 %, Action-Safe Margin 0 % |
 | Additional Scale | 100 % |
 | Advanced | Detailed Analysis (off), Rolling Shutter Ripple (Automatic Reduction, Enhanced Reduction), Crop Less <-> Smooth More 50 %, Synthesis Input Range, Synthesis Edge Feather |
+| Gyro (0.7, only with that Method) | Sync (Auto-sync with the picture, default; Off), Offset (0 ms, -2000..2000), Field of View (0 = Auto, degrees), Rolling Shutter Read-out (0 = Auto, ms) |
 
 **Analysis** (`effect.analyzeStabilization`, `src/ai/stabilize`; ported from the parked C.15 branch and finished here).
 The clip's media is tracked frame by frame at 640 px wide (the host's pictures: the app's decoders, a fake in tests):
@@ -132,6 +156,15 @@ smoothing (x0.5 at 0 %, x1.5 at 100 %). The compensation for each frame is "smoo
 path"; Stabilize, Crop, Auto-scale then finds the smallest uniform scale (capped at Maximum Scale, Action-Safe Margin
 left out) that hides every moving border, times Additional Scale; Stabilize, Crop reports the edges ever uncovered.
 
+**Keyframed Smoothness** (0.7). Smoothness has a stopwatch like Motion's controls: key it to steady only part of a shot.
+The Gaussian window of each analysed frame takes its width from the Smoothness at that frame, so a ramp from 0 % to 50 %
+brings the stabilization in gradually, and **0 % leaves the shot exactly as it was shot** at that frame (the camera moves
+as it did). The keys are read when the shot is analysed, at the frames' media times (a time-remapped clip: at the output
+frame that shows them), so after moving a key the header reads **Out of date**; **Reanalyze** (or Analyze All) re-smooths
+from the cached motion without decoding a frame. Crop Less <-> Smooth More scales every key. The L1 smoothing (the reframe
+tools') uses the mean of the keys; No Motion ignores Smoothness. A project that keys Smoothness does not open in an older version
+(it treats a keyed constant setting as an invalid project).
+
 **Rolling Shutter Ripple** (Perspective and Subspace Warp only: a corner pin can carry a skew). A rolling-shutter
 camera reads its lines one after the other, so while the picture moves each line shows it a little further on: the
 camera path's skew follows the motion. `rollingShutterShares` measures the scan's share of the frame time by regressing
@@ -144,7 +177,30 @@ path is smoothed as a global shutter would have shot it.
 `transform.rotation`, `transform.scale` for Position and Position, Scale, Rotation; `corner.*` offsets for Perspective),
 sparse within a tolerance (auto reframe's curve fit), in the clip's curve time; `autoScale` and `crop.*` hold the
 framing, data `status` ("analyzed") and `analysis` (a summary) the state. The keys stay editable; one undo step adds
-and keys the instance. A time-remapped or nested clip is refused (analyse the media, then remap).
+and keys the instance. A nested clip is refused (analyse the clips inside it, or use Analyze All); a time-remapped clip is analysed over the frames its remap shows (see Speed changes below).
+
+**Speed changes** (0.7, roadmap #107). A clip at another constant speed (also reversed) is analysed over the source frames
+it shows; its keys are at the media's times, which are its curve times, so each timeline frame finds the compensation of
+the source frame it shows - no nesting. A **time-remapped** clip (speed ramps, holds, reverse segments) is analysed too:
+the frames its remap shows are tracked once (the cached motion is per media), and the compensation is keyed per frame the
+clip shows on the timeline, in the clip's curve time (which runs with the timeline): Frame Sampling takes the compensation of
+the whole frame it shows, Frame Blending and Optical Flow interpolate between the analysed frames. Changing the remap
+afterwards means **Reanalyze** (the keys follow the remap as it was).
+
+**Analyze All** (0.7, roadmap #128). **Sequence > Analyze All Stabilizers** (also the command palette, and **Analyze All** next to
+Analyze in a stabilizer's Effect Controls header, which shows when the sequence has more than one) analyses every Warp
+Stabilizer and Rolling Shutter Repair of the sequence, the sequences nested in it and the Master Clip Effects of its media
+that is **not analysed or out of date** - the clip was trimmed longer or moved onto other footage, or a setting such as
+Smoothness changed (the header then reads "Out of date") - in one job with one progress bar and one undo step "Analyze All
+Stabilizers"; effects already current are skipped (**Reanalyze All** redoes them), and the media's cached motion makes a
+re-analysis quick. Effects that cannot be analysed (switched off, a freeze frame, nothing to track) are listed in the
+message. `effect.analyzeAll` (`kind`, `reanalyze`, `nested`) does the same from the CLI, MCP and the assistant.
+Morph Cut needs no such step: its analysis starts when the transition is applied and runs in the background.
+
+**Warning before export** (0.7, roadmap #107). A Warp Stabilizer or Rolling Shutter Repair that has not been analysed (or is
+out of date) exports **without** its stabilization, so the Export panel warns first - "2 stabilizers are not analyzed:
+V1: Interview (Warp Stabilizer) ... They will export unstabilized" - for the stabilizers inside the range being exported,
+with **Analyze now** (the same job as Analyze All). The export itself stays allowed.
 
 **Rendering** (`playback/video/Evaluate.cpp`, `stabilizationOf`). A clip with an analysed stabilizer becomes a group
 on a canvas of the stream's displayed size: inside, the frame (or its Time Interpolation group) drawn through
@@ -174,6 +230,73 @@ outside that stretch needs Reanalyze.
 about 15 ms a frame for Position, Scale, Rotation or Perspective (65 frames/s, so a minute of 30 fps footage analyses in
 about 30 s) and about 31 ms with Detailed Analysis; re-smoothing a cached analysis is instant. The pictures come from
 the app's decoders, whose cost adds to that.
+
+## Stabilize with the camera's gyro
+
+(0.7, roadmap #130.) Many cameras record their own gyroscope in the video file. **Method: Gyro (camera metadata)** in a Warp
+Stabilizer uses that rotation instead of tracking the picture, so the correction does not depend on what is in the shot
+(featureless sky, water, a dark room, a face filling the frame) and has no drift. Adobe asks for the same ([feature
+request](https://community.adobe.com/feature-requests-730/add-gyro-data-support-to-warp-stabilizer-1327942)).
+
+**What is read.** The gyro (and accelerometer) come out of the file's data tracks as untrusted binary input: every length is
+bounded, a damaged packet ends that packet's data, never the program. The reading is by camera:
+
+| Camera / format | Status | Notes |
+|---|---|---|
+| **GoPro** HERO5 and later (MP4, `gpmd` track, GPMF) | **Read** | Gyro and accelerometer, the readings timed by the camera's clock (STMP, HERO8 and later) or spread over their packet; the IMU's axis order from ORIN (or the order GoPro lists for the camera). The axis mapping is checked against real HERO5, HERO6, HERO7 and HERO8 footage. GoPro's format is documented by GoPro ([GPMF](https://github.com/gopro/gpmf-parser)). |
+| **Sony** Alpha, FX, ZV and RX cameras with a gyro (MP4: XAVC S, XAVC HS, XAVC S-I; `rtmd` track) | **Read** | Gyro and accelerometer per frame, the sensor's read-out time (the rolling shutter), the exposure, and the lens's focal length and sensor size (the field of view) when the file has them; the camera's model from its NonRealTimeMeta XML. Sony does not publish the layout: it follows the open-source parser of the Gyroflow project (see THIRD-PARTY-NOTICES.md). The axis table of Sony cameras is **not checked against footage** here (none was available), so Auto-sync checks it against the picture and turns the axes when that fits much better. |
+| Sony MXF (XDCAM, XAVC in MXF, Venice) | Not read | The metadata sits in MXF system items, not in a track. |
+| **DJI** (Osmo Action, Avata, Neo, drones) | Not read | The gyro is in a protobuf `djmd` track whose layout DJI has not published; the community's reverse-engineered schemas differ per model and none could be checked against a real file here. The Effect Controls note says so. |
+| **Insta360** | Not read | The IMU data is a trailer in Insta360's own format, not documented by Insta360. |
+| **RED** R3D | Not read | The gyro is read through the REDCODE SDK, which cannot be linked into Wabcut (R3D plays through a decoder helper that carries pictures only). |
+| **Blackmagic RAW** | Not read | The gyro is read through Blackmagic's RAW SDK (same reason). |
+| Canon, ARRI, Panasonic, Z CAM, phones (CAMM) and others | Not read | Other formats; the picture-based methods work as before. |
+
+A clip whose file has no readable gyro keeps the picture-based methods: the Method menu offers **Gyro (camera metadata)** only for
+footage with gyro data (or for a stabilizer that already uses it), and a file that has gyro data Wabcut does not read says why in
+the note under the header. The project's `analyzeStabilization` command refuses a Gyro analysis of such a file with the same
+reason.
+
+**The method.** The rotation is integrated from the angular velocity (quaternions, body rates) and put in one camera frame (x
+right, y down, z out of the lens). For every analysed frame the camera's orientation is read at the middle line's exposure
+(the frame's time + the sync offset + half the sensor's read-out). The path is smoothed in **rotation space** - not on the
+picture, so a camera that turns through a hundred degrees is as good as one that shakes - with the same Gaussian-weighted local
+linear fit and the same Smoothness as the picture-based path: Smoothness is keyframable (0 % leaves the shot exactly as shot),
+Result: No Motion locks the camera to the first frame, Crop Less <-> Smooth More scales the smoothing. The correction of
+each frame is the rotation between the real camera and the smoothed one as a homography on the picture, `K E^T K^-1`, with the
+lens's focal length in pixels in K. A **rolling-shutter** camera (the file gives its read-out time, or you do) has the skew
+of its scan taken out first from the angular velocity, the way Rolling Shutter Repair does from the picture's motion. The framing (Stabilize Only, Crop,
+Crop with Auto-scale, Synthesize Edges, Maximum Scale, Action-Safe Margin, Additional Scale) is the picture-based path's, on the same
+corner-pin keys (`corner.*`), so **preview and export draw the same keys** as for Perspective. A frame the gyro does not reach is left as shot.
+
+**Sync and field of view (Auto-sync).** The file does not say everything: the gyro's clock and the picture's can be a few
+milliseconds apart, the lens's field of view depends on the lens mode and any crop, and an unchecked camera's axes may be turned. With
+**Sync: Auto-sync with the picture** (the default) the analysis measures the picture's own motion on up to three stretches
+of about two seconds spread over the clip (Similarity tracking, cached like every analysis), compares it with the gyro
+integrated over each frame interval, and searches the offset (+-0.5 s, to a millisecond), the 24 turns of the axes and the
+focal length (the least squares scale between the two). The note under the header reports it: "Synced to the picture: gyro
++12 ms, lens 96 degrees (measured), 94 % match". It is applied when the gyro explains the picture well enough (a match of 50 %
+or more, higher for fewer frames); when it does not (the camera's own stabilization was on and moved the picture against the
+gyro, or the picture hardly moves) the camera's own timing and the file's or the camera's usual field of view are used and the note says
+so. **Offset** is added to the sync (a manual trim, or the whole offset with Sync off); **Field of View** and **Rolling Shutter
+Read-out** replace the automatic values when set. The lens is modelled as rectilinear: a very wide mode (GoPro Wide, SuperView,
+HyperView) is right near the centre and approximate toward the edges, so Linear or a narrower mode steadies best.
+
+**Use it well.** Turn the camera's own stabilization off (GoPro HyperSmooth, Sony Active SteadyShot, in-body or lens
+stabilization): it moves the picture against the gyro, which no metadata here undoes. Analyze (or Analyze All) as for
+the other methods; speed changes and time remapping work as in "Speed changes" above (the analysis is per source frame), and a
+changed Gyro setting makes the header read **Out of date**.
+
+**Commands.** `effect.analyzeStabilization` with the effect's Method 4 does it for the assistant and MCP inside the app (the effect's
+`gyroSync`, `gyroOffset`, `gyroFov`, `gyroReadout` settings; `data.gyro` reports the camera, the sync and the field of view); like
+the picture-based analysis it needs the app's media readers, and a host without them refuses it with a message. The camera note is the
+effect's data `gyro`. In the UI, **Effect Controls** puts one line under the stabilizer's header: what the file has ("This clip has
+gyro data (GoPro HERO8 Black, 202 readings per second)"), how the analysis synced it, or why the file's camera data is not used
+("No gyro for this clip: DJI records its gyro in a metadata track whose layout DJI has not published ...").
+
+**Not in this version, and the next steps:** a horizon lock from the accelerometer (it is read, not used yet); GoPro's published
+lens polynomial (ZFOV, POLY) for a true wide-lens model; Sony's in-body stabilization and lens tables; a per-line mesh for the rolling
+shutter (the skew here is the affine, first-order one); DJI, Insta360, RED and Blackmagic where their layouts or SDKs allow; MXF.
 
 ## Bars and Tone, Universal Counting Leader
 

@@ -7,8 +7,11 @@
 #include <wabcut/ai/ModelRegistry.h>
 #include <wabcut/ai/Provider.h>
 
+#include <chrono>
 #include <cstdint>
 #include <expected>
+#include <initializer_list>
+#include <utility>
 #include <filesystem>
 #include <optional>
 #include <span>
@@ -156,5 +159,61 @@ private:
 /// Provenance of a cloud transcription.
 Provenance cloudProvenance(const ProviderContext& context, const TranscribeRequest& request, std::string modelUsed,
                            std::string modelVersion);
+
+// --- r07: shared by the generation, speech and transcription adapters added in round 07 -------------------------
+
+/// Whether `host` (lower case) is one of `patterns`: an exact host, or "*.example.com" for any subdomain of
+/// example.com (never example.com itself, never a host that merely ends in "example.com").
+bool hostMatches(std::string_view host, std::initializer_list<std::string_view> patterns);
+
+/// What a generated file must be: the extension it gets from its first bytes, checked against the Content-Type when
+/// that names a type (generic binary types defer to the signature). nullopt when it is not the expected kind (an HTML
+/// error page, JSON, ...). Images: PNG, JPEG, WebP; video: ISO media (MP4/MOV); sound: MP3, WAV, FLAC, OGG, M4A.
+std::optional<std::string> generatedFileExtension(std::string contentType, std::string_view magic, GeneratedMediaKind kind);
+
+/// Downloads one generated output into `directory` (a new "generated-<n>.<ext>" file): the URL must be HTTPS on port
+/// 443, without userinfo, on one of `hosts`; redirects are followed on that host only; `headers` (credentials only
+/// when the host is the provider's own API) go with it; at most 512 MiB; the file must be of `kind`.
+std::expected<std::filesystem::path, AiError> downloadGenerated(IHttpTransport& transport, const std::string& url, HttpHeaders headers,
+                                                                const std::filesystem::path& directory,
+                                                                std::initializer_list<std::string_view> hosts, GeneratedMediaKind kind,
+                                                                std::stop_token stop);
+/// r07 (QA-04): the same download from a custom or self-hosted provider's own server: the URL must have the scheme,
+/// host and port of `baseUrl` (no userinfo); plain http only when that server is on this computer (loopback).
+/// Redirects stay on that origin.
+std::expected<std::filesystem::path, AiError> downloadFromProvider(IHttpTransport& transport, const std::string& url, HttpHeaders headers,
+                                                                   const std::filesystem::path& directory, std::string_view baseUrl,
+                                                                   GeneratedMediaKind kind, std::stop_token stop);
+/// Writes inline output bytes (base64 images, an audio answer) after the same signature check.
+std::expected<std::filesystem::path, AiError> writeGenerated(std::span<const std::uint8_t> bytes, std::string_view contentType,
+                                                             const std::filesystem::path& directory, GeneratedMediaKind kind);
+
+/// A PNG or JPEG conditioning image (1 byte to `maxBytes`) read from disk.
+std::expected<ImagePart, AiError> loadConditioningImage(const std::filesystem::path& path, std::size_t maxBytes = 10u * 1024 * 1024);
+
+/// A provider id that goes into a URL path: letters, digits, '-', '_' (and '/' '.' when `slash`), no "..", no "//".
+bool safePathId(std::string_view id, bool slash = false);
+
+/// A paid, non-idempotent request: never retried (a network ambiguity must not bill twice), long timeouts.
+HttpRequest paidSubmit(HttpRequest request, std::chrono::seconds timeout = std::chrono::seconds(180));
+
+/// GET `url` with the provider's headers; the parsed JSON object (ProviderError when it is not one).
+std::expected<Json, AiError> getJson(IHttpTransport& transport, const ProviderContext& context, std::string url, std::string_view what,
+                                     std::stop_token stop);
+/// Sends a request and parses the JSON object it answers with (errors: the transport's, httpError, ProviderError).
+std::expected<Json, AiError> sendForJson(IHttpTransport& transport, const HttpRequest& request, std::string_view what, std::stop_token stop);
+
+/// Unicode code points of UTF-8 text (what per-character prices count).
+std::int64_t codePointCount(std::string_view text);
+
+/// Common size for an aspect ratio at a long side of `longSide` pixels, both multiples of `multiple`:
+/// "16:9" at 1024 -> 1024x576. Unknown ratios are square.
+std::pair<int, int> sizeForAspect(std::string_view aspectRatio, int longSide, int multiple = 16);
+
+/// The media type of audio bytes from their signature ("audio/wav", "audio/mpeg", "audio/flac", "audio/ogg"); empty
+/// when they are not audio this editor imports.
+std::string sniffAudioType(std::span<const std::uint8_t> bytes);
+/// The duration of a WAV or MP3 file in milliseconds; nullopt when it cannot be measured.
+std::optional<std::int64_t> audioMilliseconds(std::span<const std::uint8_t> bytes);
 
 } // namespace wabcut::ai::net

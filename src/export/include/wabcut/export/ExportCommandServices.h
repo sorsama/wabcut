@@ -61,6 +61,8 @@ public:
     Json presets() const override;
     std::expected<Json, command::CommandError> describe(const ProjectState& state, SequenceId sequence,
                                                         const Output& output) const override;
+    std::expected<Json, command::CommandError> check(const ProjectState& state, SequenceId sequence,
+                                                      const Output& output) const override;
     std::vector<std::string> reserveJobs(std::size_t count) override;
     void queue(std::shared_ptr<const ProjectState> state, SequenceId sequence, std::vector<Output> outputs,
                std::vector<std::string> jobIds, bool hold) override;

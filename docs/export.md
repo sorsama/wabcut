@@ -78,14 +78,29 @@ the sequence's colour setup (an HDR one writes PQ or HLG on a 10-bit HEVC, AV1 o
 SDR version); PQ and HLG need an HDR or Wide Gamut colour setup. The HDR masters, their tags, the HDR10 mastering
 display and the measured MaxCLL / MaxFALL are described in docs/color.md "HDR export".
 
+**Dynamic metadata** (0.7, `VideoSettings::dynamicMetadata`, the override `dynamicMetadata`: none / hdr10plus; CLI
+`--set dynamicMetadata=hdr10plus`): the drawer's **HDR metadata** row (Dynamic metadata), under Dynamic range, for HDR or Wide Gamut
+sequences on HEVC.
+- **HDR10+** (SMPTE ST 2094-40) is written into every frame of a PQ HEVC video in an MP4, MOV or MKV file. The export
+  first renders the range once at half size and measures each frame (the brightest red, green and blue, the mean and
+  the brightness distribution of the picture; about a third more time, the queue row says "Analyzing HDR10+"), finds the
+  shots (the sequence's cuts where the brightness jumps; an overlay or a dissolve is not a cut), and writes shot by shot:
+  the shot's maximum, each frame's own mean and distribution, for a 400-nit reference display, without a tone mapping
+  curve. When it ends the row says "HDR10+ · 12 shots · peak 1,000 nits"; hover it for the shots. It needs 10-bit HEVC
+  (a hardware encoder here), switches smart rendering off, and the Pre-export Check warns when clips carry HDR10+ or
+  Dolby Vision metadata that the export does not keep ("HDR10+ metadata of 3 clips is not kept").
+- **Dolby Vision 8.1 and 8.4** are listed but unavailable: Dolby licenses the format and certifies the files, and this
+  build has no licensed writer (`DolbyVisionRegistry`, `include/wabcut/export/DynamicMetadata.h`). The row says so, and
+  an export that asks for it is refused with the same sentence; HDR10, HDR10+ and HLG exports are not affected.
+
 Containers mp4 / mov / mkv / wav (0.2: mp3, m4a, aiff, image); video H.264, HEVC, ProRes (proxy/lt/standard/hq; 0.2:
 4444, 4444 XQ), DNxHR (lb/sq/hq/hqx; 0.2: 444, and DNxHD lb/sq/hq/hqx), 0.2: PNG, TIFF, DPX, JPEG, Targa, OpenEXR,
 QuickTime Animation, CineForm;
 pixel formats yuv420p, yuv420p10, yuv422p, yuv422p10; rate control quality (CRF/CQ/ICQ/CQP) or bitrate (VBR);
 output size with Fit (pad) / Fill (crop) / Stretch; frame rate (default: the sequence's); audio AAC / PCM16 /
 PCM24 / AC-3 (FFmpeg's native encoder, up to 5.1, 32-48 kHz; in MP4, MOV and MKV), sample rate, channels (1-8, or 0
-= as the master: 5.1 for a 5.1 master, else stereo; A.9), bitrate; range whole sequence / In-Out / work area /
-custom. A 5.1 master exported to stereo is downmixed (ITU-R BS.775, docs/ai.md "Audio channels and 5.1"). The presets
+= as the master: 5.1 for a 5.1 master, 8 for a 7.1 master (0.7; AC-3 takes 5.1, MP3 stereo), else stereo; A.9), bitrate; range whole sequence / In-Out / work area /
+custom. A 5.1 or 7.1 master exported to fewer channels is downmixed (ITU-R BS.775, docs/ai.md "Audio channels and 5.1"; the file's channel layout is written and `ffprobe` reports `7.1`). The presets
 stay stereo. `validate()` names every impossible combination (e.g. PCM in MP4); `resolve()` gives the exact frame
 and sample counts.
 
@@ -93,7 +108,17 @@ and sample counts.
 the audio and a 4 % margin (container, rate-control overshoot) leave of the size over the exported duration, its peaks
 capped at that rate; an export that still ends over its size is encoded once more at the rate that fits
 (`ExportResult::attempts`, `::bytes`). A range too long for the size (under 150 kb/s of video) is refused with the
-length that fits. H.264, HEVC, AV1 and VP9.
+length that fits. H.264, HEVC, AV1 and VP9. The audio is budgeted at the channels the file really writes (with the
+channels "as the master", 6 for a 5.1 master). The first encode is not put in place until the second one has decided:
+cancel the second pass and no new file (and no sidecar) is written, an earlier file at the output stays; if the second
+pass fails, the first file is the result, with a warning that it is over the size.
+
+**Pixel aspect ratio** (`ResolvedExport::sampleAspect`): an HDV (1440x1080, 4:3 pixels), DV widescreen or anamorphic
+sequence exports with its pixel aspect ratio in the file (MP4 / MOV `pasp`, MKV display size, MXF aspect ratio), so a
+player shows the shape the Program Monitor shows. That holds for the sequence's own size and for any pure scale of it
+(a half-size proxy). An output of another shape (1920x1080 from a 1440x1080 / 4:3 canvas, a vertical Fill) is made of
+square pixels: the canvas is resampled to the shape it is seen in, and Fit / Fill work on that shape. Smart rendering
+is skipped for an anamorphic sequence (the cached frames are square). A square sequence is unchanged.
 
 **GIF** (`Container::Gif`, `VideoCodec::Gif`, `OutputPixelFormat::Pal8`): FFmpeg's gif encoder; the converter renders
 RGB and libavfilter makes 256 colours for each frame (palettegen `stats_mode=single`, paletteuse `new=1`, sierra2_4a
@@ -173,8 +198,11 @@ as the master: 2, or 6 for a 5.1 master). OP1a writes **mono tracks** (one per c
 "<name>_A1.mxf", "<name>_A2.mxf", … next to "<name>.mxf" (the video). The mix is rendered at its own channel count
 (stereo, or 5.1 for a 5.1 master into 6 or more tracks) and spread over the tracks: track n carries mix channel n, the
 tracks after the mix are silent (a stereo programme in 8 tracks: 1-2 the mix, 3-8 silence), and the details say so.
-The OP-Atom audio files are moved into place only after the picture file is, so a failed or cancelled export never
-leaves audio files without their picture.
+The OP-Atom picture file and its audio files are moved into place as one unit (every earlier file is moved aside first
+and put back if any move fails): a failed or cancelled export never leaves audio files without their picture, nor a new
+picture with the earlier export's audio when one of its files is open in another program (the export fails and says
+so). Re-exporting over an export that had more audio files removes the extra `_A<n>` files and says which in the
+export's warnings (files that are source media in the project are never touched).
 
 **OP-Atom and Media Composer: separate clips.** Media Composer makes one master clip of OP-Atom files that share one
 material package: the same material package UMID in every file, each file's material package listing every track of
@@ -237,7 +265,8 @@ MXF (its constant-size DNxHD index wants every frame from one encoder).
 
 Premiere's header Quick Export: the top bar's ⚡ button opens a popover with every preset (built-in and the user's;
 not the HDR masters), what it writes, and the file name and location (default: next to the project, named after the
-sequence); Export queues it like the Export workspace does (`ExportController::quickExport(presetId, output,
+sequence; the format's extension replaces a media extension you typed - `.mov` for `.mp4` - and is added to a name
+that only has dots in it, such as `Stream 2026.11.03 Highlights` or `cut v1.2`); Export queues it like the Export workspace does (`ExportController::quickExport(presetId, output,
 overrides)`; command `export.quick`). The preset list is a keyboard list (Up / Down pick, Enter exports). A sequence
 with In / Out marks or a work area adds a **Range** row (Entire sequence / In to Out / Work Area; the Export button
 names the range). Quick Export says when it starts (a toast with Cancel) and when it is done.
@@ -251,8 +280,15 @@ Per user, not per project (QSettings `export/*`, `ExportController` `lastPreset`
   pick. A user preset deleted since falls back to Match Source.
 - **Folder.** An export to a folder you chose (Browse… or a typed path) makes it the default for the next one: the
   default file name, both Browse… dialogs and Quick Export start there. When that folder is gone (an unplugged drive),
-  exports go next to the project again.
-- **Range.** The range picked last (Entire Source, In to Out, Work Area) when the sequence has it; with nothing picked
+  exports go next to the project again. Settings > General > **Export** > **Default export folder** changes that rule
+  (QSettings `export/folderMode`, `ExportController.defaultFolderMode`): **Last used** (the behaviour above, the
+  default), **Next to the project**, **Next to the media** (the folder of the sequence's first clip; the project's folder
+  for a sequence without media) or **A folder** you browse to (`export/defaultFolder`). The default file name and
+  Quick Export follow it; an export to another place through Browse… still goes there, and only **Last used** then
+  remembers it. A folder that is gone falls back to the project's folder.
+- **Range.** The range picked last (Entire Source, In to Out, Work Area) when the sequence has it (0.7: the Work Area range is
+  greyed out in the drawer until the sequence has a work area - Alt+[ and Alt+] set it at the playhead, Sequence > Clear
+  Work Area removes it); with nothing picked
   yet, a sequence with In / Out marks exports In to Out (`suggestedRange`). The Export button says so ("Export In to
   Out", "Export Work Area"). The range stays when you pick another preset: it belongs to the sequence.
 - **Reset to defaults** (the Save to card) forgets all of it: Match Source, next to the project, the whole sequence
@@ -284,7 +320,7 @@ Per user, not per project (QSettings `export/*`, `ExportController` `lastPreset`
   better). Override key `targetMB`.
 - **Offline media.** The export never uses proxies, so an offline or missing original file would stop it. The Export
   panel and Quick Export find them before you start (the media the range plays, nested and multicam clips included):
-  "1 offline file(s) in this export: A001.mov. Relink to export." with **Relink…** (the Relink dialog), and Export and
+  "1 offline file in this export: A001.mov. Relink to export." with **Relink…** (the Relink dialog), and Export and
   Send to Queue wait until they are relinked.
 - **Disk space.** The estimate is checked against the free space of the drive the file goes to (the chosen file, else
   the default one): when the file needs more than is free (with a 20 % margin) the panel and Quick Export say "Only
@@ -336,7 +372,9 @@ Premiere's Save Preset / Import Preset / Preset Manager (`wabcut/export/ExportPr
 `"<id>.json"` in the user's "Export Presets" folder (`QStandardPaths::AppConfigLocation`; wabcut-cli: the same folder,
 or `WABCUT_EXPORT_PRESETS`): `{"format": "wabcut-export-preset", "version": 1, "id": "user-…", "name", "description",
 "settings": {…}}`, the settings in `settingsToJson`'s format. Ids are "user-" and the name in lowercase letters, digits
-and dashes. Files are untrusted (they are shared): at most 1 MB, every value type-checked and bounded, unknown keys
+and dashes; names that differ only in non-ASCII text or punctuation ("YouTube 4K" and "youtube-4k", two Thai names that
+end in "4K") would share one, so the second gets its id with an 8-digit hash of its name appended (`PresetStore::idFor`):
+every name keeps a file of its own, and saving a name again replaces only that preset. Files are untrusted (they are shared): at most 1 MB, every value type-checked and bounded, unknown keys
 ignored (a newer preset still opens), then `validate()`; a folder's broken files are left out and reported, never
 fatal. The Export workspace shows them under **My presets** with **Manage…** (save the current settings under a
 name, Export Preset…, Delete, Import Preset…); commands `export.preset.save / import / export / delete`.
@@ -369,8 +407,14 @@ under it while it is applied, then Metadata and the render options (`effects` / 
 - **Video Limiter**: **Clip Level** (90..109 IRE) and **Compression Before Clipping** (0..20 %): R'G'B' scaled together
   (hue kept, so luma and chroma stay under the level too) with a soft knee. SDR only. Wabcut's renders never exceed
   100 IRE, so 100 IRE changes nothing; lower levels limit.
-- **Loudness Normalization**: **Loudness Standard** EBU R 128 (-23 LUFS, -1 dBTP), ATSC A/85 (-24 LKFS, -2 dBTP) or
-  custom (target -40..-5 LUFS, **Max True Peak Level** -12..0 dBTP), **Tolerance**, a log file. The mix is measured first
+- **Loudness Normalization**: **Loudness Standard** EBU R 128 (-23 LUFS, -1 dBTP), ATSC A/85 (-24 LKFS, -2 dBTP),
+  custom (target -40..-5 LUFS, **Max True Peak Level** -12..0 dBTP) or **Streaming** (-14 LUFS, -1 dBTP: the level
+  YouTube, Shorts and Twitch play at; the settings JSON name is `streaming`), **Tolerance**, a log file. The YouTube,
+  Shorts / TikTok / Reels and Twitch tiles of the Export workspace show a **Normalize to -14 LUFS** chip (while
+  Loudness Normalization is off): one click turns Loudness Normalization on with the Streaming standard, so a long
+  video and its Shorts go out at the same level. It is off by default and remembered once you turn it on (QSettings
+  `export/streamingLoudness`: the next YouTube, Shorts or Twitch tile starts with it on; click it again to turn it
+  off). The mix is measured first
   (ITU-R BS.1770-4 through libebur128: gated integrated loudness, 4x oversampled true peak), then rendered again
   through the gain (none within the tolerance) and the lookahead true-peak limiter of wabcut.audio.limiter, its delay
   compensated, so the export stays sample-exact. The log ("<output>.loudness.txt") says what was measured and done.
@@ -388,7 +432,8 @@ under it while it is applied, then Metadata and the render options (`effects` / 
 (`ExportMetadata`, `src/export/src/MetadataWriter.cpp`.)
 
 - **Chapters** from the sequence's chapter markers in the range (MP4, MOV, MKV, M4A): each runs to the next one (or
-  its own end), titled with the marker's name (else its comment).
+  its own end), titled with the marker's name (else its comment); a title is at most 1024 bytes, cut between characters
+  (Thai and CJK text stay valid; the soft subtitle track's cues are cut the same way at 60,000 bytes).
 - **Timecode**: the start timecode - **Set Start Timecode**, else the sequence's start timecode plus the range start -
   as a QuickTime timecode track (`tmcd`) in MOV and MP4, the time reference of a Broadcast WAV.
 - **XMP**: **Embed in Output File** (MP4 / MOV / M4A: Adobe's top-level XMP `uuid` box BE7ACFCB-97A9-42E8-9C71-999491E3AFAC,
@@ -403,7 +448,7 @@ under it while it is applied, then Metadata and the render options (`effects` / 
 Export settings > **Audio stems** > **By track role** (Premiere's multichannel stems, Resolve's Deliver stems; a DME or
 M&E delivery) also writes one audio-only file per **track role** next to the export: the audio tracks' roles from the
 Audio Track Mixer / Essential Sound (Dialogue, Music, Effects; tracks without a role are "Other"). A line under the row
-names the files the export will write, e.g. "Also writes 3 stem(s), 24-bit WAV, next to the export: Dialogue
+names the files the export will write, e.g. "Also writes 3 stems, 24-bit WAV, next to the export: Dialogue
 (Episode 12_DX.wav), Music (Episode 12_MX.wav), Other (Episode 12_OTHER.wav)."
 
 * **Which stems.** A role is written when at least one of its audio tracks is played by the export: enabled, not
@@ -435,7 +480,9 @@ CEA-608 captions, which are the Captions mode.) **Subtitle track in the file** p
 Captions panel's, its redacted words replaced as in sidecars) inside the video as a track players turn on and off: 3GPP
 Timed Text (`mov_text`) in MP4 and MOV, SubRip in MKV, times relative to the range, tagged with the caption track's
 language (ISO 639-2). A sequence without captions in the range exports without the track and says so in the result's
-warnings.
+warnings. Each cue is written as the video reaches its start, so its packet sits beside the picture it belongs to in the
+file (sequential players and progressive download show it in time; written at the end, the cues of a long export sat
+after all the video, in MKV in clusters at the tail with early timestamps).
 
 ## Smart rendering, Use Previews, Maximum Render Quality and Depth
 
@@ -450,12 +497,61 @@ warnings.
   sequence shows when the export's format is the previews' (ProRes LT or DNxHR LB at the sequence's size and rate).
   The plan reads only file indexes; the encoder then runs with slice threads (no frame delay), so copied and encoded
   packets interleave in order. `ExportResult::copiedFrames` counts them. Copied frames are bit-identical to their
-  source (tested). Long-GOP codecs (H.264 / HEVC / AV1) are never smart rendered.
+  source (tested).
+- **H.264 / HEVC passthrough (0.7)** (MP4 and MOV exports; Smart Render on; not with a size limit, burned-in or embedded
+  captions, effects on the export, alpha or HDR). Whole closed GOPs of an untouched source clip are copied packet by
+  packet, without decoding; everything else is encoded again, in segments, and the job says how much and why. A GOP is
+  copied when
+  - it starts at an IDR picture (H.264 type 5; HEVC IDR_W_RADL / IDR_N_LP) and the GOP before it ends before its first
+    picture is shown (closed: it needs nothing from before it; open GOPs and CRA-started GOPs of an HEVC stream are
+    one piece with the GOP before them, so an x265 stream with its default open GOP is copied whole or not at all);
+  - the clip shows its pictures one after the other at the export's own frame rate and size (no Motion, opacity, blend
+    mode, effect, transition, redaction or colour conversion; not retimed, reversed or frozen; one layer; an SDR display-
+    referred sequence; progressive, square pixels, no rotation), and the whole GOP lies inside what the clip shows - the
+    pictures between a cut and the next IDR (and from the last IDR before a clip's end) are encoded again;
+  - **the source's parameter sets (SPS, PPS, and for HEVC VPS) are exactly the ones the export's encoder writes into the
+    file**, so the copied pictures decode under the file's own headers; a source from another encoder, or from the same
+    one with other settings (the profile, the level, the reference frames or the colour tags change the SPS; another
+    keyframe interval alone did not in the tests), is encoded again and the job says "the source was encoded with other settings" with the first
+    difference found (profile, level, or "the headers differ"). The headers must match byte for byte, so in practice the
+    sources that copy are Wabcut's own earlier exports with the same preset; footage from a camera, a phone or OBS
+    almost never does;
+  - its bitrate is not above the export's when the export has a bitrate target (above 1.3 times it, the GOP is encoded
+    again); and the GOP is at most 1800 pictures with a picture reordering depth of at most 16.
+  Each stretch of re-encoded frames is made by an encoder of its own (opened with the same settings, so it writes the
+  same headers; it starts with an IDR and is drained at the end of the stretch), and every packet of the file gets
+  `dts = first frame + decode index - delay` (the delay is the larger of the copied GOPs' reordering and the encoder's,
+  at least 5 frames), so decode time counts up across the joins and every GOP of the result is closed. The audio is not
+  involved. **The job's details** read "H.264 passthrough: 82 % copied, 18 % re-encoded", and hovering them lists the
+  reasons with the timecode each starts at (`ExportResult::smartRenderNotes`: "Clip starts inside a GOP", "Effects on the
+  clip", "A transition", "Retimed, reversed or frozen clip", ...). The export settings' Smart Render switch is offered for
+  these formats too. The plan reads the packets of the clips it may copy (a few seconds of video per GOP, no decoding).
+  An MKV export is encoded as usual: Matroska counts time in milliseconds, which cannot hold the frame times of 24, 30
+  or 60 fps to the tick, and a copy keeps its source's frame times exactly. An MKV *source* copies (into an MP4 or MOV
+  export) only at 25 and 50 fps for the same reason; at other rates the job says "The source's frame times are not
+  whole ticks".
 - **Use Maximum Render Quality**: an output smaller than the sequence is rendered at the sequence size and scaled
   down with a Lanczos filter (swscale), instead of composited at the output size.
 - **Render at Maximum Depth**: formats deeper than 8 bits (10-bit Y'CbCr, 16-bit / 10-bit / 12-bit RGB, half float)
   are rendered and read back at 10 bits per channel also for display-referred projects (colour-managed projects
   always are).
+
+## Newer codecs (0.7)
+
+What Wabcut does with APV, 4:2:2 HEVC, 4:2:2 AV1 and MV-HEVC is asked of the FFmpeg it is built with
+(`wabcut/media/CodecSupport.h`), shown in **Help > About Wabcut** ("Newer camera codecs") and, for a clip, as the
+**Codec support** line of Get Properties:
+
+| Codec | Plays | Exports |
+|---|---|---|
+| APV (Advanced Professional Video, RFC 9924) | yes (FFmpeg's native `apv` decoder) | **no: decode only** (the encoder is the external OpenAPV library, not in this build) |
+| HEVC 4:2:2 (8, 10 and 12-bit) | yes | 8-bit 4:2:2 through libx265; **10-bit 4:2:2 is decode-only** (the bundled x265 is an 8-bit build, and the hardware encoders that take 4:2:2 10-bit need a GPU generation this version does not rely on) |
+| AV1 4:2:2 | yes (dav1d) | **no: decode only** (SVT-AV1 and the hardware AV1 encoders write 4:2:0) |
+| MV-HEVC (spatial video) | the base view, as ordinary HEVC; the second eye is not used | **no: decode only** |
+
+Decoded frames of 4:2:2 or 4:4:4 content, and of APV's 10 and 12-bit and gray formats, are converted to the editor's
+10-bit layouts (`media::conversionTarget`); the hardware decoders that cannot take a format hand over to the software one.
+`wabcut-cli --version` lists the same.
 
 ## The queue (Media Encoder)
 
@@ -466,6 +562,52 @@ stops between two frames, `ExportPhase::Paused`, through its `PauseGate`), `resu
 **Export Queue** dialog (the queue header's Queue…) lists every job with its progress and per-job start / pause /
 resume / cancel, Start Queue, Stop All, Clear Finished; **several destinations** from one export: `sendToQueue(sequence,
 [presets…], overrides, hold)` / `export.queue` with several presets (each its own default name, all checked first).
+
+### Export history (0.7)
+
+Every export that finishes is added to a list of the last 100 (QSettings `export/history`, newest first; failed and
+cancelled ones are not): the file, the preset, the sequence and the project it was made from, when, and the request it was
+queued with (sequence, preset, overrides). The Export Queue dialog's **History** tab (Export panel > Queue…) shows them with
+the file name greyed ("file not found") when it is gone, and three buttons: **Show** (the file in the file manager, or its
+folder when the file is gone), **Open** (the system's player) and **Export Again**, which queues the same request on the
+project as it is now - into the same file, or "name (2).ext" when it exists - and goes back to the queue tab. Export Again
+says so when the export was made from another project (open it first), when its sequence is gone, or when it has no preset
+to repeat (a built request, such as a command's); the entry can be removed with its **×**, or the list cleared (**Clear
+History**). `ExportController.history`, `refreshHistory()`, `exportAgain(index)`, `revealHistory(index)`,
+`openHistory(index)`, `removeHistory(index)`, `clearHistory()` (`src/app/src/bridge/ExportHistory.cpp`). The history is an
+app feature (the settings are the user's): the command line and MCP queue have none.
+
+### Pre-export check (0.7)
+
+One list of what is likely to go wrong, worked out from the project and the export settings alone (nothing is rendered or
+decoded): `exporter::preExportCheck` (`wabcut/export/PreExportCheck.h`). Open it with the Export panel's **Check before
+export…**; the **Export** button runs it first while **"Check before every export"** is on (the default; QSettings
+`export/checkBefore`, a switch in the dialog) and shows the list - with **Export anyway** - only when it finds a problem or
+a warning (notes alone start the export). Rows, most serious first, then in timeline order; each has **Go to** (the playhead
+goes to its timecode) and a fix where Wabcut has one:
+
+| Row | Severity | Fix |
+|---|---|---|
+| Original media offline or missing (the export would stop on it) | problem | Relink… |
+| The export settings do not resolve (an In to Out range without marks, ...) | problem | |
+| No picture for N seconds (a gap inside the exported range: black frames) | warning | Close gap |
+| A flash frame (a video clip of one or two frames) | warning | |
+| Clips at another frame rate than the sequence (a note), or a variable frame rate file (a warning) | note / warning | |
+| A Warp Stabilizer / Rolling Shutter Repair that was never analyzed (it exports unstabilized) | warning | |
+| Effects that render slowly (Warp Stabilizer, Median, Echo, Camera Blur, Fractal Noise, Turbulent Displace: a fixed list) | note | |
+| The export's shape does not suit the sequence (black bars, a crop, a stretch), or it is larger than the sequence | warning / note | Use the sequence size |
+| Captions are on for the export but the sequence has none in range | warning | |
+| The sequence has captions the file will not show | note | Burn captions in |
+| The loudness is more than 2 LU from the destination's (YouTube, Shorts / TikTok / Reels and Twitch tiles: -14 LUFS), or the true peak is at 0 dBTP or above | warning | Normalize loudness |
+
+**AI effects (0.7).** A clip with AI Restore, AI Denoise, AI Refocus or AI Frame Interpolation whose pictures are not all processed gets a notice in the Export panel (above the footer): the export processes what is missing first - the same pictures as the preview, slower, with the estimate in the notice - and **Process now** does it in the background beforehand. When a model is not downloaded the notice says which (download it from the effect in Effect Controls, or turn the effect off): the export stops with that reason rather than quietly writing the unprocessed picture. See [ai.md](ai.md#ai-video-effects-restore-and-denoise-07).
+
+Loudness needs the sound rendered once, so the dialog's **Measure loudness** does it on request (off the GUI thread, with
+Cancel; `exporter::measureExportLoudness` renders the export's own mix without a sound card). The rows come from that
+measurement until the project is edited. At most 12 rows of one kind are listed; the last says "...and N more". Not
+checked: title and caption text past the title-safe area, and captions against a platform's interface zones (they need the
+renderer's text layout). `ExportController.preExportCheck(sequenceId, presetId, overrides, platform)`, `goToCheckRow`,
+`measureLoudness`, `cancelLoudnessMeasure`, `checkBeforeExport`.
 
 ### The queue is kept across restarts (0.6)
 
@@ -483,7 +625,7 @@ that were never saved; exports queued from one version share one copy). On the n
   keeps exporting the project it was queued with, not the project open now. If its file was completed before Wabcut
   closed, it comes back done - never when the file there is still the one it was replacing, or when its temporary file
   (`<name>.wabcut-partial-…`) is still next to it.
-- A toast says what came back ("3 export(s) from last time are waiting"), with **Start Queue** and **Clear** (Clear
+- A toast says what came back ("3 exports from last time are waiting"), with **Start Queue** and **Clear** (Clear
   cancels them).
 
 A finished, cancelled or removed export leaves the folder, and its project copy goes with the last export that uses
@@ -513,7 +655,7 @@ queued. API: `sequenceExports(keys, options)`, `queueSequences(keys, { preset | 
 For highlight clips, client selects or Discord uploads: **Export each marker range…** in the Markers panel's export menu,
 or **Each marker…** / **Each selected clip…** under Range in the Export panel's settings. Every marker with a duration
 (optionally of one colour), or every selected clip (a linked video and audio clip counts once), becomes one export,
-named "<sequence> - <marker or clip name>.<ext>" and numbered when taken. The dialog says "12 file(s) · ≈ 240 MB · 3:20"
+named "<sequence> - <marker or clip name>.<ext>" and numbered when taken. The dialog says "12 files · ≈ 240 MB · 3:20"
 before anything is queued, warns when the drive is short, and an empty range refuses the whole batch. API:
 `queueRanges(sequence, preset, [{ in, out, name }], overrides, hold)`, `markerRanges(sequence, colorIndex)`,
 `selectedClipRanges()`, `describeRanges(...)`; command `export.queue` with `ranges` (one preset) and `folder`.
@@ -527,10 +669,43 @@ media's own timecode, at the clip's speed), the duration, seconds and speed; the
 seconds on screen, seconds of the source shown, overlapping uses counted once). Options: the whole sequence or In to
 Out; **Report through nested sequences and multicam clips** (on: nested clips are listed in the top sequence's
 timecode, a multicam clip by its active angle; off: a nested clip is one row); CSV (UTF-8 with a byte order mark, so
-spreadsheets read accents and non-Latin names) or JSON. A linked video and audio clip is one use; titles, mattes and
+spreadsheets read accents and non-Latin names; a text cell that starts with `=`, `+`, `-` or `@` gets a leading `'` so a
+spreadsheet shows a file or tape name made like a formula as text and does not run it; the Markers panel's CSV and the
+transcript's CSV do the same for marker names and comments and for speaker names and words) or JSON. A linked video and audio clip is one use; titles, mattes and
 graphics are not listed; a time-remapped clip is reported as its whole range with the note "remapped". Command:
-`sequence.mediaUsage { sequence, range, format, flatten }` (read only; it returns the text and the report).
+`sequence.mediaUsage { sequence, range, format, flatten, asOf, soonDays }` (read only; it returns the text and the report).
+(0.7) Every use and every source also carries its rights and clearance record (below): **Clearance**, **Source**,
+**Licence**, **Territory**, **Expires**, **Cost** (with its currency), **Credit Line** and **Rights Flags** follow the old
+columns (blank for a source with no record). The flags say what needs attention on the day the report is judged (`asOf`,
+today unless named; the delivery date is usual): material that is pending or whose status was never set, a licence that
+has expired, or one that expires within `soonDays` (30). The command warns when any source needs attention.
 
+### Rights and clearance log (0.7)
+
+Documentaries need a clearance report for every third-party clip and track. Every media item can carry a **rights record**
+(saved in the project only when set, so older builds open it): `status` (cleared, pending, fairUse, notRequired, or not
+set), `source`, `licence`, `reference` (licence, asset or invoice number), `territory`, `expiry` (`YYYY-MM-DD`, the last
+day it may be shown), `cost` and `currency` (three capital letters), `creditLine` and `notes`. A subclip uses its master's
+record unless it has its own. **File > Export > Rights and Clearance Log…** (or right-click a clip > **Rights and
+Clearance…**) lists, for the open sequence or the whole project, one row per source: its record, how many times and for how
+many seconds it is used, where it first appears, and the flags (**Not cleared yet**, **Clearance status not set**,
+**Licence expired on ...**, **Licence expires in N days**). A source with no record is the editor's own and is not
+flagged. The summary counts the sources per status, those without a record and those that need attention, and adds up the
+cost per currency (a master and its subclips share one record, counted once). Rows are edited together (only the fields
+changed are written; one undo step) and **Export log…** saves them as CSV (UTF-8 with a byte order mark; text cells that
+start with `=`, `+`, `-` or `@` get a leading `'` like the other CSVs) or JSON.
+
+**Make credits roll** (`sequence.creditsRoll`) builds the end credits from the credit lines: one rolling text graphic
+(Essential Graphics **Roll**, centred, a heading and one line per distinct credit - lines that differ only in case or
+spacing are one credit) at the end of the sequence's content on the first free video track, about 1.6 s a line (at
+least 8 s), in the order the sources first appear or alphabetically. Sources with a record but no credit line (and not
+marked not required) are listed so none is forgotten. It is an ordinary graphic clip afterwards.
+
+Commands: `media.setRights { media[], status, source, licence, reference, territory, expiry, cost, currency, creditLine,
+notes }` (only the fields given change; `""` clears one; `cost` is an amount such as `1250` or `"1,250.00"`),
+`project.rightsLog { scope: sequence | project, range, format: csv | json, asOf, soonDays, flaggedOnly, includeUnrecorded }`
+(read only; `text` is the file to write, `report` the same as data) and `sequence.creditsRoll { at, duration, track,
+placement, heading, name, order: appearance | alphabetical, range, skipNotRequired }`.
 ## Watch Folders
 
 Media Encoder's Watch Folders (`wabcut/export/WatchFolders.h`): media files dropped into a watched folder (by
@@ -552,7 +727,8 @@ Hardware encoders are unaffected (they hardly use the CPU).
 
 ## Commands
 
-`export.presets`, `export.describe`, `export.quick` (Quick Export), `export.queue` (Send to Media Encoder: several
+`export.presets`, `export.describe`, `export.check` (0.7, the pre-export check: the rows of the Check before export
+list, as data), `export.quick` (Quick Export), `export.queue` (Send to Media Encoder: several
 presets and destinations, `hold`), `export.queue.list / start / pause / resume / cancel / remove`, `export.preset.save /
 import / export / delete`, `export.watchFolder.add / list / remove` (docs/commands.md). They never change the project:
 exports are queued after the request succeeded (a dry run reports what would be written), on the host's queue - the
@@ -768,8 +944,10 @@ Embedded captions rows (screenshots `export-mxf-{dark,light}.png`, `export-mxf-c
 - 0.2: MP3 uses Windows' Media Foundation encoder (other platforms need FFmpeg's LAME feature); an MP3 export runs on a
   thread of its own (Media Foundation refuses a GUI thread's single-threaded COM apartment). DNxHD is 1920×1080 only.
   The export overlays are export-only (as in Premiere). Smart rendering covers intra-only ProRes and DNx exports of
-  untouched single clips and preview segments, not H.264 / HEVC passthrough. No Time Tuner. Watch folders
-  poll (no file-system notifications) and are not recursive.
+  untouched single clips and preview segments, and (0.7) the whole closed GOPs of H.264 / HEVC sources whose headers are
+  the export's; it does not copy AV1 or VP9, a GOP cut by a clip's end, a source from another encoder (screen recorders'
+  NVENC / x264 settings are rarely the export's), or a sequence of non-square pixels (copied frames are square). No Time
+  Tuner. Watch folders poll (no file-system notifications) and are not recursive.
 - Retimed audio (speed ≠ 1) exports as silence, like playback today; HDR export needs an HDR or
   Wide Gamut colour setup (docs/color.md); HEVC Main 10 needs a hardware encoder (vcpkg's x265 is 8-bit).
 - AMF, QSV, VideoToolbox and VA-API option sets are written but only NVENC and the software encoders are

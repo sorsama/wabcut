@@ -52,6 +52,14 @@ struct GestureSpec {
     edit::TrackShift tracks;
     /// Move only: audio tracks to add below the last one first (dropping below the last track creates one).
     int newAudioTracks = 0;
+    /// Move only, card 095 (the Track Select Forward tool): the sequence markers that start at or after the earliest
+    /// clip moved shift by the applied delta too, as one edit with the move, when the sequence's Ripple Sequence Markers
+    /// option is on (Markers menu). A plain overwrite move only: a copy leaves the originals' markers alone, and an
+    /// Insert / Rearrange move already makes room for them (SequenceEditor::captionsInsert).
+    bool moveMarkers = false;
+    /// Move only, with moveMarkers, 0.7 (the Track Select Backward tool): the markers at or before the end of the last
+    /// clip moved follow instead (the ones at or after the first clip's start are the forward tool's).
+    bool markersBefore = false;
     /// 0.2, Trim or Ripple Trim of a clip group's outer edge (Premiere's groups): the other members whose same edge is
     /// the group's outer edge; every one is trimmed by the same delta (the smallest any of them can take), a ripple
     /// shifting what follows on their tracks and the sync-locked ones (edit::rippleTrimEdges).

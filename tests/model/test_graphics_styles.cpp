@@ -164,3 +164,166 @@ TEST_CASE("Caption track styles follow their preset", "[model][captions][trackSt
     s = ok(edit::setCaptionTrackStyle(s, tl.seq, thai, "")).state;
     CHECK(track(thai).trackStyle.empty());
 }
+
+// ---- Style part of a text, reorder the styles (0.7, card 81) -------------------------------------------------------------
+
+namespace {
+
+std::string joined(const std::vector<TextRun>& runs) {
+    std::string out;
+    for (const TextRun& r : runs)
+        out += r.text;
+    return out;
+}
+
+TextStyle sized(double size) {
+    TextStyle s;
+    s.fontSize = size;
+    return s;
+}
+
+} // namespace
+
+TEST_CASE("Retexting runs keeps the styles of what did not change (card 81)", "[model][graphics][textStyles][runs]") {
+    const std::vector<TextRun> runs{TextRun{"Hello ", sized(40)}, TextRun{"big", sized(90)}, TextRun{" world", sized(40)}};
+    // Typing inside the styled word continues its style.
+    auto r = edit::retextRuns(runs, "Hello bigger world");
+    REQUIRE(r.size() == 3);
+    CHECK(r[1].text == "bigger");
+    CHECK(r[1].style.fontSize == 90.0);
+    CHECK(r[0].style.fontSize == 40.0);
+    CHECK(r[2].style.fontSize == 40.0);
+    // Deleting the styled word removes its run; the neighbours (one style) join.
+    r = edit::retextRuns(runs, "Hello  world");
+    REQUIRE(r.size() == 1);
+    CHECK(r[0].text == "Hello  world");
+    CHECK(r[0].style.fontSize == 40.0);
+    // Typing before everything continues the first run; after everything the last.
+    r = edit::retextRuns(runs, "Oh Hello big world");
+    CHECK(joined(r) == "Oh Hello big world");
+    REQUIRE(r.size() == 3);
+    CHECK(r.front().style.fontSize == 40.0);
+    CHECK(r[1].text == "big");
+    CHECK(r[1].style.fontSize == 90.0);
+    r = edit::retextRuns(runs, "Hello big world!");
+    REQUIRE(r.size() == 3);
+    CHECK(r[2].text == " world!");
+    CHECK(r.back().style.fontSize == 40.0);
+    // An unchanged text is unchanged; a replaced middle takes the style of the run before it.
+    CHECK(edit::retextRuns(runs, "Hello big world") == runs);
+    r = edit::retextRuns(runs, "Hello large world");
+    CHECK(joined(r) == "Hello large world");
+    bool largeIsBig = false;
+    for (const TextRun& run : r)
+        largeIsBig = largeIsBig || (run.text.find("large") != std::string::npos && run.style.fontSize == 40.0);
+    CHECK(largeIsBig); // the change starts where the 40 run ends: it continues that run
+    // Everything replaced; empty text; one run (the plain case); no runs (a fallback style).
+    r = edit::retextRuns(runs, "Completely new");
+    CHECK(joined(r) == "Completely new");
+    CHECK(joined(edit::retextRuns(runs, "")) == "");
+    CHECK(edit::retextRuns(runs, "").size() == 1);
+    r = edit::retextRuns({TextRun{"Plain", sized(50)}}, "Plain text");
+    REQUIRE(r.size() == 1);
+    CHECK(r[0].style.fontSize == 50.0);
+    r = edit::retextRuns({}, "From nothing", sized(33));
+    REQUIRE(r.size() == 1);
+    CHECK(r[0].style.fontSize == 33.0);
+    // Multi-byte text is cut on character boundaries.
+    const std::vector<TextRun> thai{TextRun{"\xE0\xB8\xAA\xE0\xB8\xA7\xE0\xB8\xB1\xE0\xB8\xAA", sized(40)}, TextRun{"A", sized(80)}};
+    r = edit::retextRuns(thai, "\xE0\xB8\xAA\xE0\xB8\xA7\xE0\xB8\xB1\xE0\xB8\xAA" "AB");
+    CHECK(joined(r) == "\xE0\xB8\xAA\xE0\xB8\xA7\xE0\xB8\xB1\xE0\xB8\xAA" "AB");
+}
+
+TEST_CASE("Text styles can style part of a text layer (card 81)", "[model][graphics][textStyles][runs]") {
+    Timeline tl(R"(
+        V1 tgt |..........|
+    )");
+    Graphic g;
+    g.layers = {textLayer(1, "The quick brown fox", 40.0)};
+    g.layers[0].text.align = TextAlign::Center;
+    auto a = ok(edit::addGraphic(tl.state, tl.seq, tl.track("V1"), Ticks{}, f(5), g));
+    const ClipId clip = a.placed.front();
+    ProjectState s = a.state;
+    ProjectTextStyle highlight;
+    highlight.name = "Highlight";
+    highlight.style.fontSize = 90.0;
+    highlight.style.fill.rgba = {1.0, 0.8, 0.0, 1.0};
+    highlight.style.italic = true;
+    highlight.align = TextAlign::Right; // layer-level parts of a style are not applied to a range
+    s = ok(edit::saveTextStyle(s, highlight)).state;
+
+    // "quick" is characters 4..9.
+    const auto styled = ok(edit::applyTextStyleToRange(s, tl.seq, clip, 1, 4, 9, "highlight"));
+    const GraphicLayer* layer = graphicOf(styled.state, tl.seq, clip).findLayer(1);
+    REQUIRE(layer->text.runs.size() == 3);
+    CHECK(layer->text.runs[0].text == "The ");
+    CHECK(layer->text.runs[1].text == "quick");
+    CHECK(layer->text.runs[1].style.fontSize == 90.0);
+    CHECK(layer->text.runs[1].style.italic);
+    CHECK(layer->text.runs[1].style.fill.rgba[1] == 0.8);
+    CHECK(layer->text.runs[2].text == " brown fox");
+    CHECK(layer->text.runs[2].style.fontSize == 40.0);
+    CHECK(layer->text.align == TextAlign::Center); // the layer's own alignment stays
+    CHECK(layer->textStyle.empty());               // and it follows nothing
+    requireValid(styled.state);
+    CHECK(layer->text.text() == "The quick brown fox");
+
+    // A second range next to the first joins its run; styling a range already in the style is refused.
+    const auto more = ok(edit::applyTextStyleToRange(styled.state, tl.seq, clip, 1, 9, 15, "Highlight"));
+    const GraphicLayer* joinedLayer = graphicOf(more.state, tl.seq, clip).findLayer(1);
+    REQUIRE(joinedLayer->text.runs.size() == 3);
+    CHECK(joinedLayer->text.runs[1].text == "quick brown");
+    CHECK_FALSE(edit::applyTextStyleToRange(more.state, tl.seq, clip, 1, 4, 9, "Highlight"));
+    // Refusals: no such style, layer or range; a range past the text; not a text layer.
+    CHECK_FALSE(edit::applyTextStyleToRange(s, tl.seq, clip, 1, 4, 9, "Missing"));
+    CHECK_FALSE(edit::applyTextStyleToRange(s, tl.seq, clip, 7, 4, 9, "Highlight"));
+    CHECK_FALSE(edit::applyTextStyleToRange(s, tl.seq, clip, 1, 9, 9, "Highlight"));
+    CHECK_FALSE(edit::applyTextStyleToRange(s, tl.seq, clip, 1, 9, 4, "Highlight"));
+    CHECK_FALSE(edit::applyTextStyleToRange(s, tl.seq, clip, 1, 4, 200, "Highlight"));
+
+    // Editing the text afterwards keeps the styled word styled (what the on-monitor editor now does on commit).
+    GraphicLayer edited = *layer;
+    edited.text.runs = edit::retextRuns(edited.text.runs, "The quick brown fox jumps");
+    CHECK(edited.text.runs[1].text == "quick");
+    CHECK(edited.text.runs[1].style.fontSize == 90.0);
+    CHECK(edited.text.text() == "The quick brown fox jumps");
+
+    // Saved with the project and read back.
+    const auto json = io::toJson(styled.state);
+    REQUIRE(json);
+    const auto loaded = io::fromJson(*json);
+    REQUIRE(loaded);
+    CHECK(graphicOf(*loaded, tl.seq, clip).findLayer(1)->text.runs.size() == 3);
+}
+
+TEST_CASE("Text styles can be reordered (card 81)", "[model][graphics][textStyles]") {
+    Timeline tl(R"(
+        V1 tgt |..........|
+    )");
+    ProjectState s = tl.state;
+    for (const char* name : {"First", "Second", "Third", "Fourth"}) {
+        ProjectTextStyle style;
+        style.name = name;
+        s = ok(edit::saveTextStyle(s, style)).state;
+    }
+    const auto order = [](const ProjectState& state) {
+        std::string out;
+        for (const ProjectTextStyle& st : state.textStyles)
+            out += st.name + ",";
+        return out;
+    };
+    CHECK(order(s) == "First,Second,Third,Fourth,");
+    const auto moved = ok(edit::moveTextStyle(s, "Fourth", 1));
+    CHECK(order(moved.state) == "First,Fourth,Second,Third,");
+    CHECK(moved.changes.textStylesChanged);
+    CHECK(order(ok(edit::moveTextStyle(s, "first", 99)).state) == "Second,Third,Fourth,First,"); // past the end = last, names are case-blind
+    CHECK(order(ok(edit::moveTextStyle(s, "Third", 2)).state) == order(s)); // already there
+    CHECK_FALSE(edit::moveTextStyle(s, "Missing", 0));
+    requireValid(moved.state);
+    // The order is saved with the project.
+    const auto json = io::toJson(moved.state);
+    REQUIRE(json);
+    const auto loaded = io::fromJson(*json);
+    REQUIRE(loaded);
+    CHECK(order(*loaded) == "First,Fourth,Second,Third,");
+}

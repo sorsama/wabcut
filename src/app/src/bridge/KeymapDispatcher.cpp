@@ -37,6 +37,19 @@ namespace {
 
 Q_STATIC_LOGGING_CATEGORY(lcKeymap, "wabcut.keymap")
 
+/// The ids of the run-time commands whose keys are kept even when their source is gone: an extension's "ext:", and 0.7's
+/// "fx:" (an effect) and "preset:" (a preset of the Effects panel).
+bool isRunTimeCommandId(const QString& id) {
+    return id.startsWith(QLatin1String("ext:")) || id.startsWith(QLatin1String("fx:")) || id.startsWith(QLatin1String("preset:"));
+}
+
+/// The shortcut editor's group of a run-time command that has no source any more.
+QString groupOfRunTimeCommand(const QString& id) {
+    return id.startsWith(QLatin1String("fx:")) ? QStringLiteral("Apply Effect")
+         : id.startsWith(QLatin1String("preset:")) ? QStringLiteral("Apply Preset")
+                                                    : QStringLiteral("Extensions");
+}
+
 // ---- The Qt adapter -------------------------------------------------------------------------------------
 // The keymap module is Qt-free but uses Qt's numeric key and modifier values, so a QKeyEvent converts to a
 // KeyChord without a lookup table. These checks keep the two in lockstep.
@@ -312,7 +325,7 @@ void KeymapDispatcher::setOverridesPath(const QString& path) {
 
 void KeymapDispatcher::reload() {
     if (m_dispatcher) {
-        deliver(m_dispatcher->focusLost()); // the dispatcher is about to be replaced: end any slow play
+        endHolds(); // the dispatcher is about to be replaced: end any slow play and any held H / Z
     }
     QFile file(m_overridesPath);
     QByteArray data;
@@ -327,7 +340,7 @@ void KeymapDispatcher::reload() {
     QSet<QString> bound;
     const QJsonObject saved = QJsonDocument::fromJson(data).object().value(QStringLiteral("overrides")).toObject();
     for (auto it = saved.begin(); it != saved.end(); ++it) {
-        if (it.key().startsWith(QLatin1String("ext:"))) {
+        if (isRunTimeCommandId(it.key())) {
             bound.insert(it.key());
         }
     }
@@ -409,8 +422,8 @@ std::unique_ptr<KeymapDispatcher::Registry> KeymapDispatcher::buildRegistry(cons
     for (const QString& id : leftovers) {
         if (!ids.contains(id) && !builtin.contains(id.toStdString())) {
             ids.insert(id);
-            //: A keyboard shortcut's command whose extension is off or not installed any more
-            extra.append(ExtraCommand{id, tr("%1 (unavailable)").arg(id)});
+            //: A keyboard shortcut's command whose extension is off, not installed any more or whose effect or preset is gone
+            extra.append(ExtraCommand{id, tr("%1 (unavailable)").arg(id), groupOfRunTimeCommand(id)});
         }
     }
     if (extra.isEmpty()) {
@@ -421,22 +434,35 @@ std::unique_ptr<KeymapDispatcher::Registry> KeymapDispatcher::buildRegistry(cons
     for (const ExtraCommand& command : extra) {
         const std::string& id = out->strings.emplace_back(command.id.toStdString());
         const std::string& name = out->strings.emplace_back(command.title.toStdString());
-        out->commands.push_back(km::CommandInfo{id, km::Scope::Application, "Extensions", name, "", "", "", false});
+        const std::string& group = out->strings.emplace_back(command.group.toStdString());
+        out->commands.push_back(km::CommandInfo{id, km::Scope::Application, group, name, "", "", "", false});
     }
     out->registry.emplace(out->commands);
     return out;
 }
 
 void KeymapDispatcher::setExtraCommands(const QList<ExtraCommand>& commands) {
-    if (commands == m_extra) {
+    setExtraCommandsFor(QStringLiteral("extensions"), commands);
+}
+
+void KeymapDispatcher::setExtraCommandsFor(const QString& source, const QList<ExtraCommand>& commands) {
+    if (m_extraSources.value(source) == commands) {
         return;
     }
-    m_extra = commands;
+    m_extraSources.insert(source, commands);
+    QList<ExtraCommand> merged;
+    for (auto it = m_extraSources.begin(); it != m_extraSources.end(); ++it) { // QMap: in source-name order
+        merged += it.value();
+    }
+    if (merged == m_extra) {
+        return;
+    }
+    m_extra = merged;
     QSet<QString> bound;
     const std::vector<km::CommandOverride> overrides = m_keymap->overrides();
     for (const km::CommandOverride& o : overrides) {
         const QString id = toQString(o.command);
-        if (id.startsWith(QLatin1String("ext:"))) {
+        if (isRunTimeCommandId(id)) {
             bound.insert(id);
         }
     }
@@ -451,7 +477,7 @@ void KeymapDispatcher::setExtraCommands(const QList<ExtraCommand>& commands) {
         return;
     }
     // A new dispatcher: the old one remembers held keys by their (old) registry entries.
-    deliver(m_dispatcher->focusLost());
+    endHolds();
     *m_keymap = std::move(*next);
     m_dispatcher = std::make_unique<km::KeyDispatcher>(*m_keymap);
     m_consumedKeys.clear();
@@ -616,10 +642,11 @@ bool KeymapDispatcher::handleKeyPress(QKeyEvent* event, QQuickWindow* window) {
         return false;
     }
     // Tab and Shift+Tab always move keyboard focus (M5j, accessibility: every panel can be left with the keyboard).
-    // Premiere binds them in the Project panel to step between a rename's column fields, which Wabcut's Library does
-    // not have; Ctrl+Tab and other chords with Tab still resolve.
+    // Premiere binds them in the Project panel to step between a rename's column fields; Wabcut's Library list has
+    // that while a cell is open for editing (0.7, card 021: the open editor says so, see stepsFields). Ctrl+Tab and
+    // other chords with Tab still resolve.
     if ((event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab) &&
-        !(event->modifiers() & ~(Qt::ShiftModifier | Qt::KeypadModifier))) {
+        !(event->modifiers() & ~(Qt::ShiftModifier | Qt::KeypadModifier)) && !stepsFields(event, focus)) {
         return false;
     }
     const auto chord = chordOf(event);
@@ -695,7 +722,26 @@ bool KeymapDispatcher::isSuppressed(QKeyEvent* event, QQuickItem* focus) const {
     // Text editing (TextField, TextArea, NumberField): typing, navigation (NumberField's Up/Down), Enter and
     // Alt/Option characters stay in the editor. Ctrl/Cmd shortcuts the editor did not claim (Save, Export...)
     // still work.
-    return isTextEditor(focus) && !(event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier));
+    return isTextEditor(focus) && !(event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)) &&
+           !stepsFields(event, focus);
+}
+
+bool KeymapDispatcher::stepsFields(const QKeyEvent* event, const QQuickItem* focus) const {
+    // 0.7 (card 021): the cell editor of the Library list (a text field) sets `fieldStepping`: Tab, Shift+Tab, Enter and
+    // Shift+Enter (Premiere's Next / Previous Column Field and Next / Previous Row Field) are then the keymap's, not the
+    // editor's. Nothing else changes: every other key stays in the field.
+    if (focus == nullptr || !focus->property("fieldStepping").toBool()) {
+        return false;
+    }
+    switch (event->key()) {
+    case Qt::Key_Tab:
+    case Qt::Key_Backtab:
+    case Qt::Key_Return:
+    case Qt::Key_Enter:
+        return !(event->modifiers() & ~(Qt::ShiftModifier | Qt::KeypadModifier));
+    default:
+        return false;
+    }
 }
 
 bool KeymapDispatcher::focusClaimsKey(QKeyEvent* event, QQuickItem* focus) const {
@@ -745,6 +791,9 @@ void KeymapDispatcher::deliver(const km::KeyResult& result) {
     for (const km::CommandId& id : result.commands) {
         emit commandTriggered(toQString(id));
     }
+    for (const km::CommandId& id : result.released) {
+        emit commandReleased(toQString(id));
+    }
 }
 
 void KeymapDispatcher::deliver(const std::vector<km::TransportIntent>& intents) {
@@ -768,8 +817,16 @@ void KeymapDispatcher::resetGesture() {
         return;
     }
     m_consumedKeys.clear();
-    deliver(m_dispatcher->focusLost());
+    endHolds();
     updateGestureTimer();
+}
+
+void KeymapDispatcher::endHolds() {
+    // 0.7 (card 063): a held H / Z hands its tool back; the key's release will not arrive.
+    for (const km::CommandId& id : m_dispatcher->heldMomentary()) {
+        emit commandReleased(toQString(id));
+    }
+    deliver(m_dispatcher->focusLost());
 }
 
 } // namespace wabcut::app

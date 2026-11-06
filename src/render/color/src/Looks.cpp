@@ -228,17 +228,25 @@ LutLibrary& LutLibrary::shared() {
 std::shared_ptr<const Lut> LutLibrary::load(const std::filesystem::path& file, std::string* error) {
     std::error_code ec;
     const auto size = static_cast<std::int64_t>(std::filesystem::file_size(file, ec));
+    const std::string key = pathToUtf8(file.lexically_normal());
     if (ec) {
+        // Remembered as missing, so a deleted file is not read from disk on every frame either (and its old LUT is not
+        // played any longer); it loads again when it comes back.
+        Entry gone;
+        gone.error = "the LUT file is missing";
+        gone.checked = std::chrono::steady_clock::now();
         if (error) {
-            *error = "the LUT file is missing";
+            *error = gone.error;
         }
+        std::lock_guard lock(m_mutex);
+        m_entries[key] = std::move(gone);
         return nullptr;
     }
     const auto mtime = std::filesystem::last_write_time(file, ec).time_since_epoch().count();
-    const std::string key = pathToUtf8(file.lexically_normal());
     {
         std::lock_guard lock(m_mutex);
         if (const auto it = m_entries.find(key); it != m_entries.end() && it->second.size == size && it->second.mtime == mtime) {
+            it->second.checked = std::chrono::steady_clock::now();
             if (error) {
                 *error = it->second.error;
             }
@@ -248,6 +256,7 @@ std::shared_ptr<const Lut> LutLibrary::load(const std::filesystem::path& file, s
     Entry entry;
     entry.size = size;
     entry.mtime = static_cast<std::int64_t>(mtime);
+    entry.checked = std::chrono::steady_clock::now();
     if (auto lut = loadCube(file)) {
         entry.lut = std::make_shared<const Lut>(std::move(*lut));
     } else {
@@ -282,21 +291,61 @@ LutResolver LutLibrary::resolver(const ProjectState& state) {
         for (const Known& k : known) {
             if (k.id == id.value) {
                 if (k.offline || k.path.empty()) {
+                    noteUnreadable(pathFromUtf8(k.path), k.path.empty() ? "the LUT has no file" : "the LUT file is offline");
                     return nullptr;
                 }
-                // Fast path: the cache, without touching the disk (the evaluator calls this every frame).
+                // Fast path: the cache, without touching the disk (the evaluator calls this every frame) - but only for
+                // one recheck interval since the file was last compared with the disk; then load() reads its size and
+                // modification time and loads it again when the file was replaced (card #153). A file that failed to
+                // load is held the same way, so a broken file is not read on every frame either.
                 const std::filesystem::path file = pathFromUtf8(k.path).lexically_normal();
+                std::shared_ptr<const Lut> found;
+                std::string why;
+                bool fresh = false;
                 {
                     std::lock_guard lock(m_mutex);
-                    if (const auto it = m_entries.find(pathToUtf8(file)); it != m_entries.end() && it->second.lut) {
-                        return it->second.lut;
+                    if (const auto it = m_entries.find(pathToUtf8(file));
+                        it != m_entries.end() && std::chrono::steady_clock::now() - it->second.checked < m_recheck) {
+                        found = it->second.lut;
+                        why = it->second.error;
+                        fresh = true;
                     }
                 }
-                return load(file);
+                if (!fresh) {
+                    found = load(file, &why);
+                }
+                if (!found) {
+                    noteUnreadable(file, why);
+                }
+                return found;
             }
         }
         return nullptr;
     };
+}
+
+void LutLibrary::noteUnreadable(const std::filesystem::path& file, const std::string& why) {
+    m_unreadable.fetch_add(1);
+    std::lock_guard lock(m_mutex);
+    m_lastUnreadable = pathToUtf8(file) + ": " + (why.empty() ? std::string("the LUT file could not be read") : why);
+}
+
+std::string LutLibrary::lastUnreadable() {
+    std::lock_guard lock(m_mutex);
+    return m_lastUnreadable;
+}
+
+void LutLibrary::refresh(const ProjectState& state) {
+    for (const ProjectAsset& a : state.assets) {
+        if (a.kind == kAssetKindLut && !a.locator.offline && !a.locator.path.empty()) {
+            load(pathFromUtf8(a.locator.path).lexically_normal());
+        }
+    }
+}
+
+void LutLibrary::setRecheckInterval(std::chrono::milliseconds interval) {
+    std::lock_guard lock(m_mutex);
+    m_recheck = interval;
 }
 
 void LutLibrary::clear() {

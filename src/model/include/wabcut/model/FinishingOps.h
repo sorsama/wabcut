@@ -136,6 +136,12 @@ struct EffectTarget {
 EditOutcome addEffect(const ProjectState& state, SequenceId sequence, const EffectTarget& target,
                       const std::string& effect, std::vector<EffectParam> params = {},
                       std::optional<std::size_t> index = std::nullopt);
+/// 0.7 (card 101): appends ready-made instances (a preset's stack effects, parameters and keyframes as they are) to a
+/// track's or a master stack, each with a fresh id (EditResult::createdEffects). The effects must be of the stack's kind
+/// (an effect the registry does not know, an audio plug-in, counts as audio). Errors: InvalidArgument (a locked track,
+/// a clip or media target, the wrong kind), NotFound.
+EditOutcome appendEffectInstances(const ProjectState& state, SequenceId sequence, const EffectTarget& target,
+                                  std::vector<EffectInstance> instances);
 EditOutcome removeEffect(const ProjectState& state, SequenceId sequence, const EffectTarget& target,
                          EffectInstanceId effect);
 EditOutcome moveEffect(const ProjectState& state, SequenceId sequence, const EffectTarget& target,

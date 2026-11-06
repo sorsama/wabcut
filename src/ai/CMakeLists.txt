@@ -10,6 +10,7 @@ add_library(wabcut_ai STATIC
     src/InferProtocol.cpp
     src/ModelStore.cpp
     src/Sha256.cpp
+    src/SpokenLanguages.cpp
     src/Text.cpp
     src/Timestamps.cpp
     src/TranslationManifest.cpp
@@ -54,6 +55,18 @@ target_sources(wabcut_ai PRIVATE
     ${wabcut_ai_models_cpp})
 target_link_libraries(wabcut_ai PUBLIC nlohmann_json::nlohmann_json)
 
+# r07 local model library (Local-AI engineer): Hugging Face GGUF browsing, benchmarks (data/local-benchmarks.json,
+# compiled in), the installed library index and the download queue.
+set(wabcut_ai_benchmarks_json ${CMAKE_CURRENT_SOURCE_DIR}/data/local-benchmarks.json)
+set(wabcut_ai_benchmarks_cpp ${CMAKE_CURRENT_BINARY_DIR}/generated/LocalBenchmarksJson.cpp)
+add_custom_command(
+    OUTPUT ${wabcut_ai_benchmarks_cpp}
+    COMMAND ${CMAKE_COMMAND} -DINPUT=${wabcut_ai_benchmarks_json} -DOUTPUT=${wabcut_ai_benchmarks_cpp}
+            -DSYMBOL=kLocalBenchmarksJson -P ${CMAKE_CURRENT_SOURCE_DIR}/EmbedFile.cmake
+    DEPENDS ${wabcut_ai_benchmarks_json} ${CMAKE_CURRENT_SOURCE_DIR}/EmbedFile.cmake
+    COMMENT "Embedding src/ai/data/local-benchmarks.json")
+target_sources(wabcut_ai PRIVATE src/ModelLibrary.cpp src/ModelDownloads.cpp ${wabcut_ai_benchmarks_cpp})
+
 # wabcut_ai_transcribe â€” TranscriptionService (local whisper), TranscribeService (local / cloud / cache routing,
 # shared by the app, the transcript.transcribe command and the CLI) and AudioEnergyService (per-range RMS/peak/speech
 # jobs): they decode media (wabcut_media's AudioDecoder at 16 kHz, source fingerprints, media::Job), so they exist
@@ -86,6 +99,11 @@ add_subdirectory(vision)
 # shot and the mask.objectSelect / refine / propagate commands (AI-14). Owner: AI platform engineer. See
 # src/ai/segment/CMakeLists.txt. Before `edit`, whose catalog includes its commands.
 add_subdirectory(segment)
+
+# ---------------------------------------------------------------------------------------------------------------
+# wabcut_ai_video (+ wabcut_ai_video_media in full builds) - the AI video-effect runner (0.7): AI Restore and AI Denoise's
+# models, tiling, per-clip cache and runner, in wabcut-embed. See src/ai/video/CMakeLists.txt.
+add_subdirectory(video)
 
 # ---------------------------------------------------------------------------------------------------------------
 # wabcut_ai_audio (+ wabcut_ai_audio_media in full builds) — Enhance Speech (DeepFilterNet3) and stem separation

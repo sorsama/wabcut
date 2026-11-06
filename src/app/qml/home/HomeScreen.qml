@@ -508,6 +508,13 @@ FocusScope {
                     w.showMaximized()
             }
         }
+        // 0.7 (card 017): the window's system menu on a right-click of the empty header (Windows).
+        TapHandler {
+            objectName: "homeSystemMenuTap"
+            acceptedButtons: Qt.RightButton
+            enabled: AppShell.systemMenuAvailable
+            onTapped: eventPoint => AppShell.showSystemMenu(surface.Window.window, eventPoint.globalPosition)
+        }
         DragHandler {
             target: null
             onActiveChanged: {

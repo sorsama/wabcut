@@ -66,7 +66,7 @@ TEST_CASE("interchange: EDL, 29.97 drop-frame: events, dissolve, channels, motio
     CHECK(hasEntry(rep, A, ReportCategory::SequenceSetting,
                    "EDLs carry no frame rate; 29.97 fps drop-frame assumed"));
     CHECK(hasEntry(rep, O, ReportCategory::SequenceSetting, "start timecode 01:00:00;00")); // X.1: kept
-    CHECK(hasEntry(rep, D, ReportCategory::Effect, "1 line(s) that are not CMX3600 events"));
+    CHECK(hasEntry(rep, D, ReportCategory::Effect, "Ignored, not CMX3600 events or comments: 1 line"));
     CHECK(hasEntry(rep, A, ReportCategory::Media, "'A001_C002.mov' is referenced by source timecode"));
     const ReportEntry& gap = entry(rep, O, ReportCategory::Gap, "gap on V1 at 00:00:09;00 (30 frames)");
     CHECK(gap.location.element == "event 003");

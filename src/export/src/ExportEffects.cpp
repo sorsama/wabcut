@@ -88,12 +88,14 @@ std::string_view loudnessStandardName(LoudnessStandard standard) {
         return "atscA85";
     case LoudnessStandard::Custom:
         return "custom";
+    case LoudnessStandard::Streaming:
+        return "streaming";
     }
     return "ebuR128";
 }
 
 std::optional<LoudnessStandard> loudnessStandardFromName(std::string_view name) {
-    for (int s = 0; s <= static_cast<int>(LoudnessStandard::Custom); ++s) {
+    for (int s = 0; s <= static_cast<int>(LoudnessStandard::Streaming); ++s) {
         if (loudnessStandardName(static_cast<LoudnessStandard>(s)) == name) {
             return static_cast<LoudnessStandard>(s);
         }
@@ -107,6 +109,8 @@ double LoudnessNormalization::effectiveTarget() const {
         return -23.0;
     case LoudnessStandard::AtscA85:
         return -24.0;
+    case LoudnessStandard::Streaming:
+        return -14.0;
     case LoudnessStandard::Custom:
         break;
     }
@@ -119,6 +123,8 @@ double LoudnessNormalization::effectiveTruePeak() const {
         return -1.0;
     case LoudnessStandard::AtscA85:
         return -2.0;
+    case LoudnessStandard::Streaming:
+        return -1.0;
     case LoudnessStandard::Custom:
         break;
     }

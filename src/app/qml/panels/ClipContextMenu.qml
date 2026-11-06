@@ -19,6 +19,10 @@ import QtQuick
 // 0.6 (P1 round, D9 #8): Detect Beats… (D9) in the audio tools on a clip with sound: its dialog (the optional BPM range)
 // and the analysis run in the Beats bridge.
 // 0.6 (card #74): Audition, the submenu of take stacks, after the nesting rows.
+// 0.7 (card 125): Clip Note… after Rename…: a free-text note on the clip (ClipNotePopover), printed on it with Timeline
+// Display's Clip notes.
+// 0.7 (card 010): the label swatches carry Premiere's colour names (Library.labelNames) and a ring on the colour the
+// selected clips share; Select Label Group (every clip of that colour) ends the swatch area.
 ContextMenu {
     id: clipMenu
     objectName: "clipContextMenu"
@@ -35,6 +39,8 @@ ContextMenu {
     }
 
     signal renameRequested(string clipId, point at)
+    /// 0.7 (card 125): Clip Note… was chosen: the panel opens the note popover at the pointer.
+    signal noteRequested(string clipId, point at)
     /// Nest…: the panel asks for the new sequence's name.
     signal nestRequested()
 
@@ -48,6 +54,8 @@ ContextMenu {
     property var sceneInfo: ({})
     /// 0.6: frames the clip is out of sync with its linked partner (0: in sync): Move / Slip into Sync show then.
     property int syncFrames: 0
+    /// 0.7: the label colour the selected clips share (-1 when they differ): its swatch is checked.
+    property int labelIndex: -1
 
     function openAt(target, id, point) {
         clipId = id
@@ -58,6 +66,7 @@ ContextMenu {
         selection = ClipAudio.selectedClips()
         sceneInfo = SceneDetect.availability()
         syncFrames = ProjectController.syncOffsetFrames(id)
+        labelIndex = ProjectController.selectionLabel()
         showChannels()
         showTakes()
         momentsMenu.refresh()
@@ -214,6 +223,15 @@ ContextMenu {
             enableItem.checked = Qt.binding(() => ProjectController.selectionEnabled)
         }
     }
+    // 0.7 (card 064): Lock Clip freezes the selected clips (a locked clip cannot be moved, trimmed, deleted or changed);
+    // Unlock Clip when they are all locked.
+    ContextMenuItem {
+        objectName: "clipContextLock"
+        text: ProjectController.selectionLocked ? qsTr("Unlock Clip") : qsTr("Lock Clip")
+        iconName: ProjectController.selectionLocked ? "lock-open" : "lock"
+        command: "clip.lock"
+        onTriggered: ProjectController.toggleLockSelection()
+    }
     ContextMenuItem {
         text: ProjectController.selectionLinked ? qsTr("Unlink") : qsTr("Link")
         iconName: ProjectController.selectionLinked ? "unlink" : "link"
@@ -349,6 +367,25 @@ ContextMenu {
         iconName: "fold-vertical"
         onTriggered: Nesting.unnest(clipMenu.clipId)
     }
+    // 0.7 (card 069): bake the nest into a file the clip plays (the dialog opens once the menu has closed), and the way back.
+    ContextMenuItem {
+        objectName: "renderReplaceMenuItem"
+        visible: clipMenu.nestInfo.nested === true && clipMenu.nestInfo.multicam !== true
+        height: visible ? implicitHeight : 0
+        text: qsTr("Render and Replace…")
+        iconName: "film"
+        command: "clip.renderAndReplace"
+        onTriggered: clipMenu.pendingCommand = "clip.renderAndReplace"
+    }
+    ContextMenuItem {
+        objectName: "restoreUnrenderedMenuItem"
+        visible: clipMenu.nestInfo.rendered === true
+        height: visible ? implicitHeight : 0
+        text: qsTr("Restore Unrendered")
+        iconName: "undo-2"
+        command: "clip.restoreUnrendered"
+        onTriggered: KeymapDispatcher.trigger("clip.restoreUnrendered")
+    }
     ContextMenuItem {
         objectName: "flattenMenuItem"
         visible: clipMenu.nestInfo.multicam === true
@@ -377,6 +414,17 @@ ContextMenu {
         iconName: "volume-2"
         command: "clip.audioGain"
         onTriggered: clipMenu.pendingCommand = "clip.audioGain"
+    }
+    // 0.7 (card 047): Spectral Repair… - the spectrogram of the clip's sound with the tools that repair a cough, a squeak or a
+    // hum in it (Audio Tools' Spectral tab); Main shows the tab once the menu has closed.
+    ContextMenuItem {
+        objectName: "spectralRepairMenuItem"
+        visible: clipMenu.audioInfo.audio === true
+        height: visible ? implicitHeight : 0
+        text: qsTr("Spectral Repair…")
+        iconName: "audio-lines"
+        command: "clip.spectralRepair"
+        onTriggered: clipMenu.pendingCommand = "clip.spectralRepair"
     }
     // 0.6 (P1 round, D9 #8): Detect Beats… (its dialog has the optional BPM range) on a clip with sound, which puts the
     // numbered beat markers and the sequence's beat grid on it; Main opens the dialog once the menu has closed.
@@ -428,6 +476,12 @@ ContextMenu {
         text: qsTr("Rename…")
         iconName: "pencil"
         onTriggered: clipMenu.renameRequested(clipMenu.clipId, clipMenu.menuPoint)
+    }
+    ContextMenuItem {
+        objectName: "clipNoteMenuItem"
+        text: qsTr("Clip Note…")
+        iconName: "message-square"
+        onTriggered: clipMenu.noteRequested(clipMenu.clipId, clipMenu.menuPoint)
     }
     // A nested clip keeps "Reveal Nested Sequence in Library" above (the same action).
     ContextMenuItem {
@@ -487,19 +541,31 @@ ContextMenu {
             spacing: Theme.space(0.5)
 
             Repeater {
-                model: Theme.clipColors.length
+                model: Library.labelNames
 
                 delegate: Swatch {
+                    id: chip
+                    required property string modelData
                     required property int index
+                    objectName: "clipLabelColor_" + index
                     swatchColor: Theme.clipColor(index)
-                    checkable: false
-                    tooltip: qsTr("Label color %1").arg(index + 1)
+                    tooltip: modelData
+                    checked: index === clipMenu.labelIndex
                     onClicked: {
+                        chip.checked = Qt.binding(() => chip.index === clipMenu.labelIndex)
                         ProjectController.setSelectionColor(index)
                         clipMenu.close()
                     }
                 }
             }
         }
+    }
+    // 0.7 (card 010): Edit > Label > Select Label Group: every clip of the sequence with the selection's label colour.
+    ContextMenuItem {
+        objectName: "clipMenuSelectLabelGroup"
+        text: qsTr("Select Label Group")
+        iconName: "tag"
+        command: "edit.selectLabelGroup"
+        onTriggered: ProjectController.selectLabelGroup()
     }
 }

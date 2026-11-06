@@ -6,6 +6,7 @@
 
 #include "ShellFixture.h"
 #include "TimelineFixture.h"
+#include <wabcut/model/ProjectOps.h>
 
 #include "ColorBridge.h"
 #include "ProjectController.h"
@@ -400,4 +401,117 @@ TEST_CASE("Export drawer: the Color space row sets the output colour space and t
     const QStringList messages = takeMessages();
     INFO(messages.join(QLatin1Char('\n')).toStdString());
     CHECK(messages.isEmpty());
+}
+
+// 0.7 (card #85): the LUT menu groups LUTs by folder.
+TEST_CASE("LUT menu: LUTs imported from folders are submenus and the loose ones stay in the list (card 85 screenshots)",
+          "[app][color][lut][qml][screenshots]") {
+    Shell shell;
+    REQUIRE(shell.window);
+    shell.resize(1600, 900);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* color = shell.engine.singletonInstance<ColorBridge*>("Wabcut", "Color");
+    REQUIRE(controller);
+    REQUIRE(color);
+    Timeline tl(R"(
+        V1 tgt |Aaaaaaaaaa|
+    )");
+    ProjectState state = tl.state;
+    const auto add = [&](const char* name, const char* folder) {
+        ProjectAsset lut;
+        lut.kind = std::string(kAssetKindLut);
+        lut.name = name;
+        lut.folder = folder;
+        lut.locator.path = std::string("C:/luts/") + name;
+        auto added = edit::addAsset(state, std::move(lut));
+        REQUIRE(added);
+        state = added->state;
+    };
+    add("Loose.cube", "");
+    add("2383.cube", "Film/Kodak");
+    add("3510.cube", "Film/Fuji");
+    add("2395.cube", "Film/Kodak");
+    add("Teal.cube", "Looks");
+    controller->resetProject(state, tl.seq);
+    spin(100);
+    shell.window->setProperty("workspace", 3); // the Color workspace
+    QQuickItem* panel = nullptr;
+    REQUIRE(waitFor([&] {
+        panel = findNamed(shell.window->contentItem(), QStringLiteral("colorPanel"));
+        return panel != nullptr;
+    }));
+    QObject* menu = panel->findChild<QObject*>(QStringLiteral("lutMenu"));
+    REQUIRE(menu);
+
+    // The bridge lists each LUT with its folder.
+    int inFolders = 0;
+    for (const QVariant& choice : color->lutChoices()) {
+        const QVariantMap c = choice.toMap();
+        if (c.value(QStringLiteral("kind")).toString() == QLatin1String("file") && !c.value(QStringLiteral("folder")).toString().isEmpty())
+            ++inFolders;
+    }
+    CHECK(inFolders == 4);
+
+    const auto rows = [&] {
+        REQUIRE(QMetaObject::invokeMethod(menu, "rebuild"));
+        const int count = menu->property("count").toInt();
+        QStringList names;
+        for (int i = 0; i < count; ++i) {
+            QQuickItem* item = nullptr;
+            REQUIRE(QMetaObject::invokeMethod(menu, "itemAt", Q_RETURN_ARG(QQuickItem*, item), Q_ARG(int, i)));
+            REQUIRE(item);
+            QObject* sub = item->property("subMenu").value<QObject*>();
+            names << (sub ? sub->objectName() : item->objectName());
+        }
+        return names;
+    };
+    // Creative > Look (the default slot): the built-in looks and the loose LUT in the list, then one submenu per folder,
+    // sorted, with the import rows last.
+    QStringList names = rows();
+    INFO(names.join(QStringLiteral(", ")).toStdString());
+    CHECK(menu->property("folderNames").toStringList() ==
+          QStringList{QStringLiteral("Film/Fuji"), QStringLiteral("Film/Kodak"), QStringLiteral("Looks")});
+    REQUIRE(names.size() >= 8);
+    CHECK(names.first() == QStringLiteral("lutMenuNone"));
+    CHECK(names.mid(names.size() - 6, 3) ==
+          QStringList{QStringLiteral("lutMenuFolder_Film/Fuji"), QStringLiteral("lutMenuFolder_Film/Kodak"), QStringLiteral("lutMenuFolder_Looks")});
+    CHECK(names.at(names.size() - 1) == QStringLiteral("lutMenuImportFolder"));
+    CHECK(names.at(names.size() - 2) == QStringLiteral("lutMenuImport"));
+    CHECK(names.filter(QStringLiteral("lutMenuRow_asset:")).size() == 1); // the loose LUT only, the others are in submenus
+    CHECK(names.filter(QStringLiteral("lutMenuRow_builtin:")).size() == 5); // the five looks
+    // A folder's submenu holds its LUTs.
+    QQuickItem* kodakRow = nullptr;
+    for (int i = 0; i < menu->property("count").toInt(); ++i) {
+        QQuickItem* item = nullptr;
+        REQUIRE(QMetaObject::invokeMethod(menu, "itemAt", Q_RETURN_ARG(QQuickItem*, item), Q_ARG(int, i)));
+        QObject* sub = item->property("subMenu").value<QObject*>();
+        if (sub && sub->objectName() == QLatin1String("lutMenuFolder_Film/Kodak"))
+            kodakRow = item;
+    }
+    REQUIRE(kodakRow);
+    CHECK(kodakRow->property("subMenu").value<QObject*>()->property("count").toInt() == 2);
+    // Rebuilding again does not pile rows up.
+    CHECK(rows() == names);
+
+    // Basic > Input LUT: the camera input LUTs instead of the looks; the project's LUTs are offered there too.
+    menu->setProperty("slot", QStringLiteral("input"));
+    names = rows();
+    CHECK(names.filter(QStringLiteral("lutMenuRow_builtin:")).size() == 2);
+    CHECK(menu->property("folderNames").toStringList().size() == 3);
+    menu->setProperty("slot", QStringLiteral("look"));
+
+    // The open menu, in both themes.
+    REQUIRE(QMetaObject::invokeMethod(menu, "openAt", Q_ARG(QVariant, QVariant::fromValue<QObject*>(panel))));
+    REQUIRE(waitFor([&] { return menu->property("opened").toBool(); }, 5000));
+    for (const bool dark : {true, false}) {
+        shell.setAppearance(dark, "ultraviolet");
+        spin(80);
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        REQUIRE(image.save(outputDir() + QStringLiteral("/lut-menu-folders-") + (dark ? QStringLiteral("dark") : QStringLiteral("light")) +
+                           QStringLiteral(".png")));
+    }
+    QMetaObject::invokeMethod(menu, "close");
+    shell.setAppearance(true, "ultraviolet");
 }

@@ -1,3 +1,4 @@
+#include <wabcut/model/Plural.h>
 #include <wabcut/export/ClosedCaptions.h>
 
 #include <wabcut/interchange/CaptionFiles.h>
@@ -672,20 +673,22 @@ ClosedCaptionData buildClosedCaptions(const std::vector<CaptionCue>& cues, TimeR
         out.late708 = cc708.late;
         out.maxLateFrames = cc708.maxLate;
         if (cc708.late > 0) {
-            out.notes.push_back(std::format("708: {} caption(s) appear up to {} frame(s) late (not enough caption bandwidth "
+            out.notes.push_back(std::format("708: {} up to {} late (not enough caption bandwidth "
                                             "to load them before they start)",
-                                            cc708.late, cc708.maxLate));
+                                            counted(static_cast<std::int64_t>(cc708.late), "caption"),
+                                            counted(static_cast<std::int64_t>(cc708.maxLate), "frame")));
         }
         if (cc708.dropped > 0) {
-            out.notes.push_back(std::format("708: {} caption(s) at the very end did not fit before the export ends",
-                                            cc708.dropped));
+            out.notes.push_back(std::format("708: {} at the very end did not fit before the export ends",
+                                            counted(static_cast<std::int64_t>(cc708.dropped), "caption")));
         }
         if (cc708.wrapped || cc708.cut) {
             out.notes.push_back(std::format("708: captions rewrapped to 32 columns{}",
                                             cc708.cut ? " and cut to 4 rows" : ""));
         }
         if (cc708.replaced > 0) {
-            out.notes.push_back(std::format("708: {} character(s) 708 cannot show were replaced by '?'", cc708.replaced));
+            out.notes.push_back(std::format("708: replaced by '?' because 708 cannot show them: {}",
+                                            counted(static_cast<std::int64_t>(cc708.replaced), "character")));
         }
     }
     return out;

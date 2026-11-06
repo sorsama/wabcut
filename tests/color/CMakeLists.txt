@@ -12,6 +12,7 @@ wabcut_add_test_suite(color
         test_scopes.cpp
         test_color_tools.cpp
         test_color_commands.cpp
+        test_chart_match.cpp
     LIBS wabcut_color wabcut_ai_edit
     PROPERTIES LABELS color)
 target_include_directories(wabcut_color_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests/model ${CMAKE_SOURCE_DIR}/tests/command)

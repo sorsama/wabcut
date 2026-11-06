@@ -808,3 +808,81 @@ TEST_CASE("A 5.1 master exports 5.1 AAC and AC-3 (ffprobe), and a stereo export 
     REQUIRE(plain.has_value());
     CHECK(ffprobe(dir / "stereo.mp4")->stream("audio")->at("channels") == "2");
 }
+
+// 0.7 (card 048): a 7.1 master writes eight channels with the 7.1 layout tag (ffprobe), in PCM (WAV, QuickTime / ProRes) and
+// AAC; AC-3 carries 5.1 at most, so it gets the 7.1 to 5.1 downmix; a stereo file gets the ITU-R BS.775 downmix.
+TEST_CASE("A 7.1 master exports eight channels with the 7.1 layout (ffprobe) and downmixes for AC-3 and stereo",
+          "[export][media][channels][surround71]") {
+    if (!haveTimelineMedia()) {
+        SKIP("test clips were not generated (tools/gen_test_media.py)");
+    }
+    TestProject project = threeLayerTimeline(kWidth, kHeight, Rate{25, 1}, Ticks::fromSeconds(1));
+    project.editSequence([](Sequence& s) { s.masterFormat = ChannelFormat::Surround71; });
+    const auto dir = freshOutputDir("surround71");
+
+    // Settings checks: "as the master" is 8 channels except where the codec cannot carry them.
+    {
+        AudioSettings audio;
+        audio.channels = 0;
+        audio.codec = AudioCodec::Aac;
+        CHECK(exportAudioChannels(audio, ChannelFormat::Surround71) == 8);
+        audio.codec = AudioCodec::Pcm24;
+        CHECK(exportAudioChannels(audio, ChannelFormat::Surround71) == 8);
+        audio.codec = AudioCodec::Opus;
+        CHECK(exportAudioChannels(audio, ChannelFormat::Surround71) == 8);
+        audio.codec = AudioCodec::Ac3;
+        CHECK(exportAudioChannels(audio, ChannelFormat::Surround71) == 6);
+        audio.codec = AudioCodec::Mp3;
+        CHECK(exportAudioChannels(audio, ChannelFormat::Surround71) == 2);
+        audio.codec = AudioCodec::Aac;
+        audio.channels = 2;
+        CHECK(exportAudioChannels(audio, ChannelFormat::Surround71) == 2); // asked for: the downmix
+    }
+
+    struct Case {
+        const char* file;
+        const char* preset;
+        AudioCodec codec;
+        const char* codecName;
+        const char* channels;
+        const char* layout;
+    };
+    for (const Case& c : {Case{"eight.wav", "audio-wav", AudioCodec::Pcm24, "pcm_s24le", "8", "7.1"},
+                          Case{"eight.mov", "prores-422-hq", AudioCodec::Pcm24, "pcm_s24le", "8", "7.1"},
+                          Case{"eight.mp4", "match-source", AudioCodec::Aac, "aac", "8", "7.1"},
+                          Case{"six.mp4", "match-source", AudioCodec::Ac3, "ac3", "6", "5.1"}}) {
+        INFO(c.file);
+        ExportSettings settings = presetSettings(c.preset);
+        settings.audio.codec = c.codec;
+        settings.audio.channels = 0; // as the master
+        const auto r = ExportJob(makeRequest(project, settings, dir / c.file)).run();
+        INFO((r ? std::string() : r.error().message));
+        REQUIRE(r.has_value());
+        const auto probe = ffprobe(dir / c.file);
+        REQUIRE(probe.has_value());
+        const auto* audio = probe->stream("audio");
+        REQUIRE(audio != nullptr);
+        CHECK(audio->at("codec_name") == c.codecName);
+        CHECK(audio->at("channels") == c.channels);
+        CHECK(audio->at("channel_layout").starts_with(c.layout));
+    }
+
+    // The WAV decodes to eight channels; its stereo downmix (channels 2) is the BS.775 mix of the 7.1 mix.
+    const auto eight = decodeAudio(dir / "eight.wav");
+    REQUIRE(eight.has_value());
+    CHECK(eight->channels == 8);
+    ExportSettings stereo = presetSettings("audio-wav");
+    stereo.audio.channels = 2;
+    const auto r = ExportJob(makeRequest(project, stereo, dir / "downmix.wav")).run();
+    REQUIRE(r.has_value());
+    const auto decoded = decodeAudio(dir / "downmix.wav");
+    REQUIRE(decoded.has_value());
+    CHECK(decoded->channels == 2);
+    const std::vector<float> reference = referenceMix(project, Ticks{}, 48'000, 2, 48'000);
+    REQUIRE(decoded->samples.size() == reference.size());
+    double worst = 0.0;
+    for (std::size_t i = 0; i < reference.size(); ++i) {
+        worst = std::max(worst, std::fabs(static_cast<double>(decoded->samples[i]) - reference[i]));
+    }
+    CHECK(worst <= 2.0 / 8388608.0);
+}

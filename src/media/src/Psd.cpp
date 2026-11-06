@@ -118,6 +118,10 @@ struct Parsed {
     int channels = 0;
     std::vector<LayerRecord> records;
     std::uint64_t mergedOffset = 0; ///< the image data section
+    /// The layer count was negative: per the Photoshop file format specification the first alpha channel of the merged
+    /// image is then its transparency. Any other extra channel there (a saved selection, a spot colour) is not a picture
+    /// channel of the merged image at all.
+    bool mergedHasAlpha = false;
 };
 
 /// Photoshop's 8-byte-length keys in PSB files.
@@ -178,7 +182,9 @@ std::expected<void, Error> parseLayerInfo(Reader& r, std::uint64_t length, Parse
     if (length > r.remaining()) {
         return std::unexpected(malformed("the layer information runs past the end of the file"));
     }
-    const int count = std::abs(static_cast<int>(r.i16())); // negative: the first alpha channel is the merged transparency
+    const int rawCount = static_cast<int>(r.i16());
+    const int count = std::abs(rawCount);
+    p.mergedHasAlpha = rawCount < 0; // negative: the first alpha channel is the merged transparency (card #157)
     if (static_cast<std::size_t>(count) > kMaxPsdLayers) {
         return std::unexpected(Error{ErrorCode::Unsupported, "Too many layers in the Photoshop file"});
     }
@@ -644,7 +650,7 @@ std::expected<PsdImage, Error> mergedImage(Reader& r, const Parsed& p) {
     const std::size_t bps = bytesPerSample(p.doc.depth);
     const std::size_t plane = static_cast<std::size_t>(w) * h;
     const int colorChannels = colorChannelsOf(p.doc);
-    const int used = std::min(p.channels, colorChannels + 1);
+    const int used = std::min(p.channels, colorChannels + (p.mergedHasAlpha ? 1 : 0)); // card #157
     r.seek(p.mergedOffset);
     const int compression = r.u16();
     std::vector<std::vector<std::uint16_t>> planes(static_cast<std::size_t>(used));
@@ -702,7 +708,9 @@ std::expected<PsdImage, Error> mergedImage(Reader& r, const Parsed& p) {
         for (std::size_t c = 0; c < 3; ++c) {
             image.rgba[4 * i + c] = p.doc.depth == 32 ? encodeLinear(rgb[c] / 65535.0) : rgb[c];
         }
-        image.rgba[4 * i + 3] = used > colorChannels ? planes[static_cast<std::size_t>(colorChannels)][i] : 65535;
+        // Card #157: only a negative layer count makes the next channel the picture's transparency; a flattened file's
+        // saved selection or spot channel must not punch holes in the photo.
+        image.rgba[4 * i + 3] = p.mergedHasAlpha && used > colorChannels ? planes[static_cast<std::size_t>(colorChannels)][i] : 65535;
     }
     return image;
 }

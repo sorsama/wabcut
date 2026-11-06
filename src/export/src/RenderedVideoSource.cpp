@@ -1,14 +1,20 @@
 #include <wabcut/export/RenderedVideoSource.h>
 
+#include "HdrDynamic.h"
+
 #include <wabcut/color/ColorSpaces.h>
+#include <wabcut/color/Looks.h>
 #include <wabcut/export/Encoders.h>
 #include <wabcut/media/VideoDecoder.h>
+#include <wabcut/model/FrameScaling.h>
 #include <wabcut/playback/video/Evaluate.h>
+#include <wabcut/playback/video/SourceStage.h>
 
 #include <QSize>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <deque>
@@ -17,6 +23,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <stop_token>
 #include <thread>
 
 namespace wabcut::exporter {
@@ -106,7 +113,11 @@ public:
     RenderedVideoSource(ProjectState project, Sequence sequence, VideoSourceFormat format,
                         RenderedSourceOptions options)
         : m_project(std::move(project)), m_sequence(std::move(sequence)), m_format(format),
-          m_options(std::move(options)), m_maxInFlight(std::clamp(m_options.maxInFlight, 1, 16)) {}
+          m_options(std::move(options)), m_maxInFlight(std::clamp(m_options.maxInFlight, 1, 16)) {
+        if (m_format.frameStats && m_format.dynamicRange == DynamicRange::Pq && m_format.frameCount > 0) {
+            m_frameStats.resize(static_cast<std::size_t>(std::min<std::int64_t>(m_format.frameCount, std::int64_t{1} << 26)));
+        }
+    }
 
     ~RenderedVideoSource() override { shutdown(); }
 
@@ -115,10 +126,14 @@ public:
         // 0.2: the CPU limit preference keeps one render thread under 4 export threads.
         const int limit = exportThreadLimit();
         const int renderers = limit > 0 && limit < 4 ? 1 : std::clamp(m_options.renderThreads, 1, 4);
+        const bool background = exportBackgroundMode(); // 0.7: an idle preview render: these threads run at low priority
         std::vector<std::promise<std::expected<void, Error>>> started(static_cast<std::size_t>(renderers));
         for (int i = 0; i < renderers; ++i) {
             auto* promise = &started[static_cast<std::size_t>(i)];
-            m_renderThreads.emplace_back([this, promise, i] { renderMain(*promise, i); });
+            m_renderThreads.emplace_back([this, promise, i, background] {
+                const BackgroundThreadMode mode(background);
+                renderMain(*promise, i);
+            });
         }
         for (auto& promise : started) {
             if (auto result = promise.get_future().get(); !result) {
@@ -126,7 +141,10 @@ public:
                 return result;
             }
         }
-        m_decodeThread = std::jthread([this] { decodeMain(); });
+        m_decodeThread = std::jthread([this, background] {
+            const BackgroundThreadMode mode(background);
+            decodeMain();
+        });
         return {};
     }
 
@@ -138,6 +156,13 @@ public:
         }
         std::lock_guard lock(m_lightMutex);
         return m_light;
+    }
+    std::optional<FrameLightStats> frameStats(std::int64_t frameIndex) const override {
+        std::lock_guard lock(m_lightMutex);
+        if (frameIndex < 0 || static_cast<std::size_t>(frameIndex) >= m_frameStats.size()) {
+            return std::nullopt;
+        }
+        return m_frameStats[static_cast<std::size_t>(frameIndex)];
     }
     std::optional<SdrConformReport> conformReport() const override {
         if (!m_format.sdrConform) {
@@ -191,6 +216,7 @@ public:
             m_toDecode.clear();
             m_toRender.clear();
         }
+        m_aiStop.request_stop(); // 0.7: a picture being made by an AI effect is dropped, not waited for
         m_changed.notify_all();
         if (m_decodeThread.joinable()) {
             m_decodeThread.join();
@@ -216,6 +242,8 @@ private:
     };
 
     static constexpr std::size_t kRecentFrames = 4;
+    /// 100 ms steps an export waits for a look-up table file that cannot be read (3 s) before it stops.
+    static constexpr int kLutPatience = 30;
 
     void decodeMain() {
         std::vector<playback::LayerSpec> specs;
@@ -257,13 +285,38 @@ private:
     std::shared_ptr<const render::PreparedComposite>
     evaluate(Ticks time, Ticks frameDuration, std::int64_t index, std::vector<playback::LayerSpec>& specs,
              std::map<std::uint64_t, Decoder>& decoders, std::optional<Error>& error) {
-        playback::evaluateVideoLayers(m_project, m_sequence, time, specs, true, nullptr,
-                                      m_captions ? &*m_captions : nullptr);
+        const auto evaluateLayers = [&] {
+            playback::evaluateVideoLayers(m_project, m_sequence, time, specs, true, nullptr, m_captions ? &*m_captions : nullptr);
+        };
+        color::LutLibrary& luts = color::LutLibrary::shared();
+        const std::uint64_t unreadableBefore = luts.unreadableCount();
+        evaluateLayers();
+        if (luts.unreadableCount() != unreadableBefore) {
+            // A look-up table file a grade names cannot be used right now: the program that saves it may be rewriting it (a
+            // half-written file reads as damaged) or it is gone. The frame would go out without its look, so wait a few
+            // seconds for the file and read it again; if it stays unusable the export stops with the reason, it never writes
+            // frames without the look (review-1 m3).
+            bool usable = false;
+            for (int attempt = 0; attempt < kLutPatience && !usable; ++attempt) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                luts.refresh(m_project);
+                const std::uint64_t before = luts.unreadableCount();
+                evaluateLayers();
+                usable = luts.unreadableCount() == before;
+            }
+            if (!usable) {
+                error = Error{ErrorCode::IoError,
+                              std::format("A look-up table cannot be used ({}): the export stopped instead of writing frames without "
+                                          "the look. Fix or relink the file and export again.",
+                                          luts.lastUnreadable())};
+                return nullptr;
+            }
+        }
         // The same request the preview Scheduler publishes (Scheduler::Impl::publishIfReady).
         auto composite = std::make_shared<render::PreparedComposite>();
         composite->targetTime = time;
         composite->frameDuration = frameDuration;
-        composite->canvas = {m_sequence.width, m_sequence.height};
+        composite->canvas = {m_sequence.width, m_sequence.height, sequencePixelAspect(m_sequence)}; // 145: carries its pixel aspect ratio
         composite->color = m_options.color;
         // I.9: the project's colour management, and what the export writes (SDR, PQ, HLG).
         composite->color.management = m_project.colorManagement;
@@ -341,8 +394,17 @@ private:
         }
         // P.2: flow mixes take their motion from the analyzer, computed here on the decode thread when it is not cached
         // (export always computes full quality: the same analysis as the preview's).
+        // 0.7 (AI video effects): an export is never short of a picture - the decoded frames are the originals at full size, so a
+        // picture the cache lacks is made here, on the decode thread; when it cannot be (no model on this computer, no helper in
+        // this build) the export stops with the reason.
+        playback::ScopedSourceStageMode aiMode(playback::SourceStageMode::ProcessMissing, m_aiStop.get_token());
+        const playback::ScopedOfflineVideoRender offline; // 0.7: OpenFX plug-ins get the time a render needs
         playback::buildCompositeLayers(specs, frames, composite->layers, &playback::computedMotion(),
-                                       {m_sequence.width, m_sequence.height});
+                                       composite->canvas);
+        if (const std::optional<std::string> why = aiMode.failure()) {
+            error = Error{ErrorCode::DecoderError, *why};
+            return nullptr;
+        }
         return composite;
     }
 
@@ -484,14 +546,22 @@ private:
         auto pixels = std::make_shared<std::vector<std::uint16_t>>(plane * 3);
         double maxNits = 0.0;
         double averageNits = 0.0;
+        FrameLightStats stats;
+        const bool wantStats = pq && m_format.frameStats;
         rgb10ToYuv444(reinterpret_cast<const std::uint32_t*>(image.rgba.data()), image.width, image.height, bt2020,
                       pixels->data(), pixels->data() + plane, pixels->data() + 2 * plane, pq ? &maxNits : nullptr,
                       pq ? &averageNits : nullptr);
+        if (wantStats) { // 0.7 (HDR10+): the brightness distribution of the picture
+            stats = detail::measureLightRgb10(reinterpret_cast<const std::uint32_t*>(image.rgba.data()), plane);
+        }
         if (pq) {
             std::lock_guard lock(m_lightMutex);
             m_light.maxCll = std::max(m_light.maxCll, maxNits);
             m_light.maxFall = std::max(m_light.maxFall, averageNits);
             ++m_light.frames;
+            if (wantStats && index >= 0 && static_cast<std::size_t>(index) < m_frameStats.size()) {
+                m_frameStats[static_cast<std::size_t>(index)] = stats;
+            }
         }
         media::FrameHandle f;
         f.pts = composite->targetTime;
@@ -531,8 +601,10 @@ private:
     std::deque<Work> m_toRender;         // evaluated, not yet rendered
     std::map<std::int64_t, std::expected<media::FrameHandle, Error>> m_done;
     bool m_stopped = false;
+    std::stop_source m_aiStop;
     mutable std::mutex m_lightMutex; // I.9: the light levels, measured by the render threads
     ContentLightLevels m_light;
+    std::vector<std::optional<FrameLightStats>> m_frameStats; // 0.7 (HDR10+), under m_lightMutex, one per output frame
     SdrConformReport m_conform; // 0.6 (#72), under m_lightMutex
 
     void countConform(std::uint64_t tone, std::uint64_t gamut, std::size_t pixels) {

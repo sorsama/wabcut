@@ -11,8 +11,10 @@
 #include <QJsonParseError>
 #include <QLocalServer>
 #include <QLocalSocket>
+#include <QLockFile>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QThread>
 #include <QTimer>
 #include <QWindow>
 
@@ -38,6 +40,10 @@ constexpr int kStaleMs = 10'000;
 constexpr int kConfirmMs = 1000;
 /// How long listen() waits for a Wabcut that may hold the name to answer.
 constexpr int kProbeMs = 500;
+/// A launch that waits for the Wabcut starting beside it offers its files again this often.
+constexpr int kRetryMs = 150;
+/// A steady stream of hand-overs is cut into batches of at most this many batch windows.
+constexpr int kBatchCap = 5;
 
 // Where a hand-over is on the receiving side (a property of its socket).
 const char* const kStage = "wabcutStage";
@@ -83,6 +89,10 @@ QUrl SingleInstance::projectToHandOver(const QStringList& arguments) {
     return separateInstance(arguments) ? QUrl() : ProjectLifecycle::launchProjectIn(arguments);
 }
 
+QList<QUrl> SingleInstance::filesToHandOver(const QStringList& arguments) {
+    return separateInstance(arguments) ? QList<QUrl>() : ProjectLifecycle::launchFilesIn(arguments);
+}
+
 bool SingleInstance::handOver(const QList<QUrl>& files, int timeoutMs) const {
     if (files.isEmpty())
         return false;
@@ -125,6 +135,72 @@ bool SingleInstance::handOver(const QList<QUrl>& files, int timeoutMs) const {
     return confirmed;
 }
 
+bool SingleInstance::claimLaunch() {
+    if (m_lock && m_lock->isLocked())
+        return true;
+    auto lock = std::make_unique<QLockFile>(QDir::temp().filePath(m_name + QStringLiteral(".launch.lock")));
+    // Only a lock whose process is gone counts as stale (never one that is merely old: a Wabcut runs for days).
+    lock->setStaleLockTime(0);
+    if (!lock->tryLock(0))
+        return false;
+    m_lock = std::move(lock);
+    return true;
+}
+
+bool SingleInstance::holdsLaunch() const {
+    return m_lock && m_lock->isLocked();
+}
+
+bool SingleInstance::handOverOrWait(const QList<QUrl>& files, int waitMs, int timeoutMs) {
+    if (files.isEmpty())
+        return false;
+    QElapsedTimer clock;
+    clock.start();
+    for (;;) {
+        if (handOver(files, timeoutMs))
+            return true;
+        // Nobody took them. The first launch to get the lock is the Wabcut the others hand their files to (it opens its
+        // own files itself, and listens once its window is up).
+        if (claimLaunch())
+            return false;
+        if (clock.elapsed() >= waitMs)
+            return false; // the one that holds the lock never answered (hung, or still starting): start on your own
+        QThread::msleep(static_cast<unsigned long>(std::min<qint64>(kRetryMs, waitMs - clock.elapsed())));
+    }
+}
+
+void SingleInstance::setBatchWindow(int ms) {
+    m_batchMs = std::max(0, ms);
+}
+
+void SingleInstance::queue(const QList<QUrl>& files) {
+    if (m_batchMs <= 0) {
+        emit filesRequested(files);
+        return;
+    }
+    if (m_batch.isEmpty())
+        m_batchClock.start();
+    for (const QUrl& file : files) {
+        if (!m_batch.contains(file))
+            m_batch.append(file);
+    }
+    if (!m_batchTimer) {
+        m_batchTimer = new QTimer(this);
+        m_batchTimer->setSingleShot(true);
+        connect(m_batchTimer, &QTimer::timeout, this, &SingleInstance::flush);
+    }
+    // Every arrival restarts the wait; a steady stream of them still ends after kBatchCap windows.
+    const qint64 cap = static_cast<qint64>(m_batchMs) * kBatchCap;
+    m_batchTimer->start(static_cast<int>(std::max<qint64>(1, std::min<qint64>(m_batchMs, cap - m_batchClock.elapsed()))));
+}
+
+void SingleInstance::flush() {
+    if (m_batch.isEmpty())
+        return;
+    const QList<QUrl> files = std::exchange(m_batch, {});
+    emit filesRequested(files);
+}
+
 void SingleInstance::setReady(std::function<bool()> ready) {
     m_ready = std::move(ready);
 }
@@ -156,6 +232,10 @@ bool SingleInstance::listen() {
 void SingleInstance::close() {
     if (m_server)
         m_server->close();
+    // The Wabcut that restarts itself must not find the launch lock held by the one that is ending.
+    if (m_lock)
+        m_lock->unlock();
+    m_lock.reset();
 }
 
 bool SingleInstance::isListening() const {
@@ -187,7 +267,7 @@ void SingleInstance::read(QLocalSocket* socket) {
             socket->setProperty(kStage, Done);
             const QList<QUrl> files = socket->property(kFiles).value<QList<QUrl>>();
             if (line == "go" && !files.isEmpty())
-                emit filesRequested(files);
+                queue(files);
             return;
         }
         QJsonParseError error;

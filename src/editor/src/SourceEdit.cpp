@@ -308,6 +308,14 @@ edit::EditOutcome dropMedia(EditSession& session, const MediaDrop& drop) {
         // Now that it is known where the clips land, the streams that follow the pointer's track avoid tracks with
         // other clips there.
         source.patches = patchesForDrop(*sequence, *media, drop.track, TimeRange{at, source.sourceRange.duration});
+        if (!drop.addTracks) {
+            // 0.7 (card 182): a stream that has no track to go to would get a new one; leave those out.
+            std::erase_if(source.patches, [](const edit::SourcePatch& p) { return !p.destination && !p.newTrack.empty(); });
+            if (source.patches.empty()) {
+                return std::unexpected(invalid("there is no track to drop into, and adding tracks automatically is off "
+                                               "(Settings > Timeline & editing)"));
+            }
+        }
         return drop.mode == DropMode::Overwrite ? edit::overwriteEdit(state, sequence->id, source, at)
                                                 : edit::insertEdit(state, sequence->id, source, at);
     });

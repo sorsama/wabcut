@@ -11,6 +11,7 @@
 //   color.match        Color Match: the clip's grade fitted so it looks like a reference frame
 //   color.matchScene   match every clip of a scene (C.5 shot pieces of one take), a track or a list to a reference clip
 //   lut.import         add a .cube file to the project (a LUT asset) and return its reference
+//   lut.importFolder   0.7 (card #85): every .cube in a folder, grouped in the LUT menu by folder
 //   lut.list           the built-in looks and input LUTs and the project's LUT assets
 //   cdl.export         write clips' colour wheels as an ASC CDL (.cc, .ccc or .cdl)
 //   cdl.import         set clips' colour wheels from an ASC CDL file

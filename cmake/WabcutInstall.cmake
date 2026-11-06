@@ -103,6 +103,9 @@ endforeach()
 if(TARGET wabcut-plughost)
     list(APPEND wabcut_install_targets wabcut-plughost) # A.6: the audio plugin helper, next to the app and the CLI
 endif()
+if(TARGET wabcut-ofxhost)
+    list(APPEND wabcut_install_targets wabcut-ofxhost) # 0.7: the OpenFX video plug-in helper, next to the app and the CLI
+endif()
 if(TARGET wabcut-scripthost)
     list(APPEND wabcut_install_targets wabcut-scripthost) # C.12: runs extensions (Qt Qml), next to the app and the CLI
 endif()
@@ -224,10 +227,31 @@ install(FILES "${CMAKE_SOURCE_DIR}/docs/interchange.md" "${CMAKE_SOURCE_DIR}/doc
               "${CMAKE_SOURCE_DIR}/docs/premiere-parity.md" "${CMAKE_SOURCE_DIR}/docs/pilot.md"
     DESTINATION ${wabcut_docs_dir})
 
+# 0.7 (card 050): the Python package for scripting (docs/python.md) - `pip install <this folder>`, or nothing to install for
+# the Scripts menu, which puts it on the script's PYTHONPATH. Next to the executables like the docs; a macOS bundle keeps it
+# in Contents/Resources. Examples sit beside it.
+if(WABCUT_MACOS_BUNDLE)
+    set(wabcut_python_dir "wabcut.app/Contents/Resources/python")
+else()
+    set(wabcut_python_dir "${CMAKE_INSTALL_BINDIR}/python")
+endif()
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/python/wabcut"
+    DESTINATION ${wabcut_python_dir}
+    FILES_MATCHING PATTERN "__pycache__" EXCLUDE PATTERN "*.py" PATTERN "*.pyi" PATTERN "*.json" PATTERN "py.typed")
+install(FILES "${CMAKE_SOURCE_DIR}/python/pyproject.toml" "${CMAKE_SOURCE_DIR}/python/README.md"
+    DESTINATION ${wabcut_python_dir})
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/python/examples"
+    DESTINATION ${wabcut_python_dir}
+    FILES_MATCHING PATTERN "*.py" PATTERN "*.csv")
+install(FILES "${CMAKE_SOURCE_DIR}/docs/python.md" DESTINATION ${wabcut_docs_dir})
+
 # Linux desktop integration: a launcher entry and the app icon in the hicolor theme (the AppImage uses them too).
 if(UNIX AND NOT APPLE AND TARGET wabcut)
     install(FILES "${CMAKE_CURRENT_LIST_DIR}/packaging/linux/wabcut.desktop"
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+    # The .wabcut project type (freedesktop.org shared MIME-info), which the launcher entry lists in MimeType.
+    install(FILES "${CMAKE_CURRENT_LIST_DIR}/packaging/linux/wabcut-mime.xml"
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages RENAME io.github.sorsama.wabcut.xml)
     foreach(size 16 24 32 48 64 128 256 512)
         install(FILES "${CMAKE_SOURCE_DIR}/src/app/resources/brand/icons/wabcut-${size}.png"
             DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${size}x${size}/apps RENAME wabcut.png)
@@ -380,6 +404,8 @@ install(FILES "${CMAKE_SOURCE_DIR}/src/app/resources/icons/LICENSE"
     DESTINATION ${WABCUT_INSTALL_LICENSEDIR} RENAME boxicons.txt)
 install(FILES "${CMAKE_CURRENT_LIST_DIR}/licenses/LGPL-3.0.txt"
     DESTINATION ${WABCUT_INSTALL_LICENSEDIR} RENAME qt-LGPL-3.0.txt)
+# The OpenFX API headers the OpenFX video plug-in host is built against (0.7; BSD-3-Clause).
+install(FILES "${CMAKE_CURRENT_LIST_DIR}/licenses/openfx.txt" DESTINATION ${WABCUT_INSTALL_LICENSEDIR})
 # The AAF object model tables of AAF export (P.2), generated from pyaaf2's (MIT).
 install(FILES "${CMAKE_CURRENT_LIST_DIR}/licenses/pyaaf2.txt" DESTINATION ${WABCUT_INSTALL_LICENSEDIR})
 # The bundled fonts (design language v3, and v2's faces kept for content): SIL OFL 1.1.

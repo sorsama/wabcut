@@ -2,6 +2,7 @@
 
 #include "AiController.h"
 #include "BridgeIds.h"
+#include "FramePlacement.h"
 #include "MaskBridge.h"
 #include "ProjectController.h"
 #include "ProjectLifecycle.h"
@@ -149,32 +150,18 @@ struct ObjectMaskBridge::Placement {
             }
             v = item->info.video[static_cast<std::size_t>(clip.stream.index)];
         }
-        if (v.width <= 0 || v.height <= 0 || seq.width <= 0 || seq.height <= 0) {
+        // The one shared placement (FramePlacement.h): as playback places it (display orientation, pixel aspect, Motion).
+        const std::optional<FramePlacement> shared = framePlacement(project, seq, clip, v, t);
+        if (!shared) {
             return std::nullopt;
         }
-        const ClipProperties& p = clip.properties();
-        render::LayerTransform transform;
-        transform.position = {p.value(ParamId::PositionX, t), p.value(ParamId::PositionY, t)};
-        transform.scale = p.value(ParamId::Scale, t) * scaleToFrameFactor(project, clip, seq.width, seq.height); // P.2
-        transform.rotationDegrees = p.value(ParamId::Rotation, t);
-        transform.anchor = {p.value(ParamId::AnchorX, t), p.value(ParamId::AnchorY, t)};
-        const int quarter = ((v.rotationDegrees / 90) % 4 + 4) % 4;
-        if (quarter != 0) {
-            transform.rotationDegrees += 90.0 * quarter;
-            const render::Vec2 a = transform.anchor;
-            transform.anchor = quarter == 1 ? render::Vec2{a.y, -a.x} : quarter == 2 ? render::Vec2{-a.x, -a.y} : render::Vec2{-a.y, a.x};
-        }
-        const double par = v.sampleAspect.isValid() ? v.sampleAspect.toDouble() : 1.0;
         Placement out;
-        out.frameToCanvas = render::layerToCanvas(transform, v.width, v.height, par, {seq.width, seq.height});
-        if (std::abs(out.frameToCanvas.determinant()) < 1e-12) {
-            return std::nullopt;
-        }
-        out.canvasToFrame = out.frameToCanvas.inverted();
-        out.frameWidth = v.width;
-        out.frameHeight = v.height;
-        out.canvasWidth = seq.width;
-        out.canvasHeight = seq.height;
+        out.frameToCanvas = shared->frameToCanvas;
+        out.canvasToFrame = shared->canvasToFrame;
+        out.frameWidth = shared->frameWidth;
+        out.frameHeight = shared->frameHeight;
+        out.canvasWidth = shared->canvasWidth;
+        out.canvasHeight = shared->canvasHeight;
         out.curveTime = t;
         return out;
     }

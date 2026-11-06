@@ -7,6 +7,7 @@ find_package(pugixml CONFIG REQUIRED)
 
 add_library(wabcut_color STATIC
     src/Cdl.cpp
+    src/ChartMatch.cpp
     src/ColorCommands.cpp
     src/ColorMath.cpp
     src/ColorTools.cpp

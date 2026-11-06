@@ -1,5 +1,6 @@
 #include "TextUtil.h"
 
+#include <wabcut/model/Plural.h>
 #include <wabcut/interchange/FileUrl.h>
 #include <wabcut/interchange/MediaRelinker.h>
 
@@ -233,7 +234,7 @@ RelinkResult MediaRelinker::resolve(const MediaReference& reference) {
             {p, sharedTail(originalParts, components(utf8FromPath(p))), utf8FromPath(p.filename()) == name});
     }
     if (matches.empty()) {
-        result.note = std::to_string(rejected) + " file(s) named '" + name + "' found, but the " + lastWhy;
+        result.note = counted(static_cast<std::int64_t>(rejected), "file") + " named '" + name + "' found, but the " + lastWhy;
         return result;
     }
     std::sort(matches.begin(), matches.end(), [](const Candidate& a, const Candidate& b) {

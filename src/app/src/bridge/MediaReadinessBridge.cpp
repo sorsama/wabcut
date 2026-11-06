@@ -16,9 +16,12 @@
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/PreviewCache.h>
 
+#include <QCoreApplication>
 #include <QDesktopServices>
 #include <QDir>
+#include <QEvent>
 #include <QFileInfo>
+#include <QMouseEvent>
 #include <QProcess>
 #include <QQmlEngine>
 #include <QSettings>
@@ -83,6 +86,47 @@ std::optional<MediaId> parseMediaKey(const QString& text) {
     return detail::parseId<MediaId>(QLatin1Char('m'), text);
 }
 
+std::int64_t steadyNowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+/// 0.7 (background rendering): notes the time of the user's last input, application-wide: keys, mouse buttons and real
+/// mouse moves (not the ones Qt synthesises when items move under a still cursor), wheel, touch and pen.
+class InputWatcher final : public QObject {
+public:
+    explicit InputWatcher(std::atomic<std::int64_t>* last) : m_last(last) {}
+
+    bool eventFilter(QObject*, QEvent* event) override {
+        switch (event->type()) {
+        case QEvent::KeyPress:
+        case QEvent::KeyRelease:
+        case QEvent::MouseButtonPress:
+        case QEvent::MouseButtonRelease:
+        case QEvent::MouseButtonDblClick:
+        case QEvent::Wheel:
+        case QEvent::TouchBegin:
+        case QEvent::TouchUpdate:
+        case QEvent::TouchEnd:
+        case QEvent::TabletPress:
+        case QEvent::TabletMove:
+        case QEvent::TabletRelease:
+            m_last->store(steadyNowNs());
+            break;
+        case QEvent::MouseMove:
+            if (static_cast<QMouseEvent*>(event)->source() == Qt::MouseEventNotSynthesized) {
+                m_last->store(steadyNowNs());
+            }
+            break;
+        default:
+            break;
+        }
+        return false; // never consumes anything
+    }
+
+private:
+    std::atomic<std::int64_t>* m_last;
+};
+
 std::vector<MediaId> parseIds(const QStringList& ids) {
     std::vector<MediaId> out;
     for (const QString& id : ids) {
@@ -114,6 +158,18 @@ MediaReadinessBridge::MediaReadinessBridge(ProjectLifecycle* lifecycle, Playback
     // P1 (#16): the paused resolution starts and ends with the transport (not only at the next poll).
     if (m_playback) {
         connect(m_playback, &PlaybackBridge::transportChanged, this, &MediaReadinessBridge::updatePlaying);
+    }
+    // 0.7: background rendering while idle. On by default; the options are Settings > Media & cache > Background rendering.
+    m_idleSettings.enabled = settings.value(QStringLiteral("render/background"), true).toBool();
+    m_idleSettings.idleSeconds = std::clamp(settings.value(QStringLiteral("render/backgroundIdleSeconds"),
+                                                           static_cast<int>(editor::kDefaultIdleSeconds)).toInt(),
+                                            static_cast<int>(editor::kMinIdleSeconds), static_cast<int>(editor::kMaxIdleSeconds));
+    m_idleSettings.pauseOnBattery = settings.value(QStringLiteral("render/backgroundPauseOnBattery"), true).toBool();
+    m_idleSettings.pauseWhenBusy = settings.value(QStringLiteral("render/backgroundPauseWhenBusy"), true).toBool();
+    m_idleShared->lastInputNs = steadyNowNs(); // the user just started the program
+    if (QCoreApplication* app = QCoreApplication::instance()) {
+        m_inputWatcher = std::make_unique<InputWatcher>(&m_idleShared->lastInputNs);
+        app->installEventFilter(m_inputWatcher.get());
     }
 
     m_startMediaCache = cachefolders::mediaCacheFolder();
@@ -163,6 +219,12 @@ MediaReadinessBridge::MediaReadinessBridge(ProjectLifecycle* lifecycle, Playback
 }
 
 MediaReadinessBridge::~MediaReadinessBridge() {
+    if (m_inputWatcher) {
+        if (QCoreApplication* app = QCoreApplication::instance()) {
+            app->removeEventFilter(m_inputWatcher.get());
+        }
+    }
+    m_idle.reset(); // gives up the segment in hand and joins the background worker
     {
         std::lock_guard lock(m_cacheGate->mutex);
         m_cacheGate->bridge = nullptr;
@@ -205,6 +267,7 @@ void MediaReadinessBridge::setSourceMonitor(SourceMonitorBridge* source) {
 
 void MediaReadinessBridge::updatePlaying() {
     const bool playing = (m_playback && m_playback->playing()) || (m_source && m_source->playing());
+    m_idleShared->playing = playing; // 0.7: background rendering stops at once, not at the next poll
     if (playing == m_monitorPlaying) {
         return;
     }
@@ -385,6 +448,7 @@ void MediaReadinessBridge::pollNow() {
     applyPreview();
     updateProxyState();
     updateBadge();
+    updateBackgroundRender();
 }
 
 void MediaReadinessBridge::updateFocus() {
@@ -433,7 +497,13 @@ void MediaReadinessBridge::applyPreview(bool force) {
     // 0.1.1: rendered previews play where still valid. Setting the same cache again (force, after a render) is how the
     // scheduler learns its files changed.
     preview.previews = m_previews;
+    preview.aiRevision = m_aiRevision;
     m_playback->setPreviewSettings(std::move(preview));
+}
+
+void MediaReadinessBridge::aiPicturesChanged() {
+    ++m_aiRevision;
+    applyPreview(true);
 }
 
 // ---- Render In to Out (0.1.1) -----------------------------------------------------------------------------------
@@ -469,7 +539,12 @@ std::shared_ptr<PreviewCache> MediaReadinessBridge::previewCache() {
 
 std::shared_ptr<command::CommandServices> MediaReadinessBridge::previewServices() {
     ensurePreviewCache();
-    return std::make_shared<command::PreviewServices>(m_previews, m_renderer);
+    auto services = std::make_shared<command::PreviewServices>(m_previews, m_renderer);
+    services->backgroundStatus = [box = m_bgBox] {
+        std::lock_guard lock(box->mutex);
+        return box->json;
+    };
+    return services;
 }
 
 void MediaReadinessBridge::setPreviewRendererForTests(std::shared_ptr<PreviewRenderer> renderer) {
@@ -577,6 +652,11 @@ QString MediaReadinessBridge::startRender(const std::vector<TimeRange>& ranges, 
     m_renderProgress = 0.0;
     m_renderMessage = tr("Rendering previews…");
     emit renderChanged();
+    // 0.7: a render the user asked for goes first: the background one gives up the segment in hand and waits.
+    m_idleShared->otherWork = true;
+    if (m_idle) {
+        m_idle->cancelCurrent();
+    }
     QPointer<MediaReadinessBridge> self(this);
     // P1 (#7): Render Selection is one render.previewInOut per range, in one job (one progress, one Cancel).
     std::vector<CommandJob::Request> requests;
@@ -627,6 +707,297 @@ QString MediaReadinessBridge::startRender(const std::vector<TimeRange>& ranges, 
 
 void MediaReadinessBridge::cancelRender() {
     m_render.cancel();
+}
+
+// ---- Background rendering while idle (0.7) ------------------------------------------------------------------------------
+
+namespace {
+std::atomic<bool> g_backgroundAvailable{false};
+} // namespace
+
+void MediaReadinessBridge::setBackgroundRenderAvailable(bool available) {
+    g_backgroundAvailable = available;
+}
+
+bool MediaReadinessBridge::backgroundMayRun() const {
+    // Only the application starts the worker (main.cpp): the test programs have a window system and a GPU but no user, and a
+    // render started behind a test would be a test of something else.
+    return m_idleAllowedForTests || g_backgroundAvailable.load();
+}
+
+void MediaReadinessBridge::setBackgroundRenderAllowedForTests(bool allowed, std::shared_ptr<editor::SystemLoadProbe> probe) {
+    m_idleAllowedForTests = allowed;
+    m_idleProbe = std::move(probe);
+    m_idle.reset(); // made again with the probe at the next look
+    m_idleCache.reset();
+}
+
+void MediaReadinessBridge::noteInput(double secondsAgo) {
+    m_idleShared->lastInputNs = steadyNowNs() - static_cast<std::int64_t>(secondsAgo * 1e9);
+}
+
+void MediaReadinessBridge::saveBackgroundSettings() {
+    QSettings settings;
+    settings.setValue(QStringLiteral("render/background"), m_idleSettings.enabled);
+    settings.setValue(QStringLiteral("render/backgroundIdleSeconds"), static_cast<int>(m_idleSettings.idleSeconds));
+    settings.setValue(QStringLiteral("render/backgroundPauseOnBattery"), m_idleSettings.pauseOnBattery);
+    settings.setValue(QStringLiteral("render/backgroundPauseWhenBusy"), m_idleSettings.pauseWhenBusy);
+    if (m_idle) {
+        m_idle->setSettings(m_idleSettings);
+    }
+    m_idleSeenGeneration = ~std::uint64_t{0}; // the status text follows the settings
+    emit backgroundSettingsChanged();
+    updateBackgroundRender();
+}
+
+void MediaReadinessBridge::setBackgroundRender(bool on) {
+    if (on == m_idleSettings.enabled) {
+        return;
+    }
+    m_idleSettings.enabled = on;
+    if (on) {
+        m_idleHeld = false; // turned on again: it works again, also after a Stop or a Delete Render Files
+        m_idleShared->held = false;
+    }
+    saveBackgroundSettings();
+}
+
+void MediaReadinessBridge::toggleBackgroundRender() {
+    setBackgroundRender(!m_idleSettings.enabled);
+}
+
+void MediaReadinessBridge::setBackgroundIdleSeconds(int seconds) {
+    const double clamped = std::clamp(seconds, static_cast<int>(editor::kMinIdleSeconds), static_cast<int>(editor::kMaxIdleSeconds));
+    if (clamped == m_idleSettings.idleSeconds) {
+        return;
+    }
+    m_idleSettings.idleSeconds = clamped;
+    saveBackgroundSettings();
+}
+
+void MediaReadinessBridge::setBackgroundPauseOnBattery(bool on) {
+    if (on == m_idleSettings.pauseOnBattery) {
+        return;
+    }
+    m_idleSettings.pauseOnBattery = on;
+    saveBackgroundSettings();
+}
+
+void MediaReadinessBridge::setBackgroundPauseWhenBusy(bool on) {
+    if (on == m_idleSettings.pauseWhenBusy) {
+        return;
+    }
+    m_idleSettings.pauseWhenBusy = on;
+    saveBackgroundSettings();
+}
+
+void MediaReadinessBridge::stopBackgroundRender() {
+    if (!m_lifecycle) {
+        return;
+    }
+    m_idleHeld = true;
+    m_idleHeldRevision = m_lifecycle->document().session().revision();
+    m_idleShared->held = true;
+    if (m_idle) {
+        m_idle->cancelCurrent();
+    }
+    updateBackgroundRender();
+}
+
+QString MediaReadinessBridge::backgroundStatusText(const editor::IdleRenderStatus& status, bool brief) const {
+    using Phase = editor::IdleRenderStatus::Phase;
+    using Block = editor::IdleBlock;
+    const auto reason = [&](Block block) -> QString {
+        switch (block) {
+        case Block::Playing:
+            return tr("playback is running");
+        case Block::Editing:
+            return tr("you are editing");
+        case Block::Input:
+            return tr("you used the keyboard or mouse");
+        case Block::Export:
+            return tr("an export is running");
+        case Block::OtherWork:
+            return tr("another render or background task is running");
+        case Block::Held:
+            return tr("stopped until your next edit");
+        case Block::Battery:
+            return tr("the computer is on battery power");
+        case Block::BatterySaver:
+            return tr("energy saver is on");
+        case Block::CpuBusy:
+            return tr("other programs are using the processor");
+        case Block::GpuBusy:
+            return tr("another program is using the graphics card");
+        case Block::NoSequence:
+            return tr("no sequence is open");
+        case Block::Disabled:
+        case Block::None:
+            break;
+        }
+        return {};
+    };
+    switch (status.phase) {
+    case Phase::Off:
+        return tr("Background rendering is off.");
+    case Phase::Rendering:
+        if (brief) {
+            //: %n is how many segments of the timeline are left to render (the one in hand included)
+            return tr("%n segment(s) left", "", status.remaining);
+        }
+        //: %n is how many segments of the timeline are left to render (the one in hand included)
+        return tr("Rendering previews in the background · %n segment(s) left", "", status.remaining);
+    case Phase::Paused:
+        if (brief) { // the background tasks row has little room: "Background rendering · paused while you work"
+            switch (status.block) {
+            case Block::Input:
+                return tr("paused while you work");
+            case Block::Playing:
+                return tr("paused while playing");
+            case Block::Editing:
+                return tr("paused while you edit");
+            case Block::Export:
+                return tr("paused for the export");
+            case Block::OtherWork:
+                return tr("paused for another task");
+            case Block::Held:
+                return tr("stopped until your next edit");
+            case Block::Battery:
+                return tr("paused on battery power");
+            case Block::BatterySaver:
+                return tr("paused: energy saver is on");
+            case Block::CpuBusy:
+                return tr("paused: processor busy");
+            case Block::GpuBusy:
+                return tr("paused: graphics card busy");
+            default:
+                return tr("paused");
+            }
+        }
+        //: %1 is why it waits, e.g. "you used the keyboard or mouse"
+        return tr("Paused: %1.").arg(reason(status.block));
+    case Phase::UpToDate:
+        return tr("Every effect-heavy stretch has a render file.");
+    case Phase::Full:
+        return tr("Not rendering: the render files are at their size limit or the drive is nearly full.");
+    case Phase::Waiting:
+        break;
+    }
+    if (status.block == Block::Input) {
+        //: %n is the idle time in seconds that has to pass without input before background rendering starts
+        return tr("Waiting for %n second(s) without input before it renders.", "", static_cast<int>(m_idleSettings.idleSeconds));
+    }
+    //: %1 is why it waits, e.g. "playback is running"
+    return tr("Waiting: %1.").arg(reason(status.block));
+}
+
+void MediaReadinessBridge::updateBackgroundRender() {
+    ProjectController* controller = m_lifecycle ? m_lifecycle->controller() : nullptr;
+    if (!controller) {
+        return;
+    }
+    EditSession& session = m_lifecycle->document().session();
+    if (m_idleHeld && session.revision() != m_idleHeldRevision) {
+        m_idleHeld = false; // the project changed: whatever stopped it is over
+    }
+    // What the worker thread sees: plain data, never a pointer into the GUI's objects.
+    {
+        std::lock_guard lock(m_idleShared->mutex);
+        m_idleShared->focus.snapshot = session.snapshot();
+        m_idleShared->focus.sequence = controller->currentSequenceId();
+        m_idleShared->focus.playhead =
+            m_playback && m_playback->session() ? m_playback->session()->position() : controller->playhead();
+    }
+    m_idleShared->playing = m_monitorPlaying;
+    m_idleShared->gesture = session.inGesture();
+    m_idleShared->exporting = m_exportBusy && m_exportBusy();
+    m_idleShared->otherWork = m_render.running() || m_deleteJob.running() || m_working;
+    m_idleShared->held = m_idleHeld;
+
+    if (!m_idle && m_idleSettings.enabled && backgroundMayRun()) {
+        ensurePreviewCache();
+        editor::IdleRenderHost host;
+        host.focus = [shared = m_idleShared] {
+            std::lock_guard lock(shared->mutex);
+            return shared->focus;
+        };
+        host.inputs = [shared = m_idleShared] {
+            editor::IdleInputs in;
+            in.secondsSinceInput = static_cast<double>(steadyNowNs() - shared->lastInputNs.load()) / 1e9;
+            in.playing = shared->playing.load();
+            in.gesture = shared->gesture.load();
+            in.exporting = shared->exporting.load();
+            in.otherWork = shared->otherWork.load();
+            in.held = shared->held.load();
+            return in;
+        };
+        host.probe = m_idleProbe;
+        m_idle = std::make_unique<editor::IdleRenderer>(m_previews, m_renderer, std::move(host), m_idleSettings);
+        m_idleCache = m_previews;
+        m_idleSeenRendered = 0;
+        m_idleSeenGeneration = ~std::uint64_t{0};
+    } else if (m_idle && m_idleCache != m_previews) {
+        m_idle->reset(m_previews, m_renderer); // another project's cache (or a new renderer): start over
+        m_idleCache = m_previews;
+        m_idleSeenRendered = 0;
+    }
+
+    // The worker's status for QML.
+    editor::IdleRenderStatus status;
+    if (m_idle) {
+        status = m_idle->status();
+    } else {
+        status.phase = m_idleSettings.enabled ? editor::IdleRenderStatus::Phase::Waiting : editor::IdleRenderStatus::Phase::Off;
+        status.block = m_idleSettings.enabled ? editor::IdleBlock::Input : editor::IdleBlock::Disabled;
+    }
+    if (!m_idleSettings.enabled) { // the setting is the truth at once; the worker follows within a tick
+        const int rendered = status.rendered;
+        status = {};
+        status.phase = editor::IdleRenderStatus::Phase::Off;
+        status.block = editor::IdleBlock::Disabled;
+        status.rendered = rendered;
+    }
+    if (status.rendered > m_idleSeenRendered) {
+        m_idleSeenRendered = status.rendered;
+        applyPreview(true); // the monitor plays the new files
+        emit previewFilesChanged(); // the render bar turns green
+        updateRenderFilesRow();
+    } else if (status.rendered < m_idleSeenRendered) {
+        m_idleSeenRendered = status.rendered;
+    }
+    if (m_idle && status.generation == m_idleSeenGeneration) {
+        return;
+    }
+    m_idleSeenGeneration = status.generation;
+    using Phase = editor::IdleRenderStatus::Phase;
+    const QString state = status.phase == Phase::Off         ? QStringLiteral("off")
+                          : status.phase == Phase::Rendering ? QStringLiteral("rendering")
+                          : status.phase == Phase::Paused    ? QStringLiteral("paused")
+                          : status.phase == Phase::UpToDate  ? QStringLiteral("upToDate")
+                          : status.phase == Phase::Full      ? QStringLiteral("full")
+                                                             : QStringLiteral("waiting");
+    const QString text = backgroundStatusText(status);
+    const QString detail = backgroundStatusText(status, true);
+    const bool active = status.phase == Phase::Rendering || status.phase == Phase::Paused;
+    if (state != m_bgState || text != m_bgText || detail != m_bgDetail || active != m_bgActive ||
+        status.progress != m_bgProgress || status.remaining != m_bgRemaining || status.rendered != m_bgRendered) {
+        m_bgState = state;
+        m_bgText = text;
+        m_bgDetail = detail;
+        m_bgActive = active;
+        m_bgProgress = status.progress;
+        m_bgRemaining = status.remaining;
+        m_bgRendered = status.rendered;
+        {
+            std::lock_guard lock(m_bgBox->mutex);
+            m_bgBox->json = command::Json{{"enabled", m_idleSettings.enabled},
+                                          {"state", m_bgState.toStdString()},
+                                          {"text", m_bgText.toStdString()},
+                                          {"remaining", m_bgRemaining},
+                                          {"rendered", m_bgRendered}};
+        }
+        emit backgroundChanged();
+    }
 }
 
 // ---- Delete Render Files (P1 #7, #58) ---------------------------------------------------------------------------
@@ -712,6 +1083,15 @@ QString MediaReadinessBridge::startDelete(command::Json params) {
     ProjectController* controller = m_lifecycle ? m_lifecycle->controller() : nullptr;
     if (!controller) {
         return tr("No project is open");
+    }
+    // 0.7: whoever deletes the render files wants them gone: the background renderer does not make them again until the
+    // project changes (the next edit) or it is turned off and on.
+    m_idleHeld = true;
+    m_idleHeldRevision = m_lifecycle->document().session().revision();
+    m_idleShared->held = true;
+    m_idleShared->otherWork = true;
+    if (m_idle) {
+        m_idle->cancelCurrent();
     }
     QPointer<MediaReadinessBridge> self(this);
     // Off the GUI thread: a long sequence can have thousands of files, on a slow drive. PreviewCache is thread-safe; a
@@ -870,9 +1250,8 @@ void MediaReadinessBridge::updateBadge() {
                                                                                : QStringLiteral("1/4"));
     }
     if (decoded) {
-        tip << tr("Decoded from %1 proxy layer(s) and %2 original layer(s), at %3 of full resolution")
-                   .arg(s.proxyLayers)
-                   .arg(s.originalLayers)
+        tip << tr("Decoded from %1, at %2 of full resolution")
+                   .arg(tr("%n proxy layer(s)", "", s.proxyLayers) + tr(" and ") + tr("%n original layer(s)", "", s.originalLayers))
                    .arg(res == 1 ? tr("all") : QStringLiteral("1/%1").arg(res));
     }
     if (s.offlineProxyLayers > 0) {
@@ -1136,6 +1515,8 @@ void MediaReadinessBridge::configureCaches() {
                          {".wpeaks"}});
     locations.push_back({"analysis", tr("Analysis results").toStdString(), ai::userCacheDir() / "analysis",
                          limit("analysis"), {}, editor::CacheKind::Analysis});
+    // 0.7: the pictures AI Restore and AI Denoise processed (one file per frame); made again by Process, so Clean may delete them.
+    locations.push_back({"aiVideo", tr("AI video pictures").toStdString(), ai::userCacheDir() / "ai-video", 0, {".wpf"}});
     // Fix F2C: AI object mask mattes and imported chat logs cannot be rebuilt from the media: their own row, never part
     // of "Clean regenerable data", and their Clean asks first (MediaCacheSettings.qml).
     locations.push_back({"analysisKept", tr("AI masks and chat logs").toStdString(), ai::userCacheDir() / "analysis", 0, {},

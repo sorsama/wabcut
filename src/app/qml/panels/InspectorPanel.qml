@@ -11,7 +11,8 @@ import QtQuick.Controls.Basic
 // Lane: click a key to select it (Shift adds, Ctrl/Cmd toggles), drag to move the selected keys (Alt duplicates),
 // drag on empty lane for a rubber band, right-click for the interpolation menu, Delete removes them; the ruler
 // scrubs the playhead. Effects dropped here from the Effects panel are added to the clip (where dropped in the
-// stack). Rows come from ProjectController.effectControls; every edit is one undo step.
+// stack). Rows come from ProjectController.effectControls; every edit is one undo step. In an open value graph a
+// Bezier handle drags with Alt to break the pair and with Shift to stay level with its key (a flat ease; 0.7 #79).
 // Sections (0.4): click a header to select it (Ctrl / Shift add), Backspace removes it, Ctrl+C / Ctrl+V copy it to the
 // selected clips, Esc clears the selection.
 // Lane zoom (0.5.1; Premiere's Effect Controls timeline): Ctrl/Alt+wheel over the lane or its ruler zooms at the pointer,
@@ -75,7 +76,6 @@ Panel {
     function pickFont(anchor: Item, rowKey: string, current: string) {
         fontPicker.rowKey = rowKey
         fontPicker.current = current
-        fontPicker.families = root.controls.fontFamilies()
         fontPicker.parent = anchor
         fontPicker.x = 0
         fontPicker.y = anchor.height + Theme.space(1)
@@ -84,8 +84,19 @@ Panel {
 
     /// Explain this frame (M5k) takes the side panel.
     signal explainRequested()
+    /// 0.7 (card 96): the Graph Editor panel opens (the shell docks it).
+    signal graphEditorRequested()
 
     trailing: [
+        IconButton {
+            // 0.7 (card 96): the clip's keyframes as curves, value and speed graphs, in a panel of any size.
+            objectName: "graphEditorButton"
+            compact: true
+            iconName: "spline"
+            tooltip: qsTr("Graph Editor: the keyframes of this clip as curves")
+            property string menuText: qsTr("Graph Editor")
+            onClicked: root.graphEditorRequested()
+        },
         IconButton {
             objectName: "explainFrameButton"
             compact: true
@@ -94,6 +105,20 @@ Panel {
             // 0.4: its row in the header's More tools menu (Panel.menuLabel) when the header is short.
             property string menuText: qsTr("Explain this frame")
             onClicked: root.explainRequested()
+        },
+        IconButton {
+            // 0.7 (card #83): Track Motion - pin a graphic or censor bar to a moving subject (the section opens below).
+            objectName: "trackMotionToggle"
+            compact: true
+            checkable: true
+            checked: TrackMotion.panelOpen
+            enabled: TrackMotion.available || TrackMotion.panelOpen
+            iconName: "mouse-pointer-2"
+            tooltip: TrackMotion.panelOpen ? qsTr("Close Track Motion")
+                   : TrackMotion.available ? qsTr("Track Motion: pin a graphic or censor bar to a moving subject")
+                   : qsTr("Track Motion needs footage under the playhead")
+            property string menuText: qsTr("Track Motion")
+            onClicked: TrackMotion.panelOpen = !TrackMotion.panelOpen
         },
         IconButton {
             objectName: "keyframeLaneToggle"
@@ -275,17 +300,52 @@ Panel {
                 }
             }
 
-            // Playhead across the lane (none while a zoomed lane shows another part of the clip).
-            Rectangle {
+            // Playhead across the lane (none while a zoomed lane shows another part of the clip). The Dynamics Processing graph
+            // (0.7) fills the width of its row and has no lane, so the line is cut where that row is: it would sweep across the
+            // picture.
+            Item {
+                id: playhead
                 objectName: "lanePlayhead"
                 readonly property real at: root.laneXOf(root.controls.playheadPosition)
+                readonly property real lift: ruler.height + Theme.space(2)
+                /// The pieces of the line, [top, bottom] in this item's coordinates: its whole height less the graph rows in view.
+                readonly property var pieces: {
+                    list.contentY; list.contentHeight; list.count; list.height // read again when the rows move
+                    const cuts = []
+                    for (const child of list.contentItem.children) {
+                        const row = child as EffectControlsRow
+                        if (row && row.dynamics) {
+                            const top = child.y - list.contentY + playhead.lift
+                            cuts.push([top, top + child.height])
+                        }
+                    }
+                    cuts.sort((a, b) => a[0] - b[0])
+                    const out = []
+                    let from = 0
+                    for (const cut of cuts) {
+                        if (cut[0] > from)
+                            out.push([from, cut[0]])
+                        from = Math.max(from, cut[1])
+                    }
+                    out.push([from, playhead.height])
+                    return out
+                }
                 visible: root.laneShown && root.controls.playheadPosition >= 0 && at >= -0.5 && at <= root.laneWidth + 0.5
                 x: Math.round(root.laneX + at - width / 2)
-                y: -ruler.height - Theme.space(2)
+                y: -lift
                 width: Theme.playheadWidth
-                height: parent.height + ruler.height + Theme.space(2)
-                color: Theme.playhead
+                height: parent.height + lift
                 opacity: 0.85
+                Repeater {
+                    model: playhead.pieces
+                    delegate: Rectangle {
+                        required property var modelData
+                        y: modelData[0]
+                        width: playhead.width
+                        height: Math.max(0, modelData[1] - modelData[0])
+                        color: Theme.playhead
+                    }
+                }
             }
 
             // Lane interaction (keys of every row): select, drag (Alt duplicates), rubber band, interpolation menu.
@@ -354,7 +414,8 @@ Panel {
                     if (handleGraph) {
                         const q = mapToItem(handleGraph, mouse.x, mouse.y)
                         root.controls.dragHandle(root.clipX(q.x), q.y / handleGraph.height,
-                                                 (mouse.modifiers & Qt.AltModifier) !== 0)
+                                                 (mouse.modifiers & Qt.AltModifier) !== 0,
+                                                 (mouse.modifiers & Qt.ShiftModifier) !== 0)
                     } else if (draggingKeys) {
                         root.controls.dragKeys((mouse.x - pressX) / width * root.viewSpan)
                     } else if (banding) {
@@ -543,6 +604,18 @@ Panel {
         }
     }
 
+    // Track Motion (0.7, card #83): pin a graphic, title or censor bar to something that moves in the shot. A card laid over
+    // the panel's body while it is open (its header button, Clip > Track Motion...) and a footage clip is under the
+    // playhead: inside the column the clip's sections left it a hand's breadth of room and cut it at the panel's edge, so
+    // it takes the whole body instead - all of it shown, scrolling under its pinned header when the panel is shorter than
+    // it. Closing it (its x, the header button) gives the effects back.
+    TrackMotionSection {
+        anchors.fill: parent
+        maximumHeight: parent.height
+        z: 5
+        visible: root.controls.mode === "clip" && TrackMotion.available && TrackMotion.panelOpen
+    }
+
     // Delete / Backspace removes the selected keys while the panel has focus (the lane takes it on a press): the
     // panel claims the keys before the keymap's Delete (clips) sees them. 0.4: Esc clears the selected sections (the
     // sections themselves go through the keymap: Backspace, Delete, Ctrl+C / X / A in Main.qml's Effect Controls hook).
@@ -573,6 +646,14 @@ Panel {
         }
     }
 
+    // 0.7 (card #57): Favorites changes (the Effects panel's Add to Favorites, Pin / Unpin here) show or hide the pinned headers.
+    Connections {
+        target: EffectPresets
+        function onChanged() {
+            root.controls.refreshPinned()
+        }
+    }
+
     // Right-click on a key: its interpolation (all selected keys), or delete them.
     KeyframeMenu {
         id: keyMenu
@@ -594,98 +675,18 @@ Panel {
         }
     }
 
-    // 0.6: a Text section's font: the installed families, filtered as you type; Enter or a click picks one.
-    Popover {
+    // 0.6: a Text section's font. card 053: the shared FontPicker - one search over every installed family by name,
+    // language or script, with filters; Enter or a click picks one.
+    FontPicker {
         id: fontPicker
         objectName: "effectControlsFontPicker"
-        title: qsTr("Font")
         transformOrigin: Item.TopLeft
         property string rowKey: ""
-        property string current: ""
-        property var families: []
-        readonly property var shown: {
-            const q = fontFilter.text.trim().toLowerCase()
-            const all = fontPicker.families ?? []
-            return q === "" ? all : all.filter(f => f.toLowerCase().indexOf(q) >= 0)
-        }
-        function choose(family: string) {
-            if (family !== "" && family !== fontPicker.current)
-                root.controls.setEffectText(fontPicker.rowKey, family)
-            fontPicker.close()
-        }
-        onOpened: {
-            fontFilter.text = ""
-            fontFilter.forceActiveFocus(Qt.PopupFocusReason)
-            const at = fontPicker.shown.indexOf(fontPicker.current)
-            fontList.currentIndex = at
-            if (at >= 0)
-                fontList.positionViewAtIndex(at, ListView.Center)
-        }
-
-        Column {
-            width: Theme.space(70)
-            spacing: Theme.space(2)
-
-            FieldInput {
-                id: fontFilter
-                objectName: "fontPickerFilter"
-                width: parent.width
-                iconName: "search"
-                clearOnEscape: true
-                placeholderText: qsTr("Find a font")
-                Accessible.name: qsTr("Find a font")
-                onTextChanged: fontList.currentIndex = fontPicker.shown.length > 0 ? 0 : -1
-                Keys.onDownPressed: fontList.currentIndex = Math.min(fontList.count - 1, fontList.currentIndex + 1)
-                Keys.onUpPressed: fontList.currentIndex = Math.max(0, fontList.currentIndex - 1)
-                onAccepted: fontPicker.choose(fontPicker.shown[Math.max(0, fontList.currentIndex)] ?? "")
-            }
-            ListView {
-                id: fontList
-                objectName: "fontPickerList"
-                width: parent.width
-                height: Theme.space(80)
-                clip: true
-                model: fontPicker.shown
-                boundsBehavior: Flickable.StopAtBounds
-                highlightMoveDuration: 0
-                ScrollBar.vertical: ThinScrollBar {}
-                Accessible.role: Accessible.List
-                Accessible.name: qsTr("Fonts")
-
-                delegate: Rectangle {
-                    id: fontItem
-                    required property string modelData
-                    required property int index
-                    width: ListView.view ? ListView.view.width : 0
-                    height: Theme.controlHeight
-                    radius: Theme.radiusField
-                    color: fontHover.hovered || fontItem.ListView.isCurrentItem ? Theme.hover : "transparent"
-                    border.width: fontItem.modelData === fontPicker.current ? Theme.hairline : 0
-                    border.color: Theme.accentStroke
-                    Accessible.role: Accessible.ListItem
-                    Accessible.name: fontItem.modelData
-                    Accessible.onPressAction: fontPicker.choose(fontItem.modelData)
-
-                    Text {
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.leftMargin: Theme.space(2)
-                        anchors.rightMargin: Theme.space(2)
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: fontItem.modelData
-                        elide: Text.ElideRight
-                        color: Theme.textPrimary
-                        font.family: fontItem.modelData
-                        font.pixelSize: Theme.textMd
-                    }
-                    HoverHandler {
-                        id: fontHover
-                    }
-                    TapHandler {
-                        onTapped: fontPicker.choose(fontItem.modelData)
-                    }
-                }
-            }
+        onChosen: id => {
+            if (id !== "" && id !== fontPicker.current)
+                root.controls.setEffectText(fontPicker.rowKey, id)
+            if (id !== "")
+                Fonts.noteUsed(id)
         }
     }
 }

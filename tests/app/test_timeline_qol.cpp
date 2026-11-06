@@ -515,7 +515,7 @@ TEST_CASE("Add Tracks puts the new tracks where asked as one undo step", "[app][
     CHECK(c.addTracks({{QStringLiteral("video"), 100}}).isEmpty());
     CHECK_FALSE(c.lastError().isEmpty());
     CHECK(c.addTracks({{QStringLiteral("video"), 1}, {QStringLiteral("videoPlacement"), QStringLiteral("sideways")}}).isEmpty());
-    CHECK(c.addTracks({{QStringLiteral("audio"), 1}, {QStringLiteral("audioFormat"), QStringLiteral("7.1")}}).isEmpty());
+    CHECK(c.addTracks({{QStringLiteral("audio"), 1}, {QStringLiteral("audioFormat"), QStringLiteral("9.1")}}).isEmpty());
     CHECK(c.addTracks({}).isEmpty());
     CHECK(p.undoSteps() == before2);
     CHECK(p.sequence().videoTracks.size() == 2);

@@ -97,8 +97,10 @@ enum class LibraryColumn : std::uint8_t {
     // P1 round (#40): Premiere's Video Usage and Audio Usage (hidden until chosen).
     VideoUsage,
     AudioUsage,
+    // 0.7 (card 144): when a sequence was made (Sequence::createdAt; blank for media and bins; hidden until chosen).
+    Created,
 };
-inline constexpr std::size_t kLibraryColumnCount = 34;
+inline constexpr std::size_t kLibraryColumnCount = 35;
 
 struct LibraryColumnInfo {
     LibraryColumn column;

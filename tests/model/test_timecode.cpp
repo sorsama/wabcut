@@ -123,3 +123,35 @@ TEST_CASE("Parsing rejects malformed timecode", "[model][timecode]") {
     }
     CHECK_FALSE(parseTimecodeFrames("00:00:00:00", Rate{0, 1}, false));
 }
+
+TEST_CASE("Parsing refuses a time beyond a month of timeline instead of wrapping into a wrong tick (card 091)",
+          "[model][timecode]") {
+    // 99999999 hours is ~1e13 frames: times 8.5e9 ticks a frame it overflowed int64 into an arbitrary position.
+    for (const char* huge : {"99999999:00:00:00", "-99999999:00:00:00", "999999999:59:59:24", "10100:00:00:00",
+                             "745:00:00:00", "9999999999999"}) {
+        INFO(huge);
+        const auto frames = parseTimecodeFrames(huge, kRate25, false);
+        REQUIRE_FALSE(frames);
+        CHECK(frames.error().code == ErrorCode::ParseError);
+        const auto ticks = parseTimecode(huge, kRate25, false);
+        REQUIRE_FALSE(ticks);
+        CHECK(ticks.error().code == ErrorCode::ParseError);
+        CHECK(ticks.error().message.find("out of range") != std::string::npos);
+    }
+    // The same at the other rates, drop-frame included, and the packed-digits form.
+    CHECK_FALSE(parseTimecode("99999999:00:00;00", kRate29_97, true));
+    CHECK_FALSE(parseTimecode("99999999:00:00:00", kRate59_94, false));
+    CHECK_FALSE(parseTimecode("99999999:00:00:00", kRate24, false));
+    CHECK_FALSE(parseTimecode("999999999999999", kRate30, false));
+
+    // What a timeline can hold still parses: a day, a week, and 30 days exactly to the frame.
+    CHECK(parseTimecode("24:00:00:00", kRate25, false) == Ticks::fromSeconds(24 * 3600));
+    CHECK(parseTimecode("168:00:00:00", kRate25, false) == Ticks::fromSeconds(168 * 3600));
+    CHECK(parseTimecode("720:00:00:00", kRate25, false) == Ticks::fromSeconds(720 * 3600));
+    CHECK(parseTimecode("-01:00:00:00", kRate25, false) == Ticks::fromSeconds(-3600));
+    CHECK(parseTimecode("00:00:01:00", kRate30, false) == Ticks::fromSeconds(1));
+    // Ticks of a frame are exact at an NTSC rate (the checked conversion agrees with the plain one).
+    const auto ntsc = parseTimecode("01:00:00;02", kRate29_97, true);
+    REQUIRE(ntsc);
+    CHECK(*ntsc == framesToTicks(*parseTimecodeFrames("01:00:00;02", kRate29_97, true), kRate29_97));
+}

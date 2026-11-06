@@ -295,7 +295,7 @@ namespace {
 bool isBuiltinAudioEffect(std::string_view id) {
     return id == kGain || id == kEq3 || id == kCompressor || id == kLimiter || id == kDenoise || id == kFilter || id == kDeHum ||
            id == kDeEss || id == kExpander || id == kReverb || id == kWidth || premiere::isAmplitudeEffect(id) ||
-           premiere::isFilterEffect(id) || premiere::isTimeEffect(id);
+           premiere::isFilterEffect(id) || premiere::isTimeEffect(id) || premiere::isSpectralRepair(id);
 }
 
 struct FactorySlot {
@@ -379,7 +379,7 @@ bool inOfflineRender() noexcept { return t_offlineDepth > 0; }
 std::shared_ptr<RenderIncidents> offlineRenderIncidents() noexcept { return t_incidents; }
 
 std::unique_ptr<EffectProcessor> createEffectProcessor(const EffectDescriptor& d, int channels, int sampleRate,
-                                                       std::span<const double> values) {
+                                                       std::span<const double> values, const EffectInstance* instance) {
     channels = std::clamp(channels, 1, dsp::kMaxDspChannels);
     if (d.params.size() > static_cast<std::size_t>(kMaxEffectParams) || values.size() < d.params.size()) {
         return nullptr;
@@ -416,6 +416,10 @@ std::unique_ptr<EffectProcessor> createEffectProcessor(const EffectDescriptor& d
     }
     if (d.id == kWidth) {
         return std::make_unique<WidthProcessor>(d, channels, sampleRate);
+    }
+    // 0.7 (card 047): Spectral Repair builds from the instance's edit list.
+    if (premiere::isSpectralRepair(d.id)) {
+        return premiere::createSpectralRepairProcessor(d, channels, sampleRate, values, instance);
     }
     // p02 audio: Premiere's effects (PremiereEffects.h).
     if (premiere::isAmplitudeEffect(d.id)) {
@@ -490,7 +494,7 @@ const EffectDescriptor* runnable(const EffectInstance& instance, bool& external)
 /// What an external stage's processor was built from: the instance's data. Texts over 256 bytes (a plugin's base64
 /// state parts) count by their key and length only, so the feeder's rebind stays cheap; plugin effects keep a short
 /// checksum entry of their state ("plugin.state.sum"), which changes whenever the state does.
-std::uint64_t hashData(const EffectInstance& instance) noexcept {
+std::uint64_t hashData(const EffectInstance& instance, bool full = false) noexcept {
     std::uint64_t h = 0xcbf29ce484222325ULL;
     const auto bytes = [&h](const void* p, std::size_t n) {
         const auto* b = static_cast<const unsigned char*>(p);
@@ -502,7 +506,7 @@ std::uint64_t hashData(const EffectInstance& instance) noexcept {
         bytes(d.key.data(), d.key.size());
         if (const std::string* text = d.text()) {
             const std::size_t size = text->size();
-            if (size <= 256) {
+            if (size <= 256 || full) {
                 bytes(text->data(), size);
             } else {
                 bytes(&size, sizeof size);
@@ -523,6 +527,10 @@ double constantOf(const EffectInstance& instance, const EffectParamInfo& info) {
     return v != nullptr ? v->constant() : info.defaultValue;
 }
 
+/// Built-in effects whose processor is built from the instance's data too (0.7: Spectral Repair's edit list): the chain
+/// builds a new one whenever the data changes.
+bool buildsFromData(std::string_view effect) noexcept { return premiere::isSpectralRepair(effect); }
+
 bool sameBuild(const EffectChain::Stage& s, const EffectInstance& instance, const EffectDescriptor& d, bool external) {
     if (s.id != instance.id || s.effect != instance.effect || s.external != external) {
         return false;
@@ -536,7 +544,7 @@ bool sameBuild(const EffectChain::Stage& s, const EffectInstance& instance, cons
             return false;
         }
     }
-    return true;
+    return !buildsFromData(instance.effect) || s.dataHash == hashData(instance, true);
 }
 
 /// Whether an external stage binds exactly `instance`'s parameter keys.
@@ -636,6 +644,9 @@ bool EffectChain::bind(const EffectStack& stack, const EffectChain* adoptFrom) {
                 initial.push_back(constantOf(instance, info));
                 stage.constants.push_back(info.animatable ? 0.0 : initial.back());
             }
+            if (buildsFromData(instance.effect)) {
+                stage.dataHash = hashData(instance, true);
+            }
         }
         const std::size_t count = stage.defaults.size();
         stage.values.assign(count, nullptr);
@@ -660,7 +671,10 @@ bool EffectChain::bind(const EffectStack& stack, const EffectChain* adoptFrom) {
                                             factory->create(instance, *d, m_channels, m_sampleRate, m_context, replacing))
                                       : nullptr;
         } else {
-            stage.processor = createEffectProcessor(*d, m_channels, m_sampleRate, std::span<const double>(initial));
+            stage.processor = createEffectProcessor(*d, m_channels, m_sampleRate, std::span<const double>(initial), &instance);
+            if (stage.processor) {
+                stage.processor->attachInstance(instance.id.value);
+            }
         }
         if (!stage.processor) {
             continue;
@@ -714,7 +728,7 @@ void EffectChain::process(float* interleaved, int frames, std::int64_t firstFram
                 s.cell = cell;
             }
             const ParamCell values{s.start.data(), s.end.data(), offset, kParamCellFrames,
-                                   static_cast<int>(s.start.size()), s.binding.get()};
+                                   static_cast<int>(s.start.size()), s.binding.get(), frame, &clock};
             s.processor->process(block, n, values);
         }
         done += n;

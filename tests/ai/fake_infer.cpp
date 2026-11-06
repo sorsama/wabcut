@@ -9,6 +9,10 @@
 //          | flood-line (20 MiB without a newline) | flood-lines (80 MiB of short lines), then wait for end of input
 //          | print-environment ("env NAME=value" per variable, then "cwd <path>", then exit)
 //   --thai          words are Thai syllables whose bytes are split across tokens mid-character
+//   --alternate-languages  language detection (language "auto") says "en" or "th" by the 10 s block of the request's
+//                   first sample (0-10 s en, 10-20 s th, ...); a named language is returned as it is. Thai words as with
+//                   --thai. For the mixed-languages tests (card 111).
+//   --unnamed-thai  a request heard as Thai sends its segments without a language (the result still names it)
 //   --pid-file <f>  write the process id to <f> at start
 //   --runs-file <f> append a line to <f> at every start
 
@@ -87,12 +91,18 @@ int main(int argc, char** argv) {
 #endif
     std::string mode = "ok";
     bool thai = false;
+    bool alternate = false;
+    bool unnamedThai = false;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--mode" && i + 1 < argc) {
             mode = argv[++i];
         } else if (arg == "--thai") {
             thai = true;
+        } else if (arg == "--alternate-languages") {
+            alternate = true;
+        } else if (arg == "--unnamed-thai") {
+            unnamedThai = true;
         } else if (arg == "--pid-file" && i + 1 < argc) {
             std::ofstream(argv[++i]) << getpid() << "\n";
         } else if (arg == "--runs-file" && i + 1 < argc) {
@@ -178,16 +188,21 @@ int main(int argc, char** argv) {
                 }
             }
             const std::vector<float> pcm = readPcm(t->pcm);
+            // The language this request is heard as: --thai, or with --alternate-languages the detection by block.
+            const std::string heard = alternate ? (t->language != "auto" ? t->language
+                                                                         : (t->pcm.offset / 16000 / 10) % 2 == 0 ? "en" : "th")
+                                                : (thai ? "th" : "en");
+            const bool thaiWords = heard == "th";
             for (const auto& [b, e] : speechRuns(pcm)) {
                 infer::Segment s;
                 s.id = t->id;
-                s.language = thai ? "th" : "en";
+                s.language = unnamedThai && thaiWords ? std::string() : heard;
                 s.segment.t0 = b / 160;
                 s.segment.t1 = e / 160;
                 for (std::int64_t second = (t->pcm.offset + b) / 16000; second * 16000 < t->pcm.offset + e; ++second) {
                     const std::int64_t w0 = std::max<std::int64_t>(second * 16000 - t->pcm.offset, b);
                     const std::int64_t w1 = std::min<std::int64_t>((second + 1) * 16000 - t->pcm.offset, e);
-                    if (thai) {
+                    if (thaiWords) {
                         // One syllable per second, its UTF-8 bytes split over two tokens in the middle of a
                         // character (byte-level BPE does this).
                         const std::string syllable = kThai[second % 7];
@@ -201,7 +216,7 @@ int main(int argc, char** argv) {
                 send(s);
             }
             send(infer::Progress{t->id, 100});
-            send(infer::Result{t->id, thai ? "th" : "en", 1, {{"wallMs", 1.0}}});
+            send(infer::Result{t->id, heard, 1, {{"wallMs", 1.0}}});
         }
     }
     return 0;

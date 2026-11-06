@@ -3,6 +3,7 @@
 #include <wabcut/interchange/CaptionFiles.h>
 #include <wabcut/playback/video/CaptionRedaction.h>
 #include <wabcut/playback/video/Evaluate.h>
+#include <wabcut/render/Caption.h>
 
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectIO.h>
@@ -79,6 +80,18 @@ std::string payloadOf(std::string_view text, bool vtt) {
 
 } // namespace
 
+std::string captionStyledText(const CaptionTrack& track, const std::string& text) {
+    const CaptionStyle& style = track.style;
+    if (style.textCase == CaptionTextCase::AsWritten && !style.stripPunctuation && !style.stripAccents) {
+        return text;
+    }
+    return render::captionDisplayText(text,
+                                      style.textCase == CaptionTextCase::Lower   ? render::CaptionCase::Lower
+                                      : style.textCase == CaptionTextCase::Upper ? render::CaptionCase::Upper
+                                                                                 : render::CaptionCase::AsWritten,
+                                      style.stripPunctuation, style.stripAccents, track.language);
+}
+
 const CaptionTrack* captionTrackToExport(const Sequence& sequence, const CaptionExportSettings& captions) {
     if (captions.track) {
         for (const CaptionTrack& t : sequence.captionTracks) {
@@ -102,7 +115,7 @@ std::string captionSidecarText(const CaptionTrack& track, TimeRange range, Capti
     for (const CaptionCue& cue : track.cues) {
         const Ticks start = std::max(cue.start, range.start);
         const Ticks end = std::min(cue.end(), range.end());
-        const std::string payload = payloadOf(cue.text, vtt);
+        const std::string payload = payloadOf(captionStyledText(track, cue.text), vtt);
         if (!(start < end) || payload.empty()) {
             continue;
         }
@@ -120,7 +133,11 @@ std::string captionSidecarText(const CaptionTrack& track, TimeRange range, Capti
 CaptionTrack captionTrackForFile(const ProjectState& project, const Sequence& sequence, const CaptionTrack& track,
                                  std::string_view redactedWord, const playback::CaptionWordTimings* words) {
     const std::vector<TimeRange> redacted = playback::redactedSpeechRanges(project, sequence);
-    return playback::redactCaptionTrack(track, redacted, words, redactedWord);
+    CaptionTrack out = playback::redactCaptionTrack(track, redacted, words, redactedWord);
+    for (CaptionCue& cue : out.cues) {
+        cue.text = captionStyledText(track, cue.text); // card 114: the style's case, punctuation and accents
+    }
+    return out;
 }
 
 namespace {

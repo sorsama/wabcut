@@ -22,10 +22,15 @@ Item {
     property bool canMoveUp: false
     property bool canMoveDown: false
     property int clipSectionCount: 0
+    /// 0.7 (card #57): the effect the section is of, and whether it is a favourite (pinned in Effect Controls).
+    property string effectId: ""
+    property bool pinnedNow: false
 
     function popupAt(target, x, y, sectionKey) {
         section = sectionKey
         header = controls.row("h:" + sectionKey)
+        effectId = controls.effectIdOfSection(sectionKey)
+        pinnedNow = effectId !== "" && EffectPresets.isFavorite("effect:" + effectId)
         canMoveUp = controls.canMoveSection(sectionKey, -1)
         canMoveDown = controls.canMoveSection(sectionKey, 1)
         clipSectionCount = EffectPresets.sectionsOfClip(sectionKey).length
@@ -120,6 +125,15 @@ Item {
             visible: root.masterEffect
             height: visible ? implicitHeight : 0
             onTriggered: root.controls.rowAction("h:" + root.section, "toClip")
+        }
+        // 0.7 (card #57): a favourite effect shows in Effect Controls on every clip that does not have it, ready to Add.
+        ContextMenuItem {
+            objectName: "pinEffectItem"
+            text: root.pinnedNow ? qsTr("Unpin from Effect Controls") : qsTr("Pin to Effect Controls")
+            iconName: "bookmark"
+            visible: root.stackEffect && !root.masterEffect && root.effectId !== ""
+            height: visible ? implicitHeight : 0
+            onTriggered: EffectPresets.setFavorite("effect:" + root.effectId, !root.pinnedNow)
         }
         ContextMenuSeparator {}
         ContextMenuItem {

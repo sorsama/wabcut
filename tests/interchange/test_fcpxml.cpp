@@ -219,6 +219,45 @@ TEST_CASE("interchange: FCPXML: 1.8 asset src, missing start, effects and unknow
     CHECK(hasEntry(r.report, D, ReportCategory::Clip, "'Ghost' refers to a missing asset"));
 }
 
+TEST_CASE("interchange: FCPXML: a non-uniform scale keeps its width and height (card 12)", "[interchange][fcpxml][scalewidth]") {
+    const auto r = importText(fcpxml(R"(
+        <asset-clip ref="a" offset="0s" duration="2s" start="1s" name="stretched"><adjust-transform scale="2 0.5"/></asset-clip>
+        <asset-clip ref="a" offset="2s" duration="2s" start="1s" name="uniform"><adjust-transform scale="1.5 1.5"/></asset-clip>
+        <asset-clip ref="a" offset="4s" duration="2s" start="1s" name="keyed"><adjust-transform scale="1 1"><param name="scale"><keyframeAnimation><keyframe time="1s" value="1 1"/><keyframe time="2s" value="2 0.5"/></keyframeAnimation></param></adjust-transform></asset-clip>
+        <asset-clip ref="a" offset="6s" duration="2s" start="1s" name="flipped"><adjust-transform scale="-1 1"/></asset-clip>)"),
+                              Format::FcpXml);
+    const Sequence& seq = sequenceAt(r, 0);
+    REQUIRE(track(seq, "V1").clips.size() == 4);
+    // Width x, height y: Scale Width 200 %, Scale (the height) 50 %, Uniform Scale off - nothing approximated.
+    const ClipProperties& stretched = track(seq, "V1").clips[0].properties();
+    CHECK_FALSE(stretched.uniformScale());
+    CHECK(stretched.value(ParamId::ScaleWidth) == Approx(2.0));
+    CHECK(stretched.value(ParamId::Scale) == Approx(0.5));
+    CHECK_FALSE(hasEntry(r.report, A, ReportCategory::Effect, "non-uniform scale of 'stretched'"));
+    // A uniform pair stays uniform with Scale Width untouched.
+    const ClipProperties& uniform = track(seq, "V1").clips[1].properties();
+    CHECK(uniform.uniformScale());
+    CHECK(uniform.value(ParamId::Scale) == Approx(1.5));
+    CHECK(uniform.isDefault(ParamId::ScaleWidth));
+    // Keys on a stretched scale become keys of both.
+    const ClipProperties& keyed = track(seq, "V1").clips[2].properties();
+    CHECK_FALSE(keyed.uniformScale());
+    const Curve* width = keyed[ParamId::ScaleWidth].curve();
+    const Curve* height = keyed[ParamId::Scale].curve();
+    REQUIRE(width);
+    REQUIRE(height);
+    REQUIRE(width->keys.size() == 2);
+    REQUIRE(height->keys.size() == 2);
+    CHECK(width->keys[0].value == Approx(1.0));
+    CHECK(width->keys[1].value == Approx(2.0));
+    CHECK(height->keys[0].value == Approx(1.0));
+    CHECK(height->keys[1].value == Approx(0.5));
+    // A flip (a negative scale) still has no counterpart: uniform, approximated and said so.
+    const ClipProperties& flipped = track(seq, "V1").clips[3].properties();
+    CHECK(flipped.uniformScale());
+    CHECK(hasEntry(r.report, A, ReportCategory::Effect, "non-uniform scale of 'flipped' imported as uniform scale"));
+}
+
 TEST_CASE("interchange: FCPXML: malformed documents are errors", "[interchange][fcpxml]") {
     CHECK(ImportRouter::importData("<fcpxml version=\"1.10\"><resources/></fcpxml>", Format::FcpXml, "x")
               .error()

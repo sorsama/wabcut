@@ -1,6 +1,7 @@
 #include "PluginBridge.h"
 
 #include "BridgeIds.h"
+#include "OfxUi.h"
 #include "ProjectController.h"
 
 #include <wabcut/model/ChangeSet.h>
@@ -93,6 +94,8 @@ PluginBridge::PluginBridge(QObject* parent) : QObject(parent) {
     connect(&m_editorTimer, &QTimer::timeout, this, &PluginBridge::pollEditors);
     m_statusTimer.setInterval(1000);
     connect(&m_statusTimer, &QTimer::timeout, this, &PluginBridge::pollStatus);
+    // 0.7: an OpenFX effect's badge changed (a crash, a retry) or a scan of OpenFX plug-ins finished.
+    connect(&OfxUi::instance(), &OfxUi::changed, this, &PluginBridge::bumpRevision);
 }
 
 PluginBridge::~PluginBridge() {
@@ -347,6 +350,7 @@ QString PluginBridge::rescan(bool all) {
     }
     if (scanning())
         return tr("A scan is running");
+    static_cast<void>(OfxUi::instance().rescan(all)); // 0.7: the OpenFX video plug-ins are scanned again too (in the background)
 #if defined(WABCUT_WITH_AUDIO_PLUGINS)
     m_ownScan = true;
     m_scanText = tr("Scanning audio plugins");
@@ -504,6 +508,11 @@ std::optional<PluginBridge::Found> PluginBridge::findEffect(EffectInstanceId id)
 }
 
 QString PluginBridge::apply(const QString& pluginId, const QString& targetKey) {
+    if (pluginId.startsWith(QLatin1String("plugin.ofx."))) {
+        // 0.7: an OpenFX video plug-in goes on a video clip (the timeline's drop).
+        const auto clip = parseClipKey(targetKey);
+        return clip ? OfxUi::instance().applyToClip(m_controller, pluginId, *clip) : tr("Drop the plug-in on a clip");
+    }
     if (!available() || !m_controller)
         return tr("Audio plugins are not available here");
 #if defined(WABCUT_WITH_AUDIO_PLUGINS)
@@ -581,6 +590,8 @@ QString PluginBridge::apply(const QString& pluginId, const QString& targetKey) {
 QString PluginBridge::applyToSelection(const QString& pluginId) {
     if (!m_controller)
         return tr("No project");
+    if (pluginId.startsWith(QLatin1String("plugin.ofx.")))
+        return OfxUi::instance().applyToSelectedClips(m_controller, pluginId).value(QStringLiteral("error")).toString();
     const auto target = m_controller->propertyTarget(StreamKind::Audio);
     if (!target)
         return tr("Select an audio clip first");
@@ -588,6 +599,8 @@ QString PluginBridge::applyToSelection(const QString& pluginId) {
 }
 
 QVariantMap PluginBridge::applyToSelectedClips(const QString& pluginId) {
+    if (pluginId.startsWith(QLatin1String("plugin.ofx.")))
+        return OfxUi::instance().applyToSelectedClips(m_controller, pluginId);
     const auto failed = [](const QString& error) {
         return QVariantMap{{QStringLiteral("ok"), false},
                            {QStringLiteral("error"), error},
@@ -679,6 +692,8 @@ QVariantMap PluginBridge::effectInfo(const QString& effectKey) const {
     const auto found = id ? findEffect(*id) : std::nullopt;
     if (!found || !isPluginEffect(found->effect.effect))
         return {{QStringLiteral("plugin"), false}};
+    if (found->effect.effect.starts_with("plugin.ofx."))
+        return OfxUi::instance().effectInfo(found->effect); // 0.7: an OpenFX video plug-in
     QVariantMap out{{QStringLiteral("plugin"), true},
                     {QStringLiteral("hasEditor"), false},
                     {QStringLiteral("kind"), QString()},
@@ -738,6 +753,7 @@ std::uint64_t PluginBridge::statusSignature() const {
         stack(t->effects);
     }
     stack(seq->audioEffects);
+    mix(OfxUi::instance().revision()); // 0.7: OpenFX effects' badges
     return h;
 #else
     return 0;

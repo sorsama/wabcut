@@ -40,6 +40,7 @@ const std::string kUndoTool = "edit_undo";
 const std::string kRedoTool = "edit_redo";
 const std::string kBatchTool = "edit_batch";
 const std::string kSaveTool = "project_save";
+const std::string kTransactionTool = "edit_transaction";
 
 enum class Era {
     Modern, ///< per-request _meta (2026-07-28)
@@ -194,6 +195,7 @@ struct McpServer::Impl {
     static EnginePolicy policyFor(const McpServerOptions& o) {
         EnginePolicy policy{o.allowed, 1024, o.services};
         policy.allowFileCommands = false;
+        policy.allowModelCommands = !o.holdModelCommands || o.allowed.has(Capability::MediaAnalysis);
         policy.fileRoots = o.fileRoots;
         policy.deniedCommands = {std::string(kNeverServed)};
         return policy;
@@ -595,6 +597,22 @@ struct McpServer::Impl {
                             {"inputSchema", undoRedoInput},
                             {"outputSchema", editOutputSchema()},
                             {"annotations", annotations("Redo", false, true, false)}});
+        if (options.transactions) {
+            list.push_back(Json{
+                {"name", kTransactionTool},
+                {"title", "Transaction"},
+                {"description", "Groups everything this connection edits into ONE undo step: \"begin\" opens it (label names the "
+                                "step), \"commit\" closes it, \"rollback\" returns the project to how it was at \"begin\" - nothing "
+                                "is kept. While it is open undo, redo and project_save are refused. A connection that ends "
+                                "with one open rolls it back."},
+                {"inputSchema",
+                 schema::object({{"action", schema::enumeration({"begin", "commit", "rollback"}, "What to do.")},
+                                 {"label", schema::described(Json{{"type", "string"}, {"maxLength", 200}},
+                                                             "begin: the undo step's name. Default \"Script\".")}},
+                                {"action"})},
+                {"outputSchema", editOutputSchema()},
+                {"annotations", annotations("Transaction", false, true, false)}});
+        }
         if (canSave()) {
             list.push_back(Json{
                 {"name", kSaveTool},
@@ -692,11 +710,14 @@ struct McpServer::Impl {
         } reset{current};
 
         std::optional<Json> result;
-        if (name == kBatchTool || name == kUndoTool || name == kRedoTool || name == kSaveTool) {
+        if (name == kBatchTool || name == kUndoTool || name == kRedoTool || name == kSaveTool ||
+            (options.transactions && name == kTransactionTool)) {
             if (!canEdit()) {
                 result = readOnlyRefusal(name);
             } else if (name == kBatchTool) {
                 result = callBatch(args, call);
+            } else if (name == kTransactionTool) {
+                result = callTransaction(args);
             } else if (name == kSaveTool) {
                 result = canSave() ? callSave(args)
                                    : toolError(CommandError{ErrorCode::PermissionDenied,
@@ -719,7 +740,95 @@ struct McpServer::Impl {
         if (!result) {
             return; // cancelled: the client no longer wants an answer
         }
+        record(name, args, *result);
         reply(id, std::move(*result), era);
+    }
+
+    /// The audit trail: what was called and how it ended, never its parameters or its answer.
+    void record(const std::string& tool, const Json& args, const Json& result) {
+        if (!options.audit) {
+            return;
+        }
+        McpAuditEntry entry;
+        entry.tool = tool;
+        entry.ok = !result.value("isError", false);
+        const Json structured = result.value("structuredContent", Json::object());
+        if (structured.is_object()) {
+            entry.revision = structured.value("revision", std::uint64_t{0});
+            entry.committed = structured.value("committed", false);
+            entry.dryRun = structured.value("dryRun", false);
+            if (structured.contains("error") && structured["error"].is_object()) {
+                entry.code = structured["error"].value("code", std::string());
+            }
+        }
+        if (tool == kBatchTool && args.contains("commands") && args["commands"].is_array()) {
+            entry.commands = args["commands"].size();
+        } else if (tool != kUndoTool && tool != kRedoTool && tool != kSaveTool && tool != kTransactionTool) {
+            entry.commands = 1;
+        }
+        options.audit(entry);
+    }
+
+    /// edit_transaction: the session's gesture, so the connection's edits are one undo step or none.
+    Json callTransaction(const Json& args) {
+        const Json inputSchema = schema::object(
+            {{"action", schema::enumeration({"begin", "commit", "rollback"}, "")},
+             {"label", schema::described(Json{{"type", "string"}, {"maxLength", 200}}, "")}},
+            {"action"});
+        if (auto issues = validateAgainstSchema(inputSchema, args); !issues.empty()) {
+            return toolError(CommandError{ErrorCode::InvalidParams, issues.front().path + " " + issues.front().message,
+                                          Json{{"path", issues.front().path}}});
+        }
+        const std::string action = args["action"].get<std::string>();
+        if (action == "begin") {
+            if (transactionOpen) {
+                return toolError(CommandError{ErrorCode::EditRejected, "a transaction is already open: commit or roll it back",
+                                              Json{{"label", transactionLabel}}});
+            }
+            if (session.inGesture()) {
+                return toolError(CommandError{ErrorCode::EditRejected, "the project is busy with another edit gesture", nullptr});
+            }
+            transactionLabel = args.value("label", std::string("Script"));
+            if (transactionLabel.empty()) {
+                transactionLabel = "Script";
+            }
+            session.beginGesture(transactionLabel);
+            transactionOpen = true;
+            transactionStart = session.revision();
+            return toolResult(Json{{"ok", true}, {"revision", session.revision()}, {"transaction", "open"},
+                                   {"label", transactionLabel}, {"committed", false}});
+        }
+        if (!transactionOpen) {
+            return toolError(CommandError{ErrorCode::EditRejected, "no transaction is open", nullptr});
+        }
+        transactionOpen = false;
+        Json s{{"ok", true}, {"label", transactionLabel}};
+        if (action == "commit") {
+            session.endGesture();
+            const bool changed = session.revision() != transactionStart;
+            s["revision"] = session.revision();
+            s["transaction"] = "committed";
+            s["committed"] = changed;
+            Json warnings = Json::array();
+            if (changed) {
+                afterChange(s, warnings);
+            }
+            if (!warnings.empty()) {
+                s["warnings"] = std::move(warnings);
+            }
+        } else {
+            session.cancelGesture();
+            s["revision"] = session.revision();
+            s["transaction"] = "rolledBack";
+            s["committed"] = false;
+        }
+        return toolResult(std::move(s));
+    }
+
+    Json inTransactionRefusal(const char* what) const {
+        return toolError(CommandError{ErrorCode::EditRejected,
+                                      std::string(what) + " is not available while a transaction is open: commit or roll it back",
+                                      Json{{"label", transactionLabel}}});
     }
 
     /// Moves dryRun / expectedRevision / idempotencyKey from the arguments into the request.
@@ -886,6 +995,9 @@ struct McpServer::Impl {
     }
 
     Json callUndoRedo(const Json& args, bool undo) {
+        if (transactionOpen) {
+            return inTransactionRefusal(undo ? "undo" : "redo");
+        }
         if (auto issues = validateAgainstSchema(
                 schema::object({{"expectedRevision", revisionParam("")}}), args);
             !issues.empty()) {
@@ -924,6 +1036,9 @@ struct McpServer::Impl {
     }
 
     Json callSave(const Json& args) {
+        if (transactionOpen) {
+            return inTransactionRefusal("project_save");
+        }
         if (auto issues = validateAgainstSchema(schema::object({{"copyName", schema::string("")}}), args);
             !issues.empty()) {
             return toolError(CommandError{ErrorCode::InvalidParams, issues.front().path + " " + issues.front().message,
@@ -957,8 +1072,8 @@ struct McpServer::Impl {
 
     /// Autosave after a change.
     void afterChange(Json& structured, Json& warnings) {
-        if (options.saveMode != SaveMode::Auto || options.projectPath.empty()) {
-            return;
+        if (options.saveMode != SaveMode::Auto || options.projectPath.empty() || transactionOpen) {
+            return; // inside a transaction the file waits for the commit
         }
         if (auto saved = io::saveProject(session.stateForSave(), options.projectPath); !saved) {
             warnings.push_back("autosave failed: " + saved.error().message);
@@ -1097,6 +1212,12 @@ struct McpServer::Impl {
     // --- Lifetime -----------------------------------------------------------------------------------------
 
     void finish() {
+        if (transactionOpen) {
+            // The client went away with a transaction open (a script that crashed or was stopped): none of it is kept.
+            session.cancelGesture();
+            transactionOpen = false;
+            options.log("rolled back the open transaction \"" + transactionLabel + "\": the client disconnected");
+        }
         if (options.saveMode != SaveMode::OnExit || options.projectPath.empty() || session.revision() == savedRevision) {
             return;
         }
@@ -1113,6 +1234,10 @@ struct McpServer::Impl {
     const CommandRegistry& registry;
     CommandEngine engine;
     std::uint64_t savedRevision;
+
+    bool transactionOpen = false;
+    std::string transactionLabel;
+    std::uint64_t transactionStart = 0;
 
     McpTransport* transport = nullptr;
     std::deque<std::string> pending;
@@ -1144,6 +1269,8 @@ void McpServer::serve(McpTransport& transport) {
     }
     m->finish();
 }
+
+void McpServer::finish() { m->finish(); }
 
 Json McpServer::tools() const { return m->tools(); }
 

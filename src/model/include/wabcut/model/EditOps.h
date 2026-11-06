@@ -82,6 +82,8 @@ struct EditResult {
     std::uint32_t createdLayer = 0;
     /// Tracks the edit added (A.10: source edits whose patches ask for a new track), in patch order.
     std::vector<TrackId> createdTracks;
+    /// 0.7 (card 124): the track group createTrackGroup made.
+    TrackGroupId createdTrackGroup;
 };
 
 using EditOutcome = std::expected<EditResult, Error>;

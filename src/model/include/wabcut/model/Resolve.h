@@ -13,8 +13,9 @@
 //   time) -> its track -> ... -> the top sequence.
 // Within one nested level the leaves come in track order (V1 first, A1 first), then time.
 //
-// Which tracks a level reads: a nested sequence's tracks of the clip's kind whose output is on (video: Track::enabled;
-// audio: not muted, and only soloed tracks while any is soloed); a multicam clip only its angles' tracks, whatever
+// Which tracks a level reads: a nested sequence's tracks of the clip's kind whose output is on (video: Track::enabled,
+// and only soloed tracks while any is soloed (0.7); audio: not muted, and only soloed tracks while any is soloed); a
+// multicam clip only its angles' tracks, whatever
 // their flags. Disabled clips and clips of unknown source kinds give nothing; a nested clip past its sequence's end
 // gives nothing. Transitions: inside a transition region of a track both clips are active, each leaf (and each level
 // of `path`) records the transition and how far it is (0..1) - the evaluator blends them as it does on the top level.
@@ -83,6 +84,15 @@ std::vector<ResolvedLeaf> resolveLeaves(const ProjectState& state, SequenceId se
 /// Every leaf a sequence shows (`kind` Video) or plays (Audio) at time `t`: resolveLeaves over each track of that kind
 /// whose output is on, with the clips active at `t` there (both clips inside a transition).
 std::vector<ResolvedLeaf> resolveSequenceLeaves(const ProjectState& state, SequenceId sequence, StreamKind kind, Ticks t);
+
+/// 0.7 (card 106): whether any video track of `sequence` is soloed (the solo switch of a video track header). While one
+/// is, only the soloed video tracks show, like soloed audio tracks are the only ones heard.
+bool anyVideoSolo(const Sequence& sequence);
+
+/// 0.7 (card 106): whether the picture of video track `track` of `sequence` shows: its output (eye) is on and, while
+/// any video track of the sequence is soloed, it is one of the soloed ones. Every place that decides which video
+/// tracks make the picture (the Program Monitor, export, nested sequences, picking) asks this.
+bool videoTrackShown(const Sequence& sequence, const Track& track);
 
 /// The tracks a nested or multicam `clip` reads from its sequence `nested` by the rules above, as indices into
 /// nested.tracks() of the clip's kind in compositing / mixing order (V1 / A1 first): a multicam clip its active angles'

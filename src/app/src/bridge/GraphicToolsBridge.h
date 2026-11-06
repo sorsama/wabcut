@@ -64,6 +64,11 @@ public:
     Q_INVOKABLE QString pushTextStyle(const QString& clip, int layer);
     Q_INVOKABLE QString renameTextStyle(const QString& from, const QString& to);
     Q_INVOKABLE QString removeTextStyle(const QString& name);
+    /// 0.7 (card #81): styles part of a text layer: the characters [from, to) in UTF-16 units of the text the editor shows
+    /// (TextEdit.selectionStart / selectionEnd) take the look of project text style `name` (textStyle.applyRange). "" or why not.
+    Q_INVOKABLE QString applyTextStyleToRange(const QString& clip, int layer, int from, int to, const QString& name);
+    /// 0.7 (card #81): moves a text style to place `index` of the list (textStyle.move; Library > Text card menu).
+    Q_INVOKABLE QString moveTextStyle(const QString& name, int index);
 
     // ---- Text Styles as project items (0.2: Premiere's Text Style items in the Project panel) ----
     /// The project's text styles with their look for a preview: [{ name, fontFamily, fontSize, fontWeight, italic,

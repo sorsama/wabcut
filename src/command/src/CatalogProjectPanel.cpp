@@ -516,6 +516,63 @@ void registerProjectPanelCommands(CommandRegistry& registry) {
                         return out;
                     }},
                    {"path"}));
+
+    // ---- Consolidate Duplicates (0.7, card 025) ----
+    addBuiltin(registry,
+               {"project.consolidateDuplicates", 1, "Consolidate Duplicates",
+                "Premiere's Edit > Consolidate Duplicates: media items that are the same file (equal size and sample hash; "
+                "subclips and titles are not) are merged into one. Everything that played a removed item - clips and "
+                "audition takes in every sequence, graphic images, AI matte masks, redactions, subclips' masters, brand "
+                "logos - plays the kept one, which is the item that is online, then has the most clips, then the lowest "
+                "id. Only items with equal Interpret Footage, timecode, audio channels, frame scaling, camera RAW "
+                "settings and Master Clip Effects merge; the others stay and are listed under \"skipped\" with the "
+                "reason. The keeper's empty comment, description, label, metadata and rights are filled from the "
+                "removed items, markers are added (once per start and name), transcript corrections move over when the "
+                "keeper has none. \"media\" limits it to the groups of those items. One undo step; \"groups\" in the "
+                "result is the report (a dry run shows it without changing anything).",
+                Capability::EditProject,
+                withSequence({{"media", schema::array(mediaParam("A media item."),
+                                                      "Only the groups of duplicates these items are in (default: all).")}}),
+                Json::object(), {},
+                [](ExecutionContext& c) {
+                    std::vector<MediaId> only;
+                    if (c.has("media")) {
+                        only = c.mediaList("media");
+                    }
+                    auto merged = c.take(edit::consolidateDuplicates(c.state(), only));
+                    Json groups = Json::array();
+                    CommandOutput out;
+                    for (const edit::ConsolidateGroup& g : merged.groups) {
+                        Json removed = Json::array();
+                        Json removedNames = Json::array();
+                        for (const MediaId id : g.removed) {
+                            removed.push_back(id.value);
+                        }
+                        for (const std::string& name : g.removedNames) {
+                            removedNames.push_back(name);
+                        }
+                        Json skipped = Json::array();
+                        for (const edit::ConsolidateSkip& s : g.skipped) {
+                            skipped.push_back(Json{{"media", s.media.value}, {"name", s.name}, {"reason", s.reason}});
+                            out.warnings.push_back("\"" + s.name + "\" " + s.reason);
+                        }
+                        for (const std::string& note : g.notes) {
+                            out.warnings.push_back(note);
+                        }
+                        groups.push_back(Json{{"keeper", g.keeper.value},
+                                              {"keeperName", g.keeperName},
+                                              {"removed", std::move(removed)},
+                                              {"removedNames", std::move(removedNames)},
+                                              {"repointedClips", g.repointedClips},
+                                              {"skipped", std::move(skipped)},
+                                              {"notes", g.notes}});
+                    }
+                    out.data = Json{{"removed", merged.removedItems()},
+                                    {"repointedClips", merged.repointedClips()},
+                                    {"groups", std::move(groups)}};
+                    out.state = std::move(merged.state);
+                    return out;
+                }});
 }
 
 } // namespace wabcut::command::detail

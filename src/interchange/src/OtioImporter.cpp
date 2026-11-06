@@ -286,7 +286,8 @@ ClipProperties propertiesFrom(const Json& j, std::vector<std::string>& rejected)
     for (const auto& entry : j.items()) {
         const auto id = parameterByKey(entry.key());
         const auto value = paramFrom(entry.value());
-        if (!id || !value || !value->isValid(parameterInfo(*id).minValue, parameterInfo(*id).maxValue)) {
+        if (!id || !value || !value->isValid(parameterInfo(*id).minValue, parameterInfo(*id).maxValue) ||
+            (value->isCurve() && !parameterInfo(*id).animatable)) {
             rejected.push_back(entry.key());
             continue;
         }
@@ -1949,6 +1950,11 @@ bool OtioParser::applySequenceMetadata(const Json& meta, const std::string& poin
     }
     if (const auto out = ticksMember(meta, "markOut"); out && out->value >= 0) {
         s.markOut = *out;
+    }
+    if (const auto in = ticksMember(meta, "workIn"), out = ticksMember(meta, "workOut"); // 0.7 (card 046)
+        in && out && in->value >= 0 && *out > *in) {
+        s.workIn = *in;
+        s.workOut = *out;
     }
     // The exact duration (its trailing gap), unless the timeline was lengthened or shortened in another editor.
     if (const auto duration = ticksMember(meta, "duration"); duration && duration->value >= 0) {

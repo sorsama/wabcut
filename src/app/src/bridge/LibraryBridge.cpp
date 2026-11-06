@@ -22,6 +22,7 @@
 #include <wabcut/editor/MediaFormats.h>
 #include <wabcut/editor/MediaImport.h>
 #include <wabcut/interchange/Xmp.h>
+#include <wabcut/media/CodecSupport.h>
 #include <wabcut/media/ContainerTags.h>
 #include <wabcut/model/LayeredFile.h>
 #include <wabcut/model/RedactionMedia.h>
@@ -276,6 +277,46 @@ void LibraryBridge::setMessage(const QString& message) {
 
 // ---- Settings -----------------------------------------------------------------------------------------------------
 
+QStringList LibraryBridge::encodeColumns(const std::vector<ColumnState>& columns) {
+    QStringList out;
+    for (const ColumnState& c : columns) {
+        out << QStringLiteral("%1:%2:%3")
+                   .arg(QLatin1String(libraryColumns()[static_cast<std::size_t>(c.column)].id))
+                   .arg(c.width)
+                   .arg(c.visible ? 1 : 0);
+    }
+    return out;
+}
+
+std::optional<std::vector<LibraryBridge::ColumnState>> LibraryBridge::decodeColumns(const QStringList& saved) {
+    if (saved.isEmpty())
+        return std::nullopt;
+    std::vector<ColumnState> columns;
+    for (const QString& entry : saved) {
+        const QStringList parts = entry.split(QLatin1Char(':'));
+        const auto column = parts.isEmpty() ? std::nullopt : libraryColumnFromId(parts.front());
+        if (!column || std::any_of(columns.begin(), columns.end(), [&](const ColumnState& c) { return c.column == *column; }))
+            continue;
+        ColumnState state{*column, true, libraryColumns()[static_cast<std::size_t>(*column)].defaultWidth};
+        if (parts.size() > 1)
+            state.width = std::clamp(parts[1].toInt(), 40, 800);
+        if (parts.size() > 2)
+            state.visible = parts[2] != QStringLiteral("0");
+        columns.push_back(state);
+    }
+    // Columns this build added since: at the end, as their defaults say.
+    for (const LibraryColumnInfo& info : libraryColumns()) {
+        if (std::none_of(columns.begin(), columns.end(), [&](const ColumnState& c) { return c.column == info.column; }))
+            columns.push_back({info.column, info.defaultVisible, info.defaultWidth});
+    }
+    // The name always shows, first or not.
+    for (ColumnState& c : columns) {
+        if (c.column == LibraryColumn::Name)
+            c.visible = true;
+    }
+    return columns;
+}
+
 void LibraryBridge::loadSettings() {
     QSettings settings;
     settings.beginGroup(QStringLiteral("library"));
@@ -285,37 +326,29 @@ void LibraryBridge::loadSettings() {
                           .toStringList()
                           .mid(0, 2);
     m_hoverScrub = settings.value(QStringLiteral("hoverScrub"), true).toBool();
+    m_listThumbnails = settings.value(QStringLiteral("listThumbnails"), false).toBool();
     m_embedXmp = QSettings().value(QStringLiteral("metadata/embedXmp"), false).toBool();
     m_thumbnailScale = std::clamp(settings.value(QStringLiteral("thumbnailScale"), 1.0).toDouble(), 0.5, 2.0);
     m_ingest = settings.value(QStringLiteral("ingest"), false).toBool();
     if (const QString action = settings.value(QStringLiteral("ingestAction")).toString();
-        action == QLatin1String("copy") || action == QLatin1String("transcode") || action == QLatin1String("proxies"))
+        action == QLatin1String("copy") || action == QLatin1String("transcode") || action == QLatin1String("proxies") ||
+        action == QLatin1String("copyProxies"))
         m_ingestAction = action;
     m_ingestFolder = settings.value(QStringLiteral("ingestFolder")).toString();
     if (const QString preset = settings.value(QStringLiteral("ingestPreset")).toString(); !preset.isEmpty())
         m_ingestPreset = preset;
-    const QStringList saved = settings.value(QStringLiteral("columns")).toStringList();
-    if (!saved.isEmpty()) {
-        std::vector<ColumnState> columns;
-        for (const QString& entry : saved) {
-            const QStringList parts = entry.split(QLatin1Char(':'));
-            const auto column = parts.isEmpty() ? std::nullopt : libraryColumnFromId(parts.front());
-            if (!column || std::any_of(columns.begin(), columns.end(), [&](const ColumnState& c) { return c.column == *column; }))
-                continue;
-            ColumnState state{*column, true, libraryColumns()[static_cast<std::size_t>(*column)].defaultWidth};
-            if (parts.size() > 1)
-                state.width = std::clamp(parts[1].toInt(), 40, 800);
-            if (parts.size() > 2)
-                state.visible = parts[2] != QStringLiteral("0");
-            columns.push_back(state);
-        }
-        // Columns this build added since: at the end, as their defaults say.
-        for (const LibraryColumnInfo& info : libraryColumns()) {
-            if (std::none_of(columns.begin(), columns.end(), [&](const ColumnState& c) { return c.column == info.column; }))
-                columns.push_back({info.column, info.defaultVisible, info.defaultWidth});
-        }
-        m_columns = std::move(columns);
+    if (auto columns = decodeColumns(settings.value(QStringLiteral("columns")).toStringList()))
+        m_columns = std::move(*columns);
+    // 0.7 (card 144): the named column layouts.
+    const int presetCount = settings.beginReadArray(QStringLiteral("columnPresets"));
+    for (int i = 0; i < presetCount && static_cast<int>(m_columnPresets.size()) < kMaxColumnPresets; ++i) {
+        settings.setArrayIndex(i);
+        const QString name = settings.value(QStringLiteral("name")).toString().trimmed();
+        auto columns = decodeColumns(settings.value(QStringLiteral("columns")).toStringList());
+        if (!name.isEmpty() && columns)
+            m_columnPresets.push_back({name, std::move(*columns)});
     }
+    settings.endArray();
     if (const auto sort = libraryColumnFromId(settings.value(QStringLiteral("sortColumn")).toString()))
         m_model->setSort(*sort, settings.value(QStringLiteral("sortAscending"), true).toBool());
     settings.endGroup();
@@ -329,20 +362,22 @@ void LibraryBridge::saveSettings() const {
     settings.beginGroup(QStringLiteral("library"));
     settings.setValue(QStringLiteral("view"), m_view);
     settings.setValue(QStringLiteral("hoverScrub"), m_hoverScrub);
+    settings.setValue(QStringLiteral("listThumbnails"), m_listThumbnails);
     settings.setValue(QStringLiteral("thumbnailScale"), m_thumbnailScale);
     settings.setValue(QStringLiteral("freeformLines"), m_freeformLines);
     settings.setValue(QStringLiteral("ingest"), m_ingest);
     settings.setValue(QStringLiteral("ingestAction"), m_ingestAction);
     settings.setValue(QStringLiteral("ingestFolder"), m_ingestFolder);
     settings.setValue(QStringLiteral("ingestPreset"), m_ingestPreset);
-    QStringList columns;
-    for (const ColumnState& c : m_columns) {
-        columns << QStringLiteral("%1:%2:%3")
-                       .arg(QLatin1String(libraryColumns()[static_cast<std::size_t>(c.column)].id))
-                       .arg(c.width)
-                       .arg(c.visible ? 1 : 0);
+    settings.setValue(QStringLiteral("columns"), encodeColumns(m_columns));
+    settings.remove(QStringLiteral("columnPresets"));
+    settings.beginWriteArray(QStringLiteral("columnPresets"), static_cast<int>(m_columnPresets.size()));
+    for (std::size_t i = 0; i < m_columnPresets.size(); ++i) {
+        settings.setArrayIndex(static_cast<int>(i));
+        settings.setValue(QStringLiteral("name"), m_columnPresets[i].first);
+        settings.setValue(QStringLiteral("columns"), encodeColumns(m_columnPresets[i].second));
     }
-    settings.setValue(QStringLiteral("columns"), columns);
+    settings.endArray();
     settings.setValue(QStringLiteral("sortColumn"), sortColumn());
     settings.setValue(QStringLiteral("sortAscending"), m_model->sortAscending());
     settings.endGroup();
@@ -379,6 +414,14 @@ void LibraryBridge::setHoverScrub(bool on) {
     m_hoverScrub = on;
     saveSettings();
     emit hoverScrubChanged();
+}
+
+void LibraryBridge::setListThumbnails(bool on) {
+    if (on == m_listThumbnails)
+        return;
+    m_listThumbnails = on;
+    saveSettings();
+    emit listThumbnailsChanged();
 }
 
 void LibraryBridge::setThumbnailScale(qreal scale) {
@@ -503,6 +546,73 @@ void LibraryBridge::resetColumns() {
     emit sortChanged();
 }
 
+QStringList LibraryBridge::columnPresets() const {
+    QStringList out;
+    for (const auto& preset : m_columnPresets)
+        out << preset.first;
+    return out;
+}
+
+bool LibraryBridge::saveColumnPreset(const QString& name) {
+    const QString chosen = name.simplified().left(64);
+    if (chosen.isEmpty()) {
+        setMessage(tr("Give the column layout a name."));
+        return false;
+    }
+    const auto same = [&](const std::pair<QString, std::vector<ColumnState>>& p) {
+        return p.first.compare(chosen, Qt::CaseInsensitive) == 0;
+    };
+    if (const auto it = std::find_if(m_columnPresets.begin(), m_columnPresets.end(), same); it != m_columnPresets.end()) {
+        it->second = m_columns;
+    } else if (static_cast<int>(m_columnPresets.size()) >= kMaxColumnPresets) {
+        setMessage(tr("Delete a column layout first: at most %1 can be kept.").arg(kMaxColumnPresets));
+        return false;
+    } else {
+        m_columnPresets.push_back({chosen, m_columns});
+    }
+    setMessage({});
+    saveSettings();
+    emit columnPresetsChanged();
+    return true;
+}
+
+bool LibraryBridge::applyColumnPreset(const QString& name) {
+    const auto it = std::find_if(m_columnPresets.begin(), m_columnPresets.end(), [&](const auto& p) {
+        return p.first.compare(name.simplified(), Qt::CaseInsensitive) == 0;
+    });
+    if (it == m_columnPresets.end())
+        return false;
+    m_columns = it->second;
+    applyColumns();
+    saveSettings();
+    return true;
+}
+
+bool LibraryBridge::deleteColumnPreset(const QString& name) {
+    const auto removed = std::erase_if(m_columnPresets, [&](const auto& p) {
+        return p.first.compare(name.simplified(), Qt::CaseInsensitive) == 0;
+    });
+    if (removed == 0)
+        return false;
+    saveSettings();
+    emit columnPresetsChanged();
+    return true;
+}
+
+bool LibraryBridge::setNestBin(const QString& key, bool on) {
+    const auto bin = parseBinKey(key);
+    if (!bin) {
+        setMessage(tr("Choose a bin."));
+        return false;
+    }
+    const bool ok = apply(on ? QT_TRANSLATE_NOOP("wabcut::app::LibraryBridge", "File Nested Sequences in Bin")
+                             : QT_TRANSLATE_NOOP("wabcut::app::LibraryBridge", "Stop Filing Nested Sequences in Bin"),
+                          [&](const ProjectState& s) { return edit::setNestBin(s, *bin, on); });
+    if (ok)
+        setMessage({});
+    return ok;
+}
+
 // ---- Refresh ---------------------------------------------------------------------------------------------------------
 
 namespace {
@@ -538,6 +648,14 @@ void computeUsage(const ProjectState& state, std::unordered_map<std::uint64_t, L
                         ++t.uses;
                 }
             }
+            // 0.7 (card 069): the nest a rendered clip can be restored to counts as used, so Remove Unused keeps it and a
+            // delete asks first.
+            if (const RenderedNest* rendered = c.renderedNest(); rendered && rendered->sequence.value != 0) {
+                LibraryUsage& r = sequences[rendered->sequence.value];
+                (video ? r.video : r.audio) += 1;
+                if (!c.linkGroup.isValid() || groups.insert({(1ULL << 63) | rendered->sequence.value, c.linkGroup.value}).second)
+                    ++r.uses;
+            }
         };
         for (const TrackPtr& t : seq->videoTracks) {
             if (t) {
@@ -561,30 +679,38 @@ void LibraryBridge::recomputeStats(const ProjectState& state) {
     m_used.clear();
     for (const auto& [id, use] : m_usage)
         m_used.insert(id);
+    // Card #169: a subclip plays its master's Master Clip Effects (MasterClipEffects.h), so the master of a used subclip is
+    // in use - even when no clip plays it itself - and Remove Unused keeps it. (A subclip of a subclip: the chain.)
+    for (const MediaPtr& m : state.media) {
+        std::uint64_t id = m ? m->id.value : 0;
+        for (const MediaItem* item = m.get(); item && item->subclip && m_used.contains(id);) {
+            id = item->subclip->master.value;
+            item = state.findMedia(item->subclip->master);
+            if (!m_used.insert(id).second)
+                break;
+        }
+    }
     m_unused.clear();
     for (const MediaPtr& m : state.media) {
         if (!m_used.contains(m->id.value))
             m_unused.insert(m->id.value);
     }
     // Duplicates: the same file content (size and sample hash) imported more than once. Subclips share their
-    // master's file on purpose, and generated items have no file.
+    // master's file on purpose, and generated items have no file. 0.7 (card 025): one definition in the model, shared with
+    // the search bins and Consolidate Duplicates.
     m_duplicates.clear();
     m_duplicateGroups.clear();
-    std::map<std::pair<std::int64_t, std::string>, std::vector<const MediaItem*>> byContent;
-    for (const MediaPtr& m : state.media) {
-        if (m->isSubclip() || m->isGenerator() || !m->locator.fingerprint.isKnown())
-            continue;
-        byContent[{m->locator.fingerprint.size, m->locator.fingerprint.sampleHash}].push_back(m.get());
-    }
-    for (const auto& [content, items] : byContent) {
-        if (items.size() < 2)
-            continue;
+    for (const std::vector<MediaId>& ids : edit::duplicateMediaGroups(state)) {
         QVariantList rows;
-        for (const MediaItem* m : items) {
+        for (const MediaId id : ids) {
+            const MediaItem* m = state.findMedia(id);
+            if (!m)
+                continue;
             m_duplicates.insert(m->id.value);
             rows.append(QVariantMap{{QStringLiteral("key"), mediaKey(m->id)}, {QStringLiteral("name"), text(m->name)}});
         }
-        m_duplicateGroups.append(QVariantMap{{QStringLiteral("name"), text(items.front()->name)},
+        const MediaItem* first = state.findMedia(ids.front());
+        m_duplicateGroups.append(QVariantMap{{QStringLiteral("name"), text(first ? first->name : std::string())},
                                              {QStringLiteral("items"), rows}});
     }
 }
@@ -1680,11 +1806,26 @@ QVariantMap LibraryBridge::deleteImpact(const QStringList& keys) const {
     QString firstName;
     int usedItems = 0;
     int takes = 0;
+    int masterSubclips = 0; // card #169: subclips on timelines that lose the Master Clip Effects of an item that goes
+    int masterClips = 0;
+    QString masterName;
     QStringList unusedKeys;
     if (snap) {
         std::unordered_set<std::uint64_t> deletedMedia;
         std::unordered_set<std::uint64_t> deletedSequences;
         deletedItems(*snap, bins, media, sequences, deletedMedia, deletedSequences);
+        for (const MediaPtr& m : snap->media) {
+            if (!m || !m->subclip || deletedMedia.contains(m->id.value) || !deletedMedia.contains(m->subclip->master.value))
+                continue;
+            const MediaItem* master = snap->findMedia(m->subclip->master);
+            const auto use = m_usage.find(m->id.value);
+            if (!master || master->masterEffects.empty() || use == m_usage.end() || use->second.video + use->second.audio == 0)
+                continue;
+            ++masterSubclips;
+            masterClips += use->second.video + use->second.audio;
+            if (masterName.isEmpty())
+                masterName = text(master->name);
+        }
         const DeletedUses uses = deletedUses(*snap, bins, media, sequences);
         // The items being deleted that those clips play, keyed as media / sequence (a linked partner's own file is not
         // one of them); 0.6: an audition's other takes count (card #74).
@@ -1770,6 +1911,10 @@ QVariantMap LibraryBridge::deleteImpact(const QStringList& keys) const {
             {QStringLiteral("sequenceNames"), names},
             {QStringLiteral("firstName"), firstName},
             {QStringLiteral("usedItems"), usedItems},
+            // Card #169: subclips (and their clips) that would play without the Master Clip Effects of "masterName".
+            {QStringLiteral("masterEffectSubclips"), masterSubclips},
+            {QStringLiteral("masterEffectClips"), masterClips},
+            {QStringLiteral("masterEffectName"), masterName},
             {QStringLiteral("unusedKeys"), unusedKeys}};
 }
 
@@ -1777,7 +1922,7 @@ bool LibraryBridge::requestDelete(const QStringList& keys, bool withOptions) {
     if (keys.isEmpty())
         return false;
     const QVariantMap impact = deleteImpact(keys);
-    if (withOptions || impact.value(QStringLiteral("clips")).toInt() > 0) {
+    if (withOptions || impact.value(QStringLiteral("clips")).toInt() > 0 || impact.value(QStringLiteral("masterEffectClips")).toInt() > 0) {
         emit deleteConfirmRequested(keys, impact, withOptions);
         return true;
     }
@@ -1793,7 +1938,8 @@ QVariantMap LibraryBridge::details(const QString& key) const {
     if (const auto b = parseBinKey(key)) {
         const Bin* bin = snap->findBin(*b);
         return bin ? QVariantMap{{QStringLiteral("key"), key}, {QStringLiteral("kind"), QStringLiteral("bin")},
-                                 {QStringLiteral("name"), text(bin->name)}, {QStringLiteral("searchBin"), bin->isSearch()}}
+                                 {QStringLiteral("name"), text(bin->name)}, {QStringLiteral("searchBin"), bin->isSearch()},
+                                 {QStringLiteral("nestTarget"), bin->nestTarget}}
                    : QVariantMap{};
     }
     const auto id = parseMediaKey(key);
@@ -2937,9 +3083,11 @@ QString LibraryBridge::importFromBrowser(const QStringList& files) {
 }
 
 std::optional<command::Json> LibraryBridge::ingestClips(const QStringList& files) {
-    const bool copying = m_ingest && m_ingestAction == QLatin1String("copy");
+    // 0.7 (card 022): "copyProxies" copies the files into the folder, imports the copies and makes proxies of those.
+    const bool copyProxies = m_ingest && m_ingestAction == QLatin1String("copyProxies");
+    const bool copying = (m_ingest && m_ingestAction == QLatin1String("copy")) || copyProxies;
     const bool transcoding = m_ingest && m_ingestAction == QLatin1String("transcode");
-    const bool proxies = m_ingest && m_ingestAction == QLatin1String("proxies");
+    const bool proxies = (m_ingest && m_ingestAction == QLatin1String("proxies")) || copyProxies;
     if ((copying || transcoding) && m_ingestFolder.isEmpty()) {
         setMessage(tr("Choose the folder Ingest copies or transcodes the clips to (Ingest Settings)."));
         return std::nullopt;
@@ -2961,8 +3109,14 @@ std::optional<command::Json> LibraryBridge::ingestClips(const QStringList& files
     }
     if (proxies) {
         const int queued = m_readiness ? m_readiness->generateProxies(keys) : 0;
-        setMessage(queued > 0 ? tr("Creating proxies of %n clip(s).", "", queued)
-                              : tr("Imported; there is nothing to make a proxy of."));
+        if (copyProxies)
+            setMessage(queued > 0 ? tr("Copied to %1; creating proxies of %n clip(s).", "", queued)
+                                        .arg(QDir::toNativeSeparators(m_ingestFolder))
+                                  : tr("Copied to %1; there is nothing to make a proxy of.")
+                                        .arg(QDir::toNativeSeparators(m_ingestFolder)));
+        else
+            setMessage(queued > 0 ? tr("Creating proxies of %n clip(s).", "", queued)
+                                  : tr("Imported; there is nothing to make a proxy of."));
     } else if (transcoding) {
         const std::filesystem::path folder = pathFromUtf8(m_ingestFolder.toStdString());
         const ProjectSnapshot snap = m_controller->snapshot();
@@ -3058,7 +3212,8 @@ void LibraryBridge::setIngest(bool on) {
 
 void LibraryBridge::setIngestAction(const QString& action) {
     if (action == m_ingestAction ||
-        (action != QLatin1String("copy") && action != QLatin1String("transcode") && action != QLatin1String("proxies")))
+        (action != QLatin1String("copy") && action != QLatin1String("transcode") && action != QLatin1String("proxies") &&
+         action != QLatin1String("copyProxies")))
         return;
     m_ingestAction = action;
     saveSettings();
@@ -3081,6 +3236,13 @@ void LibraryBridge::setIngestPreset(const QString& preset) {
     m_ingestPreset = preset;
     saveSettings();
     emit ingestChanged();
+}
+
+void LibraryBridge::setFieldEditing(bool editing) {
+    if (editing == m_fieldEditing)
+        return;
+    m_fieldEditing = editing;
+    emit fieldEditingChanged();
 }
 
 QString LibraryBridge::makeSubclip(const QString& name, bool restricted) {
@@ -3258,7 +3420,7 @@ QString LibraryBridge::createProxies(const QString& key) {
     const int queued = wanted.isEmpty() || !m_readiness ? 0 : m_readiness->generateProxies(wanted);
     QStringList parts{tr("%n queued", nullptr, queued)};
     if (ready > 0)
-        parts << tr("%n already have proxies", nullptr, ready);
+        parts << tr("%n with a proxy already", nullptr, ready);
     if (making > 0)
         parts << tr("%n being made", nullptr, making);
     if (wanted.size() > queued)
@@ -3286,7 +3448,7 @@ QString LibraryBridge::remakeProxies(const QString& key) {
     if (!ready.isEmpty())
         m_readiness->deleteProxies(ready);
     const int queued = m_readiness->generateProxies(again);
-    const QString result = tr("Remaking %n proxies.", nullptr, queued);
+    const QString result = tr("Remaking %n prox(ies).", nullptr, queued);
     emit notice(result);
     return result;
 }
@@ -3302,7 +3464,7 @@ QString LibraryBridge::deleteProxies(const QString& key) {
     if (!m_readiness || doomed.isEmpty())
         return tr("No proxies to delete.");
     const int deleted = m_readiness->deleteProxies(doomed);
-    const QString result = tr("Deleted or cancelled %n proxies.", nullptr, std::max(deleted, static_cast<int>(doomed.size())));
+    const QString result = tr("Deleted or cancelled %n prox(ies).", nullptr, std::max(deleted, static_cast<int>(doomed.size())));
     emit notice(result);
     return result;
 }
@@ -3326,15 +3488,27 @@ QVariantMap videoMap(const VideoStreamInfo& v) {
                                                                                     : QStringLiteral("progressive")},
             {QStringLiteral("alpha"), v.alpha != AlphaMode::None},
             {QStringLiteral("rotation"), v.rotationDegrees},
+            // 0.7 (card "Dolby Vision 8.4 and HDR10+"): the Dolby Vision configuration the container declares, and HDR10+.
+            {QStringLiteral("dolbyVision"), v.dolbyVision ? QVariant(QVariantMap{{QStringLiteral("profile"), text(v.dolbyVision->name())},
+                                                                                 {QStringLiteral("level"), v.dolbyVision->level},
+                                                                                 {QStringLiteral("blCompatibilityId"), v.dolbyVision->blCompatibilityId},
+                                                                                 {QStringLiteral("rpu"), v.dolbyVision->rpuPresent},
+                                                                                 {QStringLiteral("enhancementLayer"), v.dolbyVision->elPresent}})
+                                                          : QVariant()},
+            {QStringLiteral("hdr10Plus"), v.hdr10Plus},
             {QStringLiteral("frames"), QVariant::fromValue(static_cast<qint64>(v.frameCount))}};
 }
 
 QVariantMap audioMap(const AudioStreamInfo& a) {
+    QStringList channelNames; // 0.7 (card 062): a poly WAV's channel names ("" for a channel with none)
+    for (const std::string& name : a.channelNames)
+        channelNames << text(name);
     return {{QStringLiteral("codec"), text(a.codec)},
             {QStringLiteral("channels"), a.channels},
             {QStringLiteral("layout"), text(a.channelLayout)},
             {QStringLiteral("sampleRate"), static_cast<int>(std::lround(a.sampleRate.toDouble()))},
-            {QStringLiteral("title"), text(a.title)}};
+            {QStringLiteral("title"), text(a.title)},
+            {QStringLiteral("channelNames"), channelNames}};
 }
 
 /// What browserFileInfo and mediaProperties share about one item: { name, container, duration (timecode), seconds,
@@ -3437,6 +3611,57 @@ QVariantMap LibraryBridge::mediaProperties(const QString& key) const {
     return out;
 }
 
+namespace {
+
+/// 0.7 (card 103): the name and the plain sentence for one entry of media::newerCodecSupport().
+QString codecSupportName(const QString& id) {
+    return id == QLatin1String("apv")        ? LibraryBridge::tr("APV (Advanced Professional Video)")
+           : id == QLatin1String("hevc-422") ? LibraryBridge::tr("HEVC 4:2:2")
+           : id == QLatin1String("av1-422")  ? LibraryBridge::tr("AV1 4:2:2")
+                                             : LibraryBridge::tr("MV-HEVC (spatial video)");
+}
+
+QString codecSupportText(const media::CodecSupport& c) {
+    const QString id = QString::fromStdString(c.id);
+    if (!c.decodes()) {
+        return LibraryBridge::tr("This build cannot play it.");
+    }
+    if (id == QLatin1String("apv")) {
+        return c.exports() ? LibraryBridge::tr("Plays and exports.")
+                           : LibraryBridge::tr("Plays. Decode only: Wabcut cannot export APV; export as ProRes, DNxHR or H.264.");
+    }
+    if (id == QLatin1String("hevc-422")) {
+        if (!c.exports()) {
+            return LibraryBridge::tr("Plays (8, 10 and 12-bit). Decode only: no HEVC encoder here takes 4:2:2; export as ProRes 422 or H.264.");
+        }
+        return c.encoderEightBitOnly
+                   ? LibraryBridge::tr("Plays (8, 10 and 12-bit). Exports 4:2:2 at 8 bits only; 10-bit 4:2:2 HEVC is decode-only (export "
+                       "it as ProRes 422 or H.264 4:2:2 10-bit).")
+                   : LibraryBridge::tr("Plays and exports 4:2:2 (8 and 10-bit).");
+    }
+    if (id == QLatin1String("av1-422")) {
+        return c.exports() ? LibraryBridge::tr("Plays and exports.")
+                           : LibraryBridge::tr("Plays. Decode only: the AV1 encoders here write 4:2:0; export as ProRes, H.264 4:2:2 10-bit "
+                               "or HEVC.");
+    }
+    return LibraryBridge::tr("Plays the base view as ordinary HEVC; the second eye is not used. Decode only: there is no MV-HEVC encoder.");
+}
+
+} // namespace
+
+QVariantList LibraryBridge::codecSupport() const {
+    QVariantList list;
+    for (const media::CodecSupport& c : media::newerCodecSupport()) {
+        const QString id = QString::fromStdString(c.id);
+        list.append(QVariantMap{{QStringLiteral("id"), id},
+                                {QStringLiteral("name"), codecSupportName(id)},
+                                {QStringLiteral("plays"), c.decodes()},
+                                {QStringLiteral("exports"), c.exports()},
+                                {QStringLiteral("text"), codecSupportText(c)}});
+    }
+    return list;
+}
+
 QVariantList LibraryBridge::propertyLines(const QVariantMap& info) const {
     QVariantList lines;
     const auto add = [&](const QString& label, const QString& value) {
@@ -3492,6 +3717,11 @@ QVariantList LibraryBridge::propertyLines(const QVariantMap& info) const {
                            v.value(QStringLiteral("alpha")).toBool() ? tr("alpha") : QString()};
         pixels.removeAll(QString());
         add(tr("Pixels"), pixels.join(dot));
+        // 0.7 (card 103): APV, 4:2:2 HEVC and 4:2:2 AV1 say what Wabcut does with them (they play; some only decode).
+        if (const auto support = media::codecSupportFor(v.value(QStringLiteral("codec")).toString().toStdString(),
+                                                        v.value(QStringLiteral("chroma")).toString().toStdString())) {
+            add(tr("Codec support"), codecSupportText(*support));
+        }
         if (!still) {
             const QString order = v.value(QStringLiteral("fieldOrder")).toString();
             add(tr("Fields"), order == QLatin1String("upper")   ? tr("Upper field first")
@@ -3500,6 +3730,27 @@ QVariantList LibraryBridge::propertyLines(const QVariantMap& info) const {
         }
         if (const int rotation = v.value(QStringLiteral("rotation")).toInt(); rotation != 0)
             add(tr("Rotation"), tr("%1°").arg(rotation));
+        // 0.7: dynamic HDR metadata. Dolby Vision as the container declares it (profile.compatibility, level; 8.4 is an HLG base,
+        // 8.1 an HDR10 one), HDR10+ as the first frames carry it.
+        QStringList dynamicHdr;
+        const QVariantMap dolby = v.value(QStringLiteral("dolbyVision")).toMap();
+        if (!dolby.isEmpty()) {
+            const int compat = dolby.value(QStringLiteral("blCompatibilityId")).toInt();
+            QStringList parts{tr("Dolby Vision profile %1").arg(dolby.value(QStringLiteral("profile")).toString()),
+                              tr("level %1").arg(dolby.value(QStringLiteral("level")).toInt())};
+            if (compat == 1)
+                parts << tr("HDR10 base layer");
+            else if (compat == 2)
+                parts << tr("SDR base layer");
+            else if (compat == 4)
+                parts << tr("HLG base layer");
+            parts << (dolby.value(QStringLiteral("rpu")).toBool() ? tr("RPU in the stream") : tr("no RPU"));
+            dynamicHdr << parts.join(QStringLiteral(", "));
+        }
+        if (v.value(QStringLiteral("hdr10Plus")).toBool())
+            dynamicHdr << tr("HDR10+ (SMPTE ST 2094-40) in the first frames");
+        if (!dynamicHdr.isEmpty())
+            add(tr("Dynamic HDR"), dynamicHdr.join(dot));
     }
     const QVariantList audio = info.value(QStringLiteral("audio")).toList();
     for (int i = 0; i < audio.size(); ++i) {
@@ -3510,6 +3761,15 @@ QVariantList LibraryBridge::propertyLines(const QVariantMap& info) const {
                           a.value(QStringLiteral("title")).toString()};
         parts.removeAll(QString());
         add(audio.size() > 1 ? tr("Audio %1").arg(i + 1) : tr("Audio"), parts.join(dot));
+        // 0.7 (card 062): the names a field recorder gave the channels of a poly WAV, "1 Boom · 2 Lav A".
+        QStringList named;
+        const QStringList names = a.value(QStringLiteral("channelNames")).toStringList();
+        for (int c = 0; c < names.size(); ++c) {
+            if (!names[c].isEmpty())
+                named << QString::number(c + 1) + QLatin1Char(' ') + names[c];
+        }
+        if (!named.isEmpty())
+            add(audio.size() > 1 ? tr("Audio %1 channels").arg(i + 1) : tr("Audio channels"), named.join(dot));
     }
     add(tr("Start timecode"), info.value(QStringLiteral("startTimecode")).toString());
     const int files = info.value(QStringLiteral("files")).toInt();
@@ -3664,6 +3924,63 @@ int LibraryBridge::removeUnused() {
     if (!ok)
         return 0;
     setMessage(tr("Removed %n unused item(s).", nullptr, removed));
+    return removed;
+}
+
+QVariantList LibraryBridge::consolidatePreview() const {
+    QVariantList out;
+    const ProjectSnapshot snapshot = m_controller ? m_controller->snapshot() : nullptr;
+    if (!snapshot)
+        return out;
+    const auto merged = edit::consolidateDuplicates(*snapshot);
+    if (!merged)
+        return out;
+    for (const edit::ConsolidateGroup& g : merged->groups) {
+        QVariantList removed;
+        for (std::size_t i = 0; i < g.removed.size(); ++i) {
+            removed.append(QVariantMap{{QStringLiteral("key"), mediaKey(g.removed[i])},
+                                       {QStringLiteral("name"), text(i < g.removedNames.size() ? g.removedNames[i] : std::string())}});
+        }
+        QVariantList skipped;
+        for (const edit::ConsolidateSkip& s : g.skipped)
+            skipped.append(QVariantMap{{QStringLiteral("name"), text(s.name)}, {QStringLiteral("reason"), text(s.reason)}});
+        QStringList notes;
+        for (const std::string& n : g.notes)
+            notes << text(n);
+        out.append(QVariantMap{{QStringLiteral("keeper"), g.keeper.isValid() ? mediaKey(g.keeper) : QString()},
+                               {QStringLiteral("keeperName"), text(g.keeperName)},
+                               {QStringLiteral("removed"), removed},
+                               {QStringLiteral("clips"), g.repointedClips},
+                               {QStringLiteral("skipped"), skipped},
+                               {QStringLiteral("notes"), notes}});
+    }
+    return out;
+}
+
+int LibraryBridge::consolidateDuplicates() {
+    if (!m_controller)
+        return 0;
+    edit::ConsolidateResult report;
+    const bool ok = apply(QT_TRANSLATE_NOOP("wabcut::app::LibraryBridge", "Consolidate Duplicates"),
+                          [&](const ProjectState& s) -> std::expected<ProjectState, Error> {
+                              auto merged = edit::consolidateDuplicates(s);
+                              if (!merged)
+                                  return std::unexpected(merged.error());
+                              report = std::move(*merged);
+                              return report.state;
+                          });
+    if (!ok)
+        return 0;
+    const int removed = report.removedItems();
+    int skipped = 0;
+    for (const edit::ConsolidateGroup& g : report.groups)
+        skipped += static_cast<int>(g.skipped.size());
+    QString said = removed > 0 ? tr("Merged %n duplicate item(s).", nullptr, removed) : tr("There are no duplicate items to merge.");
+    if (report.repointedClips() > 0)
+        said += QLatin1Char(' ') + tr("%n clip(s) now play the kept item.", nullptr, report.repointedClips());
+    if (skipped > 0)
+        said += QLatin1Char(' ') + tr("%n item(s) were left because their settings differ.", nullptr, skipped);
+    setMessage(said);
     return removed;
 }
 
@@ -4120,6 +4437,28 @@ const SelectionMove* selectionMoveOf(const QString& id) {
     return nullptr;
 }
 
+/// 0.7 (card 021): Premiere's Next / Previous Column Field and Next / Previous Row Field while a list cell is open ->
+/// fieldStepRequested(column, row).
+struct FieldStep {
+    const char* command;
+    int column;
+    int row;
+};
+constexpr std::array kFieldSteps{
+    FieldStep{"project.nextColumnField", 1, 0},
+    FieldStep{"project.previousColumnField", -1, 0},
+    FieldStep{"project.nextRowField", 0, 1},
+    FieldStep{"project.previousRowField", 0, -1},
+};
+
+const FieldStep* fieldStepOf(const QString& id) {
+    for (const FieldStep& step : kFieldSteps) {
+        if (id == QLatin1String(step.command))
+            return &step;
+    }
+    return nullptr;
+}
+
 /// +1 for the zoom-in keys, -1 for the zoom-out keys, 0 otherwise.
 int thumbnailStepOf(const QString& id) {
     if (id == QLatin1String("project.thumbnailSizeNext") || id == QLatin1String("project.zoomIn"))
@@ -4138,6 +4477,11 @@ bool LibraryBridge::handlesCommand(const QString& id) {
         QStringLiteral("project.openInSourceMonitor"), QStringLiteral("clip.makeSubclip"), QStringLiteral("edit.find"),
         QStringLiteral("file.getProperties"), // P1 round (#39): Main.qml opens the Properties dialog
         QStringLiteral("project.deleteWithOptions"), // P1 round (#38): Ctrl/Cmd+Delete, the delete confirmation
+        // 0.7 (card 021): Tab / Shift+Tab and Enter / Shift+Enter between the cells of the list view while one is open.
+        QStringLiteral("project.nextColumnField"), QStringLiteral("project.previousColumnField"),
+        QStringLiteral("project.nextRowField"), QStringLiteral("project.previousRowField"),
+        // 0.7 (card 025): Edit > Consolidate Duplicates… and Remove Unused… (Main.qml opens the Library's confirmations).
+        QStringLiteral("edit.consolidateDuplicates"), QStringLiteral("edit.removeUnused"),
     };
     return kCommands.contains(id) || thumbnailStepOf(id) != 0 || selectionMoveOf(id) != nullptr;
 }
@@ -4171,6 +4515,15 @@ QVariantMap LibraryBridge::commandAvailability(const QString& id) const {
                m_selection.isEmpty()) {
         enabled = false;
         reason = tr("Select items in the Library first");
+    } else if (fieldStepOf(id) != nullptr && !m_fieldEditing) {
+        enabled = false;
+        reason = tr("Edit a cell in the Library list first");
+    } else if (id == QStringLiteral("edit.consolidateDuplicates") && m_duplicateGroups.isEmpty()) {
+        enabled = false;
+        reason = tr("There are no duplicate media items in the project");
+    } else if (id == QStringLiteral("edit.removeUnused") && m_unused.empty()) {
+        enabled = false;
+        reason = tr("Every item in the project is used by a sequence");
     } else if (id == QStringLiteral("project.openInSourceMonitor") && !mediaSelected()) {
         enabled = false;
         reason = tr("Select a clip in the Library first");
@@ -4189,6 +4542,13 @@ bool LibraryBridge::runCommand(const QString& id) {
         if (m_cut.isEmpty())
             return false; // nothing cut here: the timeline's Paste
         pasteItems();     // a refusal says why (message); the key was the Library's either way
+        return true;
+    }
+    // 0.7 (card 021): the list view moves on (and the key is the Library's only while a cell is open).
+    if (const FieldStep* step = fieldStepOf(id)) {
+        if (!m_fieldEditing)
+            return false;
+        emit fieldStepRequested(step->column, step->row);
         return true;
     }
     if (id == QStringLiteral("project.newBin"))
@@ -4223,6 +4583,14 @@ bool LibraryBridge::runCommand(const QString& id) {
     }
     if (id == QStringLiteral("edit.find")) {
         emit findRequested();
+        return true;
+    }
+    // 0.7 (card 025): the panel asks before it merges or removes (Edit > Consolidate Duplicates…, Remove Unused…).
+    if (id == QStringLiteral("edit.consolidateDuplicates") || id == QStringLiteral("edit.removeUnused")) {
+        if (!commandAvailability(id).value(QStringLiteral("enabled")).toBool())
+            return false;
+        emit housekeepingRequested(id == QStringLiteral("edit.consolidateDuplicates") ? QStringLiteral("consolidate")
+                                                                                       : QStringLiteral("removeUnused"));
         return true;
     }
     if (id == QStringLiteral("clip.makeSubclip")) {

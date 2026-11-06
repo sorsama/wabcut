@@ -13,7 +13,7 @@ Rectangle {
 
     required property var strip
     readonly property var values: AudioMixer.faderValues[strip.key] ?? ({ gainDb: strip.gainDb, pan: strip.pan })
-    readonly property bool surroundMaster: AudioChannels.masterFormat === "5.1"
+    readonly property bool surroundMaster: AudioChannels.masterFormat === "5.1" || AudioChannels.masterFormat === "7.1"
 
     objectName: "submixStrip_" + strip.shortName
     implicitWidth: Theme.mixerStripWidth
@@ -112,6 +112,7 @@ Rectangle {
         EffectSlots {
             Layout.fillWidth: true
             target: root.strip.key
+            stripName: root.strip.shortName
             effects: root.strip.effects
         }
 
@@ -122,7 +123,8 @@ Rectangle {
             enabled: !root.surroundMaster
             pan: root.values.pan ?? 0
             label: qsTr("Pan of %1").arg(root.strip.shortName)
-            note: root.surroundMaster ? qsTr("A submix plays its channels to the 5.1 master as they are") : ""
+            note: root.surroundMaster ? qsTr("A submix plays its channels to the %1 master as they are")
+                                            .arg(AudioChannels.masterFormat === "7.1" ? qsTr("7.1") : qsTr("5.1")) : ""
             onMoved: value => AudioMixer.setPan(root.strip.key, value)
             onReleased: AudioMixer.endFaderGesture()
             onHeldChanged: AudioMixer.touch(root.strip.key, "pan", held)

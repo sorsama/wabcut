@@ -6,6 +6,8 @@
 #include <fstream>
 #include <algorithm>
 #include <cctype>
+#include <map>
+#include <mutex>
 #include <random>
 #ifdef _WIN32
 #include <winsock2.h>
@@ -168,16 +170,57 @@ static std::optional<std::uint64_t> loopbackListener(int port) {
 #endif
 std::expected<LaunchPlan, AiError> planLaunch(const ModelInfo& model, const SystemProbe& probe,
                                             bool cpuFallback, bool cudaAccepted) {
-    // A model outside the tiers (Phi-4 mini) is planned like a 32-layer, 8-KV-head model at 8192 tokens.
-    static constexpr TierSpec kOther{"other", "Other", "", 4.0, 32, 8, 128, 8192, false};
+    // A model outside the tiers is planned with a shape from its parameter count (Tiers.h shapeFor(); unknown, as for
+    // Phi-4 mini: a 32-layer, 8-KV-head model at 8192 tokens). r07: the user's advanced settings for the model apply.
     const TierSpec* tier = tierForModel(model.id);
+    const LaunchOverrides overrides = launchOverrides(model.id);
+    TierSpec shape = tier ? *tier : shapeFor(model.paramsB);
+    if (overrides.context > 0)
+        shape.context = overrides.context;
     AdmissionOptions options;
-    options.cpuFallback = cpuFallback;
+    options.cpuFallback = cpuFallback || overrides.gpuLayers == 0;
     options.cudaAccepted = cudaAccepted;
     options.allowLargeOnCpu = true;
-    const Admission a = admit(tier ? *tier : kOther, model, probe, options);
+    SystemProbe effective = probe;
+    if (overrides.gpuLayers == 0)
+        effective.gpus.clear(); // "CPU only": plan as if there were no GPU
+    const Admission a = admit(shape, model, effective, options);
     if (!a.fits) return std::unexpected(failure(a.reason));
-    return launchPlanFor(a);
+    LaunchPlan plan = launchPlanFor(a);
+    if (overrides.threads > 0)
+        plan.threads = overrides.threads;
+    if (overrides.gpuLayers > 0 && plan.gpu)
+        plan.gpuLayers = overrides.gpuLayers;
+    return plan;
+}
+
+namespace {
+std::mutex& overridesMutex() {
+    static std::mutex m;
+    return m;
+}
+std::map<std::string, LaunchOverrides, std::less<>>& overridesMap() {
+    static std::map<std::string, LaunchOverrides, std::less<>> m;
+    return m;
+}
+} // namespace
+
+void setLaunchOverrides(const std::string& modelId, LaunchOverrides o) {
+    if (o.context != 0)
+        o.context = std::clamp(o.context, 512, 131072);
+    o.gpuLayers = std::clamp(o.gpuLayers, -1, 999);
+    o.threads = std::clamp(o.threads, 0, 256);
+    std::lock_guard lock(overridesMutex());
+    if (o == LaunchOverrides{})
+        overridesMap().erase(modelId);
+    else
+        overridesMap()[modelId] = o;
+}
+
+LaunchOverrides launchOverrides(std::string_view modelId) {
+    std::lock_guard lock(overridesMutex());
+    const auto it = overridesMap().find(modelId);
+    return it != overridesMap().end() ? it->second : LaunchOverrides{};
 }
 LocalRuntime::LocalRuntime(IHttpTransport& t) : m_transport(t) {}
 LocalRuntime::~LocalRuntime() { stop(); }
@@ -233,7 +276,10 @@ std::expected<void, AiError> LocalRuntime::start(const std::filesystem::path& ex
     child.arguments = {"--model", utf8(weights), "--alias", model.id, "--host", "127.0.0.1", "--port",
         std::to_string(port), "--api-key", std::string(m_key.reveal()), "--jinja", "--ctx-size",
         std::to_string(plan.context), "--parallel", "1", "--threads", std::to_string(plan.threads), "--gpu-layers",
-        plan.gpu ? "99" : "0", "--no-webui", "--no-warmup", "--cache-ram", "0"};
+        plan.gpuLayers >= 0 ? std::to_string(plan.gpuLayers) : std::string(plan.gpu ? "99" : "0"), "--no-webui",
+        "--no-warmup", "--cache-ram", "0"};
+    // r07: a library model's vision projector (image input on the chat endpoint).
+    if (!plan.projector.empty()) child.arguments.insert(child.arguments.end(), {"--mmproj", utf8(plan.projector)});
     // No prompt cache beyond the one slot (llama-server keeps up to 8 GiB of RAM for it by default), and Qwen3's hybrid
     // models answer without a thinking block (Tiers.h).
     if (plan.reasoningOff) child.arguments.insert(child.arguments.end(), {"--reasoning", "off"});

@@ -405,6 +405,66 @@ WabcutDialog {
                 }
             }
 
+            // ---- Background rendering (0.7) ----
+            // The red and yellow stretches of the open sequence get render files by themselves while nothing else happens:
+            // after the idle time, at low priority, paused the moment you use the keyboard or mouse, play, export, or
+            // leave mains power. An edit that changes a stretch makes its file unused at once.
+            SectionHeader {
+                Layout.fillWidth: true
+                text: qsTr("Background rendering")
+            }
+            Toggle {
+                objectName: "backgroundRenderToggle"
+                text: qsTr("Render previews in the background when idle")
+                checked: MediaReadiness.backgroundRender
+                onToggled: MediaReadiness.backgroundRender = checked
+            }
+            GridLayout {
+                Layout.fillWidth: true
+                columns: 2
+                columnSpacing: Theme.space(4)
+                rowSpacing: Theme.space(2)
+                enabled: MediaReadiness.backgroundRender
+                opacity: enabled ? 1.0 : 0.5
+
+                Label { text: qsTr("Start after") }
+                PillTabs {
+                    objectName: "backgroundIdleTabs"
+                    Layout.fillWidth: true
+                    compact: true
+                    readonly property var values: [5, 10, 30, 60, 300]
+                    Accessible.name: qsTr("Start background rendering after")
+                    //: Idle times before background rendering starts: 5 seconds, 10 seconds, 30 seconds, 1 minute, 5 minutes
+                    model: [qsTr("5 s"), qsTr("10 s"), qsTr("30 s"), qsTr("1 min"), qsTr("5 min")]
+                    currentIndex: values.indexOf(MediaReadiness.backgroundIdleSeconds)
+                    onActivated: index => {
+                        MediaReadiness.backgroundIdleSeconds = values[index]
+                        currentIndex = Qt.binding(() => values.indexOf(MediaReadiness.backgroundIdleSeconds))
+                    }
+                }
+                Item { implicitWidth: 1; implicitHeight: 1 }
+                Toggle {
+                    objectName: "backgroundBatteryToggle"
+                    text: qsTr("Wait while on battery power")
+                    checked: MediaReadiness.backgroundPauseOnBattery
+                    onToggled: MediaReadiness.backgroundPauseOnBattery = checked
+                }
+                Item { implicitWidth: 1; implicitHeight: 1 }
+                Toggle {
+                    objectName: "backgroundBusyToggle"
+                    text: qsTr("Wait while other programs are busy")
+                    checked: MediaReadiness.backgroundPauseWhenBusy
+                    onToggled: MediaReadiness.backgroundPauseWhenBusy = checked
+                }
+            }
+            Note {
+                objectName: "backgroundRenderStatus"
+                text: MediaReadiness.backgroundText
+            }
+            Note {
+                text: qsTr("It uses half of the processor cores, with the picture work at low priority, and stops at once when you work. Only the open sequence is rendered, and not past the render files' size limit. \"Wait while other programs are busy\" looks at the processor and, on NVIDIA graphics cards, the graphics card.")
+            }
+
             // ---- Cache folders (P1 #48) ----
             SectionHeader {
                 Layout.fillWidth: true

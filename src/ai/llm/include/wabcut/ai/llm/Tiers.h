@@ -80,6 +80,16 @@ struct Recommendation {
     std::string reason;
 };
 
+/// A launch shape for a model that is not a tier (the model library, r07): layers and KV heads estimated from its
+/// parameter count (0 = unknown: a 32-layer, 8-KV-head shape), at `context` tokens (0 = 8192).
+TierSpec shapeFor(double paramsB, int context = 0);
+
+/// The fit of a model before it is downloaded (the model library): `weightsBytes` (the chosen quantization, with its
+/// vision projector) at the shape shapeFor() gives, on this computer now. The licence is not checked here (the
+/// library asks for it separately); the CPU may take any size that fits in RAM (allowLargeOnCpu).
+Admission estimateFit(std::uint64_t weightsBytes, double paramsB, const SystemProbe& probe, int context = 0,
+                      const AdmissionOptions& options = {});
+
 /// The tier to suggest on this computer now (models need not be downloaded: sizes come from the manifest).
 Recommendation recommend(const SystemProbe& probe, const AdmissionOptions& options = {});
 /// The model to use when none is named (the app's default chat model, llm.local.start without a model): the recommended

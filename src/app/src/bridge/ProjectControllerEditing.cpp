@@ -2,13 +2,16 @@
 // (C.11) runs the model's clipboard.* commands.
 
 #include "ProjectController.h"
+#include "EditPreferences.h"
 #include "EditingBridge.h"
 #include "EffectControls.h"
 
 #include <wabcut/command/Engine.h>
 #include <wabcut/command/ExecutionContext.h>
 #include <wabcut/model/ClipGroups.h>
+#include <wabcut/model/ClipLock.h>
 #include <wabcut/model/Clipboard.h>
+#include <wabcut/model/EditingOps.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/ProjectOps.h>
 
@@ -46,7 +49,13 @@ edit::EditOutcome ProjectController::previewEdit(const EditFn& fn) const {
     const ProjectSnapshot snap = m_session->snapshot();
     if (!snap || !fn)
         return std::unexpected(Error{ErrorCode::InvalidArgument, "nothing to edit"});
-    return fn(*snap);
+    auto outcome = fn(*snap);
+    // 0.7 (card 064): a drag over a locked clip previews as refused, as the drop would be (the session checks it too).
+    if (outcome) {
+        if (auto locked = edit::lockedClipProblem(*snap, outcome->state))
+            return std::unexpected(std::move(*locked));
+    }
+    return outcome;
 }
 
 bool ProjectController::commitGesture(const char* label, const EditFn& fn) {
@@ -215,6 +224,33 @@ bool ProjectController::selectionEnabled() const {
         const auto loc = seq->findClip(id);
         return !loc || loc->clip().enabled;
     });
+}
+
+bool ProjectController::selectionLocked() const {
+    const SequencePtr seq = currentSequence();
+    if (!seq || m_selection.empty())
+        return false;
+    bool any = false;
+    for (const ClipId id : m_selection) {
+        const auto loc = seq->findClip(id);
+        if (!loc)
+            continue;
+        if (!loc->clip().locked)
+            return false;
+        any = true;
+    }
+    return any;
+}
+
+void ProjectController::toggleLockSelection() {
+    const std::vector<ClipId> clips = selectedClipIds();
+    if (clips.empty())
+        return;
+    const bool lock = !selectionLocked();
+    const SequenceId seq = m_sequence;
+    applyResult(lock ? QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Lock Clip")
+                     : QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Unlock Clip"),
+                [=](const ProjectState& s) { return edit::setClipsLocked(s, seq, clips, lock); });
 }
 
 void ProjectController::linkSelection() {
@@ -392,6 +428,20 @@ void ProjectController::renameClip(const QString& clipId, const QString& name) {
     const SequenceId seq = m_sequence;
     const ClipId clip = *id;
     applyResult(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Rename"), [=](const ProjectState& s) {
+        const ClipId ids[] = {clip};
+        return edit::setClipAttributes(s, seq, ids, change);
+    });
+}
+
+void ProjectController::setClipNote(const QString& clipId, const QString& note) {
+    const auto id = parseClipKey(clipId);
+    if (!id)
+        return;
+    edit::ClipAttributeChange change;
+    change.note = note.trimmed().toStdString();
+    const SequenceId seq = m_sequence;
+    const ClipId clip = *id;
+    applyResult(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Clip Note"), [=](const ProjectState& s) {
         const ClipId ids[] = {clip};
         return edit::setClipAttributes(s, seq, ids, change);
     });
@@ -587,6 +637,8 @@ void ProjectController::pasteClips(bool insert) {
     command::Json params{{"at", m_playhead.value}};
     if (insert)
         params["mode"] = "insert";
+    if (!editprefs::addTracksOnEdit())
+        params["addTracks"] = false; // 0.7 (card 182)
     const command::CommandResult result =
         runClipboardBatch(singleCommand("clipboard.paste", std::move(params),
                                         insert ? QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Paste Insert")
@@ -794,6 +846,53 @@ QVariantMap ProjectController::commandAvailability(const QString& id) const {
         });
         return offSync ? state(true, true) : state(true, false, tr("No selected clip is out of sync"));
     }
+    // 0.7 (A2, cards 106 / 117): the track switch keys need a clip or a targeted track; Add Marker from In/Out both marks.
+    if (id == QLatin1String("timeline.toggleTrackOutput") || id == QLatin1String("timeline.toggleTrackMute")
+        || id == QLatin1String("timeline.toggleTrackSolo") || id == QLatin1String("timeline.soloSelectedClipTrack")) {
+        const QString what = id == QLatin1String("timeline.toggleTrackOutput") ? QStringLiteral("output")
+                             : id == QLatin1String("timeline.toggleTrackMute") ? QStringLiteral("mute")
+                                                                               : QStringLiteral("solo");
+        const QString problem = trackKeyProblem(what);
+        return problem.isEmpty() ? state(true, true) : state(true, false, problem);
+    }
+    if (id == QLatin1String("marker.addFromInOut")) {
+        const QString problem = markerFromInOutProblem();
+        return problem.isEmpty() ? state(true, true) : state(true, false, problem);
+    }
+    if (id == QLatin1String("edit.selectDisabledClips")) { // 0.7, card 122
+        const SequencePtr seq = currentSequence();
+        return !seq                                  ? state(true, false, tr("Open a sequence first"))
+               : edit::disabledClips(*seq).empty() ? state(true, false, tr("There are no disabled clips"))
+                                                    : state(true, true);
+    }
+    if (id == QLatin1String("timeline.clearWorkArea")) { // 0.7, card 024
+        const SequencePtr seq = currentSequence();
+        return !seq || !seq->workArea ? state(true, false, tr("The sequence has no work area")) : state(true, true);
+    }
+    if (id == QLatin1String("edit.selectLabelGroup")) // 0.7, card 010
+        return selectedClipIds().empty() ? state(true, false, tr("Select a clip first")) : state(true, true);
+    if (id == QLatin1String("timeline.collapseTrackGroups") || id == QLatin1String("timeline.expandTrackGroups")) { // 0.7, card 124
+        const bool collapse = id == QLatin1String("timeline.collapseTrackGroups");
+        const SequencePtr seq = currentSequence();
+        const bool any = seq && std::ranges::any_of(seq->trackGroups, [&](const TrackGroup& g) { return g.collapsed != collapse; });
+        if (any)
+            return state(true, true);
+        return state(true, false, seq && !seq->trackGroups.empty() ? (collapse ? tr("Every track group is collapsed") : tr("Every track group is expanded"))
+                                                                    : tr("The sequence has no track groups"));
+    }
+    if (id == QLatin1String("timeline.groupTargetedTracks")) { // 0.7, card 124
+        const SequencePtr seq = currentSequence();
+        bool any = false;
+        if (seq) {
+            for (const TrackKind kind : {TrackKind::Video, TrackKind::Audio}) {
+                int ungrouped = 0;
+                for (const TrackPtr& t : seq->tracks(kind))
+                    ungrouped += t->targeted && !seq->trackGroupOf(t->id) ? 1 : 0;
+                any = any || ungrouped >= 2;
+            }
+        }
+        return any ? state(true, true) : state(true, false, tr("Target two or more tracks that are in no group first"));
+    }
     const bool hasSelection = !selectedClipIds().empty();
     const bool transitionSelected = static_cast<bool>(m_selectedTransition);
     static const QStringList kDeletes{QStringLiteral("edit.clear"), QStringLiteral("timeline.clearSelection"),
@@ -806,7 +905,7 @@ QVariantMap ProjectController::commandAvailability(const QString& id) const {
     static const QStringList kNeedsSelection{
         QStringLiteral("edit.clear"), QStringLiteral("timeline.clearSelection"), QStringLiteral("edit.rippleDelete"),
         QStringLiteral("timeline.rippleDelete"), QStringLiteral("clip.link"), QStringLiteral("clip.enable"),
-        QStringLiteral("edit.copy"), QStringLiteral("edit.cut"), QStringLiteral("edit.deselectAll"),
+        QStringLiteral("clip.lock"), QStringLiteral("edit.copy"), QStringLiteral("edit.cut"), QStringLiteral("edit.deselectAll"),
         QStringLiteral("sequence.extendEditToPlayhead"), QStringLiteral("marker.markSelection"),
         QStringLiteral("transport.goToSelectedClipStart"), QStringLiteral("transport.goToSelectedClipEnd"),
         QStringLiteral("sequence.applyDefaultTransitions"),

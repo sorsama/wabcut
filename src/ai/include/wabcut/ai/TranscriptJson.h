@@ -9,13 +9,13 @@
 //     "provenance": {"engine": "whisper.cpp", "engineVersion": "1.9.5", "modelId": "base",
 //                    "modelVersion": "<sha-256>", "params": {"language": "auto", ...}, "createdAt": "..."},
 //     "segments": [{"t0": 0, "t1": 508032000000, "firstWord": 0, "wordCount": 2, "text": "Hello world",
-//                   "speaker": 0}],
+//                   "speaker": 0, "language": "th"}],
 //     "words": [{"text": "Hello", "t0": 0, "t1": 254016000000, "confidence": 0.93, "speaker": 0,
 //                "edited": false, "approved": false}, ...]
 //   }
 //
 // Times are integer ticks (model/Time.h), written as JSON integers. The fingerprint is 16 hex digits (a 64-bit
-// value does not survive JavaScript numbers). Optional members ("speaker", "path") are omitted when unknown.
+// value does not survive JavaScript numbers). Optional members ("speaker", "path", and a segment's "language" - 0.7: written by a transcription of mixed languages, which names every segment's) are omitted when unknown.
 // Readers ignore unknown members, reject another schema or version (VersionMismatch) and check the result
 // with Transcript::validate().
 

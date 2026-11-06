@@ -3,14 +3,14 @@ import QtQuick
 
 // Time Interpolation (P.2, docs/motion.md): the clip menu's submenu, Premiere's Clip > Video Options > Time
 // Interpolation. How the selected retimed video clips make the frames between their media's frames: Frame Sampling,
-// Frame Blending or Optical Flow (clip.setTimeInterpolation on the selection, one undo step). The current choice of the
+// Frame Blending, Optical Flow or (0.7) AI Frame Interpolation (clip.setTimeInterpolation on the selection, one undo step). The current choice of the
 // clip under the menu is checked. Its own file, importing only QtQuick, so QtQuick.Controls' ContextMenu does not
 // shadow ours.
 ContextMenu {
     id: menu
     objectName: "timeInterpolationSubmenu"
 
-    /// The clip's current method ("frameSampling", "frameBlending", "opticalFlow"), read when the clip menu opens.
+    /// The clip's current method ("frameSampling", "frameBlending", "opticalFlow", "aiInterpolation"), read when the clip menu opens.
     property string current: "frameSampling"
     /// Whether the selection has a video clip to set it on.
     property bool hasVideo: false
@@ -55,5 +55,13 @@ ContextMenu {
         checked: menu.current === "opticalFlow"
         enabled: menu.hasVideo
         onTriggered: menu.choose("opticalFlow")
+    }
+    ContextMenuItem {
+        objectName: "aiInterpolationItem"
+        text: qsTr("AI Frame Interpolation")
+        checkable: true
+        checked: menu.current === "aiInterpolation"
+        enabled: menu.hasVideo
+        onTriggered: menu.choose("aiInterpolation")
     }
 }

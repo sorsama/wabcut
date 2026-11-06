@@ -102,6 +102,8 @@ std::expected<ProjectState, Error> multicamGridState(const ProjectState& state, 
             Clip copy = c;
             ClipContent content = c.content();
             content.properties[ParamId::Scale] = mapParam(content.properties[ParamId::Scale], mul, 0.0);
+            if (!content.properties.uniformScale()) // 0.7 (card #12)
+                content.properties[ParamId::ScaleWidth] = mapParam(content.properties[ParamId::ScaleWidth], mul, 0.0);
             content.properties[ParamId::PositionX] = mapParam(content.properties[ParamId::PositionX], mul, dx);
             content.properties[ParamId::PositionY] = mapParam(content.properties[ParamId::PositionY], mul, dy);
             copy.setContent(std::move(content));

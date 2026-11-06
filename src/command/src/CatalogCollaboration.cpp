@@ -8,6 +8,7 @@
 #include <wabcut/model/Merge.h>
 #include <wabcut/model/ProjectDiff.h>
 #include <wabcut/model/ProjectIO.h>
+#include <wabcut/model/ReviewComments.h>
 #include <wabcut/model/ReviewOps.h>
 #include <wabcut/model/Timecode.h>
 
@@ -15,6 +16,7 @@
 #include <chrono>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <tuple>
 
@@ -469,6 +471,65 @@ void registerCollaborationCommands(CommandRegistry& registry) {
                     CommandOutput out;
                     out.state = std::move(r.state);
                     out.data = Json{{"added", r.added}, {"updated", r.updated}, {"unchanged", r.unchanged}, {"conflicts", r.conflicts}};
+                    return out;
+                }}, {"path"}));
+
+    addBuiltin(registry,
+               command::touchesFiles({"review.importComments", 1, "Import Review Comments",
+                "Reads the comments file a reviewer exported from a review link's page (\"path\", or its text in \"text\") and adds "
+                "each comment as a review note of the sequence at \"start\" (where the review copy began in the sequence, default "
+                "0) plus the comment's frame (comments past \"duration\" are left out and listed). \"link\" is the page's public "
+                "link id: a file that carries another one is refused. The same reviewer, time and text is not added twice. One "
+                "undo step; with \"markers\" the new notes also become sequence markers.",
+                Capability::EditProject,
+                withSequence({{"path", boundedString("The comments file (UTF-8 path).", 4096)},
+                              {"text", boundedString("Or the file's text (at most 4 MiB).", kMaxReviewCommentsBytes)},
+                              {"link", boundedString("The review link's public id (what the file's \"link\" must be).", 64, true)},
+                              {"start", timeParam("Where the review copy begins in the sequence (default 0).")},
+                              {"duration", timeParam("How long the review copy is; comments after it are left out (default: no limit).")},
+                              {"markers", schema::boolean("Also make sequence markers of the new notes (default false).")}},
+                             {"link"}),
+                Json{{"path", "C:/Review/comments-maria-1a2b.json"}, {"link", "9f2c0a41d7e855b3a6c17d20"}}, {},
+                [](ExecutionContext& c) {
+                    std::string body;
+                    if (c.has("text")) {
+                        body = c.string("text");
+                    } else if (c.has("path")) {
+                        const std::filesystem::path file = pathFromUtf8(c.string("path"));
+                        std::error_code ec;
+                        const auto size = std::filesystem::file_size(file, ec);
+                        if (ec) {
+                            fail(ErrorCode::NotFound, "no such comments file", Json{{"path", "/path"}});
+                        }
+                        if (size > kMaxReviewCommentsBytes) {
+                            fail(ErrorCode::InvalidParams, "the comments file is larger than allowed", Json{{"path", "/path"}});
+                        }
+                        std::ifstream in(file, std::ios::binary);
+                        body.assign(static_cast<std::size_t>(size), '\0');
+                        if (size > 0 && !in.read(body.data(), static_cast<std::streamsize>(size))) {
+                            fail(ErrorCode::InvalidRequest, "cannot read the comments file", Json{{"path", "/path"}});
+                        }
+                    } else {
+                        fail(ErrorCode::InvalidParams, "pass \"path\" or \"text\"", Json{{"path", "/path"}});
+                    }
+                    ReviewCommentsFile file = c.take(parseReviewComments(body));
+                    ReviewLinkTarget target;
+                    target.link = c.string("link");
+                    target.sequence = c.sequenceId();
+                    target.start = c.has("start") ? c.time("start") : Ticks{};
+                    target.duration = c.has("duration") ? c.time("duration") : Ticks{};
+                    ReviewCommentsImported r = c.take(edit::importReviewComments(c.state(), file, target, c.boolean("markers", false), nowUtc()));
+                    CommandOutput out;
+                    out.state = std::move(r.state);
+                    for (const std::string& s : file.skipped) {
+                        r.conflicts.push_back(s);
+                    }
+                    out.createdIds.reserve(r.notes.size());
+                    for (const ReviewNoteId& id : r.notes) {
+                        out.createdIds.push_back(id.value);
+                    }
+                    out.data = Json{{"added", r.added},     {"unchanged", r.unchanged}, {"markers", r.markers},
+                                    {"conflicts", r.conflicts}, {"reviewer", file.reviewer}};
                     return out;
                 }}, {"path"}));
 

@@ -1,12 +1,17 @@
 #include <wabcut/export/ExportSettings.h>
 
 #include "Delivery.h"
+#include <wabcut/export/DynamicMetadata.h>
 #include "Extras.h"
+
+#include <wabcut/model/MediaLocator.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <format>
 #include <initializer_list>
+#include <iterator>
 #include <string>
 
 namespace wabcut::exporter {
@@ -616,6 +621,22 @@ std::expected<void, Error> validate(const ExportSettings& s) {
                 return std::unexpected(invalid("PQ and HLG exports are 10-bit (yuv420p10 or yuv422p10)"));
             }
         }
+        // 0.7 (card "Dolby Vision 8.4 and HDR10+ dynamic metadata"): the metadata rides in HEVC access units.
+        if (v.dynamicMetadata != DynamicMetadata::None) {
+            const std::string what = v.dynamicMetadata == DynamicMetadata::Hdr10Plus ? "HDR10+" : "Dolby Vision";
+            if (v.codec != VideoCodec::Hevc) {
+                return std::unexpected(invalid(what + " is written into HEVC video only"));
+            }
+            if (v.pixelFormat != OutputPixelFormat::Yuv420p10) {
+                return std::unexpected(invalid(what + " is 10-bit 4:2:0 (yuv420p10)"));
+            }
+            if (s.container != Container::Mp4 && s.container != Container::Mov && s.container != Container::Mkv) {
+                return std::unexpected(invalid(what + " is written into MP4, MOV and MKV files"));
+            }
+            if (const std::string reason = DolbyVisionRegistry::unavailableReason(v.dynamicMetadata); !reason.empty()) {
+                return std::unexpected(invalid(reason));
+            }
+        }
         if (v.width.has_value() != v.height.has_value()) {
             return std::unexpected(invalid("Set both the output width and height, or neither"));
         }
@@ -768,6 +789,16 @@ std::expected<ResolvedExport, Error> resolve(const ExportSettings& s, const Sequ
                 r.sdrConform = conform;
             }
         }
+        // 0.7: dynamic metadata needs the master it describes: HDR10+ and Dolby Vision 8.1 a PQ one, 8.4 an HLG one.
+        r.dynamicMetadata = s.video.dynamicMetadata;
+        if (r.dynamicMetadata != DynamicMetadata::None) {
+            const DynamicRange wanted = r.dynamicMetadata == DynamicMetadata::DolbyVision84 ? DynamicRange::Hlg : DynamicRange::Pq;
+            if (r.dynamicRange != wanted) {
+                return std::unexpected(invalid(std::string(r.dynamicMetadata == DynamicMetadata::Hdr10Plus ? "HDR10+" : r.dynamicMetadata == DynamicMetadata::DolbyVision81 ? "Dolby Vision 8.1" : "Dolby Vision 8.4") +
+                                               (wanted == DynamicRange::Pq ? " needs a PQ master: Dynamic range HDR PQ, from an HDR or Wide Gamut sequence colour setup"
+                                                                           : " needs an HLG master: Dynamic range HDR HLG, from an HDR or Wide Gamut sequence colour setup")));
+            }
+        }
         // 0.2: Render at Maximum Depth reads 10 bits back for any project into a format deeper than 8 bits.
         r.tenBitRender = deep && (managed || s.render.maximumDepth);
         if (r.alpha && r.dynamicRange != DynamicRange::Sdr) {
@@ -811,8 +842,22 @@ std::expected<ResolvedExport, Error> resolve(const ExportSettings& s, const Sequ
         const int canvasH = std::max(2, sequence.height - sequence.height % 2);
         r.width = s.video.width.value_or(canvasW);
         r.height = s.video.height.value_or(canvasH);
-        const std::int64_t cw = sequence.width;
-        const std::int64_t ch = sequence.height;
+        // 145: the canvas is seen widened by the sequence's pixel aspect ratio (HDV 4/3, DV wide ...). An output of the
+        // canvas's own shape (the default size, or a pure scale of it) keeps the pixels as they are and carries that
+        // ratio, so a player shows the shape the monitor does; an output of another shape is made of square pixels and
+        // ScaleMode fits the SEEN shape (cw * par : ch) into it. A square sequence (par 1) changes nothing.
+        Rate par = sequence.pixelAspect.isValid() ? sequence.pixelAspect.normalized() : Rate{1, 1};
+        if (par.toDouble() < 0.1 || par.toDouble() > 10.0) {
+            par = Rate{1, 1}; // out of the range Sequence Settings accepts: a damaged project, not a shape
+        }
+        std::int64_t cw = sequence.width;
+        std::int64_t ch = sequence.height;
+        const bool sameShape = std::abs(std::int64_t{r.width} * ch - std::int64_t{r.height} * cw) <= cw + ch;
+        r.sampleAspect = sameShape ? par : Rate{1, 1};
+        if (!sameShape) {
+            cw *= par.num; // square output pixels: the seen shape of the canvas (par 1/1 changes nothing)
+            ch *= par.den;
+        }
         // Output narrower than the canvas (relative to its height)?
         const bool narrower = std::int64_t{r.width} * ch < std::int64_t{r.height} * cw;
         switch (s.video.scaleMode) {
@@ -881,7 +926,8 @@ std::expected<ResolvedExport, Error> resolve(const ExportSettings& s, const Sequ
     if (s.video.enabled && s.video.rateControl == RateControl::TargetSize) {
         // The size less the margin, less the audio (PCM at its exact rate), spread over the duration.
         const double seconds = std::max(r.duration.toSeconds(), 0.001);
-        const int channels = std::max(1, s.audio.channels);
+        // 149: "as the master" (channels 0) is 2, or 6 for a 5.1 master - the count the file really writes.
+        const int channels = std::max(1, exportAudioChannels(s.audio, sequence.masterFormat));
         const double audioBits = !s.audio.enabled ? 0.0
                                  : s.audio.codec == AudioCodec::Pcm16 ? 16.0 * s.audio.sampleRate * channels * seconds
                                  : s.audio.codec == AudioCodec::Pcm24 ? 24.0 * s.audio.sampleRate * channels * seconds
@@ -977,6 +1023,41 @@ std::string_view outputExtension(const ExportSettings& s) {
     default:
         return ".png";
     }
+}
+
+bool isMediaFileExtension(std::string_view extension) {
+    std::string lower(extension);
+    for (char& c : lower) {
+        c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+    }
+    static constexpr std::string_view known[] = {
+        ".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi", ".mxf", ".mpg", ".mpeg", ".ts", ".mts", ".m2ts", ".wmv", ".flv",
+        ".wav", ".aif", ".aiff", ".mp3", ".m4a", ".aac", ".ac3", ".flac", ".ogg", ".opus", ".wma",
+        ".gif", ".png", ".tif", ".tiff", ".dpx", ".jpg", ".jpeg", ".tga", ".exr", ".bmp", ".webp"};
+    return std::ranges::find(known, std::string_view(lower)) != std::end(known);
+}
+
+bool isPlausibleExtension(std::string_view extension) {
+    if (extension.size() < 2 || extension.size() > 6 || extension.front() != '.') {
+        return false;
+    }
+    const auto letter = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
+    if (!letter(extension[1])) {
+        return false;
+    }
+    return std::ranges::all_of(extension.substr(1), [&](char c) { return letter(c) || (c >= '0' && c <= '9'); });
+}
+
+std::filesystem::path withOutputExtension(std::filesystem::path path, std::string_view extension) {
+    if (path.empty() || path.filename().empty()) {
+        return path;
+    }
+    if (isMediaFileExtension(pathToUtf8(path.extension()))) {
+        path.replace_extension(std::string(extension));
+    } else {
+        path += std::string(extension);
+    }
+    return path;
 }
 
 std::optional<Container> containerFromName(std::string_view name) {
@@ -1162,6 +1243,30 @@ std::string_view dynamicRangeName(DynamicRange range) {
     return "auto";
 }
 
+std::string_view dynamicMetadataName(DynamicMetadata kind) {
+    switch (kind) {
+    case DynamicMetadata::None:
+        return "none";
+    case DynamicMetadata::Hdr10Plus:
+        return "hdr10plus";
+    case DynamicMetadata::DolbyVision81:
+        return "dolbyVision81";
+    case DynamicMetadata::DolbyVision84:
+        return "dolbyVision84";
+    }
+    return "none";
+}
+
+std::optional<DynamicMetadata> dynamicMetadataFromName(std::string_view name) {
+    for (const DynamicMetadata kind : {DynamicMetadata::None, DynamicMetadata::Hdr10Plus, DynamicMetadata::DolbyVision81,
+                                       DynamicMetadata::DolbyVision84}) {
+        if (dynamicMetadataName(kind) == name) {
+            return kind;
+        }
+    }
+    return std::nullopt;
+}
+
 std::string_view audioCodecName(AudioCodec c) {
     switch (c) {
     case AudioCodec::Aac:
@@ -1211,7 +1316,11 @@ int exportAudioChannels(const AudioSettings& audio, ChannelFormat masterFormat) 
     if (audio.channels > 0) {
         return audio.channels;
     }
-    // AAC, AC-3, Opus and PCM take 5.1; MP3 is stereo at most (a 5.1 master is downmixed).
+    // AAC, AC-3, Opus and PCM take 5.1; MP3 is stereo at most (a 5.1 master is downmixed). 0.7: AAC, Opus and PCM take 7.1
+    // (8 channels, a WAVE / FFmpeg 7.1 file's order); AC-3 carries 5.1 at most (a 7.1 master is downmixed to it).
+    if (masterFormat == ChannelFormat::Surround71) {
+        return audio.codec == AudioCodec::Mp3 ? 2 : audio.codec == AudioCodec::Ac3 ? 6 : 8;
+    }
     return masterFormat == ChannelFormat::Surround51 && audio.codec != AudioCodec::Mp3 ? 6 : 2;
 }
 

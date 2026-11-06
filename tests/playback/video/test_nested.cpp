@@ -10,6 +10,7 @@
 
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/MotionBlur.h>
 #include <wabcut/model/Nesting.h>
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/Resolve.h>
@@ -249,6 +250,24 @@ TEST_CASE("Nested video: redactions inside follow the media, and an exception an
     std::vector<render::CompositeLayer> composite;
     playback::buildCompositeLayers(specs, frames, composite);
     CHECK(composite.empty()); // nothing decoded: the group shows nothing (and nothing fails open)
+}
+
+TEST_CASE("Nested video: a Motion Blur on a nested clip counts as a bypassed effect, not as nothing (0.7)",
+          "[playback][nested][motionblur]") {
+    Nested n;
+    const ClipId clip = n.nestedClip;
+    const ProjectState s = ok(edit::addEffect(n.state, n.tl.seq, std::span<const ClipId>(&clip, 1), std::string(kMotionBlurEffect))).state;
+    std::vector<LayerSpec> layers;
+    playback::evaluateVideoLayers(s, *s.findSequence(n.tl.seq), f(2), layers, false);
+    const LayerSpec* head = headOf(layers, n.nestedClip);
+    REQUIRE(head != nullptr);
+    CHECK(head->nested);
+    CHECK(head->bypassedEffects == 1);
+    // Without the effect nothing is bypassed.
+    std::vector<LayerSpec> plain;
+    playback::evaluateVideoLayers(n.state, *n.state.findSequence(n.tl.seq), f(2), plain, false);
+    REQUIRE(headOf(plain, n.nestedClip) != nullptr);
+    CHECK(headOf(plain, n.nestedClip)->bypassedEffects == 0);
 }
 
 TEST_CASE("Multicam video: the active angle at its sync, angle cuts frame-accurate", "[playback][multicam]") {

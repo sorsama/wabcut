@@ -132,3 +132,41 @@ TEST_CASE("Stitching maps chunk-relative centiseconds to source time and keeps o
         CHECK(bt.words[1].t0 >= bt.words[0].t0);
     }
 }
+
+TEST_CASE("Chunks of mixed languages close at the pause once they hold enough speech", "[ai][chunks][mixed]") {
+    ChunkOptions o;
+    o.maxChunkSamples = 25 * kS;
+    o.padSamples = kS / 4;
+    o.mergeGapSamples = kS * 8 / 10;
+    o.maxGapSamples = 10 * kS;
+    const std::vector<SampleRange> stretches = {{1 * kS, 5 * kS}, {8 * kS, 12 * kS}, {15 * kS, 19 * kS}};
+
+    // Without the rule the stretches share one chunk (they are within the limit and no silence is over 10 s).
+    REQUIRE(planChunks(stretches, 30 * kS, o).size() == 1);
+
+    // With it a chunk that holds 3 s of speech is closed at the next pause: one chunk per stretch.
+    o.closeAfterSamples = 3 * kS;
+    const auto chunks = planChunks(stretches, 30 * kS, o);
+    REQUIRE(chunks.size() == 3);
+    CHECK(chunks[0] == SampleRange{kS - kS / 4, 5 * kS + kS / 4});
+    CHECK(chunks[1] == SampleRange{8 * kS - kS / 4, 12 * kS + kS / 4});
+    CHECK(chunks[2] == SampleRange{15 * kS - kS / 4, 19 * kS + kS / 4});
+
+    // A stretch too short to say what language it is (under 3 s with its padding) waits for the next one.
+    const std::vector<SampleRange> shortFirst = {{1 * kS, 2 * kS}, {4 * kS, 8 * kS}};
+    const auto joined = planChunks(shortFirst, 30 * kS, o);
+    REQUIRE(joined.size() == 1);
+    CHECK(joined[0] == SampleRange{kS - kS / 4, 8 * kS + kS / 4});
+
+    // Nothing is lost: every speech sample is inside a chunk, and chunks never overlap.
+    for (const SampleRange& s : stretches) {
+        bool inside = false;
+        for (const SampleRange& c : chunks) {
+            inside = inside || (s.begin >= c.begin && s.end <= c.end);
+        }
+        CHECK(inside);
+    }
+    for (std::size_t i = 1; i < chunks.size(); ++i) {
+        CHECK(chunks[i].begin >= chunks[i - 1].end);
+    }
+}

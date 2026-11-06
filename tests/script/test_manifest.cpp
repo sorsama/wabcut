@@ -86,6 +86,13 @@ TEST_CASE("Manifests are refused field by field; with the field named", "[script
     CHECK(issues(with("id", "BeatMarkers")).find("reverse-DNS") != std::string::npos);
     CHECK(issues(with("id", "com..example")).find("reverse-DNS") != std::string::npos);
     CHECK(issues(with("id", "com.example-")).find("reverse-DNS") != std::string::npos);
+    // The names of an install in progress (card 164: "<id>.wabcut-new" / ".wabcut-old") cannot be an extension's id.
+    CHECK(issues(with("id", "acme.tools.wabcut-new")).find("reverse-DNS") != std::string::npos);
+    CHECK(issues(with("id", "acme.tools.wabcut-old")).find("reverse-DNS") != std::string::npos);
+    CHECK_FALSE(isValidExtensionId("acme.tools.wabcut-new"));
+    CHECK_FALSE(isValidExtensionId("acme.tools.wabcut-old"));
+    CHECK(isValidExtensionId("acme.tools.wabcut-news"));
+    CHECK(isValidExtensionId("acme.wabcut-new.tools")); // only the end of the id names the folder
     CHECK(issues(with("version", "1.0")).find("version") != std::string::npos);
     CHECK(issues(with("version", "01.0.0")).find("version") != std::string::npos);
     CHECK(issues(with("version", "1.0.0+build")).find("version") != std::string::npos);

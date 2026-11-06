@@ -691,6 +691,10 @@ private:
         if (s.markOut) {
             j["markOut"] = s.markOut->value;
         }
+        if (s.workIn && s.workOut) { // 0.7 (card 046)
+            j["workIn"] = s.workIn->value;
+            j["workOut"] = s.workOut->value;
+        }
         if (s.multicam) {
             Json angles = Json::array();
             for (const IrMulticamAngle& a : s.multicam->angles) {
@@ -1270,6 +1274,11 @@ private:
         if (s.markIn || s.markOut) {
             m_ctx.add(ReportOutcome::Carried, ReportCategory::SequenceSetting,
                       "In/Out marks (other editors do not read them; Wabcut does)", s.location, s.name);
+        }
+        if (s.workIn && s.workOut) {
+            m_ctx.add(ReportOutcome::Approximated, ReportCategory::SequenceSetting,
+                      "work area (OpenTimelineIO has none: it is Wabcut metadata other editors ignore; Wabcut reads it)",
+                      s.location, s.name);
         }
         if (s.multicam) {
             m_ctx.add(ReportOutcome::Carried, ReportCategory::SequenceSetting,

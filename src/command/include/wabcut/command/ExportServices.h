@@ -34,6 +34,13 @@ public:
     /// range the sequence does not have).
     virtual std::expected<Json, CommandError> describe(const ProjectState& state, SequenceId sequence,
                                                        const Output& output) const = 0;
+    /// 0.7: the pre-export check of `output` (what is likely to go wrong, without exporting): {rows: [{kind, severity
+    /// ("problem" | "warning" | "note"), message, fix, at, timecode, length, clip, track, count, ...}], problems, warnings,
+    /// notes}. Hosts without the check answer InvalidRequest. Errors: InvalidParams (as describe), NotFound.
+    virtual std::expected<Json, CommandError> check(const ProjectState& state, SequenceId sequence, const Output& output) const {
+        (void)state, (void)sequence, (void)output;
+        return std::unexpected(CommandError{ErrorCode::InvalidRequest, "this host has no pre-export check", nullptr});
+    }
     /// New job ids for `count` exports (reserved now, used by queue()).
     virtual std::vector<std::string> reserveJobs(std::size_t count) = 0;
     /// Queues the exports (after the request committed): one job per output, under the reserved ids; `hold`: they wait

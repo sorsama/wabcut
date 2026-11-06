@@ -225,6 +225,9 @@ Detection ImportRouter::detectData(std::string_view data, std::string_view fileN
                        std::string(kSupportedFormats));
     }
 
+    // Card 162: a UTF-8 byte order mark is part of the encoding (XML sniffing skips it too), so OTIO and EDL text
+    // that starts with one is sniffed on what follows it.
+    data = withoutUtf8Bom(data);
     const std::string root = rootElementName(data);
     if (root == "xmeml") {
         return make(Format::Fcp7Xml, true);
@@ -343,6 +346,9 @@ std::expected<ImportResult, Error> ImportRouter::importData(std::string_view dat
                                                             const fs::path& baseDirectory) {
     ParseContext context{std::string(sourceName), &options};
     std::expected<IrDocument, Error> document = std::unexpected(Error{});
+    if (format != Format::Aaf && format != Format::Omf && format != Format::PremiereProject) {
+        data = withoutUtf8Bom(data); // card 162: once, before any text parser sees the first line
+    }
     switch (format) {
     case Format::Fcp7Xml:
         document = parseFcp7Xml(data, context);

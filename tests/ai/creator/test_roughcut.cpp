@@ -472,6 +472,33 @@ const char* kInterpretation =
 
 } // namespace
 
+TEST_CASE("A no-cloud project interprets an outline with a model on this computer", "[ai][creator][roughcut][outline][commands][r07]") {
+    // QA-07: the no-cloud lock stops the cloud only; the host says when its chat model runs on this computer.
+    for (const bool onThisComputer : {false, true}) {
+        INFO("on this computer " << onThisComputer);
+        Studio studio(launchTakes());
+        studio.tl.state.aiNoCloud = true;
+        int calls = 0;
+        ChatRequest last;
+        const ModelSpec spec = *ModelRegistry::builtin().model("claude-sonnet-5-5"); // only names the model here
+        RoughCutServices::ChatOpener opener = [&]() -> std::expected<std::unique_ptr<IChatModel>, AiError> {
+            return std::make_unique<RecordingModel>(spec, kInterpretation, calls, last);
+        };
+        auto rough = std::make_shared<RoughCutServices>(opener, nullptr);
+        rough->chatLocal = onThisComputer;
+        auto services = std::make_shared<command::ServiceBundle>(std::vector<std::shared_ptr<command::CommandServices>>{
+            std::make_shared<ai::edit::TranscriptServices>(studio.transcripts), rough});
+        CommandHarness h(studio.tl, command::EnginePolicy{command::CapabilitySet::all(), 64, services}, ai::edit::editingCommands());
+        const auto result = h.run(Json{{"command", "roughcut.fromScript"},
+                                       {"params", Json{{"text", kOutline}, {"media", studio.mediaJson()}, {"interpret", true}}}});
+        CHECK(calls == (onThisComputer ? 1 : 0));
+        if (onThisComputer) {
+            REQUIRE(result.ok());
+            CHECK(result.data["interpreted"]["beats"] == 2);
+        }
+    }
+}
+
 TEST_CASE("A loose outline is interpreted by the user's model only with consent and never for a no-cloud project",
           "[ai][creator][roughcut][outline][commands]") {
     for (const bool consented : {false, true}) {

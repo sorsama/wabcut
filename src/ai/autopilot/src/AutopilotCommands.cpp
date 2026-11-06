@@ -7,6 +7,7 @@
 #include <wabcut/command/Schema.h>
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/Plural.h>
 
 #include <algorithm>
 #include <cmath>
@@ -204,8 +205,8 @@ CommandOutput brollCommand(ExecutionContext& c) {
         plan = planBroll(c.state(), seq.id, words, provider.get(), pictures, o,
                          [&c](std::size_t done, std::size_t total) { progress(c, "Matching what is said with the library", done, total); });
         if (*notIndexed > 0) {
-            out.warnings.push_back(std::to_string(*notIndexed) +
-                                   " library item(s) are not indexed for visual search yet: index them in the Library's smart search");
+            out.warnings.push_back("Not indexed for visual search yet: " + counted(static_cast<std::int64_t>(*notIndexed), "library item") +
+                                   " (index them in the Library's smart search)");
         }
         out.warnings.insert(out.warnings.end(), plan.warnings.begin(), plan.warnings.end());
         matches = plan.matches;
@@ -266,7 +267,7 @@ bool writeText(const std::filesystem::path& file, const std::string& text) {
 }
 
 std::string kitMarkdown(const PublishingKit& kit, const std::string& title, const std::string& description, const std::string& name,
-                        const std::vector<std::string>& thumbs) {
+                        const std::vector<std::pair<std::size_t, std::string>>& thumbs) { // (candidate index, file) of the ones written
     std::string md = "# Publishing kit: " + name + "\n\n## Title\n\n" + title + "\n";
     if (kit.titles.size() > 1) {
         md += "\nOther ideas:\n\n";
@@ -287,12 +288,15 @@ std::string kitMarkdown(const PublishingKit& kit, const std::string& title, cons
     md += "\n## Tags\n\n" + (tags.empty() ? std::string("(none)") : tags) + "\n";
     if (!thumbs.empty()) {
         md += "\n## Thumbnails\n\n";
-        for (std::size_t i = 0; i < thumbs.size() && i < kit.thumbnails.size(); ++i) {
+        for (const auto& [candidate, file] : thumbs) { // 170: each file with ITS candidate's time and reasons
+            if (candidate >= kit.thumbnails.size()) {
+                continue;
+            }
             std::string reasons;
-            for (const std::string& r : kit.thumbnails[i].reasons) {
+            for (const std::string& r : kit.thumbnails[candidate].reasons) {
                 reasons += (reasons.empty() ? "" : ", ") + r;
             }
-            md += "- " + thumbs[i] + " at " + youtubeTime(kit.thumbnails[i].time) + " (" + reasons + ")\n";
+            md += "- " + file + " at " + youtubeTime(kit.thumbnails[candidate].time) + " (" + reasons + ")\n";
         }
     }
     if (!kit.warnings.empty()) {
@@ -440,7 +444,7 @@ CommandOutput publishKitCommand(ExecutionContext& c) {
             }
             text("tags.txt", tags + "\n");
             // Thumbnails: YouTube's 1280 x 720, cropped to fill, a JPEG under 2 MB.
-            std::vector<std::string> thumbs;
+            std::vector<std::pair<std::size_t, std::string>> thumbs; // (candidate index, file) of the ones written
             auto* stills = command::findService<command::FrameExportServices>(c.services());
             if (!kit.thumbnails.empty() && (!stills || !stills->writer())) {
                 out.warnings.emplace_back("this host cannot render frames: the kit has no thumbnail files");
@@ -461,7 +465,7 @@ CommandOutput publishKitCommand(ExecutionContext& c) {
                         continue;
                     }
                     data["thumbnails"][i]["file"] = name;
-                    thumbs.push_back(name);
+                    thumbs.emplace_back(i, name);
                     files.push_back(name);
                 }
             }

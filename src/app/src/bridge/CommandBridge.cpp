@@ -12,8 +12,10 @@
 #include <QSet>
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <set>
+#include <string_view>
 
 namespace wabcut::app {
 
@@ -193,6 +195,34 @@ std::vector<const command::CommandSpec*> paletteSpecs() {
     return out;
 }
 
+/// 0.7 (card 013): commands that need services the host passes to an engine (the version history, the review notes, the
+/// export queue, the effects library, the clipboard, frame export, the media readers). CommandBridge::run builds a plain
+/// engine without them, so such a command would be listed and then fail with "The command failed": the palette leaves
+/// them out. Agents and the CLI keep them through the catalog, and the app runs them from their own panels. A test
+/// (palette access) dry-runs every command the palette lists to catch a missing entry.
+bool needsHostServices(const command::CommandSpec& spec) {
+    static constexpr std::array<std::string_view, 12> kPrefixes{
+        "history.", "review.", "export.", "effects.", "clipboard.", "media.import", "media.browse",
+        "media.layeredFileInfo", "sequence.exportFrame", "source.exportFrame", "project.merge", "sequence.makeVersion",
+    };
+    return std::ranges::any_of(kPrefixes, [&](std::string_view prefix) { return spec.name.starts_with(prefix); });
+}
+
+/// 0.7 (card 013): whether the palette lists the command (see needsHostServices; a required id, object or array parameter it
+/// cannot ask for also keeps it out). CommandBridge::offers() follows this, so the keymap provider lists what this does not.
+bool listable(const command::CommandSpec& spec) {
+    if (needsHostServices(spec))
+        return false;
+    const Json& props = spec.params.value("properties", Json::object());
+    const Json& required = spec.params.value("required", Json::array());
+    for (auto it = props.begin(); it != props.end(); ++it) {
+        const bool isRequired = std::find(required.begin(), required.end(), Json(it.key())) != required.end();
+        if (promptFor(it.key(), it.value(), isRequired, {}).unsupported)
+            return false;
+    }
+    return true;
+}
+
 bool needsSelection(const command::CommandSpec& spec) {
     const Json& required = spec.params.value("required", Json::array());
     for (const Json& r : required) {
@@ -318,7 +348,7 @@ bool CommandBridge::covered(const QString& name) {
 
 bool CommandBridge::offers(const QString& name) {
     const command::CommandSpec* spec = command::builtinCommands().find(name.toStdString());
-    return spec && spec->mutates() && !covered(name);
+    return spec && spec->mutates() && !covered(name) && listable(*spec);
 }
 
 QVariantList CommandBridge::commands() const {
@@ -327,6 +357,8 @@ QVariantList CommandBridge::commands() const {
     const QStringList tracks = trackLabelsOf(seq.get());
     const bool hasSelection = m_controller && !m_controller->selection().empty();
     for (const command::CommandSpec* spec : paletteSpecs()) {
+        if (needsHostServices(*spec))
+            continue;
         QVariantList params;
         bool unsupported = false;
         const Json& props = spec->params.value("properties", Json::object());
@@ -338,10 +370,12 @@ QVariantList CommandBridge::commands() const {
             if (!prompt.automatic && !prompt.unsupported)
                 params << prompt.descriptor;
         }
-        QString reason;
+        // 0.7 (card 013): a command with a required id, object or array parameter the palette cannot ask for is not
+        // listed (it only cluttered the list, ranked last and disabled); agents and the CLI keep it in the catalog.
         if (unsupported)
-            reason = tr("Needs values the palette cannot ask for yet");
-        else if (needsSelection(*spec) && !hasSelection)
+            continue;
+        QString reason;
+        if (needsSelection(*spec) && !hasSelection)
             reason = tr("Select a clip first");
         list << QVariantMap{
             {QStringLiteral("name"), QString::fromStdString(spec->name)},

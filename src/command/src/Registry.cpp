@@ -86,6 +86,7 @@ void registerBuiltinCommands(CommandRegistry& registry) {
     detail::registerSourceCommands(registry);
     detail::registerMarkerCommands(registry);
     detail::registerCaptionCommands(registry);
+    detail::registerSourceCitationCommands(registry); // 0.7, card 177
     detail::registerNestingCommands(registry);
     detail::registerAuditionCommands(registry); // 0.6, card #74
     detail::registerCollaborationCommands(registry);
@@ -93,6 +94,7 @@ void registerBuiltinCommands(CommandRegistry& registry) {
     detail::registerLibraryCommands(registry);
     detail::registerProjectPanelCommands(registry); // 0.2, P.3
     detail::registerGraphicsCommands(registry);
+    detail::registerVrCommands(registry); // 0.7
     detail::registerInterchangeCommands(registry);
     detail::registerParityCommands(registry);
     detail::registerTimelineCommands(registry);
@@ -103,6 +105,7 @@ void registerBuiltinCommands(CommandRegistry& registry) {
     detail::registerExportCommands(registry);
     detail::registerMonitorCommands(registry);
     detail::registerEffectsLibraryCommands(registry);
+    detail::registerTrackGroupCommands(registry); // 0.7, card 124
 }
 
 const CommandRegistry& builtinCommands() {

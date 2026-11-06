@@ -40,9 +40,11 @@ struct ClipRef {
 
 /// Resolves clip ids (and, with FollowLinks, their partners) in one pass over the sequence.
 /// Unknown ids and named clips on locked tracks are errors; partners on locked tracks are skipped.
+/// 0.7 (card 064): a locked clip (Clip::locked) is an error the same way, and a locked partner is skipped, unless
+/// llowLocked (a copy only reads the clips).
 /// Result order: track order (V1..Vn, A1..An), then time.
 std::expected<std::vector<ClipRef>, Error> resolveClips(const Sequence& sequence, std::span<const ClipId> clips,
-                                                        LinkMode links);
+                                                        LinkMode links, bool allowLocked = false);
 
 /// The clip and its linked partners for a single-edge operation (trim, roll, slide): at most one clip
 /// per track, the named clip first. A partner is the group member on another unlocked track whose
@@ -88,6 +90,7 @@ public:
     ClipId newClipId() { return m_ids.allocate<ClipId>(); }
     LinkGroupId newLinkGroup() { return m_ids.allocate<LinkGroupId>(); }
     ClipGroupId newClipGroup() { return m_ids.allocate<ClipGroupId>(); }
+    TrackGroupId newTrackGroup() { return m_ids.allocate<TrackGroupId>(); }
     TransitionId newTransitionId() {
         const auto id = m_ids.allocate<TransitionId>();
         m_createdTransitions.push_back(id);
@@ -99,6 +102,10 @@ public:
         m_createdEffects.push_back(id);
         return id;
     }
+    /// A copy of an audition clip (paste, Alt-drag copy): every effect of its other takes gets a new instance id of
+    /// this project's generator, as the clip's own effects do (card 092; validate() wants every id below the
+    /// generator, and two clips never share one). The clip's own effects are not touched here.
+    void renewTakeEffectIds(Clip& clip);
     /// One frame at the sequence rate: the shortest clip a trim may leave.
     Ticks oneFrame() const { return framesToTicks(1, m_seq.frameRate); }
     /// The source media the clip may use (MediaItem::sourceBounds: the media, or a restricted subclip's range). The
@@ -143,6 +150,12 @@ public:
     /// ops with their own option (dead-time removal, instant replay) set it before rippling.
     void setMarkersFollow(bool on) { m_markersFollow = on; }
     bool markersFollow() const { return m_markersFollow; }
+    /// 0.7 (card 120): whether the keyframes of the sequence's tracks (and its master bus) follow the same hooks: the
+    /// ripple insert / removal / stretch moves them as it moves the track's clips (Sequence::rippleTrackKeyframes). Keys
+    /// at or after an insert move later; keys inside a removed stretch go with it, later ones move back. Tracks that are
+    /// locked, or not sync-locked, keep theirs (submix tracks always follow: they hold no clips to ripple).
+    void setTrackKeysFollow(bool on) { m_trackKeysFollow = on; }
+    bool trackKeysFollow() const { return m_trackKeysFollow; }
     /// Deletes clips in one pass per track. `refs` hold input-sequence indices, grouped by track with
     /// ascending indices (resolveClips order), and must precede any other change to those tracks.
     void removeClips(std::span<const ClipRef> refs) { extract(refs, true); }
@@ -193,6 +206,11 @@ private:
     /// and captionsRemove); they stay sorted by start, and the header is touched only when a marker moved.
     void markersInsert(Ticks at, Ticks duration);
     void markersRemove(TimeRange range);
+    /// 0.7 (card 120): the tracks' and the master bus' keyframes through a ripple insert / removal (setTrackKeysFollow).
+    void trackKeysInsert(Ticks at, Ticks duration);
+    void trackKeysRemove(TimeRange range);
+    template <class Map>
+    void mapTrackKeys(Map&& map, Ticks collapseTo);
     /// Maps every marker's start (and highlight peak) through `map` and its end through `mapEnd`, keeping start <= end.
     template <class Map, class EndMap>
     void mapMarkers(Map&& map, EndMap&& mapEnd);
@@ -214,6 +232,7 @@ private:
     std::vector<TrackId> m_createdTracks;
     bool m_headerChanged = false;
     bool m_markersFollow = true; ///< 0.4: Ripple Sequence Markers (set from the sequence in the constructor)
+    bool m_trackKeysFollow = false; ///< 0.7: Ripple Track Keyframes (set from the sequence in the constructor)
 };
 
 /// The state unchanged, as an EditResult.

@@ -8,6 +8,7 @@ add_library(wabcut_render STATIC
     src/Compositor.cpp
     src/CompositorFlow.cpp
     src/EffectLibrary.cpp
+    src/FaceMap.cpp
     src/FrameImporter.cpp
     src/Mask.cpp
     src/Matte.cpp
@@ -17,16 +18,30 @@ add_library(wabcut_render STATIC
     src/SyntheticPicture.cpp
     src/Title.cpp
     src/GraphicRaster.cpp
+    src/TextTypography.cpp
     src/Transform.cpp
+    src/VectorImage.cpp
     src/ZeroCopy.cpp
 )
+# 0.7 (card #86): SVG through Qt Svg; the PDF-compatible part of an Illustrator file through Windows.Data.Pdf (WinRT, in a
+# file of its own that includes no Qt header); elsewhere and for EPS an installed Ghostscript (VectorImage.h).
+if(WIN32)
+    target_sources(wabcut_render PRIVATE src/VectorPdfWin.cpp)
+    # The WinRT headers are not clean at /W4 under every SDK: warnings in them must not stop the build.
+    if(MSVC)
+        set_source_files_properties(src/VectorPdfWin.cpp PROPERTIES COMPILE_OPTIONS "/W3;/wd4702")
+    endif()
+    target_link_libraries(wabcut_render PRIVATE windowsapp)
+endif()
 target_include_directories(wabcut_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # GuiPrivate: QRhi is semi-public API (pinned to Qt 6.11 behaviour, see the root CMakeLists.txt).
 target_link_libraries(wabcut_render PUBLIC wabcut_model wabcut_media wabcut_color wabcut_colorspaces wabcut_motion
-                                           Qt6::Gui Qt6::GuiPrivate)
+                                           Qt6::Gui Qt6::GuiPrivate Qt6::Svg)
 # 0.6: Lightning's and Scribble's strokes (render/reference/LibraryGeometry.h) are one source for the compositor and
 # their CPU twins, so preview, export and the reference draw the same segments.
-target_link_libraries(wabcut_render PRIVATE wabcut_render_reference)
+find_package(ZLIB REQUIRED)
+# zlib: an SVGZ is inflated here (capped) so the SVG's links can be checked before Qt reads it.
+target_link_libraries(wabcut_render PRIVATE wabcut_render_reference ZLIB::ZLIB)
 wabcut_target_defaults(wabcut_render)
 
 # Resources under :/wabcut/render/shaders/<name>.qsb. GLSL 300 es / 330 (no ES 2: integer uniforms, fwidth),

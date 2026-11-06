@@ -142,11 +142,11 @@ std::expected<color::ColorImage, Error> ColorFrameService::frame(const ProjectSt
                 const ClipProperties& p = clip.properties();
                 render::LayerTransform transform;
                 transform.position = {p.value(ParamId::PositionX, t), p.value(ParamId::PositionY, t)};
-                transform.scale = p.value(ParamId::Scale, t) * scaleToFrameFactor(state, clip, seq->width, seq->height);
+                transform.setScaleXY(p.scaleAt(t), scaleToFrameFactor(state, clip, seq->width, seq->height, sequencePixelAspect(*seq)));
                 transform.rotationDegrees = p.value(ParamId::Rotation, t);
                 transform.anchor = {p.value(ParamId::AnchorX, t), p.value(ParamId::AnchorY, t)};
                 opacity = std::clamp(p.value(ParamId::Opacity, t), 0.0, 1.0);
-                const render::Affine2D m = render::layerToCanvas(transform, frameW, frameH, aspect, {seq->width, seq->height});
+                const render::Affine2D m = render::layerToCanvas(transform, frameW, frameH, aspect, {seq->width, seq->height, sequencePixelAspect(*seq)});
                 if (std::abs(m.determinant()) > 1e-12) {
                     toFrame = m.inverted();
                 }

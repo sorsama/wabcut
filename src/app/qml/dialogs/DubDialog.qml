@@ -85,6 +85,14 @@ WabcutDialog {
     title: narration ? qsTr("Narration") : qsTr("Dub")
     width: Math.min(parent ? parent.width - Theme.space(16) : Theme.space(230), Theme.space(230))
     onOpened: {
+        // r07: start from the voice model of Settings > AI > Features (or the first usable one when automatic).
+        const routes = AiController.routing ?? []
+        const speak = routes.find(r => r.capability === "speak")
+        const routed = speak ? models.findIndex(m => m.id === speak.model) : -1
+        if (routed >= 0 && routed !== modelIndex) {
+            modelIndex = routed
+            voice = "" // voices belong to a model
+        }
         if (Object.keys(Dub.proposal).length > 0)
             prefill(Dub.proposal)
         estimate()
@@ -244,9 +252,13 @@ WabcutDialog {
                 FieldInput {
                     id: voiceIdField
                     objectName: "dubVoiceId"
+                    // r07 (QA-02): every model that takes voice ids of its own (ElevenLabs, Cartesia, Fish Audio, an
+                    // OpenAI-compatible server such as Kokoro), not only ElevenLabs.
+                    readonly property string hint: dialog.model ? Dub.voiceIdHint(dialog.model.id) : ""
                     Layout.fillWidth: true
-                    visible: dialog.model !== null && dialog.model.provider === "elevenlabs"
-                    placeholderText: qsTr("Or a voice id from your ElevenLabs library")
+                    visible: hint !== ""
+                    placeholderText: hint
+                    Accessible.name: qsTr("Voice id")
                     onEditingFinished: if (text.trim() !== "") dialog.voice = text.trim()
                 }
                 PillButton {

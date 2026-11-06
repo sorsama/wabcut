@@ -164,3 +164,68 @@ TEST_CASE("Captions: SubRip and WebVTT from transcript segments", "[ai][transcri
         CHECK(segmentWordsText(th, th.segments[0]) == "ใช้iPhone 15ถ่าย");
     }
 }
+
+// ---- 0.7 (card 111): segments that name their own language -------------------------------------------------------------
+
+TEST_CASE("A transcript of mixed languages names the language of each segment and keeps it in JSON", "[ai][transcript][mixed]") {
+    Transcript t = sample();
+    // The sample has "Hello, world." (English) and "สวัสดี" (Thai): a transcript made as one language names none.
+    CHECK(languageShares(t) == std::vector<LanguageShare>{{"en", 3}});
+    CHECK(t.wordLanguage(2) == "en");
+    CHECK(toJson(t).find("\"language\":\"th\"") == std::string::npos);
+
+    t.segments[1].language = "th";
+    REQUIRE(t.validate());
+    CHECK(t.segmentLanguage(0) == "en"); // no language of its own: the transcript's
+    CHECK(t.segmentLanguage(1) == "th");
+    CHECK(t.wordLanguage(0) == "en");
+    CHECK(t.wordLanguage(1) == "en");
+    CHECK(t.wordLanguage(2) == "th");
+    CHECK(t.wordLanguage(99) == "th"); // past the end: the last segment's
+    CHECK(languageShares(t) == std::vector<LanguageShare>{{"en", 2}, {"th", 1}});
+
+    // Round trip: the language of the segment that names one comes back; the other still names none.
+    for (const int indent : {-1, 2}) {
+        const std::string json = toJson(t, indent);
+        auto back = transcriptFromJson(json);
+        REQUIRE(back);
+        CHECK(*back == t);
+        CHECK(back->segments[0].language.empty());
+        CHECK(back->segments[1].language == "th");
+    }
+    // An older build's transcript (no segment names a language) reads as one language.
+    nlohmann::json doc = nlohmann::json::parse(toJson(t));
+    for (auto& segment : doc["segments"]) {
+        segment.erase("language");
+    }
+    auto old = transcriptFromJson(doc.dump());
+    REQUIRE(old);
+    CHECK(old->segments[1].language.empty());
+    CHECK(old->wordLanguage(2) == "en");
+
+    // Ties go by code; an empty transcript has no shares.
+    Transcript tie;
+    tie.language = "th";
+    tie.words = {{"a", ms(0), ms(100), 0.9f, std::nullopt, false, false}, {"b", ms(100), ms(200), 0.9f, std::nullopt, false, false}};
+    tie.segments = {{ms(0), ms(100), 0, 1, "a", std::nullopt, "th"}, {ms(100), ms(200), 1, 1, "b", std::nullopt, "en"}};
+    CHECK(languageShares(tie) == std::vector<LanguageShare>{{"en", 1}, {"th", 1}});
+    CHECK(languageShares(Transcript{}).empty());
+
+    Transcript bad = t;
+    bad.segments[1].language = "\xFF\xFE"; // not UTF-8
+    CHECK_FALSE(bad.validate());
+}
+
+TEST_CASE("Captions of a transcript with mixed languages join each segment the way its language writes", "[ai][transcript][captions][mixed]") {
+    Transcript t = sample();
+    t.words = {{"Hello", ms(1000), ms(1500), 0.9f, std::nullopt, false, false},
+               {"world", ms(1500), ms(2000), 0.9f, std::nullopt, false, false},
+               {"ส", ms(3000), ms(3200), 0.9f, std::nullopt, false, false},
+               {"ว", ms(3200), ms(3400), 0.9f, std::nullopt, false, false}};
+    t.segments = {{ms(1000), ms(2000), 0, 2, "Hello world", std::nullopt, ""}, {ms(3000), ms(3400), 2, 2, "สว", std::nullopt, "th"}};
+    REQUIRE(t.validate());
+    const std::string srt = toSrt(t);
+    CHECK(srt.find("Hello world") != std::string::npos); // English: spaced
+    CHECK(srt.find("สว\n") != std::string::npos);        // Thai: not spaced, though the transcript's language is English
+    CHECK(srt.find("ส ว") == std::string::npos);
+}

@@ -301,7 +301,7 @@ WabcutDialog {
             }
             Text {
                 visible: dialog.rows.length > dialog.shownRows
-                text: qsTr("and %1 more clips").arg(dialog.rows.length - dialog.shownRows)
+                text: qsTr("and %n more clip(s)", "", dialog.rows.length - dialog.shownRows)
                 color: Theme.textTertiary
                 font.family: Theme.fontSans
                 font.pixelSize: Theme.textXs

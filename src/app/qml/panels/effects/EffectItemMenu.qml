@@ -33,6 +33,8 @@ Item {
     readonly property bool usable: (row.problem ?? "") === ""
     readonly property string folderKind: row.folderKind ?? ""
     readonly property bool holdsPresets: row.canHoldPresets ?? false
+    /// 0.7 (card #82): the keymap command that applies this effect or preset ("" for a transition or plug-in).
+    readonly property string shortcutCommand: itemId !== "" && !isTransition ? EffectShortcuts.commandFor(itemId) : ""
 
     signal status(string message)
     signal renameRequested(string key)
@@ -75,10 +77,28 @@ Item {
             objectName: "applyToSelectedItem"
             text: qsTr("Apply to Selected Clips")
             iconName: "check"
+            // 0.7 (card #82): the key the user bound to this effect or preset, if any.
+            command: root.shortcutCommand
             enabled: root.usable
             onTriggered: {
                 const result = root.tree ? root.tree.applyToSelection(root.itemId) : ({})
                 root.status(result.message ?? result.error ?? "")
+            }
+        }
+        ContextMenuItem {
+            // 0.7 (card #82): every effect and preset is a command of Keyboard Shortcuts ("Apply <name>"): this opens the
+            // editor on it, so a key can be bound without hunting through the list.
+            objectName: "shortcutItem"
+            text: qsTr("Keyboard Shortcut…")
+            iconName: "keyboard"
+            visible: root.shortcutCommand !== ""
+            height: visible ? implicitHeight : 0
+            onTriggered: {
+                const name = root.itemName
+                root.later(() => {
+                    KeymapDispatcher.trigger("edit.keyboardShortcuts")
+                    Shortcuts.search = name // after the dialog opened: opening clears the search
+                })
             }
         }
         ContextMenuItem {

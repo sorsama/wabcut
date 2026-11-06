@@ -42,6 +42,10 @@ public:
                                                 std::optional<TimeRange> range, command::ExecutionControl* control,
                                                 const std::function<void(double)>& progress);
 
+    /// 0.7: loudness, levels and the average spectrum in one render (not cached).
+    std::expected<MatchStats, Error> measureMatch(const ProjectState& state, SequenceId sequence, const LoudnessTarget& target,
+                                                  std::optional<TimeRange> range, command::ExecutionControl* control) override;
+
     std::uint64_t renders() const noexcept { return m_renders.load(); }
     std::uint64_t cacheHits() const noexcept { return m_hits.load(); }
 

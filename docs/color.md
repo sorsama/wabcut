@@ -101,6 +101,24 @@ numbers finite, x strictly increasing. A reference to a LUT asset that no longer
   are checked on disk and relinked like media: an offline LUT counts in the "files cannot be found" prompt, is listed
   in the relink dialog ("name (LUT)"; Locate… or Search folder…), and **Collect Files** copies the referenced ones into
   `LUTs/` of the capsule (manifest role `lut`). Importing the same file again returns the existing asset.
+- **A LUT replaced on disk** (0.7): save a new version of a .cube over the same path while Wabcut is open and the
+  preview and the exports use it from the next frame on (the file's size and modification time are compared at most
+  once a second per file). A replacement that is not a readable LUT plays no look at all rather than the old one, so an
+  export never bakes in a stale grade; fix the file and it comes back by itself. Rendered previews made with the old file
+  are stale (the file's size and modification time are part of a preview's key), so **Use Previews** never copies the old
+  grade into an export. An export that meets a LUT it cannot read - missing, offline, or being rewritten by the program that
+  saves it - waits up to three seconds for the file and then **stops with the file's name** instead of writing frames without
+  the look.
+- **A `#` in a title** (0.7): a `TITLE "Kodak 2383 #2"` line reads as written; `#` starts a comment only at the start of
+  a line or after the title's closing quote (and after data, as before).
+- **LUT folders** (0.7): **"Import folder…"** in the LUT menu (Basic > Input LUT, Creative > Look), or
+  `lut.importFolder`, adds every .cube of a folder and its sub-folders (hidden folders skipped, up to 500 files, 8
+  levels) in one undo step and lists them in the menu under submenus named after their folders ("Film
+  Emulation/Kodak" for a LUT in `Film Emulation\Kodak` of the folder you chose; the chosen folder's own name is the
+  top group, or pass `group`). Only the head of each file is checked, so a large folder imports at once; a file that
+  turns out unreadable shows when it is used. LUTs already in the project are not added again but are listed under the
+  new group; `lut.import` takes the same `group`. `lut.list` reports each LUT's folder. The group is saved with the
+  project (`folder` on the asset) and says nothing about where the file lives.
 
 ### Built-in looks and input LUTs
 
@@ -180,6 +198,85 @@ CPU reference, so what it computes is what the compositor shows.
 - **Match Scene**: matches every clip of the reference clip's scene: by default the contiguous run of clips on its track
   cut from the same media without gaps (what Split at Shots makes); also "track", "media" or an explicit list. One undo
   step; dry run available.
+
+## Match to a colour chart (0.7)
+
+Shoot an X-Rite **ColorChecker Classic** (24 patches, 6 × 4) in the light of a scene, and the clips of that scene can be
+brought to the chart's published colours: no guessing at what is grey. The Color panel's **Color Chart** section (below
+Compare & Match), the command `color.chartMatch` and the assistant do it; the result is ordinary grade settings you keep
+editing, in one undo step.
+
+**In the app.**
+1. Put the playhead on a frame that shows the chart (on the clip, selected or under the playhead) and choose **Find chart**.
+2. The chart is looked for in the clip's picture (before its grade). It is drawn on the program monitor: the outline in the
+   accent colour, the middle half of every patch that is read, the numbers 1, 6, 19 and 24 on the corner patches, and four
+   **corner handles** (drag them, or Tab to one and use the arrow keys; Shift moves ten times as far). When no chart is found
+   the four handles are offered on a default shape: drag them onto the outer corners of the 24-patch area, top-left above
+   *Dark skin*, bottom-left below *White*. **Rotate** and **Mirror** reassign the corners for a chart that lies on its side,
+   upside down, or in a mirrored picture (the grey row must run white to black, otherwise there is nothing to apply and the
+   section says so). **Chart print** is the edition of the chart: since November 2014 (the default) or before (X-Rite changed the
+   formulation then; up to a couple of delta E on some patches).
+3. The swatches show each of the 24 patches three ways - the chart's colour (top), now (bottom left), matched (bottom right) -
+   and the line under them the mean and the worst **ΔE 2000** before and after (hover a swatch for that patch). Patches that
+   cannot be read (clipped, black or uneven) are dimmed and left out of the fit and the means.
+4. **Match** writes the fit into the clip's grade. With **Also match the other selected clips** the same correction goes to
+   the other selected video clips (shot in the same light); each gets a grade when it has none. **Match saturation and hue
+   too** off keeps to white balance, exposure, contrast and the grey row's curves.
+
+**What it sets.** The fit starts from the grade the clip has and replaces only what it owns: Basic **temperature, tint,
+exposure, contrast and saturation**, the **RGB curves** (master cleared; red, green and blue through the grey row) and the **hue
+vs hue / saturation / luma** points. Everything else in the grade (the input LUT, creative look, wheels, HSL secondary,
+vignette, vibrance, highlights...) stays and is part of the fit. Keyframes on those Basic parameters are replaced by the new
+values, and the section is turned on. A clip with no grade gets one. Do it first, grade creatively afterwards.
+
+**How it works** (`src/render/color/src/ChartMatch.cpp`; no machine learning).
+- *Finding.* Regions where neighbouring pixels hardly change are cut out at two scales and three flatness limits; the ones
+  that are filled squares of about the same size are lattice candidates. Pairs of neighbours give a lattice basis, the lattice
+  is refined into a perspective map (so a tilted chart is found), and the best of the eight turns/mirrors and every offset
+  inside 6 × 4 is chosen by how well the measured colours fit the reference through a per-channel gain and offset, with the
+  grey row required to run light to dark. At least 10 patches have to be seen; the rest follow from the lattice.
+- *Reading.* A 13 × 13 grid of taps on the middle half of every patch, sorted by luma; the lowest and highest 15 % are
+  dropped and the rest averaged (a speck of dust, a fingerprint or a reflection does not move the number). Patches with a
+  channel at white, all channels at black, or an uneven middle (luma spread over 0.12) are unreadable.
+- *The target.* X-Rite's published CIE L\*a\*b\* (D50) values of the Classic, both prints (tabulated by BabelColor, "New color
+  specifications since November 2014", and the colour-science project's colour checker datasets). A patch should show the
+  sRGB value computed from them (Bradford D50 → D65, the sRGB curve, clamped into the gamut: the cyan patch is outside it).
+  Errors are CIE ΔE 2000 between what the picture shows (code values read as sRGB, as the monitor shows them) and that
+  value; the grade itself works as before (BT.709 linear light for white balance, exposure and contrast).
+- *The fit.* Nelder-Mead on the weighted mean ΔE 2000 over the readable patches (grey and skin patches count more) for
+  temperature, tint, exposure, contrast and saturation, from two starts (the unchanged picture, and a white balance that
+  neutralises the mid grey); then one curve point per readable grey step on each of red, green and blue (monotone, anchored at
+  0 and 1, three rounds of correcting the residual), the saturation again, and hue points at the hues of the coloured patches (a
+  rotation, a chroma factor and a luma shift each; points within 0.015, 0.03 or 0.05 turns of hue share one, and the
+  correction is taken whole or damped to 75, 50 or 30 %, whichever has the lowest leave-one-out error, and only if that
+  error falls by at least 0.25). Every step is kept only when it lowers the weighted mean ΔE. The fit is evaluated with the grade's CPU reference, the maths the
+  compositor runs, and the reported "after" numbers are what that reference shows with the stored result.
+- *Refused* (with the reason): no chart found; fewer than 12 readable patches or fewer than 3 readable greys; a grey row that
+  does not run white to black; a fit that does not lower the mean ΔE (the corners are on the wrong patches).
+
+**How well it matches.** On synthetic charts (`tests/color/test_chart_match.cpp`) a warm cast (red × 1.28, blue × 0.72,
+exposure × 0.8) goes from a mean ΔE 2000 of 8.8 to 0.1, and a cast with channel mixing and a tone change from 6.8 to 0.3.
+Real pictures are harder: a hand-held chart photographed indoors and a ColorChecker Passport's 4 × 6 block lying a quarter
+turn (both found without help) went from 7.0 to 2.5 and from 10.4 to 2.6, about 3.2 on colours between the patches. Cameras
+and prints differ from the chart in ways per-channel curves and hue points cannot remove entirely (a 3 × 3 matrix stage in
+the grade, a new shader stage that is not part of this change, would take that further): expect a mean ΔE of 2 to 4 after.
+The hue points always reproduce the 24 patches (three numbers per patch), so the section also says what to expect between
+them: "Between the patches", the error of each coloured patch with the curves made from the other patches; hue points that do
+not lower that error clearly are left out.
+
+**CLI, MCP and the assistant.** `color.chartMatch`: `clip` (the one that shows the chart), `time`, `corners` (four [x, y]
+fractions of the picture: top-left, top-right, bottom-right, bottom-left of the chart upright; omit to find it), `edition`
+(`after-2014`, `before-2014`), `neutralOnly`, `also` (more clips), `effect`. The result lists every patch's reference, before
+and after colour and ΔE, the fitted parameters and curves, the corners used and `detected`. `dryRun` reports the fit and changes
+nothing.
+
+**Limits.** ColorChecker Classic (and charts with the same 24 patches in one 6 × 4 block with even gaps, e.g. the Mini
+versions; the Passport's classic target has the same colours and order, but it has not been tried on a real one); the ColorChecker
+SG, Video, Digital charts and the 18 % grey cards are not read. Detection wants the chart roughly flat to the camera, in
+focus, with every patch lit alike; heavy perspective, glare and a chart under 12 px per patch at the analysis size are
+better placed with the corners. The picture is read at up to 1280 px wide, on the GUI thread like Auto and Color Match (a
+single frame and tens of milliseconds of arithmetic). In a colour-managed project the chart is read as the monitor shows it,
+with the same approximation Auto and Color Match make for the grade's working space.
 
 ## Apply Grade to other clips (0.4)
 
@@ -371,6 +468,26 @@ format has 10 bits — HEVC Main 10, ProRes 422, AV1 10-bit — and its tone-map
   and to the container; **MaxCLL / MaxFALL are measured** over every rendered frame (the brightest max(R, G, B) in
   nits, and the brightest frame average of it, CTA-861.3) and written into the MP4 / MOV `clli` box with the movie header
   at the end of the export (MKV: mastering display only). `ExportResult::maxCll / maxFall` report them.
+- **Dynamic metadata (0.7)**: what this build can and cannot do, checked against its FFmpeg 9.0.2 and x265 4.3.
+  - *Read and keep.* `media::probe` stores the Dolby Vision configuration a file declares (profile, level, base layer
+    compatibility: 8.1 HDR10, 8.2 SDR, 8.4 HLG; RPU, enhancement layer; the `dvcC` / `dvvC` box, Matroska's block
+    additions) and whether the first frames of an HEVC PQ stream carry HDR10+. **Get Properties** shows "Dynamic HDR:
+    Dolby Vision profile 8.4, level 6, HLG base layer, RPU in the stream" and "HDR10+ (SMPTE ST 2094-40) in the first
+    frames". `media::scanDynamicHdr` decodes a sample and reads the HDR10+ messages (application version, peak,
+    targeted display, tone mapping curve) and Dolby Vision RPUs (FFmpeg parses them; level 1 min / max / average PQ in
+    nits). A re-render cannot keep a source's dynamic metadata (the pictures change), so a smart-rendered passthrough
+    keeps whatever its copied packets carry and the Pre-export Check warns about the rest.
+  - *HDR10+ is written.* Measured from the rendered frames (`VideoSourceFormat::frameStats`), planned shot by shot
+    (`planHdr10Plus`), serialised by FFmpeg's `av_dynamic_hdr_plus_to_t35` and put into the encoder's Annex B access
+    units as a prefix SEI NAL unit before the first slice (the muxer's packet filter). The bundled x265 has no HDR10+
+    support (its `ENABLE_HDR10_PLUS` option is off in vcpkg) and FFmpeg's libx265 does not turn
+    `AV_FRAME_DATA_DYNAMIC_HDR_PLUS` into SEI, so the message is added after the encoder; hardware encoders (NVENC,
+    AMF, Quick Sync) work the same way. Tone mapping curves (Bezier anchors) are not generated: they cannot be checked
+    here without an HDR10+ display, so `tone_mapping_flag` is 0 and displays map by the brightness distribution.
+  - *Dolby Vision is not written.* The format is licensed and certified by Dolby. FFmpeg 9.0's libx265 can write RPUs
+    from `AV_FRAME_DATA_DOVI_METADATA` and x265 accepts them, so a licensed build only has to supply the metadata
+    through `DolbyVisionWriter`; without one the 8.1 and 8.4 options are greyed out with the reason. libdovi
+    (dovi_tool, MIT) is not used and not needed for reading.
 - **AV1**: `av1_nvenc` / `av1_qsv` / `av1_amf` when the GPU has an AV1 encoder (RTX 40-series, Arc, RDNA 3), else
   **SVT-AV1** (`libsvtav1`, BSD-3-Clause-Clear with the AOMedia Patent License 1.0, preset 8, CRF from the quality
   scale). MP4 or MKV.
@@ -468,7 +585,7 @@ the side that changed the colour management (a conflict when both did).
 
 ## Commands (CLI and MCP)
 
-`color.grade.set`, `color.grade.get`, `color.grade.copy` (0.4), `color.auto`, `color.match`, `color.matchScene`, `lut.import`, `lut.list`, `lut.export`,
+`color.grade.set`, `color.grade.get`, `color.grade.copy` (0.4), `color.auto`, `color.match`, `color.matchScene`, `color.chartMatch` (0.7), `lut.import`, `lut.list`, `lut.export`,
 `cdl.export`, `cdl.import`, `scopes.read`, and colour management (I.9): `color.management.get`, `color.management.set`,
 `color.inputSpace.get`, `color.inputSpace.set` — see [commands.md](commands.md) and [mcp.md](mcp.md) (generated). Pixels for
 Auto, Match and `scopes.read` come from the editor's `ColorFrameService` (the sequence frame, or one clip alone without
@@ -522,6 +639,12 @@ The grade and scope shaders are precompiled to DXBC at build time (`qt_add_shade
   transform in OpenColorIO's studio config, RED Log Film's neutrals), `tests/model/test_color_management.cpp` (ids,
   names, menu, camera-log flags, older projects' ids unchanged), `tests/media/test_camera_log.cpp` (the vendor names
   and tags, D-Log M and F-Log2 C left alone).
+- 0.7 colour-chart matching: `tests/color/test_chart_match.cpp` (ΔE 2000 against the published test pairs, the chart's sRGB
+  values, the corner geometry, measuring with a speck and a clipped patch, finding a synthetic ColorChecker upright, turned,
+  mirrored, tilted, small and among flat squares, none in a picture without one, the fit on a per-channel cast and on one with
+  channel mixing, refusals, and `color.chartMatch` through the engine: one undo step, save and reload, "also", manual corners,
+  dry run), `tests/app/test_chart_match_ui.cpp` (the Color Chart section, the monitor's handles, Rotate / Mirror / print / colour
+  switch, Match in one undo step also onto selected clips, the chart closing with the frame; screenshots dark and light).
 - e2e `[color]`: the workspace (grade, scopes update and draw traces, stop outside the workspace, before/after,
   reference, Auto, Match, a LUT asset imported, moved, listed offline and relinked; screenshots `color_workspace.png`, `color_scopes.png`, `color_panel.png`,
   `color_graded_vs_ungraded.png`, `color_before_after.png`, `color_reference.png`) and the playback measurement above.

@@ -4,7 +4,8 @@
 #   wabcut_ai_local   what the CLI/app need around it: an OS HTTP transport for model downloads
 #   wabcut-embed      the smart-search embedding helper, SigLIP 2 on ONNX Runtime, and the auto-reframe subject
 #                     detectors (YuNet, YOLOX; AI-9), Enhance Speech and stem separation (A.4), caption translation
-#                     (OPUS-MT; AI-12) (WABCUT_WITH_ONNX; protocol:
+#                     (OPUS-MT; AI-12), the image-to-image models of the AI video effects (Real-ESRGAN, NAFNet,
+#                     DRUNet; 0.7) (WABCUT_WITH_ONNX; protocol:
 #                     wabcut/ai/search/EmbedProtocol.h)
 if(WABCUT_WITH_LOCAL_AI)
     find_package(ggml CONFIG REQUIRED)
@@ -43,8 +44,9 @@ if(WABCUT_WITH_ONNX)
     # Microsoft's prebuilt ONNX Runtime (overlay port cmake/ports/onnxruntime-prebuilt): never compiled here.
     find_package(onnxruntime-prebuilt CONFIG REQUIRED)
     find_package(nlohmann_json CONFIG REQUIRED)
-    add_executable(wabcut-embed embed/main.cpp embed/AudioModels.cpp embed/TranslateModels.cpp embed/SegmentModels.cpp)
-    target_link_libraries(wabcut-embed PRIVATE wabcut_ai_search wabcut_ai_vision wabcut_ai_audio wabcut_ai_mt onnxruntime-prebuilt::onnxruntime
+    add_executable(wabcut-embed embed/main.cpp embed/AudioModels.cpp embed/TranslateModels.cpp embed/SegmentModels.cpp
+        embed/PictureModels.cpp)
+    target_link_libraries(wabcut-embed PRIVATE wabcut_ai_search wabcut_ai_vision wabcut_ai_audio wabcut_ai_mt wabcut_ai_video onnxruntime-prebuilt::onnxruntime
         nlohmann_json::nlohmann_json)
     wabcut_target_defaults(wabcut-embed)
     # onnxruntime.dll (+ onnxruntime_providers_shared.dll) next to the helper: they are loaded when it starts.

@@ -410,6 +410,9 @@ std::expected<Placement, Error> placementOf(const ProjectState& state, SequenceI
         }
         display = reframe::displayGeometry(media->info.video[static_cast<std::size_t>(clip.stream.index)]);
     }
+    if (!clip.properties().uniformScale()) {
+        return std::unexpected(Error(ErrorCode::InvalidArgument, "the clip's Uniform Scale is off: turn it on to zoom it automatically"));
+    }
     Placement p;
     p.frameWidth = seq->width;
     p.frameHeight = seq->height;

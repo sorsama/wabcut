@@ -32,6 +32,7 @@ extern "C" {
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cmath>
@@ -44,6 +45,7 @@ extern "C" {
 using namespace exporttest;
 using namespace wabcut;
 using namespace wabcut::exporter;
+using Catch::Approx;
 
 namespace {
 
@@ -630,6 +632,104 @@ TEST_CASE("Soft subtitle tracks: 3GPP Timed Text in MP4 and SubRip in MKV", "[ex
     CHECK_FALSE(validate(wav).has_value());
 }
 
+namespace {
+
+/// Where each packet of a file's video and subtitle streams sits in the file: its time (seconds) and byte position.
+struct PacketLayout {
+    std::vector<std::pair<double, std::int64_t>> video;
+    std::vector<std::pair<double, std::int64_t>> subtitles;
+};
+
+std::optional<PacketLayout> packetLayout(const std::filesystem::path& file) {
+    AVFormatContext* fmt = nullptr;
+    const std::string path = pathToUtf8(file);
+    if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0) {
+        return std::nullopt;
+    }
+    std::unique_ptr<AVFormatContext, void (*)(AVFormatContext*)> owner(fmt, [](AVFormatContext* f) { avformat_close_input(&f); });
+    if (avformat_find_stream_info(fmt, nullptr) < 0) {
+        return std::nullopt;
+    }
+    PacketLayout out;
+    AVPacket* packet = av_packet_alloc();
+    while (av_read_frame(fmt, packet) >= 0) {
+        const AVStream* st = fmt->streams[packet->stream_index];
+        const std::int64_t ts = packet->pts != AV_NOPTS_VALUE ? packet->pts : packet->dts;
+        const double seconds = static_cast<double>(ts) * av_q2d(st->time_base);
+        if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            out.video.emplace_back(seconds, packet->pos);
+        } else if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE && packet->size > 2) {
+            // (MP4's muxer writes a 2-byte empty text sample into each gap between cues: not a cue.)
+            out.subtitles.emplace_back(seconds, packet->pos);
+        }
+        av_packet_unref(packet);
+    }
+    av_packet_free(&packet);
+    return out;
+}
+
+/// The byte position of the first video packet at or after `seconds`.
+std::int64_t videoPosAt(const PacketLayout& layout, double seconds) {
+    std::int64_t best = -1;
+    double bestTime = 1e30;
+    for (const auto& [time, pos] : layout.video) {
+        if (time >= seconds - 1e-6 && time < bestTime) {
+            bestTime = time;
+            best = pos;
+        }
+    }
+    return best;
+}
+
+} // namespace
+
+// Card 146: the cues were all written after the video loop, so they sat after every video and audio packet (in MKV in
+// clusters at the tail of the file with early timestamps), where sequential players show them late or never. Each cue is
+// now muxed as the video reaches its start.
+TEST_CASE("Soft subtitle cues are muxed beside the picture they belong to, not at the end of the file", "[export][media][captions]") {
+    TestProject project = emptyProject(160, 90, Rate{10, 1}, 24.0);
+    project.editSequence([&](Sequence& s) {
+        CaptionTrack track;
+        track.id = project.state.ids.allocate<CaptionTrackId>();
+        track.name = "English";
+        track.language = "en";
+        for (const std::int64_t second : {1, 12, 23}) {
+            track.cues.push_back(CaptionCue{Ticks::fromSeconds(second), Ticks::fromSeconds(1), "Cue at " + std::to_string(second), {}});
+        }
+        s.captionTracks.push_back(track);
+    });
+    const auto dir = freshOutputDir("subtitle-interleave");
+    ExportSettings s = preset("match-source");
+    s.video.encoder = "libx264";
+    s.subtitles.enabled = true;
+    for (const Container container : {Container::Mkv, Container::Mp4}) {
+        const bool mkv = container == Container::Mkv;
+        INFO((mkv ? "MKV" : "MP4"));
+        s.container = container;
+        const auto file = dir / (mkv ? "cues.mkv" : "cues.mp4");
+        const auto done = runExport(project, s, file);
+        REQUIRE(done.has_value());
+        CHECK(done->subtitleCues == 3);
+        const auto layout = packetLayout(file);
+        REQUIRE(layout.has_value());
+        REQUIRE(layout->subtitles.size() == 3);
+        CHECK(layout->video.size() == 240);
+        const auto cue = [&](std::size_t i) { return layout->subtitles[i].second; };
+        // The cues are in time order in the file, and each lies among the picture of its own time: after the video of
+        // seconds before it, before the video of seconds after it. (Written last, every one sat after all the video.)
+        CHECK(cue(0) < cue(1));
+        CHECK(cue(1) < cue(2));
+        CHECK(cue(0) < videoPosAt(*layout, 8.0));
+        CHECK(cue(1) > videoPosAt(*layout, 4.0));
+        CHECK(cue(1) < videoPosAt(*layout, 20.0));
+        CHECK(cue(2) > videoPosAt(*layout, 12.0));
+        // Their times are the cues' (a cue's pts is where it starts).
+        CHECK(layout->subtitles[0].first == Approx(1.0).margin(0.002));
+        CHECK(layout->subtitles[1].first == Approx(12.0).margin(0.002));
+        CHECK(layout->subtitles[2].first == Approx(23.0).margin(0.002));
+    }
+}
+
 // ---- Effects -------------------------------------------------------------------------------------------------------
 
 TEST_CASE("Export effects: image name and timecode overlays are burned into the output frame", "[export][media][effects]") {
@@ -874,6 +974,7 @@ TEST_CASE("Watch folder: a dropped file is exported with the preset and moved in
     CHECK(seq.width == 1280);
     CHECK(seq.height == 720);
     CHECK(seq.frameRate == Rate{24000, 1001});
+    CHECK(seq.pixelAspect == Rate{1, 1}); // a square-pixel source stays square (145: others carry their ratio)
     CHECK(seq.videoTracks.size() == 1);
     CHECK_FALSE(projectForMedia(dir / "Drop" / "notes.txt").has_value());
 }

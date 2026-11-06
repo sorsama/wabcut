@@ -44,7 +44,7 @@ struct SequenceChange {
     bool marksChanged = false;     ///< In/Out marks
     bool markersChanged = false;
     bool extentChanged = false;    ///< explicit duration or work area
-    bool trackListChanged = false; ///< tracks added, removed or reordered
+    bool trackListChanged = false; ///< tracks added, removed or reordered, or the track groups changed (0.7)
     bool captionsChanged = false;  ///< caption tracks or their cues
     bool beatGridChanged = false;  ///< the beat grid was set, changed or removed
 
@@ -68,6 +68,7 @@ struct ChangeSet {
     bool speakersChanged = false;   ///< ProjectState::speakers (C.7)
     bool transcriptEditsChanged = false; ///< ProjectState::transcriptEdits (C.7)
     bool captionPresetsChanged = false;  ///< ProjectState::captionPresets (C.7)
+    bool customWordsChanged = false;     ///< ProjectState::customWords (0.7)
     bool reviewNotesChanged = false;     ///< ProjectState::reviewNotes (C.9)
     bool brandKitChanged = false;        ///< ProjectState::brandKit (C.13)
     bool templatesChanged = false;       ///< ProjectState::templates (C.13)

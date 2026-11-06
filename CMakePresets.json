@@ -61,6 +61,20 @@
       }
     },
     {
+      "name": "win-msvc-arm64",
+      "displayName": "Windows on ARM64 · MSVC · RelWithDebInfo (experimental)",
+      "description": "A native build on a Windows on ARM64 machine (Snapdragon X and the like), from the MSVC ARM64 toolset: vcpkg arm64-windows-release, Qt's native ARM64 kit in WABCUT_QT_DIR. Local transcription and audio plug-in hosting are off by default there (their vcpkg ports do not support ARM64 Windows yet). docs/building.md, \"Windows on ARM64\".",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl",
+        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "Embedded",
+        "VCPKG_TARGET_TRIPLET": "arm64-windows-release"
+      }
+    },
+    {
       "name": "win-msvc-asan",
       "displayName": "Windows · MSVC · AddressSanitizer + libFuzzer (core only)",
       "description": "The core (model, command, interchange, keymap, ai, colour, masks) and its tests built with /fsanitize=address, dependencies fetched and built from source with the same flags, and the parser fuzzers in tests/fuzz as libFuzzer executables. docs/building.md, \"Sanitizers and fuzzing\".",
@@ -103,6 +117,7 @@
     { "name": "core", "configurePreset": "core" },
     { "name": "win-msvc", "configurePreset": "win-msvc" },
     { "name": "win-msvc-debug", "configurePreset": "win-msvc-debug" },
+    { "name": "win-msvc-arm64", "configurePreset": "win-msvc-arm64" },
     { "name": "win-msvc-asan", "configurePreset": "win-msvc-asan", "jobs": 1 },
     { "name": "linux-gcc", "configurePreset": "linux-gcc" },
     { "name": "macos-clang", "configurePreset": "macos-clang" }
@@ -117,6 +132,13 @@
       "filter": { "exclude": { "label": "gpu|audio-device|perf" } }
     },
     { "name": "win-msvc-debug", "configurePreset": "win-msvc-debug", "output": { "outputOnFailure": true } },
+    {
+      "name": "win-msvc-arm64",
+      "description": "win-msvc-arm64 without the tests that need a GPU or an audio device, or a quiet machine for strict timing (CI runners).",
+      "configurePreset": "win-msvc-arm64",
+      "output": { "outputOnFailure": true },
+      "filter": { "exclude": { "label": "gpu|audio-device|perf" } }
+    },
     {
       "name": "win-msvc-asan",
       "description": "The core suites and the fuzz regression runs under AddressSanitizer, one at a time (ASan needs several times the memory); [perf] tests are left out (sanitizer timings mean nothing).",

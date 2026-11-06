@@ -15,7 +15,8 @@ import QtQuick.Dialogs
 //     smart results (AI-8) replace the grid and are narrowed by the same filters.
 //   * Make Subclip (Ctrl/⌘+U) from the Source Monitor's marks; Edit Subclip; the poster frame from the hover-scrub
 //     position; Reveal in File Explorer; unused media (show, remove) and duplicates.
-//   * Media / Audio / Text tabs: everything, bins and audio, Essential Graphics (titles, M5d).
+//   * Media / Audio tabs: everything, bins and audio. r07: the Text tab (a title maker) went; text is made with
+//     Graphics > New Layer > Text and the Essential Graphics panel (Edit tab).
 //   * 0.2 (P.3): the Freeform view (LibraryFreeformView), Search Bins (the search bar's "Create new search bin",
 //     SearchBinPopover), the clip metadata columns, the Metadata panel and XMP from the item menu, and items dragged
 //     in from another project (the Production panel) imported here.
@@ -153,8 +154,8 @@ Panel {
     }
     /// The Project panel's selection keys (Library.selectionMoveRequested): moves the selection - extends it with
     /// `extend` - "up", "down", "left", "right", "home", "end", "pageUp" or "pageDown" in the view that shows (the grid
-    /// by its columns and the rows in view, the list by rows, the Freeform view in list order). Nothing while the Text
-    /// tab or the Smart search results hide the items: a selection nobody can see is never moved (Delete acts on it).
+    /// by its columns and the rows in view, the list by rows, the Freeform view in list order). Nothing while the Smart
+    /// search results hide the items: a selection nobody can see is never moved (Delete acts on it).
     function moveSelection(where: string, extend: bool) {
         const count = Library.items.count
         if (count === 0 || !content.visible)
@@ -210,8 +211,8 @@ Panel {
         root.selectionLead = key
         return to
     }
-    // While the Text tab or the Smart search results hide the items, the Library's own keys (the selection keys, the
-    // card size) belong to the focused control (a Text tab slider takes its arrows) instead of the hidden grid.
+    // While the Smart search results hide the items, the Library's own keys (the selection keys, the card size) belong
+    // to the focused control instead of the hidden grid.
     Keys.onShortcutOverride: event => event.accepted = !content.visible
                                                         && (event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) === 0
                                                         && [Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down, Qt.Key_Home, Qt.Key_End,
@@ -367,8 +368,7 @@ Panel {
         compact: true
         model: [
             { label: qsTr("Media"), icon: "film" },
-            { label: qsTr("Audio"), icon: "music" },
-            { label: qsTr("Text"), icon: "type" }
+            { label: qsTr("Audio"), icon: "music" }
         ]
         onCurrentIndexChanged: Library.scope = currentIndex === 1 ? "audio" : "all"
         Accessible.name: qsTr("Library category")
@@ -380,19 +380,9 @@ Panel {
         anchors.right: parent.right
         anchors.top: tabs.bottom
         anchors.topMargin: Theme.space(1)
-        visible: tabs.currentIndex !== 2 && !smartResults.visible
+        visible: !smartResults.visible
         height: visible ? implicitHeight : 0
         dropTarget: root.binDropShown
-    }
-
-    // Text: Essential Graphics (New Title and the title style, M5d).
-    TitleStylePanel {
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: tabs.bottom
-        anchors.bottom: parent.bottom
-        anchors.topMargin: Theme.space(3)
-        visible: tabs.currentIndex === 2
     }
 
     Item {
@@ -403,7 +393,7 @@ Panel {
         anchors.bottom: parent.bottom
         anchors.topMargin: Theme.space(1)
         anchors.bottomMargin: root.footerHeight > 0 ? root.footerHeight + Theme.space(2) : 0
-        visible: tabs.currentIndex !== 2 && !smartResults.visible
+        visible: !smartResults.visible
 
         GridView {
             id: grid
@@ -605,7 +595,7 @@ Panel {
         anchors.bottom: parent.bottom
         anchors.topMargin: Theme.space(3)
         anchors.bottomMargin: proxyPill.visible ? proxyPill.height + Theme.space(2) : 0
-        visible: searchBar.smartActive && tabs.currentIndex !== 2
+        visible: searchBar.smartActive
         results: Library.filterCount > 0 ? SmartSearch.results.filter(hit => Library.passesFilters(hit.mediaId))
                                          : SmartSearch.results
     }
@@ -620,7 +610,7 @@ Panel {
         anchors.rightMargin: Theme.space(2)
         anchors.bottom: parent.bottom
         height: Theme.controlHeightSmall
-        visible: tabs.currentIndex !== 2 && !smartResults.visible
+        visible: !smartResults.visible
         verticalAlignment: Text.AlignVCenter
         text: Library.summaryText
         elide: Text.ElideRight
@@ -641,7 +631,7 @@ Panel {
         // Never under the card-size buttons (a very narrow Library cuts the pill's text at its edge).
         width: Math.min(implicitWidth, parent.width - (zoomRow.visible ? zoomRow.width + Theme.space(2) : 0))
         clip: true
-        visible: MediaReadiness.statusText !== "" && tabs.currentIndex !== 2
+        visible: MediaReadiness.statusText !== ""
         label: MediaReadiness.statusText
         detail: MediaReadiness.statusDetail
         dotColor: MediaReadiness.working ? (MediaReadiness.pausedForForeground ? Theme.warning : Theme.accentStroke)
@@ -672,13 +662,14 @@ Panel {
     }
 
     // The card size (Premiere's zoom slider): at the right of the row under the grid, with zoom-out / zoom-in buttons
-    // that step it like the keys. Grid view only (the list has rows; the Freeform view sizes its cards in the project).
+    // that step it like the keys. The grid, and the list while it shows thumbnails (0.7, card 023); not the Freeform view,
+    // which sizes its cards in the project.
     Row {
         id: zoomRow
         objectName: "libraryZoomRow"
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        visible: content.visible && grid.visible
+        visible: content.visible && (grid.visible || (Library.view === "list" && Library.listThumbnails))
         spacing: Theme.space(1)
 
         IconButton {
@@ -789,6 +780,7 @@ Panel {
     LibraryToolsMenu {
         id: toolsMenu
         onRemoveUnusedRequested: removeUnusedPopover.open()
+        onConsolidateRequested: consolidatePopover.openPreview()
         onMakeSubclipRequested: root.makeSubclip()
         onImportImageSequenceRequested: imageSequenceDialog.openDialog()
         onNewSearchBinRequested: searchBinPopover.openNew(searchRow)
@@ -835,7 +827,9 @@ Panel {
             deletePopover.open()
             deleteConfirm.forceActiveFocus()
         }
-        title: deletePopover.withOptions ? qsTr("Delete with Options") : qsTr("Delete items in use?")
+        title: deletePopover.withOptions ? qsTr("Delete with Options")
+               : deletePopover.clips > 0 ? qsTr("Delete items in use?")
+               : (deletePopover.impact.items ?? 0) === 1 ? qsTr("Delete this item?") : qsTr("Delete these items?")
         Column {
             width: Theme.space(84)
             spacing: Theme.space(2)
@@ -870,6 +864,29 @@ Panel {
                 color: Theme.textSecondary
                 font.family: Theme.fontSans
                 font.pixelSize: Theme.textSm
+            }
+            // 0.7 (card #169): subclips on the timeline play their master's Master Clip Effects.
+            Row {
+                visible: (deletePopover.impact.masterEffectClips ?? 0) > 0
+                width: parent.width
+                spacing: Theme.space(2)
+                Icon {
+                    name: "triangle-alert"
+                    size: Theme.iconSm
+                    color: Theme.warning
+                }
+                Text {
+                    objectName: "libraryDeleteMasterEffectsText"
+                    width: parent.width - Theme.iconSm - Theme.space(2)
+                    wrapMode: Text.WordWrap
+                    //: "“Hero.mp4” has Master Clip Effects that 2 clips of its subclips play. ..."
+                    text: qsTr("“%1” has Master Clip Effects that %2 of its subclips in sequences play. Those clips would play without them. Undo brings everything back.")
+                          .arg(deletePopover.impact.masterEffectName ?? "")
+                          .arg(qsTr("%n clip(s)", "", deletePopover.impact.masterEffectClips ?? 0))
+                    color: Theme.textSecondary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textSm
+                }
             }
             Toggle {
                 id: removeClipsToggle
@@ -1000,6 +1017,147 @@ Panel {
                     onClicked: removeUnusedPopover.close()
                 }
             }
+        }
+    }
+
+    // 0.7 (card 025): Consolidate Duplicates. Lists, per set of duplicates, the item that is kept and the ones that go
+    // (what the merge does, from the model's dry run) before anything changes; one undo step.
+    Popover {
+        id: consolidatePopover
+        objectName: "libraryConsolidatePopover"
+        parent: searchRow
+        title: qsTr("Consolidate duplicate media")
+        /// Library.consolidatePreview(): one map per set { keeperName, removed [{ name }], clips, skipped [{ name, reason }], notes }.
+        property var preview: []
+        readonly property int removable: {
+            let n = 0
+            for (const g of consolidatePopover.preview)
+                n += g.removed.length
+            return n
+        }
+        function openPreview() {
+            consolidatePopover.preview = Library.consolidatePreview()
+            consolidatePopover.open()
+        }
+        Column {
+            width: Theme.space(84)
+            spacing: Theme.space(2)
+            Text {
+                objectName: "libraryConsolidateText"
+                width: parent.width
+                wrapMode: Text.WordWrap
+                text: consolidatePopover.removable > 0
+                      ? qsTr("Merge %n duplicate item(s) into the item kept in each set? Clips, markers, comments and settings of the removed items move to the kept one. The files stay on disk, and Undo brings everything back.", "", consolidatePopover.removable)
+                      : qsTr("Nothing can be merged: the duplicate items are read differently (for example other Interpret Footage settings).")
+                color: Theme.textSecondary
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textSm
+            }
+            ListView {
+                id: consolidateGroups
+                objectName: "libraryConsolidateGroups"
+                width: parent.width
+                height: Math.min(contentHeight, Theme.space(56))
+                clip: true
+                spacing: Theme.space(2)
+                interactive: contentHeight > height
+                model: consolidatePopover.preview
+                ScrollBar.vertical: ThinScrollBar {}
+                Accessible.role: Accessible.List
+                Accessible.name: qsTr("Duplicate sets")
+                delegate: Column {
+                    id: group
+                    required property var modelData
+                    required property int index
+                    width: consolidateGroups.width - Theme.space(3)
+                    spacing: Theme.space(1)
+                    Text {
+                        width: parent.width
+                        elide: Text.ElideMiddle
+                        visible: group.modelData.removed.length > 0
+                        text: qsTr("Keep “%1”").arg(group.modelData.keeperName)
+                        color: Theme.textPrimary
+                        font.family: Theme.fontSans
+                        font.pixelSize: Theme.textSm
+                        font.weight: Font.DemiBold
+                    }
+                    Repeater {
+                        model: group.modelData.removed
+                        delegate: Text {
+                            required property var modelData
+                            width: group.width
+                            elide: Text.ElideMiddle
+                            text: qsTr("Remove “%1”").arg(modelData.name)
+                            color: Theme.textSecondary
+                            font.family: Theme.fontSans
+                            font.pixelSize: Theme.textSm
+                        }
+                    }
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        visible: group.modelData.clips > 0
+                        text: qsTr("%n clip(s) play the kept item afterwards.", "", group.modelData.clips)
+                        color: Theme.textTertiary
+                        font.family: Theme.fontSans
+                        font.pixelSize: Theme.textXs
+                    }
+                    Repeater {
+                        model: group.modelData.skipped
+                        delegate: Text {
+                            required property var modelData
+                            width: group.width
+                            wrapMode: Text.WordWrap
+                            text: qsTr("“%1” stays: %2.").arg(modelData.name).arg(modelData.reason)
+                            color: Theme.warning
+                            font.family: Theme.fontSans
+                            font.pixelSize: Theme.textXs
+                        }
+                    }
+                    Repeater {
+                        model: group.modelData.notes
+                        delegate: Text {
+                            required property var modelData
+                            width: group.width
+                            wrapMode: Text.WordWrap
+                            text: modelData
+                            color: Theme.warning
+                            font.family: Theme.fontSans
+                            font.pixelSize: Theme.textXs
+                        }
+                    }
+                }
+            }
+            Row {
+                spacing: Theme.space(2)
+                PillButton {
+                    objectName: "libraryConsolidateConfirm"
+                    variant: "primary"
+                    text: qsTr("Merge")
+                    enabled: consolidatePopover.removable > 0
+                    onClicked: {
+                        Library.consolidateDuplicates()
+                        consolidatePopover.close()
+                    }
+                }
+                PillButton {
+                    objectName: "libraryConsolidateCancel"
+                    variant: "ghost"
+                    text: qsTr("Cancel")
+                    onClicked: consolidatePopover.close()
+                }
+            }
+        }
+    }
+
+    // Edit > Consolidate Duplicates… and Remove Unused… (Main.qml shows this panel, then the bridge asks for them).
+    Connections {
+        target: Library
+        function onHousekeepingRequested(kind: string) {
+            if (kind === "consolidate")
+                consolidatePopover.openPreview()
+            else if (kind === "removeUnused")
+                removeUnusedPopover.open()
         }
     }
 

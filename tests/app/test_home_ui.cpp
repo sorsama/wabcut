@@ -208,6 +208,37 @@ TEST_CASE("Home: a new project from a preset gets that sequence and is saved whe
         REQUIRE(fx.home.createProject(QStringLiteral("Custom"), fx.folder(), preset).isEmpty());
         CHECK(fx.controller.formatText() == QStringLiteral("720p30"));
     }
+    // Card 168: "Con.wabcut" is the console on Windows, so a project named like a device could not be saved (or went to the
+    // device) after the project on screen had already been replaced. Home refuses the name before anything changes.
+    SECTION("names of Windows devices are refused before anything changes") {
+        for (const char* device : {"Con", "con", "CON", "aux", "Nul", "PRN", "com1", "COM9", "lpt1", "LPT9", "com0", "nul.txt", "con.x",
+                                   "Con.wabcut", "  nul  ", "NUL .x", "CONIN$", "conout$"}) {
+            INFO(device);
+            const QString why = fx.home.validateProject(QString::fromLatin1(device), fx.folder());
+            CHECK_FALSE(why.isEmpty());
+            CHECK(why.contains(QStringLiteral("reserved")));
+        }
+        CHECK_FALSE(fx.home.validateProject(QStringLiteral("NUL."), fx.folder()).isEmpty()); // the trailing period, already
+        for (const char* fine : {"Console", "Conference", "COM10", "LPT10", "Common", "Aux1", "Null", "My Con", "com", "lpt", "con-x"}) {
+            INFO(fine);
+            CHECK(fx.home.validateProject(QString::fromLatin1(fine), fx.folder()).isEmpty());
+        }
+        // Create says no and the project on screen stays.
+        const QVariantMap hd = presetNamed(fx.home, "1080p25");
+        CHECK(fx.lifecycle.demo());
+        CHECK_FALSE(fx.home.createProject(QStringLiteral("Con"), fx.folder(), hd).isEmpty());
+        CHECK_FALSE(fx.home.createProject(QStringLiteral("nul"), fx.folder(), hd).isEmpty());
+        CHECK(fx.lifecycle.demo());
+        CHECK(fx.dir.isValid());
+        CHECK(QDir(fx.dir.path()).entryList(QDir::Files).isEmpty());
+        // A name made from a sequence, media or project called like a device is changed, never offered as it is.
+        for (const char* base : {"NUL", "con", "Com3"}) {
+            INFO(base);
+            const QString offered = fx.home.uniqueProjectName(QString::fromLatin1(base), fx.folder());
+            CHECK(offered.compare(QString::fromLatin1(base), Qt::CaseInsensitive) != 0);
+            CHECK(fx.home.validateProject(offered, fx.folder()).isEmpty());
+        }
+    }
     SECTION("names and sizes that cannot be used") {
         CHECK_FALSE(fx.home.validateProject(QStringLiteral("  "), fx.folder()).isEmpty());
         CHECK_FALSE(fx.home.validateProject(QStringLiteral("a/b"), fx.folder()).isEmpty());
@@ -215,6 +246,16 @@ TEST_CASE("Home: a new project from a preset gets that sequence and is saved whe
         CHECK(fx.home.validateProject(QStringLiteral("Film"), fx.folder()).isEmpty());
         CHECK(fx.home.projectPath(QStringLiteral("Film"), fx.folder()) ==
               QDir::toNativeSeparators(fx.dir.filePath(QStringLiteral("Film.wabcut"))));
+        // Card 174: a name typed with the extension, in any case, is that file (not "Film.wabcut.wabcut").
+        for (const char* typed : {"Film.wabcut", "Film.WABCUT", "Film.WabCut"}) {
+            INFO(typed);
+            CHECK(fx.home.projectPath(QString::fromLatin1(typed), fx.folder()) ==
+                  QDir::toNativeSeparators(fx.dir.filePath(QString::fromLatin1(typed))));
+        }
+        CHECK(fx.home.projectPath(QStringLiteral(".wabcut"), fx.folder()) ==
+              QDir::toNativeSeparators(fx.dir.filePath(QStringLiteral(".wabcut.wabcut")))); // no stem: the whole thing is the name
+        CHECK(fx.home.projectPath(QStringLiteral("Film.wabcutx"), fx.folder()) ==
+              QDir::toNativeSeparators(fx.dir.filePath(QStringLiteral("Film.wabcutx.wabcut"))));
         QVariantMap bad = presetNamed(fx.home, "custom");
         bad.insert(QStringLiteral("width"), 0);
         CHECK_FALSE(fx.home.createProject(QStringLiteral("Bad"), fx.folder(), bad).isEmpty());
@@ -712,23 +753,21 @@ TEST_CASE("Home: classifyImport routes files to the right place", "[app][home]")
         CHECK(r.value("firstVideo").toUrl() == QUrl::fromLocalFile(mkv));
         CHECK(r.value("suggestedName").toString() == QStringLiteral("Ranked match"));
     }
-    SECTION("a dotLottie archive says what to do instead") {
+    SECTION("a dotLottie archive is a Lottie animation like a Lottie JSON file (0.7)") {
         const QString sticker = fx.dir.filePath(QStringLiteral("sticker.lottie"));
         writeFile(sticker, QByteArray("PK\x03\x04", 4) + QByteArray(64, '\0'));
         QVariantMap r = classify(fx.home, {sticker});
-        CHECK(r.value("route").toString() == QStringLiteral("unsupported"));
-        CHECK(r.value("lottie").toList().isEmpty());
-        CHECK(r.value("message").toString().contains(QStringLiteral("Lottie JSON")));
-        // With media: the media start a project, the archive is a note (nothing is made for it alone).
+        CHECK(namesOf(r.value("lottie").toList()) == QStringList{QStringLiteral("sticker.lottie")});
+        CHECK(r.value("unsupported").toList().isEmpty());
+        // With media: the media start a project and the animation is imported into it.
         r = classify(fx.home, {mkv, sticker});
         CHECK(r.value("route").toString() == QStringLiteral("media"));
-        CHECK(r.value("lottie").toList().isEmpty());
-        CHECK(namesOf(r.value("unsupported").toList()) == QStringList{QStringLiteral("sticker.lottie")});
-        CHECK(r.value("notes").toStringList().size() == 1);
-        // createFromMedia does not take it either.
-        const QVariantMap made = fx.home.createFromMedia(QStringLiteral("Sticker"), fx.folder(), {}, {QUrl::fromLocalFile(sticker)});
-        CHECK_FALSE(made.value("ok").toBool());
-        CHECK_FALSE(QFile::exists(fx.dir.filePath(QStringLiteral("Sticker.wabcut"))));
+        CHECK(namesOf(r.value("lottie").toList()) == QStringList{QStringLiteral("sticker.lottie")});
+        // An OGraf manifest goes the same way.
+        const QString manifest = fx.dir.filePath(QStringLiteral("lower-third.ograf.json"));
+        writeFile(manifest, R"({"id": "x"})");
+        r = classify(fx.home, {mkv, manifest});
+        CHECK(namesOf(r.value("lottie").toList()) == QStringList{QStringLiteral("lower-third.ograf.json")});
     }
     SECTION("web addresses are not files") {
         const QUrl web(QStringLiteral("https://example.com/images/poster.png?size=large"));
@@ -1007,7 +1046,7 @@ TEST_CASE("Home: the import dialog filters list every kind Home imports", "[app]
         INFO(pattern);
         CHECK(filters[0].contains(QString::fromLatin1(pattern)));
     }
-    CHECK_FALSE(filters[0].contains(QStringLiteral("*.lottie"))); // a dotLottie archive is not imported (it gets guidance)
+    CHECK(filters[0].contains(QStringLiteral("*.lottie"))); // 0.7: a dotLottie archive imports like Lottie JSON
     CHECK(filters[1].startsWith(QStringLiteral("Media")));
     CHECK(filters[2].startsWith(QStringLiteral("Timelines")));
     CHECK(filters[3] == QStringLiteral("Wabcut projects (*.wabcut)"));

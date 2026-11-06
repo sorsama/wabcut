@@ -2,6 +2,7 @@
 
 // ExportJob renders one sequence of a fixed project snapshot to a file; ExportQueue runs jobs in background.
 
+#include <wabcut/export/DynamicMetadata.h>
 #include <wabcut/export/ExportSettings.h>
 #include <wabcut/export/VideoFrameSource.h>
 #include <wabcut/model/EditSession.h>
@@ -64,6 +65,8 @@ struct ExportProgress {
     std::optional<double> etaSeconds;
     std::string videoEncoder; ///< the encoder actually used, once chosen
     std::string audioEncoder;
+    /// 0.7: the first pass of an HDR10+ export is running (the frames are measured at half size before they are encoded).
+    bool analyzing = false;
     double fraction() const { return framesTotal > 0 ? static_cast<double>(framesDone) / framesTotal : 0.0; }
 };
 
@@ -89,6 +92,15 @@ struct ExportRequest {
     std::shared_ptr<PauseGate> pause;
     /// 0.2, Use Previews (ExportRenderOptions::usePreviews): the project's preview render cache (C.15). Optional.
     std::shared_ptr<PreviewCache> previews;
+};
+
+/// 0.7 (card 049): a reason some frames of a smart-rendered export were encoded again, and where it first happens.
+struct SmartRenderNote {
+    std::string reason;        ///< "Clip starts inside a GOP", "Effects on the clip", ...
+    std::int64_t frames = 0;   ///< how many frames
+    std::int64_t firstFrame = 0; ///< the first of them (output frame)
+    std::string firstTimecode;   ///< that frame's timecode in the sequence
+    bool operator==(const SmartRenderNote&) const = default;
 };
 
 struct ExportResult {
@@ -133,6 +145,10 @@ struct ExportResult {
     double loudnessGainDb = 0.0;        ///< and the gain applied
     std::filesystem::path loudnessLog;  ///< "<output>.loudness.txt" when asked for
     std::int64_t copiedFrames = 0;      ///< smart rendering: frames whose packets were copied, not encoded
+    /// 0.7 (card 049): "H.264" or "HEVC" when long-GOP smart rendering looked at the export (even when nothing could be
+    /// copied), else empty; the frames it encoded again, by reason, most first (SmartRenderNote).
+    std::string smartRenderCodec;
+    std::vector<SmartRenderNote> smartRenderNotes;
     // 0.6 (#73): broadcast delivery - what the export details name.
     std::string operationalPattern;              ///< MXF: "OP1a" or "OP-Atom" ("" otherwise)
     std::string materialUmid;                    ///< MXF: the (video) file's material package UMID
@@ -140,6 +156,8 @@ struct ExportResult {
     std::string audioLayout;                     ///< MXF: "8 mono tracks · PCM 24-bit 48 kHz · 1-2 stereo mix, 3-8 silent"
     std::string embeddedCaptions;                ///< Embed: "CEA-608 CC1 + CEA-708 service 1 in an SMPTE 436M track"
     int embeddedCaptionCues = 0;                 ///< Embed: the captions carried (0 with a warning: none in the range)
+    /// 0.7 (HDR10+ / Dolby Vision, DynamicMetadata.h): what was measured and written, shot by shot (kind None: nothing asked for).
+    DynamicMetadataReport dynamicMetadata;
 };
 
 /// One export, run synchronously by run() on the calling thread (a job-queue worker, never the GUI thread).

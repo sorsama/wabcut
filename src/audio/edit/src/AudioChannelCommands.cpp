@@ -18,6 +18,7 @@
 #include "AudioCommandHelpers.h"
 
 #include <wabcut/model/AudioChannelOps.h>
+#include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/Resolve.h>
 
 namespace wabcut::audio::edit {
@@ -335,6 +336,29 @@ CommandOutput splitToMono(ExecutionContext& c) {
             }
         }
     }
+    // 0.7 (card 062): a polyphonic WAV's clips take the names its recorder gave the channels ("Boom", "Lav A"), so the
+    // timeline shows which microphone each track carries.
+    if (const MediaItem* media = result.state.findMedia(clip.media);
+        media != nullptr && clip.stream.index >= 0 && static_cast<std::size_t>(clip.stream.index) < media->info.audio.size()) {
+        const std::vector<std::string>& names = media->info.audio[static_cast<std::size_t>(clip.stream.index)].channelNames;
+        for (const Json& entry : report) {
+            const auto channel = static_cast<std::size_t>(entry.value("channel", 1)) - 1;
+            if (channel >= names.size() || names[channel].empty()) {
+                continue;
+            }
+            const ClipId one{entry.value("clip", std::uint64_t{0})};
+            wabcut::edit::ClipAttributeChange rename;
+            rename.name = names[channel];
+            auto named = c.take(wabcut::edit::setClipAttributes(result.state, c.sequenceId(), std::span<const ClipId>(&one, 1), rename));
+            result.state = std::move(named.state);
+        }
+        for (Json& entry : report) {
+            const auto channel = static_cast<std::size_t>(entry.value("channel", 1)) - 1;
+            if (channel < names.size() && !names[channel].empty()) {
+                entry["name"] = names[channel];
+            }
+        }
+    }
     return edited(std::move(result), Json{{"clips", std::move(report)}});
 }
 
@@ -478,7 +502,15 @@ CommandOutput setSurroundPan(ExecutionContext& c) {
 
 CommandOutput setMasterFormat(ExecutionContext& c) {
     const ChannelFormat format = formatParam(c, "format");
-    return edited(c.take(wabcut::edit::setMasterFormat(c.state(), c.sequenceId(), format)), Json{{"master", c.string("format")}});
+    // 0.7 (card 048): a change between layouts says what happens to the sound (the 5.1 to 7.1 upmix, the downmixes).
+    Json out{{"master", c.string("format")}};
+    if (const auto sequence = c.state().findSequence(c.sequenceId())) {
+        const std::string note = masterChangeNote(sequence->masterFormat, format);
+        if (!note.empty()) {
+            out["note"] = note;
+        }
+    }
+    return edited(c.take(wabcut::edit::setMasterFormat(c.state(), c.sequenceId(), format)), std::move(out));
 }
 
 Json mapSchema() {
@@ -486,8 +518,8 @@ Json mapSchema() {
                                                            "Source channels averaged into this clip channel (empty: silent).")},
                                  {"muted", schema::boolean("Mute this clip channel.")},
                                  {"gainDb", schema::number("This channel's volume, dB.", -144.0, 24.0)}});
-    return schema::object({{"format", schema::enumeration({"mono", "stereo", "5.1", "adaptive"}, "The clip's channel format.")},
-                           {"channels", schema::array(route, "One entry per clip channel (L, R, C, LFE, Ls, Rs for 5.1).", 1)}},
+    return schema::object({{"format", schema::enumeration({"mono", "stereo", "5.1", "7.1", "adaptive"}, "The clip's channel format.")},
+                           {"channels", schema::array(route, "One entry per clip channel (L, R, C, LFE, Ls, Rs for 5.1; L, R, C, LFE, Lrs, Rrs, Ls, Rs for 7.1).", 1)}},
                           {"format", "channels"});
 }
 
@@ -573,19 +605,19 @@ void registerChannelCommands(command::CommandRegistry& registry) {
          channelLevels});
     add(registry,
         {"track.setFormat", 1, "Set Track Channel Format",
-         "An audio track's channel format (Premiere's mono, stereo, 5.1 and adaptive tracks): clips are mixed to it (mono "
-         "averages, 5.1 to stereo is ITU-R BS.775), and it to the master's format; adaptive passes channels through one to "
-         "one. One undo step.",
+         "An audio track's channel format (Premiere's mono, stereo, 5.1 and adaptive tracks, and 7.1): clips are mixed to it "
+         "(mono averages, 5.1 and 7.1 to stereo are ITU-R BS.775), and it to the master's format; adaptive passes channels "
+         "through one to one. One undo step.",
          Capability::EditSequence,
          withSequence({{"track", trackParam("The audio track.")},
-                       {"format", schema::enumeration({"mono", "stereo", "5.1", "adaptive"}, "The format.")}},
+                       {"format", schema::enumeration({"mono", "stereo", "5.1", "7.1", "adaptive"}, "The format.")}},
                       {"track", "format"}),
          Json{{"track", "A2"}, {"format", "mono"}}, {}, setTrackFormat});
     add(registry,
-        {"track.setSurroundPan", 1, "Set Track 5.1 Panner",
-         "The 5.1 panner of a mono or stereo track on a 5.1 master (Premiere's track 5.1 panner): the puck x (-1 left .. +1 "
-         "right) and y (-1 back .. +1 front; front centre plays stereo on L/R and mono on C) and the LFE send in dB (-144 = "
-         "off). One undo step.",
+        {"track.setSurroundPan", 1, "Set Track Surround Panner",
+         "The surround panner of a mono or stereo track on a 5.1 or 7.1 master (Premiere's track 5.1 panner): the puck x (-1 "
+         "left .. +1 right) and y (-1 back .. +1 front; front centre plays stereo on L/R and mono on C) and the LFE send in dB "
+         "(-144 = off). One undo step.",
          Capability::EditSequence,
          withSequence({{"track", trackParam("The audio track.")},
                        {"x", schema::number("Left .. right.", -1.0, 1.0)},
@@ -595,9 +627,11 @@ void registerChannelCommands(command::CommandRegistry& registry) {
          Json{{"track", "A1"}, {"x", -0.5}, {"y", 0.5}}, {}, setSurroundPan});
     add(registry,
         {"sequence.setMasterFormat", 1, "Set Master Channel Format",
-         "The sequence's master: stereo, or 5.1 (mono and stereo tracks through their 5.1 panners; previewed on a stereo device "
-         "and exported to stereo through an ITU-R BS.775 downmix; exports with 0 channels follow it). One undo step.",
-         Capability::EditSequence, withSequence({{"format", schema::enumeration({"stereo", "5.1"}, "The master's format.")}}, {"format"}),
+         "The sequence's master: stereo, 5.1 or 7.1 (mono and stereo tracks through their surround panners; previewed on a "
+         "stereo device and exported to stereo through an ITU-R BS.775 downmix; exports with 0 channels follow it). The "
+         "result's \"note\" says what a change between layouts does to the sound (5.1 to 7.1 puts the surrounds in the side pair "
+         "and leaves the rear pair silent). One undo step.",
+         Capability::EditSequence, withSequence({{"format", schema::enumeration({"stereo", "5.1", "7.1"}, "The master's format.")}}, {"format"}),
          Json{{"format", "5.1"}}, {}, setMasterFormat});
 }
 

@@ -194,8 +194,12 @@ bool apply(QImage& image, const ProjectState& project, MediaId media, Ticks time
     const int sh = quarter % 2 == 1 ? w : h;
     const double par = stream->sampleAspect.isValid() ? stream->sampleAspect.toDouble() : 1.0;
     const double aspect = static_cast<double>(stream->width) * par / stream->height;
-    // Display pixel (x, y) -> stored pixel (u, v): the inverse of rotating the stored frame clockwise by quarter turns.
-    const auto stored = [&](int x, int y) -> std::pair<int, int> {
+    // Display pixel (x, y) -> stored pixel (u, v): the inverse of what the picture went through, which is a clockwise
+    // turn of the stored frame by quarter turns, THEN (a mirrored stream, card 154) a horizontal flip of the turned
+    // picture (media::Orientation; ThumbnailService::orientRgba): so the flip is undone first, in the picture's own width.
+    const bool mirrored = stream->mirrored;
+    const auto stored = [&](int px, int y) -> std::pair<int, int> {
+        const int x = mirrored ? w - 1 - px : px;
         switch (quarter) {
         case 1: return {y, sh - 1 - x};
         case 2: return {sw - 1 - x, sh - 1 - y};

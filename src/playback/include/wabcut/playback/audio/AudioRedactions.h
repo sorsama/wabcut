@@ -10,6 +10,10 @@
 // Inside a marked range (sample-accurate, in media time) the clip's sound is replaced: silence (Mute) or a 1 kHz sine
 // at -12 dBFS (Bleep) whose phase follows media time. 5 ms gain ramps just OUTSIDE the range avoid clicks without
 // letting any sample of the range through.
+//
+// 0.7 (card 102): a Bleep range can name a sound file (Redaction::sound): it plays from the start of the range, once, in
+// place of the tone (cut at the range's end; silence after a shorter sound). It is decoded once to mono 48 kHz off the
+// audio thread (AudioRedactions::of) and shared; a missing or unreadable file plays the tone.
 
 #include <wabcut/model/Ids.h>
 #include <wabcut/model/Masks.h>
@@ -18,11 +22,22 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <span>
 #include <utility>
 #include <vector>
 
 namespace wabcut::playback {
+
+/// A sound file decoded for AudioRedactions: mono at 48 kHz, at most kMaxSeconds long. `key` names the file and its
+/// version (path, size, time), so two tables with the same sound compare equal.
+struct ReplacementSound {
+    static constexpr std::int64_t kMaxSeconds = 20;
+    std::string key;
+    std::vector<float> samples;
+};
+/// Decodes the sound file at `path` (UTF-8), cached by file version; null when it cannot be read or is empty.
+std::shared_ptr<const ReplacementSound> loadReplacementSound(const std::string& path);
 
 class AudioRedactions {
 public:
@@ -35,6 +50,8 @@ public:
         TimeRange source;
         RedactionAudio mode = RedactionAudio::Mute;
         std::vector<ClipId> exceptions; ///< sorted (the redaction's)
+        /// 0.7: the decoded sound that replaces the tone (null: the tone).
+        std::shared_ptr<const ReplacementSound> sound;
 
         bool operator==(const Range&) const = default;
     };

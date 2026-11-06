@@ -213,9 +213,18 @@ QtObject {
     readonly property var defaultClipColors: ["#9B6CFF", "#8C9BFF", "#3EE6B8", "#E79BF0", "#4DB2FF", "#7BD45A",
                                               "#FF6F96", "#FFB547", "#B97CFF", "#6E8FFF", "#3CCFD0", "#FF5FD2",
                                               "#DDB585", "#4DD98A", "#C9915F", "#F2DE4E"]
+    // 0.7 (card 118): the older, softer label set ("Classic": Premiere's pre-2024 look, kept light enough for black names,
+    // >= 4.5:1, tested). Not Premiere's exact values (Adobe does not publish them); the first three are the ones its
+    // users posted. Settings > Appearance > Label colours picks the palette; a custom theme's own labels still win.
+    readonly property var classicClipColors: ["#A690E0", "#729ACC", "#29D698", "#D69AD6", "#46AEE0", "#58A864",
+                                              "#E26C8A", "#F5A33A", "#B060C8", "#5B83D6", "#3DB3A8", "#D95BB5",
+                                              "#D1B48C", "#6BC24A", "#B88A5E", "#EAD65C"]
+    /// "echo" (the default, defaultClipColors) or "classic" (classicClipColors); Preferences.labelPalette.
+    property string labelPalette: "echo"
+    readonly property var paletteClipColors: labelPalette === "classic" ? classicClipColors : defaultClipColors
     // A custom theme's labels (0.1.3) when it sets all 16.
     readonly property var clipColors: Array.isArray(customClipColors) && customClipColors.length === defaultClipColors.length
-                                      ? customClipColors : defaultClipColors
+                                      ? customClipColors : paletteClipColors
     function clipColor(index) { return clipColors[((index % clipColors.length) + clipColors.length) % clipColors.length] }
     // Solid clips: the body is the label colour, waveforms and names are clipInk over it. The tints remain for
     // label-coloured areas that are not clips (library cards).
@@ -322,12 +331,14 @@ QtObject {
     readonly property int progressHeight: 8     // pill progress bars
 
     // Timeline
-    readonly property int trackHeaderWidth: 204   // source patching column + target chip + toggles (M5h)
+    readonly property int trackHeaderWidth: 224   // source patching column + target chip + toggles (M5h; 0.7: +20 for the video solo)
     readonly property int trackHeightVideo: compact ? 32 : 40
     readonly property int trackHeightAudio: compact ? 36 : 44
     // 0.5: caption tracks as lanes above the video tracks: a compact row, the cues a light neutral that carries clipInk
     // at >= 4.5:1 and reads on the lanes of both themes (like the label colours, it does not follow the theme).
     readonly property int trackHeightCaption: compact ? 26 : 28
+    // 0.7 (card 124): a track group's header row above its tracks (a collapsed group is this row alone).
+    readonly property int trackGroupHeight: compact ? 24 : 26
     readonly property color captionCue: "#BFB6D9"
     readonly property int trackGap: 2
     readonly property int rulerHeight: 26

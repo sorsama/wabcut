@@ -55,7 +55,30 @@ TEST_CASE("Channel map presets: identity, mono, sum to mono, fill and swap", "[m
     }
     CHECK(toString(ChannelFormat::Surround51) == "5.1");
     CHECK(channelFormatFromString("adaptive") == ChannelFormat::Adaptive);
-    CHECK_FALSE(channelFormatFromString("7.1"));
+    // 0.7 (card 048): 7.1 is a format of its own, eight channels in a WAVE 7.1 file's order.
+    CHECK(channelFormatFromString("7.1") == ChannelFormat::Surround71);
+    CHECK_FALSE(channelFormatFromString("9.1"));
+    CHECK(toString(ChannelFormat::Surround71) == "7.1");
+    CHECK(channelCount(ChannelFormat::Surround71) == 8);
+    CHECK(formatForChannels(8) == ChannelFormat::Surround71);
+    CHECK(AudioChannelMap::identity(8).format == ChannelFormat::Surround71);
+    CHECK_FALSE(channelMapProblem(AudioChannelMap::identity(8)));
+    CHECK(AudioChannelMap::identity(7).format == ChannelFormat::Adaptive);
+    CHECK(masterMixChannels(ChannelFormat::Surround71, 2) == 8);
+    CHECK(masterMixChannels(ChannelFormat::Surround51, 2) == 6);
+    CHECK(masterMixChannels(ChannelFormat::Stereo, 2) == 2);
+    CHECK(isMasterFormat(ChannelFormat::Surround71));
+    CHECK_FALSE(isMasterFormat(ChannelFormat::Adaptive));
+    CHECK_FALSE(isMasterFormat(ChannelFormat::Mono));
+    // The channel positions: a 5.1 file's L R C LFE are a 7.1 file's, then the rear pair, then the side pair.
+    CHECK(kChannelLrs71 == 4);
+    CHECK(kChannelRrs71 == 5);
+    CHECK(kChannelLs71 == 6);
+    CHECK(kChannelRs71 == 7);
+    // What a change of master says (the 5.1 to 7.1 upmix never stays silent about the rear pair).
+    CHECK(masterChangeNote(ChannelFormat::Surround51, ChannelFormat::Surround71).find("rear pair") != std::string::npos);
+    CHECK(masterChangeNote(ChannelFormat::Surround71, ChannelFormat::Stereo).find("ITU-R BS.775") != std::string::npos);
+    CHECK(masterChangeNote(ChannelFormat::Surround71, ChannelFormat::Surround71).empty());
 }
 
 TEST_CASE("Channel maps are validated and bounded", "[model][channels]") {
@@ -231,7 +254,7 @@ TEST_CASE("Channels round-trip through project files; projects without them save
 
     // Files past the bounds or with unknown formats are refused.
     std::string broken = *saved;
-    broken.replace(broken.find("\"masterFormat\": \"5.1\""), std::string("\"masterFormat\": \"5.1\"").size(), "\"masterFormat\": \"7.1\"");
+    broken.replace(broken.find("\"masterFormat\": \"5.1\""), std::string("\"masterFormat\": \"5.1\"").size(), "\"masterFormat\": \"9.1\"");
     CHECK_FALSE(io::fromJson(broken));
     std::string tooMany = *saved;
     const std::string sourcesKey = "\"sources\": [";
@@ -239,4 +262,37 @@ TEST_CASE("Channels round-trip through project files; projects without them save
     REQUIRE(at != std::string::npos);
     tooMany.insert(at + sourcesKey.size(), "70, ");
     CHECK_FALSE(io::fromJson(tooMany));
+}
+
+// 0.7 (card 048): the 7.1 master and 7.1 tracks.
+TEST_CASE("A 7.1 master and 7.1 tracks are set, validated and saved", "[model][channels][surround]") {
+    Timeline tl(kPicture);
+    const edit::EditResult master = ok(edit::setMasterFormat(tl.state, tl.seq, ChannelFormat::Surround71));
+    CHECK(master.state.findSequence(tl.seq)->masterFormat == ChannelFormat::Surround71);
+    CHECK_FALSE(diff(tl.state, master.state).empty()); // the player rebuilds its mix
+    CHECK(validate(master.state, Validation::Structure));
+    // Not for a video track; adaptive and mono are still no master.
+    edit::TrackStateChange eight;
+    eight.format = ChannelFormat::Surround71;
+    CHECK_FALSE(edit::setTrackState(tl.state, tl.seq, tl.track("V1"), eight));
+    const edit::EditResult track = ok(edit::setTrackState(master.state, tl.seq, tl.track("A1"), eight));
+    CHECK(track.state.findSequence(tl.seq)->findTrack(tl.track("A1"))->format == ChannelFormat::Surround71);
+    CHECK_FALSE(edit::setMasterFormat(tl.state, tl.seq, ChannelFormat::Adaptive));
+
+    // A clip map of eight channels is a 7.1 map; the file keeps both, and reads them back equal.
+    const ClipId one[] = {tl.clip("A1@0")};
+    ProjectState s = ok(edit::setClipChannels(track.state, tl.seq, one, AudioChannelMap::identity(8))).state;
+    s = *edit::setMediaChannels(s, tl.media('A'), AudioChannelMap::identity(8));
+    const auto saved = io::toJson(s);
+    REQUIRE(saved);
+    CHECK(saved->find("\"masterFormat\": \"7.1\"") != std::string::npos);
+    CHECK(saved->find("\"format\": \"7.1\"") != std::string::npos);
+    const auto back = io::fromJson(*saved);
+    REQUIRE(back);
+    CHECK(*back == s);
+    CHECK(*io::toJson(*back) == *saved);
+    CHECK(back->findSequence(tl.seq)->masterFormat == ChannelFormat::Surround71);
+    CHECK(back->findSequence(tl.seq)->findClip(tl.clip("A1@0"))->clip().channelMap()->channelCount() == 8);
+    // A project with no 7.1 anywhere is as before: stereo masters write no format at all.
+    CHECK(io::toJson(tl.state)->find("7.1") == std::string::npos);
 }

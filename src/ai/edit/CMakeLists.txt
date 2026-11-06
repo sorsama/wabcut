@@ -80,6 +80,8 @@ target_link_libraries(wabcut_ai_edit PUBLIC wabcut_ai_segment)
 target_link_libraries(wabcut_ai_edit PUBLIC wabcut_ai_highlights)
 # P.2: effect.analyzeStabilization / effect.analyzeRollingShutter (src/ai/stabilize).
 target_link_libraries(wabcut_ai_edit PUBLIC wabcut_ai_stabilize)
+# 0.7: effect.aiStatus / effect.processAi (src/ai/video).
+target_link_libraries(wabcut_ai_edit PUBLIC wabcut_ai_video)
 # P1 #62: autopilot.broll / autopilot.publishKit / autopilot.pacing (src/ai/autopilot).
 target_link_libraries(wabcut_ai_edit PUBLIC wabcut_ai_autopilot)
 

@@ -61,7 +61,8 @@ class HistoryBridge : public QObject {
     /// current (it is the sequence shown), clips: [{ name, kind, track, beforeText, afterText, whatText }] }],
     /// mediaText, notesText, stale (the project changed since) }; empty when nothing is compared.
     Q_PROPERTY(QVariantMap comparison READ comparison NOTIFY comparisonChanged FINAL)
-    /// Seconds of editing between automatic checkpoints (default 300).
+    /// Seconds of editing between automatic checkpoints (default 300; 0 = none). 0.7 (card 006): kept in the app's
+    /// settings ("history/autoIntervalSeconds"; Settings > General > Projects > Keep versions every).
     Q_PROPERTY(int autoIntervalSeconds READ autoIntervalSeconds WRITE setAutoIntervalSeconds NOTIFY settingsChanged FINAL)
     Q_PROPERTY(QString message READ message NOTIFY messageChanged FINAL)
 

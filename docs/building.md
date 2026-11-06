@@ -5,7 +5,7 @@ Two builds share one CMake project:
 | Build | What it builds | Needs | Preset |
 |---|---|---|---|
 | **Core** | The Qt-free modules `src/model`, `src/command` (with its MCP server), `src/keymap`, `src/interchange`, `src/ai`, and their tests | A C++23 compiler, CMake 3.28+, Ninja. No Qt, FFmpeg, miniaudio or vcpkg. | `core` (any OS) |
-| **Full** | Everything: media, audio, render, playback, export, the CLI, the Qt Quick app, all tests, the install tree, the MSI installer and the portable ZIP | The above plus vcpkg and Qt 6.11 (and WiX 5.0.2 for the MSI) | `win-msvc` (supported), `linux-gcc` / `macos-clang` (experimental, CI-ready but unverified: [release.md](release.md#platform-status)) |
+| **Full** | Everything: media, audio, render, playback, export, the CLI, the Qt Quick app, all tests, the install tree, the MSI installer and the portable ZIP | The above plus vcpkg and Qt 6.11 (and WiX 5.0.2 for the MSI) | `win-msvc` (supported), `win-msvc-arm64` (Windows on ARM64, [below](#windows-on-arm64)), `linux-gcc` ([below](#linux)) and `macos-clang` ([below](#macos)): built and tested by CI, not by a person on the machine ([release.md](release.md#platform-status)) |
 
 Quick start on Windows (PowerShell, from the repository root):
 
@@ -111,13 +111,53 @@ Credentials (Windows x64; [below](#content-credentials-c2pa-rs)), pinned by URL 
    or install the same commit:
    `pip install "aqtinstall @ git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7"`.
 
+## Windows on ARM64
+
+A native build for Snapdragon X and other Windows on ARM64 machines (0.7). It is built and tested by GitHub's ARM64
+Windows runner (`windows-arm64.yml`, and the release workflow's ARM64 job); nobody has used it on a real ARM64 PC yet,
+so treat it as a preview. On an ARM64 machine (or an x64 one with the ARM64 build tools, cross-compiling; the tests
+then cannot run):
+
+1. **Visual Studio 2022 17.6+ or 2026** with *MSVC ... ARM64/ARM64EC build tools* next to *Desktop development with C++*
+   and *C++ CMake tools for Windows*.
+2. **vcpkg**, as above (its tool has a native ARM64 build; `bootstrap-vcpkg.bat` fetches the right one).
+3. **Qt 6.11.3 for Windows on ARM64** (MSVC 2022 ARM64), from the Online Installer, or with aqtinstall:
+   `aqt install-qt windows_arm64 desktop 6.11.3 win64_msvc2022_arm64 -m qtshadertools` (the `windows_arm64` host is Qt's
+   native kit; the `win64_msvc2022_arm64_cross_compiled` kit of the x64 host does not run on ARM64). The default
+   location `C:\Qt\6.11.3\msvc2022_arm64` is what `dev-env.ps1 -Arch arm64` expects.
+
+```powershell
+. .\tools\dev-env.ps1 -Arch arm64
+cmake --preset win-msvc-arm64
+cmake --build --preset win-msvc-arm64
+ctest --preset win-msvc-arm64          # without the gpu, audio-device and perf tests, like win-msvc-ci
+```
+
+The preset uses the `arm64-windows-release` vcpkg triplet (`cmake/triplets`, the arm64 twin of `x64-windows-release`) and
+builds into `build/win-msvc-arm64`. What differs from the x64 build, all decided by `vcpkg.json` and `CMakeLists.txt`:
+
+| Part | On ARM64 | Why |
+|---|---|---|
+| NVENC / NVDEC, AMD AMF, Intel Quick Sync | not built (`!arm64` qualifiers in `vcpkg.json`) | no ARM64 build of their vendor libraries. Decoding still uses D3D11VA where the GPU and its driver offer it; exports use the software encoders (x264, x265, SVT-AV1, libvpx), since no hardware encoder is wired for this GPU family yet |
+| Local transcription (`WABCUT_WITH_LOCAL_AI`) | off | vcpkg's `ggml` and `whisper-cpp` ports do not support ARM64 Windows |
+| Audio plug-ins (`WABCUT_WITH_AUDIO_PLUGINS`) | off | the VST3 SDK port does not support ARM64 Windows, and almost every plug-in is an x64 binary that an ARM64 process cannot load |
+| Content Credentials signing (`WABCUT_WITH_C2PA`) | off | the build links the x64 c2pa-rs library only |
+| Smart search | on, ONNX Runtime with DirectML (the ARM64 binaries of the same NuGet package) | |
+| The managed local assistant (llama-server) | not offered | the runtimes in the model library are Windows x64 builds |
+| Updates | the dialog says a version is out and opens the release page | the update manifest names the x64 installer, which would swap the ARM64 build for the emulated x64 one |
+
+The MSI and the portable ZIP are `wabcut-<version>-windows-arm64.msi` and `-windows-arm64-portable.zip`. The MSI has the
+same `UpgradeCode` as the x64 one, so installing it over an x64 install of an older version upgrades in place; the same
+version of the other architecture has to be uninstalled first.
+
 ## The developer environment: `tools/dev-env.ps1`
 
 Dot-source it in every new PowerShell before configuring or building:
 
 ```powershell
-. .\tools\dev-env.ps1          # full build: MSVC + CMake + Ninja + vcpkg + Qt
-. .\tools\dev-env.ps1 -Core    # core build: MSVC + CMake + Ninja only
+. .\tools\dev-env.ps1                 # full build: MSVC + CMake + Ninja + vcpkg + Qt
+. .\tools\dev-env.ps1 -Core           # core build: MSVC + CMake + Ninja only
+. .\tools\dev-env.ps1 -Arch arm64     # full build for Windows on ARM64 (the win-msvc-arm64 preset)
 ```
 
 The script does the following:
@@ -155,8 +195,9 @@ To cap build parallelism on a shared machine, set `$env:CMAKE_BUILD_PARALLEL_LEV
 | `win-msvc` | Windows | RelWithDebInfo | the supported full build: vcpkg `x64-windows-release`, Qt from `WABCUT_QT_DIR` |
 | `win-msvc-debug` | Windows | Debug | opt-in, see [Debug builds](#debug-builds) |
 | `win-msvc-asan` | Windows | RelWithDebInfo | core only, AddressSanitizer + libFuzzer, see [Sanitizers and fuzzing](#sanitizers-and-fuzzing) |
-| `linux-gcc` | Linux | RelWithDebInfo | experimental |
-| `macos-clang` | macOS | RelWithDebInfo | experimental, deployment target 13.0 (the DMG needs 15: release.md, "Portability") |
+| `win-msvc-arm64` | Windows on ARM64 | RelWithDebInfo | a native ARM64 build (0.7), vcpkg `arm64-windows-release`; see [Windows on ARM64](#windows-on-arm64) |
+| `linux-gcc` | Linux | RelWithDebInfo | built and tested by CI on Ubuntu 24.04 with GCC 14; see [Linux](#linux) |
+| `macos-clang` | macOS | RelWithDebInfo | built and tested by CI on Apple silicon with Homebrew LLVM, deployment target 13.0 (the DMG needs 15: release.md, "Portability"); see [macOS](#macos) |
 
 Every preset builds with Ninja into `build/<preset>` and turns on `WABCUT_WARNINGS_AS_ERRORS`.
 
@@ -167,7 +208,8 @@ Every preset builds with Ninja into `build/<preset>` and turns on `WABCUT_WARNIN
 | `win-msvc-ci` | `win-msvc` without the `gpu` and `audio-device` labels (what CI runs) |
 | `win-msvc-debug` | every test of the Debug tree |
 | `win-msvc-asan` | the core suites and the fuzz regression runs under ASan, one at a time, without `perf` |
-| `linux-gcc`, `macos-clang` | all but `gpu` and `audio-device` |
+| `win-msvc-arm64` | all but `gpu`, `audio-device` and `perf` (it is only built where there is no GPU to test with: CI) |
+| `linux-gcc`, `macos-clang` | all but `gpu` and `audio-device`; CI also leaves out the known-gap tests, see [Platforms and their test status](#platforms-and-their-test-status) |
 
 ## Core-only build
 
@@ -482,6 +524,122 @@ At the time of writing, `ctest --preset win-msvc` has 603 tests: 28 `gpu`, 4 `au
 the fixture setups `media.generate_test_media` and `playback.generate_perf_smoke_media`. `win-msvc-ci` runs 571 of
 them. `ctest --preset core` runs 276 tests (149 model, 62 keymap, 65 interchange). The ai suite has no tests yet.
 
+## Linux
+
+Ubuntu 24.04 with GCC 14 is the tested configuration: CI builds the `linux-gcc` preset, runs its tests and packages the
+result (`unix-full.yml`, `release.yml`). It is built and checked by GitHub's machines, not used by a person on a real
+desktop ([what that leaves untested](#platforms-and-their-test-status)).
+
+**Packages** (names as `apt` knows them on Ubuntu 24.04; the core build needs only the compiler, CMake and Ninja):
+
+```sh
+sudo apt-get install -y gcc-14 g++-14 cmake ninja-build nasm autoconf automake autoconf-archive libtool pkg-config \
+  libva-dev libdrm-dev libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-dev libasound2-dev \
+  libpulse-dev libsecret-1-dev libfontconfig1-dev libvulkan-dev
+```
+
+nasm, autoconf, automake, libtool and pkg-config are for vcpkg's from-source builds of FFmpeg, x264 and x265; the
+`-dev` packages are what Qt, FFmpeg's VA-API support and miniaudio link against. Install vcpkg at the baseline as in
+[Prerequisites](#prerequisites-windows) (`./bootstrap-vcpkg.sh -disableMetrics`) and Qt 6.11.3 for Linux
+(`gcc_64`, with Qt Shader Tools; the Online Installer, or aqtinstall as above):
+
+```sh
+export VCPKG_ROOT=$HOME/vcpkg WABCUT_QT_DIR=$HOME/Qt/6.11.3/gcc_64 VCPKG_KEEP_ENV_VARS=WABCUT_QT_DIR
+cmake --preset linux-gcc -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14
+cmake --build --preset linux-gcc
+ctest --preset linux-gcc -E "$(python3 tools/ci-known-gaps.py linux)"     # QT_QPA_PLATFORM=offscreen without a display
+```
+
+**How it behaves at run time.**
+
+- **Window system.** X11 first (through XWayland on a Wayland desktop: the launch intro and the window placement need
+  to position windows, which Wayland does not allow); the bundled Wayland platform plugin when there is no X server.
+  `QT_QPA_PLATFORM=wayland` forces native Wayland.
+- **Picture.** QRhi on Vulkan, then OpenGL, then a software fallback.
+- **Decode and encode.** VA-API (Intel and AMD; the distribution's `intel-media-va-driver` or `mesa-va-drivers`, found
+  through `LIBVA_DRIVERS_PATH`, which Wabcut sets to the distribution's `dri` folders unless you did) and CUDA/NVDEC
+  for NVIDIA, with software decoding everywhere as the fallback. Hardware encoders are NVENC (NVIDIA) and VA-API (Intel,
+  AMD); software x264, x265, SVT-AV1 and libvpx otherwise. Decoded frames are read back to memory (the
+  zero-copy path is Direct3D 11 only: [zero-copy.md](zero-copy.md)).
+- **Sound.** miniaudio plays through PulseAudio (PipeWire provides it as `pipewire-pulse`, the default on current
+  desktops), ALSA or JACK, and falls back to a silent device when none opens.
+- **Keys.** AI provider keys go to the Secret Service (GNOME Keyring, KWallet) through libsecret. Without a running
+  Secret Service they last for the session only.
+- **Not on Linux yet.** Local transcription (whisper.cpp), audio plug-ins (CLAP and VST3 hosting), the managed local
+  assistant (llama-server), DirectML for smart search (the CPU is used) and Collect Files' font gathering. The cloud
+  features, smart search and the editor itself are there.
+- **Files.** The launcher entry lists the `application/x-wabcut-project` type (`share/mime/packages`), so a package that
+  runs `update-mime-database` shows Wabcut under Open With for `.wabcut`; the AppImage and the tar.gz install nothing
+  outside their folder, and Wabcut opens a project named on its command line either way.
+
+Packages: an AppImage and a tar.gz ([release.md](release.md#linux-packages)); both are unpacked and started in a clean
+environment on the CI runner before a release is published.
+
+## macOS
+
+Apple silicon, built with Homebrew's LLVM 20+ (Apple Clang 16's libc++ lacks `std::jthread` and floating-point
+`std::from_chars`; the configure step stops with that message). CI builds the `macos-clang` preset, runs its tests,
+packages the DMG, and signs and notarizes it when the repository has an Apple Developer ID
+([release.md](release.md#macos-signing-and-notarization)).
+
+```sh
+brew install llvm nasm autoconf automake autoconf-archive libtool pkg-config cmake ninja
+export VCPKG_ROOT=$HOME/vcpkg WABCUT_QT_DIR=$HOME/Qt/6.11.3/macos VCPKG_KEEP_ENV_VARS="WABCUT_QT_DIR;LLVM_ROOT"
+export LLVM_ROOT=$(brew --prefix llvm)
+cmake --preset macos-clang -DVCPKG_TARGET_TRIPLET=arm64-osx-llvm \
+  -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$PWD/cmake/toolchains/macos-llvm.cmake
+cmake --build --preset macos-clang
+ctest --preset macos-clang -E "$(python3 tools/ci-known-gaps.py macos)"
+```
+
+- **Picture** on Metal through QRhi; **decode and encode** with VideoToolbox (H.264, HEVC, ProRes), software codecs as the
+  fallback; **sound** through Core Audio (miniaudio); **keys** in the macOS Keychain (QtKeychain); smart search on ONNX
+  Runtime with the CPU and Core ML providers.
+- **Shortcuts.** Premiere's macOS table (`src/keymap/keymaps/premiere-macos.json`, Cmd where Windows uses Ctrl) is the
+  default there.
+- **Opening files.** `Info.plist` declares the `.wabcut` project type and lists Wabcut under Open With for recordings,
+  audio and pictures. Finder delivers those as file-open events, which `FileOpenRelay` hands to the window like another
+  launch's files (the unsaved-changes prompt included).
+- **Not on macOS yet.** Local transcription, audio plug-ins (Audio Units are not hosted), the managed local assistant and
+  Collect Files' font gathering.
+- The bundle needs macOS 15 because it carries Homebrew's libc++ ([release.md](release.md#portability)).
+
+## Platforms and their test status
+
+Windows x64 is the platform a person runs the whole suite on before every release. Every other platform is built and
+tested by GitHub's machines, which have no GPU, no display server of their own and no audio device, so what they do and do
+not show is written down here instead of being guessed at.
+
+| Platform | Preset | Job | Blocks a pull request or the release? |
+|---|---|---|---|
+| Windows x64 | `win-msvc-ci` | `windows-full.yml` (every PR, `main`) | yes; the release needs it |
+| Windows ARM64 | `win-msvc-arm64` | `windows-arm64.yml` (`main`, weekly, PRs that change its inputs) | no (`continue-on-error`) |
+| Linux x64, core | `core` | `core.yml`, GCC 14 (every PR, `main`) | yes |
+| Linux x64, full | `linux-gcc` | `unix-full.yml` (`main`, weekly) | no, while its matrix entry says `experimental: true` |
+| macOS arm64, core | `core` | `core.yml`, Homebrew LLVM (every PR, `main`) | yes |
+| macOS arm64, full | `macos-clang` | `unix-full.yml` (`main`, weekly) | no |
+
+Each full job writes its counts into the run's summary (`tools/ci-test-report.py`): tests, passed, failed, skipped, and
+for every skipped test the reason the test gave, so the numbers sit next to Windows' (`ci-test.py`'s line) without being
+copied into a page that would be out of date in a week. A test that does not run on a platform is one of these:
+
+| Why | Examples | Where it is explained |
+|---|---|---|
+| **Excluded by label** in every CI preset: `gpu`, `audio-device`, `perf` | hardware decode and encode, offscreen grabs on the real graphics API, real output devices, strict timing thresholds | [Tests and labels](#tests-and-labels) |
+| **Skips itself with a reason** (Catch2 `SKIP(...)`, or exit code 77) | the generated test clips are missing (`tools/gen_test_media.py`); the feature is Windows-only (update-manifest signatures and the C2PA identity use Windows CNG, zero-copy decode needs Direct3D 11, the listener check reads the Windows TCP table); the build lacks an optional part (`wabcut-embed` without `WABCUT_WITH_ONNX`, the c2pa library); a model download or paid key is not opted into (`WABCUT_TEST_*`, `WABCUT_LIVE_GENERATION`) | the reason is in the test's output and in the job summary's skipped table |
+| **Known gap**: fails off Windows for a cause nobody has fixed yet | seven tests in the local assistant, smart search's saved graph and transcript corrections | `tests/platform-gaps.json` holds each name with its reason; `tools/ci-known-gaps.py` turns it into the exclusion `core.yml` and `unix-full.yml` pass to ctest; the same tests run again apart (their output is in the log) and the summary lists them, so none disappears quietly. Fixing one means deleting its line |
+| **Not built** on that platform | local transcription, audio plug-ins, Content Credentials signing, the Windows installer tests | [Linux](#linux), [macOS](#macos) and [Windows on ARM64](#windows-on-arm64) say what is off and why |
+
+**What no CI run can show**, and a person on a real machine has to: hardware decode and encode (VA-API, NVDEC,
+VideoToolbox, D3D11VA on an Adreno GPU), real audio devices and PipeWire/PulseAudio routing, a Wayland session and
+multi-monitor or HiDPI window placement, the Secret Service and Keychain prompts, plug-in hosting, Gatekeeper's verdict
+on a Mac that downloaded the DMG (CI runs `spctl` and `stapler` on the finished image, which is the same assessment, but
+not on a second Mac), and anything about Snapdragon's NPU or Adreno driver quirks. The tests that do run use the offscreen
+Qt platform, so a window drawn on a real display is not covered.
+
+To make Linux (or macOS) a gate: when `unix-full.yml` has been green on `main` for a few runs, change `experimental: true`
+to `false` on its matrix entry (and check the known-gap table has shrunk as far as it can).
+
 ## Install tree, installer and portable ZIP
 
 ```powershell
@@ -569,7 +727,8 @@ Both run as part of `ctest --preset win-msvc` and in CI.
 |---|---|---|
 | `.github/workflows/core.yml` | push to `main`, every PR | The `core` preset on `windows-2025` with MSVC and with clang-cl, `ubuntu-24.04` (GCC 14) and `macos-15` (Homebrew LLVM), without debug information, through ccache, tests through `tools/ci-test.py` (below). The Windows jobs use `dev-env.ps1 -Core`. |
 | `.github/workflows/windows-full.yml` | push to `main`, every PR | See below. |
-| `.github/workflows/unix-full.yml` | push to `main`, weekly and on demand; **experimental** | `linux-gcc` (GCC 14) and `macos-clang` (Homebrew LLVM, `arm64-osx-llvm` triplet) with the same vcpkg manifest and Qt, local AI off, smart search on the prebuilt ONNX Runtime of each platform, no secrets; tests without `gpu` / `audio-device`, then the install tree and a TGZ as an "unverified" artifact. Marked `continue-on-error`, so it never blocks. |
+| `.github/workflows/unix-full.yml` | push to `main`, weekly and on demand | `linux-gcc` (GCC 14) and `macos-clang` (Homebrew LLVM, `arm64-osx-llvm` triplet) with the same vcpkg manifest and Qt, local AI off, smart search on the prebuilt ONNX Runtime of each platform, no secrets; tests without `gpu` / `audio-device` and the known gaps, the counts and every skip's reason in the job summary, the known gaps run apart, then the install tree and a TGZ as an "unverified" artifact. Each matrix entry has `experimental: true` (`continue-on-error`), so neither blocks yet ([Platforms and their test status](#platforms-and-their-test-status)). |
+| `.github/workflows/windows-arm64.yml` | push to `main`, weekly, on demand, PRs that change `vcpkg.json`, the ARM64 triplet or preset, or the workflow; **experimental** | `win-msvc-arm64` on the `windows-11-arm` runner: Qt's native ARM64 kit, the `arm64-windows-release` triplet, tests without `gpu` / `audio-device` / `perf`, then the MSI and the portable ZIP as an "unverified" artifact. It saves the vcpkg packages and compiler cache the release workflow's ARM64 job restores. Marked `continue-on-error`, so it never blocks ([Windows on ARM64](#windows-on-arm64)). |
 
 `windows-full.yml` does the following:
 
@@ -598,8 +757,9 @@ costs a full rerun of a three-hour workflow. When more than 25 tests fail, nothi
 
 ### CI caches
 
-Two caches keep the full builds (`windows-full`, `unix-full`, `release`) from compiling the same code again, both
-handled by `tools/ci-cache.py`:
+Two caches keep the full builds (`windows-full`, `windows-arm64`, `unix-full`, `release`) from compiling the same code
+again, both handled by `tools/ci-cache.py` (the ARM64 job has its own, `vcpkg-win-arm64-` and `ccache-win-arm64-`: nothing
+of the x64 caches matches its packages; ccache has no ARM64 Windows build, so the x64 one runs under emulation there):
 
 - **vcpkg packages** (vcpkg's binary cache, one zip per package ABI). The cache is named by the packages it holds, so a
   run saves a new one only when it built a package, and before saving it drops the packages the build no longer
@@ -611,8 +771,8 @@ handled by `tools/ci-cache.py`:
   not cache MSVC compiles that use a precompiled header (`could_not_use_precompiled_header`).
 
 GitHub gives a repository 10 GB of caches, and a cache saved by a pull request or a tag can only be restored by that
-pull request or tag (and a pull request also restores main's). The vcpkg packages are saved from `main` (`windows-full`
-and `unix-full` on every push) and restored by pull requests and by the release; `windows-full` on a pull request also
+pull request or tag (and a pull request also restores main's). The vcpkg packages are saved from `main` (`windows-full`,
+`windows-arm64` and `unix-full` on every push) and restored by pull requests and by the release; `windows-full` on a pull request also
 saves them when it had to build packages, as after a runner image update, which changes every package's ABI (otherwise
 each push rebuilt all 50, about 50 minutes, until main's next run). The compiler caches of `windows-full` and `core`
 are saved by every branch and pull request as well: a pull request's first push restores main's, every later
@@ -627,7 +787,7 @@ hit rate to the job summary ("Compiler cache: ... hits").
 - **Qt:**
   1. Install the new kit.
   2. Update `WABCUT_TESTED_QT_VERSION` (`CMakeLists.txt`), `$wabcutTestedQt` (`tools/dev-env.ps1`), `QT_VERSION`
-     (`.github/workflows/windows-full.yml`, `unix-full.yml`) and this page.
+     (`.github/workflows/windows-full.yml`, `windows-arm64.yml`, `unix-full.yml`, `release.yml`) and this page.
   3. For a new minor version (6.12+), also review the QRhi code, which uses private API, and the minimum check
      in `CMakeLists.txt`.
 - **vcpkg baseline:**

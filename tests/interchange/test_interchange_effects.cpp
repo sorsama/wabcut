@@ -454,3 +454,43 @@ TEST_CASE("interchange 0.6: Wabcut effects with keyframes and data survive FCPXM
         }
     }
 }
+
+// 0.7 (card 044): FCP7 XML, FCPXML and OTIO have no Dynamics Processing. Other editors skip it; each format says so by name
+// (never a silent loss) and Wabcut reads the effect back exactly.
+TEST_CASE("interchange 0.7: Dynamics Processing is named in the report of every format and comes back exactly",
+          "[interchange][effects][export][dynamics]") {
+    wabcut::test::Timeline tl(R"(
+        V1 tgt |A10aaaaaaaaaaaaaaaaaaaaaaaa|
+        A1 tgt |A10aaaaaaaaaaaaaaaaaaaaaaaa|
+    )");
+    tl.linkMatching();
+    ProjectState s = tl.state;
+    const ClipId a = tl.clip("A1@0");
+    Curve threshold;
+    threshold.keys = {Keyframe{f(10), -30.0}, Keyframe{f(20), -18.0}};
+    s = ok(edit::addEffect(s, tl.seq, std::span(&a, 1), "wabcut.audio.dynamicsProcessing",
+                           {EffectParam{"band1Threshold", ParamValue(threshold)}, EffectParam{"band2Mode", ParamValue(2.0)},
+                            EffectParam{"bandCount", ParamValue(3.0)}, EffectParam{"crossover1", ParamValue(200.0)},
+                            EffectParam{"limiterEnable", ParamValue(1.0)}}))
+            .state;
+    const std::string want = fxText(s.findSequence(tl.seq)->findClip(a)->clip().effects());
+    REQUIRE(want.find("wabcut.audio.dynamicsProcessing") != std::string::npos);
+    for (const Format format : {Format::Fcp7Xml, Format::FcpXml, Format::Otio}) {
+        INFO(toString(format));
+        const auto exported = exportSequence(s, tl.seq, format);
+        REQUIRE(exported.has_value());
+        // Named in the report, whichever way the format carries it (all of them say other editors skip it).
+        // (FCP7 XML files its note under the clip it is on, the other two under Effect.)
+        bool named = false;
+        for (const ReportOutcome outcome : {ReportOutcome::Carried, ReportOutcome::Approximated, ReportOutcome::Dropped}) {
+            for (const ReportCategory category : {ReportCategory::Effect, ReportCategory::Clip}) {
+                named = named || it::hasEntry(exported->report, outcome, category, "Dynamics Processing");
+            }
+        }
+        CHECK(named);
+        // Wabcut reads its own file back with every setting, keyframes included.
+        const auto back = it::importText(exported->data, format, {}, "dynamics" + exported->extension);
+        const Sequence& seq = it::sequenceAt(back, 0);
+        CHECK(fxText(first(it::track(seq, "A1")).effects()) == want);
+    }
+}

@@ -43,14 +43,14 @@ struct OfflineMixdown::Impl {
 
     Impl(std::shared_ptr<const Sequence> seq, int out, int sampleRate, Ticks from, AudioFeed& f, OfflineMixdownOptions o)
         : sequence(std::move(seq)), feed(f), options(std::move(o)),
-          channels(sequence->masterFormat == ChannelFormat::Surround51 ? 6 : out), outputChannels(out), rate{sampleRate, 1},
+          channels(masterMixChannels(sequence->masterFormat, out)), outputChannels(out), rate{sampleRate, 1},
           tpf(rate.ticksPerUnit()), start(from), routed(usesSubmixRouting(*sequence)),
           mixer(static_cast<int>(sequence->audioTracks.size()) + (routed ? detail::SubmixGraph::kMaxSubmixes : 0), channels,
                 sampleRate, kBlockFrames),
           master(channels, sampleRate) {
         const int ch = channels;
-        if (outputChannels != channels) { // A.9: a 5.1 master rendered to stereo (or mono): ITU-R BS.775
-            downmix = formatMatrix(ChannelFormat::Surround51, channels, formatForChannels(outputChannels), outputChannels);
+        if (outputChannels != channels) { // A.9: a 5.1 (0.7: or 7.1) master rendered to fewer channels: ITU-R BS.775
+            downmix = formatMatrix(formatForChannels(channels), channels, formatForChannels(outputChannels), outputChannels);
             // Review A5-P2-2: the soft clip guard runs on what is delivered, once, after the downmix (it sums up to 2.41
             // times what a guard before it let through, and a second guard would bend loud samples twice).
             guardAfterDownmix = mixer.softClipEnabled();

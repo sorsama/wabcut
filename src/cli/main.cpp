@@ -8,6 +8,7 @@
 #include <wabcut/ai/roughcut/MediaTakeProbe.h>
 #include <wabcut/ai/roughcut/RoughCutCommands.h>
 #include <wabcut/ai/segment/MediaSegment.h>
+#include <wabcut/ai/video/SourceProcessor.h>
 #include <wabcut/ai/translate/LocalTranslation.h>
 #include <wabcut/ai/translate/TranslateCommands.h>
 #include <wabcut/command/Cli.h>
@@ -33,6 +34,7 @@
 #include <wabcut/interchange/Export.h>
 #include <wabcut/interchange/Import.h>
 #include <wabcut/interchange/ImportSummary.h>
+#include <wabcut/media/CodecSupport.h>
 #include <wabcut/media/FfmpegInfo.h>
 #include <wabcut/media/GpuInfo.h>
 #include <wabcut/model/MediaLocator.h>
@@ -48,6 +50,9 @@
 #include "TranscriptEdit.h"
 #if defined(WABCUT_WITH_AUDIO_PLUGINS)
 #include <wabcut/plughost/PluginSystem.h>
+#if defined(WABCUT_WITH_OPENFX)
+#include <wabcut/ofxhost/OfxSystem.h>
+#endif
 #endif
 
 #include <QGuiApplication>
@@ -81,6 +86,11 @@ int printVersion() {
         std::printf(" %s", t.c_str());
     }
     std::printf("\n");
+    // 0.7 (card 103): what this build does with the newer camera codecs.
+    for (const auto& c : wabcut::media::newerCodecSupport()) {
+        std::printf("codec %s: %s%s%s\n", c.id.c_str(), c.decodes() ? "plays" : "no decoder",
+                    c.exports() ? ", exports" : ", decode only", c.baseViewOnly ? " (base view)" : "");
+    }
     return 0;
 }
 
@@ -114,7 +124,7 @@ int printUsage() {
     std::printf("       wabcut-cli scopes <project.wabcut> --at <timecode|ticks> [--sequence <name|id>] [--clip <id>] "
                 "[--out <png>] [--json <file>] [--width <px>] [--zoom 1|2|5]\n");
     std::printf("       wabcut-cli mcp --project <file.wabcut> [--allow-edit] [--save-on-exit | --autosave] "
-                "[--timeout-ms <n>]\n");
+                "[--timeout-ms <n>] [--transactions] [--audit-log <file>]\n");
     std::printf("       wabcut-cli analyze <media> [--shots] [--beats] [--json] [--detector <name>] "
                 "[--cache <dir> | --no-cache]\n");
     std::printf("       wabcut-cli subjects <media> [--device auto|gpu|cpu] [--threads <n>] [--no-cache] [--json] "
@@ -457,6 +467,9 @@ void startAudioPlugins() {
 #if defined(WABCUT_WITH_AUDIO_PLUGINS)
     wabcut::plughost::PluginSystem::start();
 #endif
+#if defined(WABCUT_WITH_OPENFX)
+    wabcut::ofxhost::OfxSystem::start(); // 0.7: OpenFX video plug-ins in renders (the catalog from its cache)
+#endif
 }
 
 /// plugins.list / plugins.scan (A.6), when this build hosts plugins.
@@ -581,6 +594,7 @@ std::shared_ptr<wabcut::command::CommandServices> editingServicesFor(const std::
         std::make_shared<wabcut::editor::MediaTrackingService>(project), // track.mask, track.transform (I.6)
         objectMaskServicesFor(project),                                  // mask.objectSelect / refine / propagate (AI-14)
         highlightServicesFor(project),                                   // highlights.find / toReel / toShort (G.2)
+        wabcut::ai::video::makeVideoServices(),                          // effect.aiStatus / processAi (0.7)
         pluginServices(),                                                // plugins.list, plugins.scan (A.6)
         graphicsServices(),                                              // the user's template library (C.13)
         spellingServices(),                                              // captions / graphic.checkSpelling (0.2)
@@ -925,10 +939,13 @@ int runRender(int argc, char** argv) {
             settings.video.pixelFormat = ex::OutputPixelFormat::Yuv420p10; // PQ and HLG are 10-bit
         }
     }
-    if (output.extension().empty()) {
+    const std::string typedExtension = wabcut::pathToUtf8(output.extension());
+    if (output.extension().empty() ||
+        (!ex::isMediaFileExtension(typedExtension) && !ex::isPlausibleExtension(typedExtension))) {
+        // 148: no extension - or a dot inside the name ("Stream 2026.11.03 Highlights", "cut v1.2"): the format's is appended
         output += std::string(ex::outputExtension(settings));
     } else if (settings.container == ex::Container::Image) {
-        output.replace_extension(std::string(ex::outputExtension(settings))); // the still format decides
+        output = ex::withOutputExtension(std::move(output), ex::outputExtension(settings)); // the still format decides
     } else if (const auto container = containerFromExtension(output)) {
         settings.container = *container;
         if (ex::isAudioOnly(*container)) {
@@ -1165,6 +1182,15 @@ int runRender(int argc, char** argv) {
     if (result->copiedFrames > 0) {
         std::printf("smart rendering: %lld frames copied\n", static_cast<long long>(result->copiedFrames));
     }
+    // 0.7 (card 049): H.264 / HEVC passthrough - what was copied and why the rest was encoded again.
+    if (!result->smartRenderCodec.empty()) {
+        std::printf("%s passthrough: %lld of %lld frames copied\n", result->smartRenderCodec.c_str(),
+                    static_cast<long long>(result->copiedFrames), static_cast<long long>(result->frames));
+        for (const auto& note : result->smartRenderNotes) {
+            std::printf("  %lld frames encoded again from %s: %s\n", static_cast<long long>(note.frames),
+                        note.firstTimecode.c_str(), note.reason.c_str());
+        }
+    }
     return 0;
 }
 
@@ -1309,6 +1335,9 @@ int main(int argc, char** argv) {
     // AI-14: matte masks (AI object masks, AI-tracked redactions) render from the analysis cache's mattes; without them
     // the masks' bounding boxes stand in.
     wabcut::ai::segment::installMatteSource();
+    // 0.7: AI Restore / AI Denoise render from the processed-picture cache; a render makes the pictures it lacks (the AI helper
+    // next to the CLI and the downloaded models), or stops with the reason.
+    wabcut::ai::video::services();
     if (argc >= 2 && std::string_view(argv[1]) == "import") {
         return runImport(argc, argv);
     }

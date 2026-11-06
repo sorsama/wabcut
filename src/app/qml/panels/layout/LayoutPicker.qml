@@ -27,6 +27,30 @@ Popover {
     readonly property var result: Layouts.previewResult
     property string error: ""
 
+    // 0.7 (card #54): the frame is exactly the content plus its padding - the content is this wide (or as wide as the
+    // window allows) and this tall (or as tall as the window allows, and then scrolls) - so nothing hangs past it, and
+    // the popover stays inside the window at any size.
+    readonly property real bodyWidth: Math.min(Theme.space(100), parent ? parent.width - 2 * margins - leftPadding - rightPadding
+                                                                    : Theme.space(100))
+    readonly property real maxContentHeight: parent ? Math.max(Theme.space(40), parent.height - 2 * margins - topPadding
+                                                               - bottomPadding - Theme.space(12))
+                                                    : 100000
+    y: parent ? Math.max(margins, Math.min(Theme.space(16), parent.height - height - margins)) : 0
+
+    /// Why Apply is off, or "" when it is on: the one reason, for its tooltip.
+    readonly property string applyBlockedReason: {
+        if (!Layouts.available)
+            return qsTr("Layouts arrive with the next engine update")
+        if (Layouts.gameplay === "")
+            return qsTr("Select the gameplay clip first")
+        if (picker.result.ok === false)
+            return (picker.result.error ?? "") !== "" ? picker.result.error
+                   : picker.vertical && !Layouts.sequenceIsVertical
+                     ? qsTr("A vertical layout belongs on a 9:16 sequence: create a Shorts sequence first")
+                     : qsTr("The layout cannot be applied here")
+        return ""
+    }
+
     function reset() {
         options = Object.assign({}, Layouts.defaults, { preset: "pip", facecamSource: "auto" })
         error = ""
@@ -69,14 +93,13 @@ Popover {
             if (monitor) {
                 const m = monitor.mapToItem(host, 0, 0, monitor.width, monitor.height)
                 if (host.width - (m.x + m.width) >= width + gap)
-                    px = m.x + m.width + gap
+                    px = m.x + m.width + gap // beside the monitor, not over its picture: right of it when there is room
                 else if (m.x >= width + gap)
-                    px = m.x - width - gap
+                    px = m.x - width - gap   // else left of it
                 else
-                    px = host.width - width - gap
+                    px = host.width - width - gap // else over the monitor's far edge (the schematic stays in view)
             }
-            x = Math.max(0, Math.min(host.width - width, px))
-            y = Theme.space(16)
+            x = Math.max(gap, Math.min(host.width - width - gap, px)) // always fully inside the window
         }
         open()
         Layouts.preview(options)
@@ -167,416 +190,470 @@ Popover {
         }
     }
 
-    ColumnLayout {
-        width: Theme.space(100)
-        spacing: Theme.space(2)
+    Flickable {
+        id: scroller
+        objectName: "layoutScroller"
+        width: picker.bodyWidth
+        height: Math.min(column.implicitHeight, picker.maxContentHeight)
+        contentWidth: width
+        contentHeight: column.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ThinScrollBar {}
 
-        Text {
-            objectName: "layoutGameplay"
-            Layout.fillWidth: true
-            wrapMode: Text.Wrap
-            text: Layouts.gameplay !== "" ? qsTr("Gameplay: %1").arg(Layouts.gameplayName)
-                                          : qsTr("Select the gameplay clip on the timeline (or put the playhead over it).")
-            color: Layouts.gameplay !== "" ? Theme.textSecondary : Theme.warning
-            font.family: Theme.fontSans
-            font.pixelSize: Theme.textSm
-        }
-
-        RowLayout {
-            objectName: "layoutCards"
-            Layout.fillWidth: true
-            spacing: Theme.space(2)
-            Repeater {
-                model: Layouts.layouts
-                delegate: LayoutCard {}
-            }
-        }
-        Text {
-            Layout.fillWidth: true
-            wrapMode: Text.Wrap
-            text: picker.current.description ?? ""
-            color: Theme.textTertiary
-            font.family: Theme.fontSans
-            font.pixelSize: Theme.textSm
-        }
-
-        // The facecam: a clip above the gameplay, or a region of the capture.
         ColumnLayout {
-            objectName: "layoutFacecam"
-            Layout.fillWidth: true
-            spacing: Theme.space(1)
+            id: column
+            width: scroller.width
+            spacing: Theme.space(2)
+
+            // The one message about a missing gameplay clip (the dry run's own "Select the gameplay clip" is not shown
+            // below), with the one click that fixes it.
+            Text {
+                objectName: "layoutGameplay"
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: Layouts.gameplay !== "" ? qsTr("Gameplay: %1").arg(Layouts.gameplayName)
+                                              : qsTr("Select the gameplay clip on the timeline (or put the playhead over it).")
+                color: Layouts.gameplay !== "" ? Theme.textSecondary : Theme.warning
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textSm
+            }
+            PillButton {
+                objectName: "layoutUseSuggested"
+                visible: Layouts.gameplay === "" && Layouts.suggestedGameplay.key !== undefined
+                compact: true
+                variant: "ghost"
+                iconName: "film"
+                text: Layouts.suggestedGameplay.underPlayhead === true ? qsTr("Use the clip under the playhead")
+                                                                       : qsTr("Use the nearest video clip")
+                tooltip: qsTr("Make \"%1\" the gameplay").arg(Layouts.suggestedGameplay.name ?? "")
+                onClicked: Layouts.useSuggestedGameplay()
+            }
+
             RowLayout {
+                objectName: "layoutCards"
                 Layout.fillWidth: true
                 spacing: Theme.space(2)
-                FieldLabel {
-                    text: qsTr("Facecam")
-                }
-                PillTabs {
-                    id: sourceTabs
-                    objectName: "layoutFacecamSource"
-                    Layout.fillWidth: true
-                    compact: true
-                    Accessible.name: qsTr("Facecam source")
-                    readonly property var sources: picker.preset === "verticalBlurFill" ? ["none", "clip", "region"] : ["clip", "region"]
-                    /// The tab of the options' source ("auto": the clip when there is one, else the region).
-                    readonly property int wanted: {
-                        const s = picker.options.facecamSource ?? "auto"
-                        if (s === "auto")
-                            return sources.indexOf(Layouts.facecam !== "" || Layouts.facecamRegion.width === undefined ? "clip" : "region")
-                        return Math.max(0, sources.indexOf(s))
-                    }
-                    model: picker.preset === "verticalBlurFill" ? [qsTr("None"), qsTr("Clip"), qsTr("Region")]
-                                                                : [qsTr("Clip"), qsTr("Region")]
-                    onActivated: index => picker.set("facecamSource", sources[index])
-                    // A Binding, not a plain one: a click assigns currentIndex (PillTabs.select), which would end it.
-                    Binding {
-                        target: sourceTabs
-                        property: "currentIndex"
-                        value: sourceTabs.wanted
-                    }
+                Repeater {
+                    model: Layouts.layouts
+                    delegate: LayoutCard {}
                 }
             }
-            // A clip above the gameplay.
-            RowLayout {
+            // 0.7 (card #54): right under the cards, where a vertical layout is chosen, not after the buttons.
+            Text {
+                objectName: "layoutWideHint"
                 Layout.fillWidth: true
-                visible: sourceTabs.sources[sourceTabs.currentIndex] === "clip"
-                spacing: Theme.space(2)
-                PillButton {
-                    id: facecamClip
-                    objectName: "layoutFacecamClip"
+                wrapMode: Text.Wrap
+                visible: picker.vertical && !Layouts.sequenceIsVertical
+                text: Layouts.sequencePresetsAvailable
+                      ? qsTr("This sequence is wide: a vertical layout belongs on a 9:16 sequence. Create a Shorts sequence below.")
+                      : qsTr("This sequence is wide: a vertical layout belongs on a 9:16 sequence.")
+                color: Theme.warning
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textSm
+            }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: picker.current.description ?? ""
+                color: Theme.textTertiary
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textSm
+            }
+
+            // The facecam: a clip above the gameplay, or a region of the capture.
+            ColumnLayout {
+                objectName: "layoutFacecam"
+                Layout.fillWidth: true
+                spacing: Theme.space(1)
+                RowLayout {
                     Layout.fillWidth: true
-                    compact: true
-                    iconName: "chevron-down"
-                    enabled: Layouts.facecamCandidates.length > 0
-                    text: {
-                        const c = Layouts.facecamCandidates.find(f => f.key === Layouts.facecam)
-                        return c ? qsTr("%1 · %2").arg(c.name).arg(c.track) : qsTr("No video clip above the gameplay")
+                    spacing: Theme.space(2)
+                    FieldLabel {
+                        text: qsTr("Facecam")
                     }
-                    tooltip: qsTr("The webcam clip on a video track above the gameplay")
-                    onClicked: facecamMenu.popup(facecamClip, 0, facecamClip.height + Theme.space(1))
-                    OptionsMenu {
-                        id: facecamMenu
-                        options: Layouts.facecamCandidates.map(c => ({ id: c.key, name: qsTr("%1 · %2").arg(c.name).arg(c.track) }))
-                        current: Layouts.facecam
-                        onChosen: id => {
-                            Layouts.facecam = id
-                            picker.set("facecamSource", "clip")
+                    PillTabs {
+                        id: sourceTabs
+                        objectName: "layoutFacecamSource"
+                        Layout.fillWidth: true
+                        compact: true
+                        Accessible.name: qsTr("Facecam source")
+                        readonly property var sources: picker.preset === "verticalBlurFill" ? ["none", "clip", "region"] : ["clip", "region"]
+                        /// The tab of the options' source ("auto": the clip when there is one, else the region).
+                        readonly property int wanted: {
+                            const s = picker.options.facecamSource ?? "auto"
+                            if (s === "auto")
+                                return sources.indexOf(Layouts.facecam !== "" || Layouts.facecamRegion.width === undefined ? "clip" : "region")
+                            return Math.max(0, sources.indexOf(s))
+                        }
+                        model: picker.preset === "verticalBlurFill" ? [qsTr("None"), qsTr("Clip"), qsTr("Region")]
+                                                                    : [qsTr("Clip"), qsTr("Region")]
+                        onActivated: index => picker.set("facecamSource", sources[index])
+                        // A Binding, not a plain one: a click assigns currentIndex (PillTabs.select), which would end it.
+                        Binding {
+                            target: sourceTabs
+                            property: "currentIndex"
+                            value: sourceTabs.wanted
+                        }
+                    }
+                }
+                // A clip above the gameplay.
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: sourceTabs.sources[sourceTabs.currentIndex] === "clip"
+                    spacing: Theme.space(2)
+                    PillButton {
+                        id: facecamClip
+                        objectName: "layoutFacecamClip"
+                        Layout.fillWidth: true
+                        compact: true
+                        iconName: "chevron-down"
+                        enabled: Layouts.facecamCandidates.length > 0
+                        text: {
+                            const c = Layouts.facecamCandidates.find(f => f.key === Layouts.facecam)
+                            return c ? qsTr("%1 · %2").arg(c.name).arg(c.track) : qsTr("No video clip above the gameplay")
+                        }
+                        tooltip: qsTr("The webcam clip on a video track above the gameplay")
+                        disabledReason: Layouts.gameplay === "" ? qsTr("Select the gameplay clip first")
+                                                                : qsTr("No video clip above the gameplay overlaps it")
+                        onClicked: facecamMenu.popup(facecamClip, 0, facecamClip.height + Theme.space(1))
+                        OptionsMenu {
+                            id: facecamMenu
+                            options: Layouts.facecamCandidates.map(c => ({ id: c.key, name: qsTr("%1 · %2").arg(c.name).arg(c.track) }))
+                            current: Layouts.facecam
+                            onChosen: id => {
+                                Layouts.facecam = id
+                                picker.set("facecamSource", "clip")
+                            }
+                        }
+                    }
+                }
+                // 0.7 (card #54): the next step when there is no webcam clip to choose.
+                Text {
+                    objectName: "layoutFacecamClipHint"
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    visible: sourceTabs.sources[sourceTabs.currentIndex] === "clip" && Layouts.gameplay !== ""
+                             && Layouts.facecamCandidates.length === 0
+                    text: qsTr("Put the webcam clip on the video track above the gameplay, or choose Region to draw it on the monitor.")
+                    color: Theme.textTertiary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textSm
+                }
+                // A region of the capture (the webcam overlay inside the gameplay).
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: sourceTabs.sources[sourceTabs.currentIndex] === "region"
+                    spacing: Theme.space(2)
+                    PillButton {
+                        objectName: "layoutDrawRegion"
+                        compact: true
+                        variant: Layouts.drawingRegion ? "primary" : "secondary"
+                        iconName: "square"
+                        text: Layouts.drawingRegion ? qsTr("Drawing on the monitor…") : qsTr("Draw on the monitor")
+                        tooltip: qsTr("Drag a box around the webcam in the gameplay on the Program Monitor")
+                        onClicked: {
+                            Layouts.drawingRegion = !Layouts.drawingRegion
+                            if (!Layouts.drawingRegion)
+                                return
+                            picker.set("facecamSource", "region")
+                        }
+                    }
+                    FieldValue {
+                        objectName: "layoutRegionValue"
+                        Layout.fillWidth: true
+                        elide: Text.ElideRight
+                        text: Layouts.facecamRegion.width !== undefined
+                              ? qsTr("%1 × %2 % of the frame").arg(Math.round(Layouts.facecamRegion.width * 100))
+                                                             .arg(Math.round(Layouts.facecamRegion.height * 100))
+                              : qsTr("No region yet")
+                    }
+                    IconButton {
+                        objectName: "layoutClearRegion"
+                        compact: true
+                        visible: Layouts.facecamRegion.width !== undefined
+                        iconName: "x"
+                        tooltip: qsTr("Clear the region")
+                        onClicked: {
+                            Layouts.clearRegion()
+                            Layouts.preview(picker.options)
                         }
                     }
                 }
             }
-            // A region of the capture (the webcam overlay inside the gameplay).
-            RowLayout {
+
+            // The facecam in a corner (picture-in-picture; the blur fill's facecam).
+            GridLayout {
+                objectName: "layoutCornerOptions"
                 Layout.fillWidth: true
-                visible: sourceTabs.sources[sourceTabs.currentIndex] === "region"
-                spacing: Theme.space(2)
-                PillButton {
-                    objectName: "layoutDrawRegion"
-                    compact: true
-                    variant: Layouts.drawingRegion ? "primary" : "secondary"
-                    iconName: "square"
-                    text: Layouts.drawingRegion ? qsTr("Drawing on the monitor…") : qsTr("Draw on the monitor")
-                    tooltip: qsTr("Drag a box around the webcam in the gameplay on the Program Monitor")
-                    onClicked: {
-                        Layouts.drawingRegion = !Layouts.drawingRegion
-                        if (!Layouts.drawingRegion)
-                            return
-                        picker.set("facecamSource", "region")
+                visible: picker.showsCornerOptions
+                columns: 2
+                columnSpacing: Theme.space(2)
+                rowSpacing: Theme.space(1)
+
+                FieldLabel { text: qsTr("Corner") }
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: 2
+                    columnSpacing: Theme.space(1)
+                    rowSpacing: Theme.space(1)
+                    Repeater {
+                        model: [
+                            { id: "topLeft", label: qsTr("Top left") },
+                            { id: "topRight", label: qsTr("Top right") },
+                            { id: "bottomLeft", label: qsTr("Bottom left") },
+                            { id: "bottomRight", label: qsTr("Bottom right") }
+                        ]
+                        delegate: PillButton {
+                            required property var modelData
+                            objectName: "layoutCorner_" + modelData.id
+                            Layout.fillWidth: true
+                            compact: true
+                            variant: (picker.options.corner ?? "bottomRight") === modelData.id ? "primary" : "secondary"
+                            text: modelData.label
+                            Accessible.role: Accessible.RadioButton
+                            Accessible.checkable: true
+                            Accessible.checked: (picker.options.corner ?? "bottomRight") === modelData.id
+                            onClicked: picker.set("corner", modelData.id)
+                        }
                     }
                 }
-                FieldValue {
-                    objectName: "layoutRegionValue"
+
+                FieldLabel { text: qsTr("Size") }
+                RowLayout {
                     Layout.fillWidth: true
-                    elide: Text.ElideRight
-                    text: Layouts.facecamRegion.width !== undefined
-                          ? qsTr("%1 × %2 % of the frame").arg(Math.round(Layouts.facecamRegion.width * 100))
-                                                         .arg(Math.round(Layouts.facecamRegion.height * 100))
-                          : qsTr("No region yet")
+                    ValueSlider {
+                        objectName: "layoutSize"
+                        Layout.fillWidth: true
+                        from: 0.05
+                        to: 1
+                        stepSize: 0.01
+                        value: picker.options.size ?? 0.28
+                        Accessible.name: qsTr("Facecam size")
+                        onMoved: picker.set("size", value)
+                    }
+                    FieldValue { text: qsTr("%1 %").arg(Math.round((picker.options.size ?? 0.28) * 100)) }
                 }
-                IconButton {
-                    objectName: "layoutClearRegion"
+                FieldLabel { text: qsTr("Margin") }
+                RowLayout {
+                    Layout.fillWidth: true
+                    ValueSlider {
+                        objectName: "layoutMargin"
+                        Layout.fillWidth: true
+                        from: 0
+                        to: 0.4
+                        stepSize: 0.005
+                        value: picker.options.margin ?? 0.03
+                        Accessible.name: qsTr("Margin")
+                        onMoved: picker.set("margin", value)
+                    }
+                    FieldValue { text: qsTr("%1 %").arg(((picker.options.margin ?? 0.03) * 100).toFixed(1)) }
+                }
+                FieldLabel { text: qsTr("Shape") }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.space(2)
+                    Toggle {
+                        objectName: "layoutCircle"
+                        text: qsTr("Circle")
+                        checked: picker.options.circle === true
+                        onToggled: picker.set("circle", checked)
+                    }
+                    ValueSlider {
+                        objectName: "layoutCornerRadius"
+                        Layout.fillWidth: true
+                        enabled: picker.options.circle !== true
+                        from: 0
+                        to: 0.5
+                        stepSize: 0.01
+                        value: picker.options.cornerRadius ?? 0.12
+                        Accessible.name: qsTr("Corner radius")
+                        onMoved: picker.set("cornerRadius", value)
+                    }
+                }
+                FieldLabel { text: qsTr("Border") }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.space(1)
+                    ValueSlider {
+                        objectName: "layoutBorderWidth"
+                        Layout.fillWidth: true
+                        from: 0
+                        to: 24
+                        stepSize: 1
+                        value: picker.options.borderWidth ?? 4
+                        Accessible.name: qsTr("Border width")
+                        onMoved: picker.set("borderWidth", Math.round(value))
+                    }
+                    FieldValue { text: qsTr("%1 px").arg(Math.round(picker.options.borderWidth ?? 4)) }
+                    Repeater {
+                        model: [Theme.contentWhite, Theme.contentInk].concat(Theme.clipColors.slice(0, 4))
+                        delegate: Swatch {
+                            required property var modelData
+                            readonly property string hex: String(modelData).toUpperCase()
+                            swatchColor: modelData
+                            checkable: false
+                            checked: hex === String(picker.options.borderColor ?? Theme.contentWhite).toUpperCase()
+                            tooltip: qsTr("Border colour %1").arg(hex)
+                            onClicked: picker.set("borderColor", hex)
+                        }
+                    }
+                }
+                FieldLabel { text: qsTr("Shadow") }
+                Toggle {
+                    objectName: "layoutShadow"
+                    text: qsTr("Drop shadow")
+                    checked: picker.options.shadow !== false
+                    onToggled: picker.set("shadow", checked)
+                }
+            }
+
+            // Vertical split.
+            GridLayout {
+                objectName: "layoutSplitOptions"
+                Layout.fillWidth: true
+                visible: picker.preset === "verticalSplit"
+                columns: 2
+                columnSpacing: Theme.space(2)
+                rowSpacing: Theme.space(1)
+                FieldLabel { text: qsTr("Gameplay share") }
+                RowLayout {
+                    Layout.fillWidth: true
+                    ValueSlider {
+                        objectName: "layoutSplit"
+                        Layout.fillWidth: true
+                        from: 0.2
+                        to: 0.8
+                        stepSize: 0.01
+                        value: picker.options.split ?? 0.6
+                        Accessible.name: qsTr("Gameplay share of the height")
+                        onMoved: picker.set("split", value)
+                    }
+                    FieldValue { text: qsTr("%1 %").arg(Math.round((picker.options.split ?? 0.6) * 100)) }
+                }
+                FieldLabel { text: qsTr("Facecam") }
+                Toggle {
+                    objectName: "layoutFacecamOnTop"
+                    text: qsTr("Facecam on top")
+                    checked: picker.options.facecamOnTop === true
+                    onToggled: picker.set("facecamOnTop", checked)
+                }
+            }
+
+            // Vertical blur fill.
+            GridLayout {
+                objectName: "layoutBlurOptions"
+                Layout.fillWidth: true
+                visible: picker.preset === "verticalBlurFill"
+                columns: 2
+                columnSpacing: Theme.space(2)
+                rowSpacing: Theme.space(1)
+                FieldLabel { text: qsTr("Background blur") }
+                RowLayout {
+                    Layout.fillWidth: true
+                    ValueSlider {
+                        objectName: "layoutBlur"
+                        Layout.fillWidth: true
+                        from: 0
+                        to: 200
+                        stepSize: 1
+                        value: picker.options.blur ?? 40
+                        Accessible.name: qsTr("Background blur")
+                        onMoved: picker.set("blur", Math.round(value))
+                    }
+                    FieldValue { text: qsTr("%1 px").arg(Math.round(picker.options.blur ?? 40)) }
+                }
+                FieldLabel { text: qsTr("Zoom") }
+                RowLayout {
+                    Layout.fillWidth: true
+                    ValueSlider {
+                        objectName: "layoutZoom"
+                        Layout.fillWidth: true
+                        from: 1
+                        to: 4
+                        stepSize: 0.05
+                        value: picker.options.zoom ?? 1
+                        Accessible.name: qsTr("Gameplay zoom")
+                        onMoved: picker.set("zoom", value)
+                    }
+                    FieldValue { text: qsTr("×%1").arg((picker.options.zoom ?? 1).toFixed(2)) }
+                }
+            }
+
+            // What the dry run says, or why there is nothing to apply yet.
+            Text {
+                objectName: "layoutStatus"
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                visible: text !== ""
+                // Not while the gameplay is missing: the line at the top says so, once.
+                readonly property string dryRunError: Layouts.gameplay === "" ? "" : (picker.result.error ?? "")
+                text: picker.error !== "" ? picker.error
+                      : !Layouts.available ? qsTr("Layouts arrive with the next engine update; the schematic shows what they will do.")
+                      : picker.result.busy === true ? qsTr("Checking…")
+                      : dryRunError
+                color: picker.error !== "" || (Layouts.available && picker.result.ok === false && dryRunError !== "")
+                       ? Theme.danger : Theme.textTertiary
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textSm
+            }
+
+            // A vertical layout on a wide sequence: the button that makes the sequence it belongs on is the main action.
+            RowLayout {
+                Layout.fillWidth: true
+                visible: picker.vertical && !Layouts.sequenceIsVertical && Layouts.sequencePresetsAvailable
+                PillButton {
+                    objectName: "layoutCreateShorts"
+                    Layout.fillWidth: true
                     compact: true
-                    visible: Layouts.facecamRegion.width !== undefined
-                    iconName: "x"
-                    tooltip: qsTr("Clear the region")
+                    variant: "primary"
+                    iconName: "plus"
+                    text: qsTr("Create a Shorts sequence")
+                    tooltip: qsTr("A new 1080 × 1920 sequence at 60 fps, shown next")
                     onClicked: {
-                        Layouts.clearRegion()
+                        picker.error = Layouts.createShortsSequence()
+                        if (picker.error === "")
+                            picker.close()
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.space(2)
+                // 0.6 (P1 #51): the picker opens with the last applied options; this puts the defaults back.
+                PillButton {
+                    objectName: "layoutReset"
+                    compact: true
+                    variant: "ghost"
+                    iconName: "rotate-ccw"
+                    text: qsTr("Reset")
+                    tooltip: qsTr("Back to the default options (the picker opens with the ones you applied last)")
+                    onClicked: {
+                        picker.reset()
                         Layouts.preview(picker.options)
                     }
                 }
-            }
-        }
-
-        // The facecam in a corner (picture-in-picture; the blur fill's facecam).
-        GridLayout {
-            objectName: "layoutCornerOptions"
-            Layout.fillWidth: true
-            visible: picker.showsCornerOptions
-            columns: 2
-            columnSpacing: Theme.space(2)
-            rowSpacing: Theme.space(1)
-
-            FieldLabel { text: qsTr("Corner") }
-            GridLayout {
-                Layout.fillWidth: true
-                columns: 2
-                columnSpacing: Theme.space(1)
-                rowSpacing: Theme.space(1)
-                Repeater {
-                    model: [
-                        { id: "topLeft", label: qsTr("Top left") },
-                        { id: "topRight", label: qsTr("Top right") },
-                        { id: "bottomLeft", label: qsTr("Bottom left") },
-                        { id: "bottomRight", label: qsTr("Bottom right") }
-                    ]
-                    delegate: PillButton {
-                        required property var modelData
-                        objectName: "layoutCorner_" + modelData.id
-                        Layout.fillWidth: true
-                        compact: true
-                        variant: (picker.options.corner ?? "bottomRight") === modelData.id ? "primary" : "secondary"
-                        text: modelData.label
-                        Accessible.role: Accessible.RadioButton
-                        Accessible.checkable: true
-                        Accessible.checked: (picker.options.corner ?? "bottomRight") === modelData.id
-                        onClicked: picker.set("corner", modelData.id)
-                    }
-                }
-            }
-
-            FieldLabel { text: qsTr("Size") }
-            RowLayout {
-                Layout.fillWidth: true
-                ValueSlider {
-                    objectName: "layoutSize"
+                Item {
                     Layout.fillWidth: true
-                    from: 0.05
-                    to: 1
-                    stepSize: 0.01
-                    value: picker.options.size ?? 0.28
-                    Accessible.name: qsTr("Facecam size")
-                    onMoved: picker.set("size", value)
                 }
-                FieldValue { text: qsTr("%1 %").arg(Math.round((picker.options.size ?? 0.28) * 100)) }
-            }
-            FieldLabel { text: qsTr("Margin") }
-            RowLayout {
-                Layout.fillWidth: true
-                ValueSlider {
-                    objectName: "layoutMargin"
-                    Layout.fillWidth: true
-                    from: 0
-                    to: 0.4
-                    stepSize: 0.005
-                    value: picker.options.margin ?? 0.03
-                    Accessible.name: qsTr("Margin")
-                    onMoved: picker.set("margin", value)
+                PillButton {
+                    objectName: "layoutCancel"
+                    variant: "ghost"
+                    text: qsTr("Cancel")
+                    onClicked: picker.close()
                 }
-                FieldValue { text: qsTr("%1 %").arg(((picker.options.margin ?? 0.03) * 100).toFixed(1)) }
-            }
-            FieldLabel { text: qsTr("Shape") }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Theme.space(2)
-                Toggle {
-                    objectName: "layoutCircle"
-                    text: qsTr("Circle")
-                    checked: picker.options.circle === true
-                    onToggled: picker.set("circle", checked)
+                PillButton {
+                    objectName: "layoutApply"
+                    // The main action is the Shorts sequence while a vertical layout is chosen on a wide one.
+                    variant: picker.vertical && !Layouts.sequenceIsVertical && Layouts.sequencePresetsAvailable ? "secondary" : "primary"
+                    text: qsTr("Apply")
+                    enabled: Layouts.available && Layouts.gameplay !== "" && picker.result.busy !== true
+                             && picker.result.ok !== false
+                    tooltip: qsTr("Apply the layout to the gameplay (one undo step)")
+                    disabledReason: picker.applyBlockedReason
+                    onClicked: picker.applyLayout()
                 }
-                ValueSlider {
-                    objectName: "layoutCornerRadius"
-                    Layout.fillWidth: true
-                    enabled: picker.options.circle !== true
-                    from: 0
-                    to: 0.5
-                    stepSize: 0.01
-                    value: picker.options.cornerRadius ?? 0.12
-                    Accessible.name: qsTr("Corner radius")
-                    onMoved: picker.set("cornerRadius", value)
-                }
-            }
-            FieldLabel { text: qsTr("Border") }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Theme.space(1)
-                ValueSlider {
-                    objectName: "layoutBorderWidth"
-                    Layout.fillWidth: true
-                    from: 0
-                    to: 24
-                    stepSize: 1
-                    value: picker.options.borderWidth ?? 4
-                    Accessible.name: qsTr("Border width")
-                    onMoved: picker.set("borderWidth", Math.round(value))
-                }
-                FieldValue { text: qsTr("%1 px").arg(Math.round(picker.options.borderWidth ?? 4)) }
-                Repeater {
-                    model: [Theme.contentWhite, Theme.contentInk].concat(Theme.clipColors.slice(0, 4))
-                    delegate: Swatch {
-                        required property var modelData
-                        readonly property string hex: String(modelData).toUpperCase()
-                        swatchColor: modelData
-                        checkable: false
-                        checked: hex === String(picker.options.borderColor ?? Theme.contentWhite).toUpperCase()
-                        tooltip: qsTr("Border colour %1").arg(hex)
-                        onClicked: picker.set("borderColor", hex)
-                    }
-                }
-            }
-            FieldLabel { text: qsTr("Shadow") }
-            Toggle {
-                objectName: "layoutShadow"
-                text: qsTr("Drop shadow")
-                checked: picker.options.shadow !== false
-                onToggled: picker.set("shadow", checked)
-            }
-        }
-
-        // Vertical split.
-        GridLayout {
-            objectName: "layoutSplitOptions"
-            Layout.fillWidth: true
-            visible: picker.preset === "verticalSplit"
-            columns: 2
-            columnSpacing: Theme.space(2)
-            rowSpacing: Theme.space(1)
-            FieldLabel { text: qsTr("Gameplay share") }
-            RowLayout {
-                Layout.fillWidth: true
-                ValueSlider {
-                    objectName: "layoutSplit"
-                    Layout.fillWidth: true
-                    from: 0.2
-                    to: 0.8
-                    stepSize: 0.01
-                    value: picker.options.split ?? 0.6
-                    Accessible.name: qsTr("Gameplay share of the height")
-                    onMoved: picker.set("split", value)
-                }
-                FieldValue { text: qsTr("%1 %").arg(Math.round((picker.options.split ?? 0.6) * 100)) }
-            }
-            FieldLabel { text: qsTr("Facecam") }
-            Toggle {
-                objectName: "layoutFacecamOnTop"
-                text: qsTr("Facecam on top")
-                checked: picker.options.facecamOnTop === true
-                onToggled: picker.set("facecamOnTop", checked)
-            }
-        }
-
-        // Vertical blur fill.
-        GridLayout {
-            objectName: "layoutBlurOptions"
-            Layout.fillWidth: true
-            visible: picker.preset === "verticalBlurFill"
-            columns: 2
-            columnSpacing: Theme.space(2)
-            rowSpacing: Theme.space(1)
-            FieldLabel { text: qsTr("Background blur") }
-            RowLayout {
-                Layout.fillWidth: true
-                ValueSlider {
-                    objectName: "layoutBlur"
-                    Layout.fillWidth: true
-                    from: 0
-                    to: 200
-                    stepSize: 1
-                    value: picker.options.blur ?? 40
-                    Accessible.name: qsTr("Background blur")
-                    onMoved: picker.set("blur", Math.round(value))
-                }
-                FieldValue { text: qsTr("%1 px").arg(Math.round(picker.options.blur ?? 40)) }
-            }
-            FieldLabel { text: qsTr("Zoom") }
-            RowLayout {
-                Layout.fillWidth: true
-                ValueSlider {
-                    objectName: "layoutZoom"
-                    Layout.fillWidth: true
-                    from: 1
-                    to: 4
-                    stepSize: 0.05
-                    value: picker.options.zoom ?? 1
-                    Accessible.name: qsTr("Gameplay zoom")
-                    onMoved: picker.set("zoom", value)
-                }
-                FieldValue { text: qsTr("×%1").arg((picker.options.zoom ?? 1).toFixed(2)) }
-            }
-        }
-
-        // What the dry run says, or why there is nothing to apply yet.
-        Text {
-            objectName: "layoutStatus"
-            Layout.fillWidth: true
-            wrapMode: Text.Wrap
-            visible: text !== ""
-            text: picker.error !== "" ? picker.error
-                  : !Layouts.available ? qsTr("Layouts arrive with the next engine update; the schematic shows what they will do.")
-                  : picker.result.busy === true ? qsTr("Checking…")
-                  : (picker.result.error ?? "")
-            color: picker.error !== "" || (Layouts.available && picker.result.ok === false && (picker.result.error ?? "") !== "")
-                   ? Theme.danger : Theme.textTertiary
-            font.family: Theme.fontSans
-            font.pixelSize: Theme.textSm
-        }
-        Text {
-            Layout.fillWidth: true
-            wrapMode: Text.Wrap
-            visible: picker.vertical && !Layouts.sequenceIsVertical
-            text: qsTr("This sequence is wide: a vertical layout belongs on a 9:16 sequence.")
-            color: Theme.textTertiary
-            font.family: Theme.fontSans
-            font.pixelSize: Theme.textSm
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: Theme.space(2)
-            PillButton {
-                objectName: "layoutCreateShorts"
-                visible: picker.vertical && !Layouts.sequenceIsVertical && Layouts.sequencePresetsAvailable
-                compact: true
-                variant: "ghost"
-                iconName: "plus"
-                text: qsTr("Create a Shorts sequence")
-                tooltip: qsTr("A new 1080 × 1920 sequence at 60 fps, shown next")
-                onClicked: {
-                    picker.error = Layouts.createShortsSequence()
-                    if (picker.error === "")
-                        picker.close()
-                }
-            }
-            // 0.6 (P1 #51): the picker opens with the last applied options; this puts the defaults back.
-            PillButton {
-                objectName: "layoutReset"
-                compact: true
-                variant: "ghost"
-                iconName: "rotate-ccw"
-                text: qsTr("Reset")
-                tooltip: qsTr("Back to the default options (the picker opens with the ones you applied last)")
-                onClicked: {
-                    picker.reset()
-                    Layouts.preview(picker.options)
-                }
-            }
-            Item {
-                Layout.fillWidth: true
-            }
-            PillButton {
-                objectName: "layoutCancel"
-                variant: "ghost"
-                text: qsTr("Cancel")
-                onClicked: picker.close()
-            }
-            PillButton {
-                objectName: "layoutApply"
-                variant: "primary"
-                text: qsTr("Apply")
-                enabled: Layouts.available && Layouts.gameplay !== "" && picker.result.busy !== true
-                         && picker.result.ok !== false
-                tooltip: qsTr("Apply the layout to the gameplay (one undo step)")
-                onClicked: picker.applyLayout()
             }
         }
     }

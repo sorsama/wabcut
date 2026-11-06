@@ -410,3 +410,164 @@ TEST_CASE("wabcut-cli transcribe takes any file name", "[ai][edit][cli][transcri
     CHECK(code == 0);
     CHECK(text.find("hello world") != std::string::npos);
 }
+
+// ---- card 080: delete a transcript; card 073: the language and translate options -----------------------------------------
+
+TEST_CASE("transcript.delete throws the cached transcripts away so the audio can be transcribed again",
+          "[ai][edit][media][transcribe][delete]") {
+    const auto dir = ai::test::freshDir("transcript-delete");
+    const auto wav = dir / "talk.wav";
+    writeWav(wav, 3.0, 1.0, 2.0);
+    Timeline tl(R"(
+        V1 tgt |Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+        A1 tgt |Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+    )");
+    useFile(tl, 'A', wav);
+    const auto project = dir / "talk.wabcut";
+    ai::TranscribeServiceConfig config;
+    config.cacheRoot = dir / "cache";
+    config.local.inferExecutable = dir / "not-built" / "wabcut-infer.exe";
+    auto service = std::make_shared<ai::TranscribeService>(config);
+    addEcho(*service);
+    auto provider = std::make_shared<CachedTranscriptProvider>(dir / "cache", project);
+    auto services = std::make_shared<command::ServiceBundle>(std::vector<std::shared_ptr<command::CommandServices>>{
+        std::make_shared<TranscriptServices>(provider),
+        std::make_shared<TranscribeServices>(std::make_shared<ServiceMediaTranscriber>(service, project))});
+    CommandHarness h(std::move(tl), command::EnginePolicy{command::CapabilitySet::all(), 1024, services}, editingCommands());
+
+    // Nothing to delete yet: a warning, not an error.
+    const auto none = h.ok("transcript.delete");
+    CHECK(none.data["deleted"] == 0);
+    REQUIRE_FALSE(none.warnings.empty());
+
+    REQUIRE(h.ok("transcript.transcribe", Json{{"provider", "echo"}}).data["transcribed"] == 1);
+    CHECK(h.ok("transcript.text").data["words"] == 2);
+    // A second analysis of the same source must survive the delete.
+    const auto fingerprint = media::sourceFingerprint(pathToUtf8(wav));
+    REQUIRE(fingerprint);
+    ai::AnalysisCache cache(dir / "cache");
+    REQUIRE(cache.put(ai::AnalysisKey{*fingerprint, 0, "speakers", "m", "p"}, "{\"speakers\": 2}"));
+
+    // A dry run lists and deletes nothing.
+    const auto dry = h.run(Json{{"command", "transcript.delete"}, {"params", Json::object()}, {"dryRun", true}});
+    REQUIRE(dry.ok());
+    CHECK(dry.data["deleted"] == 1);
+    CHECK(dry.data["dryRun"] == true);
+    CHECK(h.ok("transcript.text").data["words"] == 2);
+
+    const std::size_t undo = h.session.undoCount();
+    const auto gone = h.ok("transcript.delete");
+    CHECK(gone.data["deleted"] == 1);
+    CHECK(gone.data["items"][0]["hadTranscript"] == true);
+    CHECK(gone.data["items"][0]["deleted"].get<int>() >= 1);
+    CHECK(h.session.undoCount() == undo); // the transcript is not in the project: nothing to undo
+    CHECK(h.ok("transcript.text").data["words"] == 0); // the words are gone at once
+    CHECK(h.ok("transcript.transcribe", Json{{"check", true}}).data["items"][0]["hasTranscript"] == false);
+    const auto entry = cache.get(ai::AnalysisKey{*fingerprint, 0, "speakers", "m", "p"});
+    REQUIRE(entry);
+    CHECK(entry->has_value()); // another analysis of the source is left alone
+    CHECK_FALSE(cache.newest(*fingerprint, 0, "transcript").has_value());
+
+    // And the audio can be transcribed again from nothing.
+    CHECK(h.ok("transcript.transcribe", Json{{"provider", "echo"}}).data["transcribed"] == 1);
+    CHECK(h.ok("transcript.text").data["words"] == 2);
+    // By media: the same.
+    const auto byMedia = h.ok("transcript.delete", Json{{"media", Json::array({h.tl.media('A').value})}});
+    CHECK(byMedia.data["deleted"] == 1);
+    CHECK(h.errorOf("transcript.delete", Json{{"media", Json::array({999})}}) == "NotFound");
+}
+
+TEST_CASE("AnalysisCache::removeAnalyzer removes one analyser's entries for a stream and nothing else", "[ai][cache][delete]") {
+    const auto dir = ai::test::freshDir("remove-analyzer");
+    ai::AnalysisCache cache(dir / "cache");
+    const std::uint64_t fingerprint = 0x1122334455667788ull;
+    const auto key = [&](int stream, const char* analyzer, const char* model) {
+        return ai::AnalysisKey{fingerprint, stream, analyzer, model, "0011223344556677"};
+    };
+    REQUIRE(cache.put(key(0, "transcript", "whisper/base@1"), "{\"a\": 1}"));
+    REQUIRE(cache.put(key(0, "transcript", "whisper/small@2"), "{\"a\": 2}"));
+    REQUIRE(cache.put(key(1, "transcript", "whisper/base@1"), "{\"a\": 3}"));
+    REQUIRE(cache.put(key(0, "speakers", "m"), "{\"a\": 4}"));
+    const std::uint64_t before = ai::AnalysisCache::writeCount();
+    const auto removed = cache.removeAnalyzer(fingerprint, 0, "transcript");
+    REQUIRE(removed);
+    CHECK(*removed == 2);
+    CHECK(ai::AnalysisCache::writeCount() > before); // lookups that remembered an answer look again
+    CHECK_FALSE(cache.newest(fingerprint, 0, "transcript").has_value());
+    CHECK(cache.newest(fingerprint, 1, "transcript").has_value()); // another stream
+    CHECK(cache.newest(fingerprint, 0, "speakers").has_value());   // another analyser
+    // Again, and for a source that was never seen: nothing to remove, not an error.
+    CHECK(*cache.removeAnalyzer(fingerprint, 0, "transcript") == 0);
+    CHECK(*cache.removeAnalyzer(0xABCDull, 0, "transcript") == 0);
+    // Hostile or empty input stays inside the cache or is refused.
+    CHECK_FALSE(cache.removeAnalyzer(0, 0, "transcript"));
+    CHECK_FALSE(cache.removeAnalyzer(fingerprint, 0, ""));
+    CHECK(cache.removeAnalyzer(fingerprint, 0, "../../etc").has_value());
+    CHECK(cache.newest(fingerprint, 1, "transcript").has_value());
+}
+
+TEST_CASE("transcript.transcribe: the spoken language is checked against the recogniser's list and translate is local only",
+          "[ai][edit][media][transcribe][language]") {
+    const auto dir = ai::test::freshDir("transcribe-language");
+    const auto wav = dir / "talk.wav";
+    writeWav(wav, 3.0, 1.0, 2.0);
+    Timeline tl(R"(
+        V1 tgt |Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+        A1 tgt |Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+    )");
+    useFile(tl, 'A', wav);
+    const auto project = dir / "talk.wabcut";
+    ai::TranscribeServiceConfig config;
+    config.cacheRoot = dir / "cache";
+    config.local.inferExecutable = dir / "not-built" / "wabcut-infer.exe";
+    auto service = std::make_shared<ai::TranscribeService>(config);
+    std::string heard;
+    bool translated = false;
+    service->addProvider("spy", "Spy", [&](const ai::TranscribeSource&, const ai::TranscribeJobOptions& options,
+                                           const std::function<void(float)>&, std::stop_token) -> std::expected<ai::Transcript, Error> {
+        heard = options.language;
+        translated = options.translate;
+        ai::Transcript t;
+        t.language = options.language == "auto" ? "en" : options.language;
+        ai::TranscriptWord w;
+        w.text = "shalom";
+        w.t0 = Ticks{kTicksPerSecond / 5};
+        w.t1 = Ticks{kTicksPerSecond / 2};
+        w.confidence = 0.9f;
+        t.words.push_back(w);
+        t.segments.push_back(ai::TranscriptSegment{w.t0, w.t1, 0, 1, "shalom", std::nullopt});
+        return t;
+    });
+    auto services = std::make_shared<command::ServiceBundle>(std::vector<std::shared_ptr<command::CommandServices>>{
+        std::make_shared<TranscriptServices>(std::make_shared<CachedTranscriptProvider>(dir / "cache", project)),
+        std::make_shared<TranscribeServices>(std::make_shared<ServiceMediaTranscriber>(service, project))});
+    CommandHarness h(std::move(tl), command::EnginePolicy{command::CapabilitySet::all(), 1024, services}, editingCommands());
+
+    // The list the picker shows is in the command's check: every language with its own name, direction and tier.
+    const auto check = h.ok("transcript.transcribe", Json{{"check", true}});
+    REQUIRE(check.data["languages"].is_array());
+    CHECK(check.data["languages"].size() >= 99);
+    bool hebrew = false;
+    for (const Json& language : check.data["languages"]) {
+        if (language["code"] == "he") {
+            hebrew = true;
+            CHECK(language["rtl"] == true);
+            CHECK(language["nativeName"] == "\xD7\xA2\xD7\x91\xD7\xA8\xD7\x99\xD7\xAA"); // the word "Hebrew" in Hebrew
+            CHECK(language["tier"] == "strong");
+        }
+    }
+    CHECK(hebrew);
+
+    // A language of the list reaches the transcriber as its code; "he-IL" is Hebrew.
+    h.ok("transcript.transcribe", Json{{"provider", "spy"}, {"language", "he-IL"}, {"force", true}});
+    CHECK(heard == "he");
+    CHECK_FALSE(translated);
+    // Not a language: refused, nothing transcribed.
+    CHECK(h.errorOf("transcript.transcribe", Json{{"provider", "spy"}, {"language", "klingon"}}) == "InvalidParams");
+    CHECK(h.errorOf("transcript.transcribe", Json{{"provider", "spy"}, {"language", ""}}) == "InvalidParams");
+    // Translating to English is the local engine's task: a cloud or custom provider is refused, with why.
+    const auto refused = h.run(Json{{"command", "transcript.transcribe"},
+                                    {"params", Json{{"provider", "spy"}, {"language", "is"}, {"translate", true}, {"force", true}}}});
+    REQUIRE_FALSE(refused.ok());
+    CHECK(refused.error->message.find("runs on this computer") != std::string::npos);
+}

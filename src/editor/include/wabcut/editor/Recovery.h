@@ -7,9 +7,11 @@
 // (ProjectDocument::recover(file, {})) so the project file itself is never overwritten by accident.
 
 #include <wabcut/model/Error.h>
+#include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/ProjectState.h>
 #include <wabcut/model/Time.h>
 
+#include <chrono>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -57,9 +59,11 @@ struct RecoveryEntry {
 };
 
 /// The versions of `projectFile` (it first when it exists, then its autosaves and backups, newest first) followed by
-/// the untitled autosaves in `untitledDir` (newest first). `autosaveCopies` rotated autosaves are looked for.
+/// the untitled autosaves in `untitledDir` (newest first). At least `autosaveCopies` rotated autosaves are looked for.
+/// 0.7 (card 029): in every folder `location` may have put the copies in (beside the project, its Auto-Save folder, the
+/// chosen root's), up to io::kMaxBackupCount backups and io::kMaxAutosaveCopies autosaves in each.
 std::vector<RecoveryEntry> recoveryEntries(const std::filesystem::path& projectFile, const std::filesystem::path& untitledDir,
-                                           int autosaveCopies = 3);
+                                           int autosaveCopies = 3, const io::BackupLocation& location = {});
 
 /// One rendered poster: RGBA8, tightly packed, top row first.
 struct PosterImage {
@@ -75,5 +79,17 @@ struct PosterImage {
 /// errors.
 std::expected<PosterImage, Error> renderPoster(const ProjectState& state, const std::filesystem::path& projectFile,
                                                int width = 320);
+
+/// 0.7 (card #172): the dashboard keeps one rendered poster per version in a cache folder, so opening it again does not
+/// load and render every autosave again. The file of `entry`'s poster in `folder`: named by the version file's path and
+/// its modification time, so a version that was saved again has a new name (and an old poster is never shown for it).
+std::filesystem::path recoveryPosterFile(const std::filesystem::path& folder, const RecoveryEntry& entry);
+
+/// Deletes the cached posters of `folder` that no version of `entries` can use: older posters of a version that was saved
+/// since (same file path, another modification time), and any other .png older than `maxAge` (posters of versions that
+/// no longer exist, kept for a while in case that project is scanned again). Posters of other projects' recent versions
+/// stay. Returns how many files went.
+std::size_t pruneRecoveryPosters(const std::filesystem::path& folder, const std::vector<RecoveryEntry>& entries,
+                                 std::chrono::hours maxAge = std::chrono::hours(24 * 30));
 
 } // namespace wabcut::editor

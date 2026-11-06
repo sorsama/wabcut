@@ -1,9 +1,14 @@
 #include <wabcut/playback/audio/AudioRedactions.h>
 
+#include <wabcut/media/AudioDecoder.h>
+#include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/RedactionMedia.h>
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <map>
+#include <mutex>
 #include <numbers>
 
 namespace wabcut::playback {
@@ -28,6 +33,56 @@ bool before(const AudioRedactions::Range& x, const AudioRedactions::Range& y) {
 
 } // namespace
 
+// ---- 0.7 (card 102): the sound that replaces the bleep tone ----------------------------------------------------------
+
+std::shared_ptr<const ReplacementSound> loadReplacementSound(const std::string& path) {
+    namespace fs = std::filesystem;
+    static std::mutex mutex;
+    static std::map<std::string, std::shared_ptr<const ReplacementSound>> cache; // by file version; null = unreadable
+    const fs::path file = pathFromUtf8(path);
+    std::error_code ec;
+    const auto size = fs::file_size(file, ec);
+    if (ec) {
+        return nullptr;
+    }
+    const auto time = fs::last_write_time(file, ec);
+    const std::string key = path + "|" + std::to_string(size) + "|" +
+                            std::to_string(ec ? 0 : static_cast<long long>(time.time_since_epoch().count()));
+    const std::lock_guard lock(mutex);
+    if (const auto it = cache.find(key); it != cache.end()) {
+        return it->second;
+    }
+    std::shared_ptr<const ReplacementSound> loaded;
+    if (auto decoder = media::AudioDecoder::open(path, -1, kRate48kHz, media::ChannelLayout::mono())) {
+        auto sound = std::make_shared<ReplacementSound>();
+        sound->key = key;
+        constexpr std::size_t kChunk = 4096;
+        const std::size_t limit = static_cast<std::size_t>(ReplacementSound::kMaxSeconds) * 48000;
+        std::vector<float> buffer(kChunk);
+        for (std::size_t done = 0; done < limit;) {
+            const auto read = (*decoder)->read(samplesToTicks(static_cast<std::int64_t>(done), kRate48kHz), buffer);
+            if (!read) {
+                break;
+            }
+            const std::size_t frames = std::min(kChunk, read->leadingSilence + read->framesFromStream);
+            sound->samples.insert(sound->samples.end(), buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(frames));
+            if (read->endOfStream || frames < kChunk) {
+                break;
+            }
+            done += kChunk;
+        }
+        // Trailing silence is not part of the sound.
+        while (!sound->samples.empty() && sound->samples.back() == 0.0f) {
+            sound->samples.pop_back();
+        }
+        if (!sound->samples.empty()) {
+            loaded = std::move(sound);
+        }
+    }
+    cache[key] = loaded;
+    return loaded;
+}
+
 std::shared_ptr<const AudioRedactions> AudioRedactions::of(const ProjectState& project) {
     std::vector<Range> ranges;
     for (const Redaction& r : project.redactions) {
@@ -35,9 +90,17 @@ std::shared_ptr<const AudioRedactions> AudioRedactions::of(const ProjectState& p
             continue;
         }
         const MediaId root = redactionRoot(project, r.media); // a subclip's or stem's redaction marks its source
+        // 0.7 (card 102): the chosen replacement sound, decoded once (cached by file version); the tone when it is missing.
+        std::shared_ptr<const ReplacementSound> sound;
+        if (r.audio == RedactionAudio::Bleep && r.sound.isValid()) {
+            if (const ProjectAsset* asset = project.findAsset(r.sound);
+                asset != nullptr && asset->kind == kAssetKindSound && !asset->locator.offline && !asset->locator.path.empty()) {
+                sound = loadReplacementSound(asset->locator.path);
+            }
+        }
         const auto add = [&](const TimeRange& source) {
             if (!source.isEmpty()) {
-                ranges.push_back({root, source, r.audio, r.exceptions});
+                ranges.push_back({root, source, r.audio, r.exceptions, sound});
             }
         };
         if (r.audioRanges.empty()) {
@@ -107,8 +170,24 @@ std::vector<MediaId> AudioRedactions::changedMedia(const AudioRedactions* before
 bool AudioRedactions::operator==(const AudioRedactions& o) const {
     return m_roots == o.m_roots &&
            std::equal(m_ranges.begin(), m_ranges.end(), o.m_ranges.begin(), o.m_ranges.end(), [](const Range& x, const Range& y) {
-               return x.media == y.media && x.source == y.source && x.mode == y.mode && x.exceptions == y.exceptions;
+               return x.media == y.media && x.source == y.source && x.mode == y.mode && x.exceptions == y.exceptions && x.sound == y.sound;
            });
+}
+
+/// 0.7: the sound's sample `offset` ticks after the start of its range (linear between samples; 0 before the start and
+/// after the end of the sound).
+static float soundAt(const ReplacementSound& sound, std::int64_t offset) {
+    if (offset < 0) {
+        return 0.0f;
+    }
+    const long double position = static_cast<long double>(offset) * 48000.0L / static_cast<long double>(kTicksPerSecond);
+    const auto i = static_cast<std::size_t>(position);
+    if (i >= sound.samples.size()) {
+        return 0.0f;
+    }
+    const float frac = static_cast<float>(position - static_cast<long double>(i));
+    const float next = i + 1 < sound.samples.size() ? sound.samples[i + 1] : 0.0f;
+    return sound.samples[i] + (next - sound.samples[i]) * frac;
 }
 
 float AudioRedactions::bleepAt(Ticks t) {
@@ -143,6 +222,7 @@ void AudioRedactions::apply(MediaId media, ClipId clip, Ticks firstSource, std::
             continue;
         }
         const bool bleep = r.mode == RedactionAudio::Bleep;
+        const ReplacementSound* sound = r.sound.get(); // 0.7: plays from the range's start instead of the tone
         for (std::int64_t k = 0; k < frames; ++k) {
             const std::int64_t s = s0 + step * k;
             const double g = coverage(s, a, b);
@@ -150,7 +230,8 @@ void AudioRedactions::apply(MediaId media, ClipId clip, Ticks firstSource, std::
                 continue;
             }
             const auto keep = static_cast<float>(1.0 - g);
-            const float add = bleep ? static_cast<float>(g) * bleepAt(Ticks{s}) : 0.0f;
+            const float add = !bleep ? 0.0f : sound != nullptr ? static_cast<float>(g) * soundAt(*sound, s - a)
+                                                               : static_cast<float>(g) * bleepAt(Ticks{s});
             float* frame = dst + static_cast<std::size_t>(k) * ch;
             for (std::size_t c = 0; c < ch; ++c) {
                 frame[c] = frame[c] * keep + add;

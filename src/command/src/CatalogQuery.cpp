@@ -120,6 +120,9 @@ CommandOutput sequenceSummary(ExecutionContext& c) {
         if (!t.name.empty()) {
             track["name"] = t.name;
         }
+        if (t.colorIndex >= 0) { // 0.7: the track's label colour (0-15), listed only when set
+            track["colorIndex"] = t.colorIndex;
+        }
         if (!disabled.empty()) {
             track["disabled"] = std::move(disabled);
         }
@@ -178,6 +181,22 @@ CommandOutput sequenceSummary(ExecutionContext& c) {
         }
         data["captionTrackFields"] = Json::array({"id", "name", "language", "enabled", "cues"});
         data["captionTracks"] = std::move(captions);
+    }
+    if (!seq.trackGroups.empty()) { // 0.7 (card 124): the track groups, with their tracks in stack order
+        Json groups = Json::array();
+        for (const TrackGroup& g : seq.trackGroups) {
+            Json members = Json::array();
+            for (const TrackId id : g.members) {
+                members.push_back(c.trackLabel(id));
+            }
+            Json group{{"id", g.id.value}, {"name", g.name}, {"kind", g.kind == TrackKind::Video ? "video" : "audio"},
+                       {"collapsed", g.collapsed}, {"tracks", std::move(members)}};
+            if (g.colorIndex >= 0) {
+                group["colorIndex"] = g.colorIndex;
+            }
+            groups.push_back(std::move(group));
+        }
+        data["trackGroups"] = std::move(groups);
     }
     return readOnly(c, std::move(data));
 }
@@ -258,13 +277,21 @@ Json valueJson(ExecutionContext& c, const Clip& clip, const ParamValue& v) {
         return v.constant();
     }
     Json keys = Json::array();
+    Json pins = Json::array(); // 0.7 (card 120): [index, "start" | "end"] of the keys pinned to a clip end
     for (std::size_t i = 0; i < curve->keys.size(); ++i) {
         const Keyframe& k = curve->keys[i];
         const auto at = clip.timelineTimeOfCurveTime(k.time);
         keys.push_back(Json::array({i, at ? Json(c.timecode(*at)) : Json(nullptr), k.time.value, k.value,
                                     toString(k.interpolation)}));
+        if (k.pin != KeyPin::None) {
+            pins.push_back(Json::array({i, toString(k.pin)}));
+        }
     }
-    return Json{{"keys", std::move(keys)}};
+    Json out{{"keys", std::move(keys)}};
+    if (!pins.empty()) {
+        out["pins"] = std::move(pins);
+    }
+    return out;
 }
 
 CommandOutput clipDetails(ExecutionContext& c) {
@@ -335,6 +362,7 @@ CommandOutput clipDetails(ExecutionContext& c) {
                 {"sourceOut", timeJson(c, clip.sourceOut())},
                 {"speed", std::to_string(clip.speed.num) + "/" + std::to_string(clip.speed.den)},
                 {"enabled", clip.enabled},
+                {"locked", clip.locked}, // 0.7 (card 064)
                 {"colorIndex", clip.colorIndex},
                 {"link", linkValue(clip)},
                 {"linkedClips", std::move(linked)},
@@ -344,6 +372,9 @@ CommandOutput clipDetails(ExecutionContext& c) {
                 {"transitions", std::move(transitions)}};
     if (clip.reversed) {
         details["reversed"] = true;
+    }
+    if (!clip.note().empty()) {
+        details["note"] = clip.note(); // 0.7 (card 125), only when set
     }
     if (const Sequence* nested = clip.isNested() ? c.state().findSequence(clip.sequence) : nullptr) {
         // C.8: the clip plays a sequence (its sourceIn/sourceOut are that sequence's times).
@@ -370,6 +401,9 @@ CommandOutput clipDetails(ExecutionContext& c) {
     }
     if (clip.content().scaleToFrame) {
         details["scaleToFrame"] = true; // P.2: Scale to Frame Size
+    }
+    if (clip.content().nearestNeighbor) {
+        details["nearestNeighbor"] = true; // 0.7 (card #98): Nearest Neighbor Scaling
     }
     if (const ClipFieldOptions& fields = clip.content().fieldOptions; !fields.isDefault()) { // 0.2: Field Options
         details["fieldOptions"] = Json{{"reverseFieldDominance", fields.reverseFieldDominance},
@@ -508,6 +542,22 @@ void registerProjectCommands(CommandRegistry& registry) {
                 Json{{"track", "V3"}}, {},
                 [](ExecutionContext& c) {
                     return edited(c.take(edit::removeTrack(c.state(), c.sequenceId(), c.track("track"))));
+                }});
+    addBuiltin(registry,
+               {"sequence.moveTrack", 1, "Move Track",
+                "Moves a video or audio track to another place in its own stack (0.7), so it becomes track number "
+                "\"position\" (V1 / A1 = 1; a position past the last means the last), and the tracks between shift by "
+                "one. The track keeps its clips, settings, links and effects; on video, the higher the track the nearer "
+                "the top of the picture. A locked track can move. Submix tracks cannot.",
+                Capability::EditProject,
+                withSequence({{"track", trackParam("The track to move.")},
+                              {"position", schema::integer("The number the track gets in its stack (1 = V1 / A1).", 1,
+                                                           1000)}},
+                             {"track", "position"}),
+                Json{{"track", "V1"}, {"position", 3}}, {},
+                [](ExecutionContext& c) {
+                    return edited(c.take(edit::moveTrack(c.state(), c.sequenceId(), c.track("track"),
+                                                         static_cast<std::size_t>(c.integer("position")))));
                 }});
 }
 

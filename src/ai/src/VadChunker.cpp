@@ -51,7 +51,10 @@ std::vector<SampleRange> planChunks(std::span<const SampleRange> speech, std::in
             appendSplit(chunks, r, maxChunk);
             continue;
         }
-        if (!chunks.empty() && r.end - chunks.back().begin <= maxChunk && r.begin - chunks.back().end <= options.maxGapSamples) {
+        // 0.7 (card 111): with closeAfterSamples a chunk that already holds that much speech is closed at the pause, so
+        // each stretch of speech after it starts a chunk of its own (and its own language guess).
+        const bool open = options.closeAfterSamples <= 0 || chunks.empty() || chunks.back().length() < options.closeAfterSamples;
+        if (!chunks.empty() && open && r.end - chunks.back().begin <= maxChunk && r.begin - chunks.back().end <= options.maxGapSamples) {
             chunks.back().end = r.end;
         } else {
             chunks.push_back(r);

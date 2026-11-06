@@ -390,7 +390,7 @@ std::expected<void, AiError> validateKey(IHttpTransport& transport, const Provid
     request.url = joinUrl(baseUrl.empty() ? std::string_view(provider.baseUrl) : baseUrl, provider.keyCheck.path);
     request.timeout = std::chrono::seconds(20);
     request.idleTimeout = std::chrono::seconds(20);
-    applyAuth(request.headers, provider.auth, key.reveal());
+    applyAuth(request.headers, provider, key.reveal()); // r07: every scheme, header auth included
     for (const auto& h : provider.extraHeaders) { // e.g. anthropic-version
         request.headers.push_back(h);
     }

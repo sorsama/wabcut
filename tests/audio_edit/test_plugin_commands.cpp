@@ -162,3 +162,78 @@ TEST_CASE("Plugin effects go on tracks and clips through audio.addEffect and cli
     // Built-in effects still go in by "effect".
     f.h.ok("audio.addEffect", {{"target", "A1"}, {"effect", "wabcut.audio.gain"}});
 }
+
+namespace {
+
+/// 0.7: the second library (the OpenFX video plug-ins in the host that has them).
+class FakeSecondary final : public PluginLibrary {
+public:
+    PluginScanOptions lastScan;
+    int scans = 0;
+
+    std::vector<PluginListing> plugins() const override {
+        PluginListing blur;
+        blur.effect = "plugin.ofx.org.example.blur";
+        blur.format = "openfx";
+        blur.name = "Example Blur";
+        blur.vendor = "Blurs";
+        blur.params = {{"radius", "Radius", 0.0, 100.0, 5.0, true}};
+        return {blur};
+    }
+    std::vector<BlockedPluginListing> blocked() const override { return {{"C:\\OFX\\Bad.ofx.bundle", "crashed while being scanned"}}; }
+    std::vector<std::string> folders() const override { return {"C:\\Program Files\\Common Files\\OFX\\Plugins", "C:\\Program Files\\Common Files\\VST3"}; }
+    std::expected<PluginScanSummary, Error> scan(const PluginScanOptions& options, std::stop_token, const std::function<void(double)>&) override {
+        lastScan = options;
+        ++scans;
+        PluginScanSummary s;
+        s.files = 1;
+        s.scanned = 1;
+        s.plugins = 1;
+        s.added = 1;
+        s.blocked = {{"C:\\OFX\\Hang.ofx.bundle", "did not finish scanning within 30 s"}};
+        return s;
+    }
+};
+
+struct SecondaryGuard {
+    explicit SecondaryGuard(std::shared_ptr<PluginLibrary> library) { setSecondaryPluginLibrary(std::move(library)); }
+    ~SecondaryGuard() { setSecondaryPluginLibrary(nullptr); }
+};
+
+} // namespace
+
+TEST_CASE("plugins.list and plugins.scan include the second library (OpenFX) when the host installed one", "[audio][edit][plugins]") {
+    Fixture f;
+    CHECK(secondaryPluginLibrary() == nullptr);
+    auto secondary = std::make_shared<FakeSecondary>();
+    const SecondaryGuard guard(secondary);
+    CHECK(secondaryPluginLibrary() == secondary);
+
+    auto r = f.h.ok("plugins.list", {{"params", true}});
+    REQUIRE(r.data["plugins"].size() == 3); // the two audio plugins, then the OpenFX one
+    CHECK(r.data["plugins"][2]["effect"] == "plugin.ofx.org.example.blur");
+    CHECK(r.data["plugins"][2]["format"] == "openfx");
+    CHECK(r.data["plugins"][2]["params"][0]["key"] == "radius");
+    CHECK(r.data["blocked"].size() == 2);  // both libraries' blocklists
+    CHECK(r.data["folders"].size() == 2);  // the VST3 folder both name, once, and the OFX one
+    r = f.h.ok("plugins.list", {{"format", "openfx"}});
+    REQUIRE(r.data["plugins"].size() == 1);
+    CHECK(r.data["plugins"][0]["name"] == "Example Blur");
+    r = f.h.ok("plugins.list", {{"query", "blurs"}}); // by vendor
+    CHECK(r.data["plugins"].size() == 1);
+
+    // One scan command, both libraries, one summary.
+    const auto scanned = f.h.ok("plugins.scan", {{"rescan", true}, {"addFolders", Json::array({"D:\\Plugins"})}});
+    CHECK(f.library->scans == 1);
+    CHECK(secondary->scans == 1);
+    CHECK(secondary->lastScan.rescan);
+    CHECK(secondary->lastScan.addFolders == std::vector<std::string>{"D:\\Plugins"});
+    CHECK(scanned.data["files"] == 4);   // 3 + 1
+    CHECK(scanned.data["scanned"] == 3); // 2 + 1
+    CHECK(scanned.data["added"] == 2);
+    CHECK(scanned.data["blocked"].size() == 2);
+    CHECK(scanned.warnings.size() == 2);
+    // Without it, as before.
+    setSecondaryPluginLibrary(nullptr);
+    CHECK(f.h.ok("plugins.list").data["plugins"].size() == 2);
+}

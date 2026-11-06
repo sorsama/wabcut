@@ -45,7 +45,7 @@ TEST_CASE("Every audio effect in the registry has a processor", "[audio][effects
             CHECK(p.minValue <= p.defaultValue);
             CHECK(p.defaultValue <= p.maxValue);
         }
-        for (const int channels : {1, 2, 6}) {
+        for (const int channels : {1, 2, 6, 8}) { // 0.7 (card 048): and 7.1
             const std::vector<double> defaults = [&] {
                 std::vector<double> v;
                 for (const EffectParamInfo& p : d->params) {
@@ -62,7 +62,7 @@ TEST_CASE("Audio effects keep silence silent and loud noise finite", "[audio][ef
     for (const EffectDescriptor* d : audioStackEffects()) {
         INFO(std::string(d->id));
         const EffectInstance e = effectOf(std::string(d->id));
-        for (const int channels : {1, 2}) {
+        for (const int channels : {1, 2, 6, 8}) { // 0.7 (card 048): every built-in effect also runs on 5.1 and on 7.1
             INFO("channels " << channels);
             const std::vector<float> quiet = runEffect(e, std::vector<float>(48000 * static_cast<std::size_t>(channels), 0.0f), channels);
             CHECK(peak(quiet, channels) < 1e-6);

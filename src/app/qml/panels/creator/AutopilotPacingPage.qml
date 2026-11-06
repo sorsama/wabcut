@@ -236,7 +236,7 @@ ColumnLayout {
         Small {
             Layout.fillWidth: true
             text: (page.report.fasterShots ?? 0) > 0
-                  ? qsTr("%1 shot(s) are already quicker than the reference and stay as they are.").arg(page.report.fasterShots)
+                  ? qsTr("Shots already quicker than the reference stay as they are: %1.").arg(page.report.fasterShots)
                   : qsTr("Cuts land at sentence ends, pauses or beats; never inside a word.")
         }
         PillButton {

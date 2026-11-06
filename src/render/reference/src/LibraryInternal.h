@@ -20,4 +20,7 @@ bool isGenerate(LibraryEffect effect);
 Image generate(const Image& in, LibraryEffect op, const LibraryParams& q, const Image* second,
                std::span<const LibraryPath> paths = {});
 
+/// 0.7: Skin Smoothing and AI Face Retouch (LibraryRetouch.cpp); `second` is the face map (linear R skin, G mouth, B eyes).
+Image retouch(const Image& in, LibraryEffect op, const LibraryParams& q, const Image* second);
+
 } // namespace wabcut::render::reference::detail

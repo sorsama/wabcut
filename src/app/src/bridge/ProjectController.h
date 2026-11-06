@@ -125,13 +125,14 @@ public:
         ShortNameRole,                  // "V1", "A2"
         NameRole,                       // custom name or "Video 1"
         KindRole,                       // "video" | "audio"
-        ColorIndexRole,                 // header chip tint (index into Theme.clipColors)
+        ColorIndexRole,                 // the colour the track is shown in (index into Theme.clipColors): its label, else a default by position
         EnabledRole,
         LockedRole,
         MutedRole,
         SoloRole,
         TargetedRole,
         SyncLockedRole,
+        LabelIndexRole,                 // 0.7: the track's own label colour (0..15), -1 = none
     };
 
     explicit TrackListModel(QObject* parent = nullptr);
@@ -156,6 +157,7 @@ private:
         int index = 0; // 0 = V1/A1
         QString name;
         bool enabled = true, locked = false, muted = false, solo = false, targeted = false, syncLocked = true;
+        int labelIndex = -1; // 0.7
     };
     static Row makeRow(const Track& track, int index);
 
@@ -176,6 +178,12 @@ class ProjectController : public QObject {
     Q_PROPERTY(QString formatText READ formatText NOTIFY sequenceChanged FINAL)
     Q_PROPERTY(int frameWidth READ frameWidth NOTIFY sequenceChanged FINAL)
     Q_PROPERTY(int frameHeight READ frameHeight NOTIFY sequenceChanged FINAL)
+    /// The sequence's pixel aspect ratio (1 = square pixels): the Program Monitor frame is frameWidth * this : frameHeight.
+    Q_PROPERTY(double framePixelAspect READ framePixelAspect NOTIFY sequenceChanged FINAL)
+    /// 0.7 (VR / 360 video): the sequence's projection ("none", "equirect360", "equirect180") and eye layout ("mono",
+    /// "topBottom", "sideBySide"): a VR sequence can be looked around in on the Program Monitor.
+    Q_PROPERTY(QString sequenceVrProjection READ sequenceVrProjection NOTIFY sequenceChanged FINAL)
+    Q_PROPERTY(QString sequenceVrStereo READ sequenceVrStereo NOTIFY sequenceChanged FINAL)
     Q_PROPERTY(QString durationText READ durationText NOTIFY sequenceChanged FINAL)
     Q_PROPERTY(wabcut::app::TrackListModel* tracks READ tracks CONSTANT FINAL)
     /// Every clip as a list row for assistive technology and keyboard navigation (ClipAccessModel.h).
@@ -202,6 +210,9 @@ class ProjectController : public QObject {
     /// 0.4: Markers > Ripple Sequence Markers for the current sequence (Sequence::rippleMarkers, on by default): its
     /// markers follow insert, extract, ripple delete and ripple trims. setRippleSequenceMarkers() changes it.
     Q_PROPERTY(bool rippleSequenceMarkers READ rippleSequenceMarkers NOTIFY sequenceChanged FINAL)
+    /// 0.7 (card 120): Sequence > Ripple Track Keyframes for the current sequence (Sequence::rippleTrackKeyframes, off by
+    /// default): the keyframes of its tracks and master bus follow insert, extract, ripple delete and ripple trims.
+    Q_PROPERTY(bool rippleTrackKeyframes READ rippleTrackKeyframes NOTIFY sequenceChanged FINAL)
 
     // ---- Media ----
     /// Project media for the library: [{ id: "m…", name, kind: "video"|"audio"|"text", durationText, meta,
@@ -231,12 +242,17 @@ class ProjectController : public QObject {
     /// The selection's link and enable state, for the clip context menu (Link/Unlink, Enable).
     Q_PROPERTY(bool selectionLinked READ selectionLinked NOTIFY selectedClipChanged FINAL)
     Q_PROPERTY(bool selectionEnabled READ selectionEnabled NOTIFY selectedClipChanged FINAL)
+    /// 0.7 (card 064): every selected clip is locked (Clip > Lock Clip / Unlock Clip, ClipLock.h).
+    Q_PROPERTY(bool selectionLocked READ selectionLocked NOTIFY selectedClipChanged FINAL)
     /// 0.2: a selected clip is grouped (Clip > Group / Ungroup, ClipGroups.h).
     Q_PROPERTY(bool selectionGrouped READ selectionGrouped NOTIFY selectedClipChanged FINAL)
     /// 0.2, Premiere's Sequence > Selection Follows Playhead: while on, moving the playhead selects the clips under it on
     /// the targeted tracks (with their groups and links). UI state of the session, off at start.
     Q_PROPERTY(bool selectionFollowsPlayhead READ selectionFollowsPlayhead WRITE setSelectionFollowsPlayhead NOTIFY
                    selectionFollowsPlayheadChanged FINAL)
+    /// 0.7: the Linked Selection switch (Main mirrors Preferences.linkedSelection here): Select Label Group takes the
+    /// linked partners of the clips it selects while it is on, like a click does.
+    Q_PROPERTY(bool linkedSelection READ linkedSelection WRITE setLinkedSelection NOTIFY linkedSelectionChanged FINAL)
     /// The clipboard holds clips: this session's, or another Wabcut's on the system clipboard.
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY clipboardChanged FINAL)
     /// The edge of the primary selected clip that keyboard trims move: "head", "tail" or "" (none chosen: tail).
@@ -401,6 +417,8 @@ public:
     bool lastChangeAtPlayhead() const;
     std::optional<Ticks> markIn() const;
     std::optional<Ticks> markOut() const;
+    /// 0.7 (card 024): the current sequence's work area (Alt+[ / Alt+]), or nullopt.
+    std::optional<TimeRange> workArea() const;
 
     // ---- QML properties ----
     QStringList sequenceNames() const;
@@ -412,6 +430,9 @@ public:
     QString formatText() const;
     int frameWidth() const;
     int frameHeight() const;
+    double framePixelAspect() const;
+    QString sequenceVrProjection() const;
+    QString sequenceVrStereo() const;
     QString durationText() const;
     TrackListModel* tracks() const { return m_tracks; }
     ClipAccessModel* clipList() const { return m_clipList; }
@@ -430,6 +451,7 @@ public:
     QString markOutText() const;
     QString markDurationText() const;
     bool rippleSequenceMarkers() const;
+    bool rippleTrackKeyframes() const;
     QVariantList mediaItems() const { return m_mediaItems; }
     bool hasMediaFiles() const { return m_hasMediaFiles; }
     QString playheadText() const;
@@ -444,6 +466,7 @@ public:
     QVariantMap selectedClip() const;
     bool selectionLinked() const;
     bool selectionEnabled() const;
+    bool selectionLocked() const;
     bool canPaste() const;
     bool canUndo() const { return m_session->canUndo(); }
     bool canRedo() const { return m_session->canRedo(); }
@@ -485,6 +508,12 @@ public:
 
     /// Sequence In/Out marks (undoable model edits): I, O, X (around the clips under the playhead), / (around
     /// the selection), and clearing them.
+    /// 0.7 (card 046): Set Work Area Bar In / Out Point (Alt+[ and Alt+]): the work area's In or Out goes to the playhead; the
+    /// other end stays (a first In runs to the sequence's end, a first Out from 0). One undo step; refused (no step, a
+    /// message) when the new end would not leave a range.
+    Q_INVOKABLE void setWorkAreaEdgeAtPlayhead(bool in);
+    /// 0.7 (card 024): Sequence > Clear Work Area: the whole sequence again. One undo step; nothing (no step) without one.
+    Q_INVOKABLE void clearWorkArea();
     Q_INVOKABLE void markInAtPlayhead();
     Q_INVOKABLE void markOutAtPlayhead();
     Q_INVOKABLE void markClipAtPlayhead();
@@ -495,6 +524,8 @@ public:
     /// 0.4, Markers > Ripple Sequence Markers (marker.toggleRipple): turns marker rippling on or off for the current
     /// sequence, one undo step "Ripple Sequence Markers" (edit::setSequenceSettings); nothing when unchanged.
     Q_INVOKABLE void setRippleSequenceMarkers(bool on);
+    /// 0.7 (card 120), Sequence > Ripple Track Keyframes: one undo step "Ripple Track Keyframes"; nothing when unchanged.
+    Q_INVOKABLE void setRippleTrackKeyframes(bool on);
 
     // ---- Editing (undoable; act on the selection, the playhead and the targeted tracks) ----
     /// Delete (clear): removes the selected clips, leaving gaps.
@@ -518,6 +549,8 @@ public:
     Q_INVOKABLE void unlinkSelection();
     /// Shift+E: enables or disables the selected clips.
     Q_INVOKABLE void toggleEnabledSelection();
+    /// 0.7 (card 064): Clip > Lock Clip / Unlock Clip: locks the selected clips, or unlocks them when all are locked.
+    Q_INVOKABLE void toggleLockSelection();
     /// 0.2, Clip > Group (Ctrl/Cmd+G) / Ungroup (Ctrl/Cmd+Shift+G) on the selection (the clip.group / clip.ungroup
     /// commands; ProjectControllerTimeline.cpp).
     Q_INVOKABLE void groupSelection();
@@ -527,6 +560,13 @@ public:
     Q_INVOKABLE void goToSequenceGap(bool forward);
     bool selectionGrouped() const;
     bool selectionFollowsPlayhead() const { return m_selectionFollowsPlayhead; }
+    bool linkedSelection() const { return m_linkedSelection; }
+    void setLinkedSelection(bool on) {
+        if (on == m_linkedSelection)
+            return;
+        m_linkedSelection = on;
+        emit linkedSelectionChanged();
+    }
     void setSelectionFollowsPlayhead(bool on);
     /// Alt+Left/Right (±1, ±5): moves the selection; Alt+,/. slides and Ctrl+Alt+Left/Right slips the clip.
     Q_INVOKABLE void nudgeSelection(int frames);
@@ -548,6 +588,12 @@ public:
     Q_INVOKABLE void paste();
     Q_INVOKABLE void pasteInsert();
     Q_INVOKABLE void renameClip(const QString& clipId, const QString& name);
+    /// 0.7 (card 125): the clip's free-text note ("" = none) and writing it (one undo step "Clip Note"; "" clears it). A
+    /// note over clipNoteLimit() UTF-8 bytes is refused (lastError); clipNoteBytes() counts a text the way the limit does.
+    Q_INVOKABLE QString clipNote(const QString& clipId) const;
+    Q_INVOKABLE void setClipNote(const QString& clipId, const QString& note);
+    Q_INVOKABLE int clipNoteBytes(const QString& note) const;
+    Q_INVOKABLE int clipNoteLimit() const;
     /// Label colour of the selected clips (index into Theme.clipColors).
     Q_INVOKABLE void setSelectionColor(int colorIndex);
     /// Wrap several edits in one undo step (EditSession gestures); cancelGesture() returns to the state before it.
@@ -581,6 +627,16 @@ public:
 
     Q_INVOKABLE void selectClip(const QString& clipId, int mode = Replace, bool followLinks = true);
     Q_INVOKABLE void selectAll();
+    /// Edit > Select All Disabled Clips (0.7, card 122): the disabled clips of the open sequence become the selection
+    /// (Delete and Ripple Delete then act on them, Enable turns them on); false, and the selection stays, when there is none.
+    Q_INVOKABLE bool selectDisabledClips();
+    /// Edit > Label > Select Label Group (0.7, card 010): every clip of the open sequence with the label colour of one of
+    /// the selected clips becomes the selection (their linked partners too while linkedSelection is on). A selection
+    /// change only: no undo step. False, and the selection stays, when no clip is selected.
+    Q_INVOKABLE bool selectLabelGroup();
+    /// The label colour (0..15) the selected clips share, or -1 when none is selected or they differ: the clip menu and
+    /// Edit > Label check it.
+    Q_INVOKABLE int selectionLabel() const;
     Q_INVOKABLE void clearSelection();
     Q_INVOKABLE QString clipName(const QString& clipId) const;
 
@@ -589,13 +645,17 @@ public:
 
     // ---- Track header menu (0.2 UX, stream T; ProjectControllerTimeline.cpp): one undo step each ----
     /// What the menu of a track of the current sequence shows: { id, kind: "video" | "audio", shortName ("V2"), name
-    /// (the custom name, else "Video 2"), customName ("" for the default), index (0 = V1 / A1), clipCount, locked,
+    /// (the custom name, else "Video 2"), customName ("" for the default), index (0 = V1 / A1), kindCount (how many tracks
+    /// of its kind the sequence has), clipCount, locked,
     /// syncLocked, targeted, canDelete, deleteReason ("" or why Delete Track is off), emptyTracks, emptyVideoTracks,
     /// emptyAudioTracks (what Delete Empty Tracks would remove) }; {} for a key that is not a track of the sequence.
     Q_INVOKABLE QVariantMap trackInfo(const QString& trackId) const;
     /// Rename...: the track's custom name ("" or only spaces: back to the default "Video n" / "Audio n"; at most 256
     /// characters). Allowed on locked tracks (like the header toggles). False with lastError when refused.
     Q_INVOKABLE bool renameTrack(const QString& trackId, const QString& name);
+    /// 0.7 (card 077): the track's label colour (0..15, the clip label palette; -1 = none), one undo step "Track Color".
+    /// Allowed on locked tracks (like the header toggles). False with lastError when refused.
+    Q_INVOKABLE bool setTrackColor(const QString& trackId, int colorIndex);
     /// Add Track / Add Tracks... (Premiere's dialog) as one undo step "Add Tracks" ("Add Track" for one): `spec` =
     ///   { video: 0..99, audio: 0..99 (default 0),
     ///     videoPlacement, audioPlacement: "first" (before the first track: the new tracks become V1... / A1...) |
@@ -610,6 +670,47 @@ public:
     /// Delete Track: the track and its clips (their linked partners on other tracks stay, unlinked). Refused (false,
     /// lastError) on a locked track or the only track of its kind; trackInfo().canDelete says so first.
     Q_INVOKABLE bool deleteTrack(const QString& trackId);
+    /// 0.7 (card 067): Move Track / dragging a track header: the track becomes number `position` (1-based: V1 / A1 = 1) in its
+    /// own stack (video or audio), the tracks between shift by one; one undo step "Move Track". Allowed on locked tracks.
+    /// False with lastError when refused (an unknown track).
+    Q_INVOKABLE bool moveTrack(const QString& trackId, int position);
+    /// Move Track Up / Down from the track menu: `steps` places up the stack's numbering (+1 = V2 becomes V3; audio: A2
+    /// becomes A3, below it). The ends stay where they are (true, nothing changes).
+    Q_INVOKABLE bool moveTrackBy(const QString& trackId, int steps);
+
+    // ---- Track groups (0.7, card 124; ProjectControllerTrackGroups.cpp; model TrackGroups.h): one undo step each ----
+    /// The groups of the current sequence in the order they were made: { id ("g12"), name, kind, colorIndex (-1: none),
+    /// collapsed, count, tracks (the members' keys, in stack order), shortNames, muted, solo, locked, targeted, enabled,
+    /// syncLocked (each 0: no member has it, 1: some, 2: all), canRoute (an audio group), output ("mix", "submix" or
+    /// "mixed": where its tracks go) }.
+    Q_INVOKABLE QVariantList trackGroups() const;
+    /// One of them (see trackGroups); {} for a key that is not a group of the sequence.
+    Q_INVOKABLE QVariantMap trackGroupInfo(const QString& groupId) const;
+    /// Group Tracks: the tracks (keys; one kind, none in a group) become a group named `name` ("" = "Group N"), gathered at
+    /// the place of the first one. Returns the group's key, "" with lastError when refused. One undo step "Group Tracks".
+    Q_INVOKABLE QString createTrackGroup(const QStringList& trackIds, const QString& name = {});
+    /// Group Targeted Tracks (`kind` "video" or "audio"; "" = the kind the targeted tracks are): groups the targeted tracks
+    /// that are in no group. Returns the group's key, "" with lastError (fewer than one such track, or both kinds when `kind` is "").
+    Q_INVOKABLE QString groupTargetedTracks(const QString& kind = {});
+    /// Ungroup Tracks: the group goes, its tracks stay.
+    Q_INVOKABLE bool ungroupTracks(const QString& groupId);
+    /// Rename Group (at most 128 bytes; "" is refused).
+    Q_INVOKABLE bool renameTrackGroup(const QString& groupId, const QString& name);
+    /// The group's label colour (0..15; -1 = none), one undo step "Group Color".
+    Q_INVOKABLE bool setTrackGroupColor(const QString& groupId, int colorIndex);
+    /// Collapse / Expand Group: the tracks fold into the group's header row, or show. One undo step.
+    Q_INVOKABLE bool setTrackGroupCollapsed(const QString& groupId, bool collapsed);
+    /// Collapses every group of the sequence (or expands them all) in one step; false when none would change.
+    Q_INVOKABLE bool setAllTrackGroupsCollapsed(bool collapsed);
+    /// Add to Group: the tracks (keys) join the group and move next to its last track. Remove from Group: they leave it.
+    Q_INVOKABLE bool addTracksToTrackGroup(const QString& groupId, const QStringList& trackIds);
+    Q_INVOKABLE bool removeTracksFromTrackGroups(const QStringList& trackIds);
+    /// A header toggle for every track of the group: `flag` is "muted", "solo", "locked", "targeted", "enabled" (the eye) or
+    /// "syncLocked". One undo step ("Mute Group", "Unlock Group", ...).
+    Q_INVOKABLE bool setTrackGroupFlag(const QString& groupId, const QString& flag, bool value);
+    /// Output of an audio group: `output` is "mix" (the master) or "newSubmix" (a submix track named after the group, one
+    /// fader and effect stack for the whole group).
+    Q_INVOKABLE bool routeTrackGroup(const QString& groupId, const QString& output);
     /// Delete Empty Tracks: every unlocked track of `kind` ("video", "audio" or "" = both) without clips, keeping at
     /// least one track of each kind (the lowest-numbered). One undo step; returns how many went (0: nothing changed).
     Q_INVOKABLE int deleteEmptyTracks(const QString& kind = {});
@@ -683,6 +784,22 @@ public:
     Q_INVOKABLE bool moveIntoSync();
     Q_INVOKABLE bool slipIntoSync();
 
+    // ---- 0.7 stream A, batch A2 (ProjectControllerTracks.cpp) ----
+    /// Cards 106 / 117, Toggle Track Output (the eye, video), Toggle Track Mute (audio), Toggle Track Solo (either kind):
+    /// `what` "output" | "mute" | "solo". Acts on the tracks of the selected clips (a linked pair: both rows), else the
+    /// targeted tracks: when every one of them has the switch on it goes off, else it comes on (output on = shown). One
+    /// undo step. False with lastError ("Select a clip or target a track first") when it cannot run.
+    Q_INVOKABLE bool toggleTrackSwitch(const QString& what);
+    /// Solo the selected clips' tracks alone (per kind: every other track of that kind is unsoloed); when those are
+    /// already the only soloed ones the solo ends. One undo step; false with lastError when nothing is selected/targeted.
+    Q_INVOKABLE bool soloSelectedClipTracks();
+    /// Why the track key `what` ("output" | "mute" | "solo") cannot run now, "" when it can (the palette and menus grey it).
+    Q_INVOKABLE QString trackKeyProblem(const QString& what) const;
+    /// Card 105, Markers > Add Marker from In/Out: a range marker from the In to the Out mark (its duration is the
+    /// range's), one undo step. False with lastError ("Set In and Out first") when a mark is missing.
+    Q_INVOKABLE bool addMarkerFromInOut();
+    Q_INVOKABLE QString markerFromInOutProblem() const;
+
 signals:
     void changed(const QVariantMap& changeSet);
     void revisionChanged();
@@ -709,6 +826,7 @@ signals:
     void historyChanged();
     void lastErrorChanged();
     void selectionFollowsPlayheadChanged();
+    void linkedSelectionChanged();
     void audioTimeUnitsChanged();
     /// Emitted first in the destructor, while session() is still valid: engine threads reading the session
     /// (playback) stop here. C++ only.
@@ -790,6 +908,7 @@ private:
     std::vector<std::pair<QString, std::vector<TimelineHighlight>>> m_highlightOwners; // 0.5: by owner ("" first)
     QString m_selectedEdge;
     bool m_selectionFollowsPlayhead = false;
+    bool m_linkedSelection = true;
     int m_revision = 0;
     QString m_lastError;
     std::vector<edit::EdgePoint> m_trimEditPoints; // 0.6 (1A): Trim's selected edit points

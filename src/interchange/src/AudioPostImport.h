@@ -197,8 +197,12 @@ std::string wavHeader(std::int32_t channels, std::int32_t sampleRate, std::int32
 std::string textToUtf8(std::string_view text);
 
 /// The speaker a track or source name ends with ("Dialog.L", "Mix Ls", "Audio 1 Right", "FX_LFE"): 0..5 in Wabcut's
-/// 5.1 order L R C LFE Ls Rs, or -1.
+/// 5.1 order L R C LFE Ls Rs, or (0.7) 6 and 7 for the rear surrounds of 7.1 ("Mix Lrs", "Mix Rrs", Pro Tools' Lsr / Rsr), or
+/// -1. In a 7.1 layout Ls / Rs (4, 5) are the side pair.
 int speakerOfName(std::string_view name);
+/// The channel of a 7.1 mix (L R C LFE Lrs Rrs Ls Rs) a speaker of speakerOfName() plays from: the rear surrounds 6 and 7 are
+/// channels 4 and 5, Ls and Rs (4, 5) channels 6 and 7. -1 for a speaker outside 0..7.
+int channelOf71Speaker(int speaker);
 /// The name without that suffix ("Audio 1 Right" -> "Audio 1").
 std::string withoutSpeaker(std::string_view name);
 

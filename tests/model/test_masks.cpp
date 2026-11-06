@@ -481,3 +481,62 @@ TEST_CASE("Matte masks (AI-14): a matte track with its bounding box; saved as sc
     broken.replace(at, std::string("\"matte\": {").size(), "\"matteX\": {");
     CHECK_FALSE(io::fromJson(broken));
 }
+
+// ---- 0.7 (card 102): the sound that replaces a bleep ------------------------------------------------------------------
+
+TEST_CASE("A redaction can name a sound file of the project to play instead of the bleep tone", "[model][masks][io]") {
+    Timeline tl{R"(
+        V1 tgt |Aaaa|
+    )"};
+    ProjectAsset asset;
+    asset.kind = std::string(kAssetKindSound);
+    asset.name = "boing.wav";
+    asset.locator.path = "C:/Sounds/boing.wav";
+    auto withAsset = edit::addAsset(tl.state, asset);
+    REQUIRE(withAsset);
+
+    Redaction r;
+    r.media = tl.media('A');
+    r.name = "Profanity";
+    r.source = {s(0.1), s(0.5)};
+    r.region.shape = MaskShape::Ellipse;
+    r.audio = RedactionAudio::Bleep;
+    r.audioRanges = {{s(0.1), s(0.2)}};
+
+    SECTION("without a sound the file is as before: no new key") {
+        auto plain = edit::addRedaction(withAsset->state, r);
+        REQUIRE(plain);
+        const auto json = io::toJson(plain->state);
+        REQUIRE(json);
+        CHECK(json->find("\"sound\": ") == std::string::npos); // (the asset's kind is the text "sound")
+        CHECK_FALSE(plain->state.findRedaction(plain->id)->sound.isValid());
+    }
+    SECTION("with one it is saved, read back and kept when the project is copied") {
+        r.sound = withAsset->id;
+        auto added = edit::addRedaction(withAsset->state, r);
+        REQUIRE(added);
+        const auto json = io::toJson(added->state);
+        REQUIRE(json);
+        CHECK(json->find("\"sound\": " + std::to_string(withAsset->id.value)) != std::string::npos);
+        const auto loaded = io::fromJson(*json);
+        REQUIRE(loaded);
+        CHECK(loaded->findRedaction(added->id)->sound == withAsset->id);
+        CHECK(*loaded == added->state);
+        CHECK(io::toJson(*loaded).value() == *json);
+    }
+    SECTION("a sound that is not a sound file is refused; a missing asset plays the tone") {
+        ProjectAsset lut;
+        lut.kind = std::string(kAssetKindLut);
+        lut.name = "look.cube";
+        lut.locator.path = "C:/Looks/look.cube";
+        auto withLut = edit::addAsset(withAsset->state, lut);
+        REQUIRE(withLut);
+        r.sound = withLut->id;
+        const auto wrong = edit::addRedaction(withLut->state, r);
+        CHECK((!wrong || !validate(wrong->state, Validation::Structure))); // its sound is not a sound file
+        r.sound = AssetId{4242};
+        const auto missing = edit::addRedaction(withAsset->state, r);
+        REQUIRE(missing);
+        CHECK(validate(missing->state, Validation::Structure)); // the tone plays
+    }
+}

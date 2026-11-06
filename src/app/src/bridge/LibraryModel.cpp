@@ -54,6 +54,7 @@ constexpr std::array<LibraryColumnInfo, kLibraryColumnCount> kColumns{{
     {LibraryColumn::DataRate, "dataRate", 104, false, false},
     {LibraryColumn::VideoUsage, "videoUsage", 104, false, false},
     {LibraryColumn::AudioUsage, "audioUsage", 104, false, false},
+    {LibraryColumn::Created, "created", 136, false, false},
 }};
 
 QString text(const std::string& s) { return QString::fromStdString(s); }
@@ -91,6 +92,14 @@ QString dateText(std::int64_t seconds) {
     if (seconds <= 0)
         return {};
     return QDateTime::fromSecsSinceEpoch(seconds).toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+}
+
+/// Seconds since the epoch of an ISO-8601 UTC time ("2026-11-04T09:30:00Z"), or 0 when it is empty or not one.
+std::int64_t isoSeconds(const std::string& iso) {
+    if (iso.empty())
+        return 0;
+    const QDateTime time = QDateTime::fromString(QString::fromStdString(iso), Qt::ISODate);
+    return time.isValid() ? time.toSecsSinceEpoch() : 0;
 }
 
 QString dayText(std::int64_t seconds) {
@@ -175,6 +184,8 @@ QString libraryColumnTitle(LibraryColumn column) {
         return LibraryModel::tr("Generated");
     case LibraryColumn::Date:
         return LibraryModel::tr("Date modified");
+    case LibraryColumn::Created:
+        return LibraryModel::tr("Date created");
     case LibraryColumn::Path:
         return LibraryModel::tr("File path");
     case LibraryColumn::Comment:
@@ -549,6 +560,8 @@ QString LibraryModel::cellText(int rowIndex, LibraryColumn column) const {
         return {};
     case LibraryColumn::Date:
         return row.kind == Row::Kind::Media ? dateText(row.media->info.modifiedTime) : QString();
+    case LibraryColumn::Created: // 0.7 (card 144): sequences; in the viewer's time zone
+        return row.kind == Row::Kind::Sequence ? dateText(isoSeconds(row.sequence->createdAt)) : QString();
     case LibraryColumn::Path:
         if (row.kind != Row::Kind::Media)
             return {};
@@ -625,6 +638,10 @@ QVariant LibraryModel::data(const QModelIndex& index, int role) const {
                : row.kind == Row::Kind::Sequence ? row.sequence->colorIndex // 0.2: sequences have labels too
                                                  : -1;
     case ThumbnailRole:
+        // 0.7 (card 023): the list's cells all read their roles, but only the Name cell shows a picture (and the grid reads
+        // its cards from the first column, whichever it is).
+        if (column != LibraryColumn::Name && index.column() != 0)
+            return QString();
         if (row.kind == Row::Kind::Sequence)
             return m_context.sequenceThumbnail && m_snapshot ? m_context.sequenceThumbnail(*m_snapshot, *row.sequence) : QString();
         return row.kind == Row::Kind::Media && m_context.thumbnail ? m_context.thumbnail(*row.media) : QString();
@@ -802,6 +819,8 @@ QVariant LibraryModel::sortKey(const Row& row, LibraryColumn column) const {
         return m && m->markOut ? static_cast<qlonglong>(m->markOut->value) : -1LL;
     case LibraryColumn::Date:
         return m ? static_cast<qlonglong>(m->info.modifiedTime) : -1LL;
+    case LibraryColumn::Created:
+        return row.kind == Row::Kind::Sequence ? static_cast<qlonglong>(isoSeconds(row.sequence->createdAt)) : -1LL;
     case LibraryColumn::Generated:
         return m && m->generated ? 1 : 0;
     case LibraryColumn::Good:

@@ -369,7 +369,7 @@ TEST_CASE("Preview equals offline: mapped clips, track formats and a 5.1 master 
         t.surround.x = ParamValue(0.6);
         t.surround.y = ParamValue(0.2);
     });
-    for (const ChannelFormat master : {ChannelFormat::Stereo, ChannelFormat::Surround51}) {
+    for (const ChannelFormat master : {ChannelFormat::Stereo, ChannelFormat::Surround51, ChannelFormat::Surround71}) {
         INFO(toString(master));
         setMaster(p, master);
         Rig rig(p);
@@ -378,7 +378,7 @@ TEST_CASE("Preview equals offline: mapped clips, track formats and a 5.1 master 
         const std::vector<float> reference = offline(p, 2, 48000);
         CHECK(firstMismatch(rig.stream, reference, 0, reference.size()) == -1);
         CHECK(rig.player->stats().underrunFrames == 0);
-        if (master == ChannelFormat::Surround51) {
+        if (master == ChannelFormat::Surround51 || master == ChannelFormat::Surround71) {
             CHECK(rig.player->loudness().frames > 0); // the live tap measures the 5.1 mix
         }
     }
@@ -580,4 +580,224 @@ TEST_CASE("A master format change waits while a voice-over pass wraps the progra
     CHECK(rig.player->masterMeter().channels() == 6);
     const std::size_t end = rig.stream.size();
     CHECK(rmsOf(rig.stream, end - 2 * 48 * 200, end) > 0.01);
+}
+
+// ---- 0.7 (card 048): 7.1 ---------------------------------------------------------------------------------------------------
+
+TEST_CASE("7.1 conversions: downmix coefficients, the upmix from 5.1 and channel identity", "[playback][channels][surround71]") {
+    constexpr int L = 0, R = 1, C = 2, LFE = 3, Lrs = 4, Rrs = 5, Ls = 6, Rs = 7;
+    // 7.1 -> 5.1: the side pair stays the surrounds, the rear pair joins them at -3 dB; L, R, C and LFE are as they are.
+    const ChannelMatrix five = formatMatrix(ChannelFormat::Surround71, 8, ChannelFormat::Surround51, 6);
+    REQUIRE(five.rows == 6);
+    REQUIRE(five.cols == 8);
+    for (const int k : {L, R, C, LFE}) {
+        CHECK(five.at(k, k) == 1.0f);
+    }
+    CHECK(five.at(4, Ls) == 1.0f);
+    CHECK(five.at(4, Lrs) == kMinus3dB);
+    CHECK(five.at(5, Rs) == 1.0f);
+    CHECK(five.at(5, Rrs) == kMinus3dB);
+    CHECK(five.at(4, Rs) == 0.0f);
+    CHECK(five.at(5, Ls) == 0.0f);
+    // 7.1 -> stereo is that and then ITU-R BS.775: L' = L + 0.7071 C + 0.7071 Ls + 0.5 Lrs, the LFE left out.
+    const ChannelMatrix two = formatMatrix(ChannelFormat::Surround71, 8, ChannelFormat::Stereo, 2);
+    CHECK(two.at(0, L) == Approx(1.0));
+    CHECK(two.at(0, C) == Approx(kMinus3dB));
+    CHECK(two.at(0, Ls) == Approx(kMinus3dB));
+    CHECK(two.at(0, Lrs) == Approx(0.5));
+    CHECK(two.at(0, LFE) == 0.0f);
+    CHECK(two.at(0, R) == 0.0f);
+    CHECK(two.at(1, R) == Approx(1.0));
+    CHECK(two.at(1, Rs) == Approx(kMinus3dB));
+    CHECK(two.at(1, Rrs) == Approx(0.5));
+    // ... and to mono the mean of that stereo.
+    const ChannelMatrix mono = formatMatrix(ChannelFormat::Surround71, 8, ChannelFormat::Mono, 1);
+    CHECK(mono.at(0, L) == Approx(0.5));
+    CHECK(mono.at(0, C) == Approx(kMinus3dB));
+    CHECK(mono.at(0, Ls) == Approx(0.5 * kMinus3dB));
+    CHECK(mono.at(0, Lrs) == Approx(0.25));
+    CHECK(mono.at(0, LFE) == 0.0f);
+    // 5.1 -> 7.1: the side pair gets 5.1's surrounds and the rear pair is silent (upmix51To71 can copy them into it too).
+    const ChannelMatrix up = formatMatrix(ChannelFormat::Surround51, 6, ChannelFormat::Surround71, 8);
+    REQUIRE(up.rows == 8);
+    REQUIRE(up.cols == 6);
+    for (const int k : {L, R, C, LFE}) {
+        CHECK(up.at(k, k) == 1.0f);
+    }
+    CHECK(up.at(Ls, 4) == 1.0f);
+    CHECK(up.at(Rs, 5) == 1.0f);
+    for (int c = 0; c < 6; ++c) {
+        CHECK(up.at(Lrs, c) == 0.0f);
+        CHECK(up.at(Rrs, c) == 0.0f);
+    }
+    const ChannelMatrix copied = upmix51To71(true);
+    CHECK(copied.at(Ls, 4) == kMinus3dB);
+    CHECK(copied.at(Lrs, 4) == kMinus3dB);
+    CHECK(copied.at(Rs, 5) == kMinus3dB);
+    CHECK(copied.at(Rrs, 5) == kMinus3dB);
+    // Mono and stereo to 7.1 land on C and on L / R.
+    CHECK(formatMatrix(ChannelFormat::Mono, 1, ChannelFormat::Surround71, 8).at(C, 0) == 1.0f);
+    CHECK(formatMatrix(ChannelFormat::Stereo, 2, ChannelFormat::Surround71, 8).at(R, 1) == 1.0f);
+    CHECK(formatMatrix(ChannelFormat::Surround71, 8, ChannelFormat::Surround71, 8).isIdentity());
+    // Every input reaches its own output: a 7.1 to 7.1 conversion leaves no channel on another.
+    for (int c = 0; c < 8; ++c) {
+        std::vector<float> in(8, 0.0f);
+        in[static_cast<std::size_t>(c)] = 1.0f;
+        std::vector<float> out(8, 0.0f);
+        formatMatrix(ChannelFormat::Surround71, 8, ChannelFormat::Surround71, 8).apply(in.data(), out.data(), 1);
+        for (int k = 0; k < 8; ++k) {
+            CHECK(out[static_cast<std::size_t>(k)] == (k == c ? 1.0f : 0.0f));
+        }
+    }
+}
+
+TEST_CASE("The 7.1 panner: speaker positions, constant power, the LFE send", "[playback][channels][surround71]") {
+    constexpr int L = 0, R = 1, C = 2, LFE = 3, Lrs = 4, Rrs = 5, Ls = 6, Rs = 7;
+    const auto power = [](const std::array<float, 8>& g) {
+        double sum = 0.0;
+        for (const float v : g) {
+            sum += static_cast<double>(v) * v;
+        }
+        return sum;
+    };
+    // At the rim a direction plays from its speaker.
+    CHECK(surroundGainsFor(8, 0.0, 1.0)[C] == 1.0f);
+    CHECK(surroundGainsFor(8, -30.0, 1.0)[L] == 1.0f);
+    CHECK(surroundGainsFor(8, 30.0, 1.0)[R] == 1.0f);
+    CHECK(surroundGainsFor(8, -90.0, 1.0)[Ls] == 1.0f);
+    CHECK(surroundGainsFor(8, 90.0, 1.0)[Rs] == 1.0f);
+    CHECK(surroundGainsFor(8, -150.0, 1.0)[Lrs] == 1.0f);
+    CHECK(surroundGainsFor(8, 150.0, 1.0)[Rrs] == 1.0f);
+    // Between two speakers: both, the nearer louder; behind: the rear pair equally.
+    const std::array<float, 8> sideRear = surroundGainsFor(8, 135.0, 1.0); // between Rs (90) and Rrs (150)
+    CHECK(sideRear[Rrs] > sideRear[Rs]);
+    CHECK(sideRear[Rs] > 0.0f);
+    CHECK(sideRear[Ls] == 0.0f);
+    CHECK(power(sideRear) == Approx(1.0).epsilon(1e-5));
+    const std::array<float, 8> behind = surroundGainsFor(8, 180.0, 1.0);
+    CHECK(behind[Lrs] == Approx(behind[Rrs]).epsilon(1e-5));
+    CHECK(behind[Lrs] > 0.5f);
+    CHECK(power(behind) == Approx(1.0).epsilon(1e-5));
+    // At the centre all seven speakers equally; the LFE never gets anything from the panner; power always 1.
+    const std::array<float, 8> centre = surroundGainsFor(8, 0.0, 0.0);
+    for (const int s : {L, R, C, Ls, Rs, Lrs, Rrs}) {
+        CHECK(centre[static_cast<std::size_t>(s)] == Approx(1.0 / std::sqrt(7.0)).epsilon(1e-5));
+    }
+    std::mt19937 random(11);
+    std::uniform_real_distribution<double> angle(-180.0, 180.0);
+    std::uniform_real_distribution<double> focus(0.0, 1.0);
+    for (int i = 0; i < 300; ++i) {
+        const auto g = surroundGainsFor(8, angle(random), focus(random));
+        CHECK(power(g) == Approx(1.0).epsilon(1e-4));
+        CHECK(g[LFE] == 0.0f);
+    }
+    // The 5.1 panner is what it was.
+    CHECK(surroundGainsFor(6, 110.0, 1.0)[5] == 1.0f);
+    CHECK(surroundGains(110.0, 1.0)[5] == 1.0f);
+    // The track panner on a 7.1 master: stereo at front centre plays L and R, mono plays C with its LFE send; a puck at the
+    // back right corner plays the rear pair's right speaker the most.
+    std::array<float, 8 * 2> stereo{};
+    surroundPanGains(8, 2, 0.0, 1.0, 0.0, stereo.data());
+    CHECK(stereo[static_cast<std::size_t>(L) * 2 + 0] == 1.0f);
+    CHECK(stereo[static_cast<std::size_t>(R) * 2 + 1] == 1.0f);
+    CHECK(stereo[static_cast<std::size_t>(C) * 2 + 0] == 0.0f);
+    std::array<float, 8 * 2> one{};
+    surroundPanGains(8, 1, 0.0, 1.0, 0.5, one.data());
+    CHECK(one[static_cast<std::size_t>(C)] == 1.0f);
+    CHECK(one[static_cast<std::size_t>(LFE)] == 0.5f);
+    surroundPanGains(8, 1, 1.0, -1.0, 0.0, one.data());
+    CHECK(one[static_cast<std::size_t>(Rrs)] > 0.7f);
+    CHECK(one[static_cast<std::size_t>(Rrs)] > one[static_cast<std::size_t>(Rs)]);
+    CHECK(one[static_cast<std::size_t>(Lrs)] == 0.0f);
+}
+
+TEST_CASE("A 7.1 master: eight channels reach their own outputs, the panner places mono and stereo tracks, exports downmix",
+          "[playback][channels][surround71]") {
+    // An eight-channel source on a 7.1 track plays channel for channel.
+    Project p;
+    p.media('A', multichannel({0.10f, 0.20f, 0.30f, 0.40f, 0.50f, 0.60f, 0.70f, 0.80f}));
+    setStreamChannels(p, 'A', 8);
+    p.addTrack({{'A', Ticks{}, ms(1000), Ticks{}}});
+    editTrack(p, 0, [](Track& t) { t.format = ChannelFormat::Surround71; });
+    setMaster(p, ChannelFormat::Surround71);
+    const std::vector<float> eight = offline(p, 8, 4800);
+    const std::size_t k = 1000;
+    for (int c = 0; c < 8; ++c) {
+        INFO("channel " << c);
+        CHECK(eight[k * 8 + static_cast<std::size_t>(c)] == Approx(src(p, static_cast<std::int64_t>(k), c)).margin(1e-7));
+    }
+    // A stereo export of the 7.1 master is its ITU-R BS.775 downmix; a 5.1 export the 7.1 to 5.1 conversion.
+    const std::vector<float> two = offline(p, 2, 4800);
+    std::vector<float> expectedTwo(two.size());
+    formatMatrix(ChannelFormat::Surround71, 8, ChannelFormat::Stereo, 2).apply(eight.data(), expectedTwo.data(), 4800);
+    CHECK(firstMismatch(two, expectedTwo, 0, two.size()) == -1);
+    const std::vector<float> six = offline(p, 6, 4800);
+    std::vector<float> expectedSix(six.size());
+    formatMatrix(ChannelFormat::Surround71, 8, ChannelFormat::Surround51, 6).apply(eight.data(), expectedSix.data(), 4800);
+    CHECK(firstMismatch(six, expectedSix, 0, six.size()) == -1);
+
+    // Stereo and mono tracks through their panners.
+    Project q;
+    q.media('A', multichannel({1.0f, -0.5f}));
+    q.addTrack({{'A', Ticks{}, ms(1000), Ticks{}}});
+    q.addTrack({{'A', Ticks{}, ms(1000), Ticks{}}});
+    editTrack(q, 1, [](Track& t) {
+        t.format = ChannelFormat::Mono;
+        t.surround.lfeDb = ParamValue(-6.0);
+    });
+    setMaster(q, ChannelFormat::Surround71);
+    const std::vector<float> mix = offline(q, 8, 4800);
+    const float l = src(q, static_cast<std::int64_t>(k), 0);
+    const float r = src(q, static_cast<std::int64_t>(k), 1);
+    const float m = 0.5f * l + 0.5f * r;
+    CHECK(mix[k * 8 + 0] == Approx(l).margin(1e-7));
+    CHECK(mix[k * 8 + 1] == Approx(r).margin(1e-7));
+    CHECK(mix[k * 8 + 2] == Approx(m).margin(1e-7));
+    CHECK(mix[k * 8 + 3] == Approx(m * std::pow(10.0, -6.0 / 20.0)).epsilon(1e-5));
+    for (const int c : {4, 5, 6, 7}) {
+        CHECK(mix[k * 8 + static_cast<std::size_t>(c)] == 0.0f); // the surround speakers: nothing panned there
+    }
+    // The mono track's puck at the back right: its sound moves to Rs and Rrs, at the same power.
+    editTrack(q, 1, [](Track& t) {
+        t.surround.x = ParamValue(1.0);
+        t.surround.y = ParamValue(-1.0);
+        t.surround.lfeDb = ParamValue(-144.0);
+    });
+    editTrack(q, 0, [](Track& t) { t.muted = true; });
+    const std::vector<float> moved = offline(q, 8, 4800);
+    double energy = 0.0;
+    for (int c = 0; c < 8; ++c) {
+        energy += static_cast<double>(moved[k * 8 + static_cast<std::size_t>(c)]) * moved[k * 8 + static_cast<std::size_t>(c)];
+    }
+    CHECK(energy == Approx(static_cast<double>(m) * m).epsilon(1e-4));
+    CHECK(std::fabs(moved[k * 8 + 5]) > std::fabs(moved[k * 8 + 7])); // Rrs over Rs
+    CHECK(std::fabs(moved[k * 8 + 7]) > 0.0f);
+    CHECK(moved[k * 8 + 0] == 0.0f);
+    CHECK(moved[k * 8 + 4] == 0.0f);
+    CHECK(moved[k * 8 + 6] == 0.0f);
+}
+
+TEST_CASE("A 5.1 sequence switched to 7.1: the surrounds play from the side pair and the rear pair is silent",
+          "[playback][channels][surround71]") {
+    Project p;
+    p.media('A', multichannel({0.10f, 0.20f, 0.30f, 0.40f, 0.50f, 0.60f}));
+    setStreamChannels(p, 'A', 6);
+    p.addTrack({{'A', Ticks{}, ms(1000), Ticks{}}});
+    editTrack(p, 0, [](Track& t) { t.format = ChannelFormat::Surround51; });
+    setMaster(p, ChannelFormat::Surround51);
+    const std::vector<float> five = offline(p, 6, 4800);
+    setMaster(p, ChannelFormat::Surround71);
+    const std::vector<float> seven = offline(p, 8, 4800);
+    const std::size_t k = 1000;
+    for (int c = 0; c < 4; ++c) { // L R C LFE unchanged
+        CHECK(seven[k * 8 + static_cast<std::size_t>(c)] == five[k * 6 + static_cast<std::size_t>(c)]);
+    }
+    CHECK(seven[k * 8 + 6] == five[k * 6 + 4]); // 5.1's Ls on the side pair's left
+    CHECK(seven[k * 8 + 7] == five[k * 6 + 5]);
+    CHECK(seven[k * 8 + 4] == 0.0f); // the rear pair is silent
+    CHECK(seven[k * 8 + 5] == 0.0f);
+    CHECK(five[k * 6 + 4] != 0.0f);
+    // And back: 7.1 to 5.1 folds the (here silent) rear pair into the surrounds; nothing else changes.
+    const std::vector<float> back = offline(p, 6, 4800);
+    CHECK(firstMismatch(back, five, 0, five.size()) == -1);
 }

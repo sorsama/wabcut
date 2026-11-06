@@ -12,6 +12,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace wabcut::ai {
@@ -59,6 +60,10 @@ struct TranscriptSegment {
     std::size_t wordCount = 0;
     std::string text;              ///< the segment as recognised (UTF-8)
     std::optional<int> speakerId;
+    /// 0.7 (card 111, mixed languages): the language this segment is spoken in ("th" in a transcript whose own language
+    /// is English). A transcription of mixed languages names every segment's; "" = the transcript's language (every
+    /// transcript made as one language).
+    std::string language;
 
     bool operator==(const TranscriptSegment&) const = default;
 };
@@ -77,7 +82,26 @@ struct Transcript {
     /// `words`, contiguous and non-overlapping, and every word's text valid UTF-8. InvalidArgument otherwise.
     std::expected<void, Error> validate() const;
 
+    /// 0.7 (card 111): the language of segment `i` - its own when it names one, else the transcript's.
+    std::string_view segmentLanguage(std::size_t i) const {
+        return i < segments.size() && !segments[i].language.empty() ? std::string_view(segments[i].language)
+                                                                      : std::string_view(language);
+    }
+
+    /// 0.7 (card 111): the language word `wordIndex` is spoken in: that of the segment holding it (segments cover the
+    /// words in order), else the transcript's. O(log segments).
+    std::string_view wordLanguage(std::size_t wordIndex) const;
+
     bool operator==(const Transcript&) const = default;
 };
+
+/// 0.7 (card 111): the languages a transcript is spoken in with how many words each has, most words first (ties by
+/// code). One entry - the transcript's language - for a transcript made as one language; empty without words.
+struct LanguageShare {
+    std::string language;
+    std::size_t words = 0;
+    bool operator==(const LanguageShare&) const = default;
+};
+std::vector<LanguageShare> languageShares(const Transcript& transcript);
 
 } // namespace wabcut::ai

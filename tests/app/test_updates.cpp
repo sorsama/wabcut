@@ -450,6 +450,47 @@ TEST_CASE("Updates: a newer signed release is offered, verified and installed af
 #endif
 }
 
+// Windows on ARM64 (platform round): the manifest names the x64 installer, and installing it would swap the native ARM64
+// build for the x64 one running under emulation. An ARM64 build is told a newer version is out - verified, with its
+// notes - and is sent to the release page, like a portable copy; nothing is downloaded.
+TEST_CASE("Updates: a native ARM64 build is offered the release page, never the x64 installer", "[app][updates]") {
+#if !defined(_WIN32)
+    SKIP("manifest signatures are checked with Windows CNG");
+#else
+    resetSettings();
+    TestKey key;
+    Rig rig({key.publicKey()});
+    UpdateBridge::Config config = rig.bridge.config();
+    config.nativeArm64 = true; // installedByMsi stays true: it is the installer's architecture that rules it out
+    rig.bridge.setConfig(config);
+    ReleaseSpec spec;
+    spec.installer = fakeInstaller();
+    spec.installerUrl = rig.server.url(QStringLiteral("/download/v9.9.9/wabcut-9.9.9-windows-x64.msi"));
+    rig.server.serve(QStringLiteral("/download/v9.9.9/wabcut-9.9.9-windows-x64.msi"), spec.installer);
+    const QByteArray payload = payloadOf(spec);
+    rig.publish(envelope(payload, key.sign(payload)));
+
+    rig.check();
+    REQUIRE(rig.bridge.state() == QStringLiteral("available"));
+    CHECK(rig.bridge.latestVersion() == QStringLiteral("9.9.9"));
+    CHECK(rig.bridge.notes().contains(QStringLiteral("Graphics card")));
+    CHECK_FALSE(rig.bridge.canInstall());
+    CHECK(rig.bridge.installHint().contains(QStringLiteral("ARM64")));
+    CHECK(rig.bridge.installHint().contains(QStringLiteral("release page")));
+    rig.bridge.download(); // nothing to download: the installer is not for this build
+    CHECK(rig.bridge.state() == QStringLiteral("available"));
+    CHECK(rig.files().isEmpty());
+    CHECK(rig.launched.calls == 0);
+
+    // The same manifest on an x64 build installs (the case above), so the rule is the architecture and nothing else.
+    config.nativeArm64 = false;
+    rig.bridge.setConfig(config);
+    rig.check();
+    CHECK(rig.bridge.canInstall());
+    resetSettings();
+#endif
+}
+
 TEST_CASE("Updates: the same or an older version is not offered", "[app][updates]") {
 #if !defined(_WIN32)
     SKIP("manifest signatures are checked with Windows CNG");

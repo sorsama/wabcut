@@ -32,10 +32,28 @@ FocusScope {
         return ""
     }
 
+    /// card 080: the question open under the toolbar: "" (none), "redo" or "delete".
+    property string clipTask: ""
+    property bool redoConsent: false
+
     /// P1 round (#30): Edit > Find (Ctrl+F) - the Find field, its text selected.
     function focusFind() {
         search.forceActiveFocus(Qt.ShortcutFocusReason)
         search.selectAll()
+    }
+    function runClipTask() {
+        if (clipTask === "delete") {
+            SourceTranscript.deleteTranscript()
+        } else if (clipTask === "redo") {
+            const prompt = SourceTranscript.consentFor()
+            if (prompt.needed) {
+                redoConsent = true
+                consent.ask(prompt)
+            } else {
+                SourceTranscript.redo(false)
+            }
+        }
+        clipTask = ""
     }
     function start() {
         const prompt = SourceTranscript.consentFor()
@@ -222,6 +240,11 @@ FocusScope {
                     font.pixelSize: Theme.textMd
                 }
 
+                // card 073: the language spoken in this clip, and translating it to English.
+                SpokenLanguageRow {
+                    Layout.fillWidth: true
+                    visible: root.ready
+                }
                 // Transcribe this clip (the provider chosen for the sequence; change it here too).
                 RowLayout {
                     Layout.fillWidth: true
@@ -364,6 +387,87 @@ FocusScope {
                 tooltip: qsTr("Next match")
                 onClicked: SourceTranscript.nextMatch(1)
             }
+            // card 080: Transcribe again and Delete transcript, for this clip.
+            IconButton {
+                id: clipTaskButton
+                objectName: "sourceTranscriptMore"
+                compact: true
+                iconName: "ellipsis"
+                enabled: Transcript.jobStatus !== "running"
+                tooltip: qsTr("Transcribe this clip again or delete its transcript")
+                Accessible.name: qsTr("Clip transcript options")
+                onClicked: clipTaskMenu.popup(clipTaskButton, 0, clipTaskButton.height + Theme.space(1))
+                OptionsMenu {
+                    id: clipTaskMenu
+                    objectName: "sourceTranscriptTaskMenu"
+                    property string pending: ""
+                    options: [{ id: "redo", name: qsTr("Transcribe this clip again…") },
+                              { id: "delete", name: qsTr("Delete this clip's transcript…") }]
+                    onChosen: id => pending = id
+                    onClosed: {
+                        if (pending !== "") {
+                            root.clipTask = pending
+                            pending = ""
+                        }
+                    }
+                }
+            }
+        }
+
+        // card 080: the question behind Transcribe again / Delete transcript.
+        Rectangle {
+            objectName: "sourceTranscriptTaskPanel"
+            Layout.fillWidth: true
+            visible: root.hasWords && root.clipTask !== ""
+            implicitHeight: clipTaskColumn.implicitHeight + Theme.space(3)
+            radius: Theme.radiusField
+            color: Theme.sunken
+            border.width: Theme.hairline
+            border.color: root.clipTask === "delete" ? Theme.danger : Theme.border
+
+            ColumnLayout {
+                id: clipTaskColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.margins: Theme.space(2)
+                spacing: Theme.space(2)
+
+                Text {
+                    objectName: "sourceTranscriptTaskText"
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    color: Theme.textPrimary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textMd
+                    text: root.clipTask === "delete"
+                          ? qsTr("Delete this clip's transcript? Captions made from it and cuts made by editing its text stay. You can transcribe the clip again afterwards.")
+                          : qsTr("Transcribe this clip again? The new transcript replaces the old one when it is done; the old one stays if you cancel.")
+                }
+                SpokenLanguageRow {
+                    Layout.fillWidth: true
+                    visible: root.clipTask === "redo"
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.space(1)
+                    PillButton {
+                        objectName: "sourceTranscriptTaskConfirm"
+                        variant: root.clipTask === "delete" ? "danger" : "primary"
+                        compact: true
+                        iconName: root.clipTask === "delete" ? "trash-2" : "rotate-ccw"
+                        text: root.clipTask === "delete" ? qsTr("Delete transcript") : qsTr("Transcribe again")
+                        enabled: root.clipTask === "delete" || !Transcript.setupNeeded
+                        onClicked: root.runClipTask()
+                    }
+                    PillButton {
+                        objectName: "sourceTranscriptTaskCancel"
+                        compact: true
+                        text: qsTr("Cancel")
+                        onClicked: root.clipTask = ""
+                    }
+                }
+            }
         }
 
         // A press picks the word under the pointer; dragging extends the run across paragraphs; the release sets the
@@ -486,6 +590,9 @@ FocusScope {
                         Flow {
                             id: flow
                             width: column.width
+                            // card 073: right-to-left languages read from the right.
+                            LayoutMirroring.enabled: SourceTranscript.rtl
+                            LayoutMirroring.childrenInherit: false
                             Repeater {
                                 model: para.words
                                 delegate: WordText {}
@@ -607,7 +714,12 @@ FocusScope {
         onAllowed: always => {
             if (always)
                 AiController.grantConsent(consent.prompt.provider, "transcribe")
-            SourceTranscript.transcribe(true) // the user's answer: allowed for this job
+            if (root.redoConsent) {
+                root.redoConsent = false
+                SourceTranscript.redo(true)
+            } else {
+                SourceTranscript.transcribe(true) // the user's answer: allowed for this job
+            }
         }
     }
 }

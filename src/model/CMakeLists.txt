@@ -31,6 +31,12 @@ add_library(wabcut_model STATIC
     src/ChangeSet.cpp
     src/Clip.cpp
     src/ClipGroupOps.cpp
+    src/ClipLock.cpp
+    src/KeyPins.cpp
+    src/KeyframeEasing.cpp
+    src/MotionBlur.cpp
+    src/MarkerGroupOps.cpp
+    src/PacingMap.cpp
     src/FadeOps.cpp
     src/SelectionOps.cpp
     src/Clipboard.cpp
@@ -70,10 +76,12 @@ add_library(wabcut_model STATIC
     src/Parameters.cpp
     src/PreviewCache.cpp
     src/ProjectDiff.cpp
+    src/ProjectDowngrade.cpp
     src/ProjectIO.cpp
     src/AudioChannelOps.cpp
     src/AudioChannels.cpp
     src/ProjectOps.cpp
+    src/RenderReplace.cpp # 0.7 (card 069): Render and Replace for nested sequences
     src/ProjectState.cpp
     src/RawSourceSettings.cpp
     src/RedactedSpeech.cpp
@@ -89,6 +97,7 @@ add_library(wabcut_model STATIC
     src/SequenceEditor.h
     src/Snap.cpp
     src/SpannedClip.cpp
+    src/SpectralRepair.cpp
     src/SnapshotReleaser.cpp
     src/Spelling.cpp
     src/Synthetic.cpp
@@ -96,12 +105,15 @@ add_library(wabcut_model STATIC
     src/TextFind.cpp
     src/SpeedOps.cpp
     src/EffectsMotion.cpp
+    src/EyeContact.cpp
+    src/EffectsAi.cpp
     src/TimeInterpolation.cpp
     src/SubmixOps.cpp
     src/TimeRemap.cpp
     src/TimeRemapOps.cpp
     src/Timecode.cpp
     src/TitleOps.cpp
+    src/TrackGroups.cpp
     src/TranscriptOps.cpp
     src/Transcripts.cpp
     src/TransitionOps.cpp
@@ -117,3 +129,13 @@ wabcut_target_defaults(wabcut_model)
 # P.2 (E6, monitors): Motion set as one edit (Position, Scale, Rotation, Anchor Point at one curve time): the Program
 # Monitor's direct manipulation and clip.setMotion.
 target_sources(wabcut_model PRIVATE src/MotionOps.cpp)
+
+# 0.7: Consolidate Duplicates (card 025) and the rights and clearance record (card 179).
+target_sources(wabcut_model PRIVATE src/Consolidate.cpp src/Rights.cpp)
+
+# 0.7: VR / 360 video (equirectangular projections, stereoscopic layouts and the sphere maths).
+target_sources(wabcut_model PRIVATE src/Vr.cpp)
+
+# 0.7: the comments a review link brings back (card 035, docs/cloud.md): the file the review page exports, and its import into the
+# review notes.
+target_sources(wabcut_model PRIVATE src/ReviewComments.cpp)

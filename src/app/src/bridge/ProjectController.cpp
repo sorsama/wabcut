@@ -15,6 +15,8 @@
 
 #include <wabcut/model/ClipGroups.h>
 #include <wabcut/model/EditOps.h>
+#include <wabcut/model/FrameScaling.h>
+#include <wabcut/model/EditingOps.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/ProjectOps.h>
@@ -84,7 +86,7 @@ QHash<int, QByteArray> TrackListModel::roleNames() const {
         {TrackIdRole, "trackId"},     {ShortNameRole, "shortName"}, {NameRole, "name"},
         {KindRole, "kind"},           {ColorIndexRole, "colorIndex"}, {EnabledRole, "trackEnabled"},
         {LockedRole, "locked"},       {MutedRole, "muted"},         {SoloRole, "solo"},
-        {TargetedRole, "targeted"},   {SyncLockedRole, "syncLocked"},
+        {TargetedRole, "targeted"},   {SyncLockedRole, "syncLocked"}, {LabelIndexRole, "labelIndex"},
     };
 }
 
@@ -102,9 +104,13 @@ QVariant TrackListModel::data(const QModelIndex& index, int role) const {
     case KindRole:
         return r.kind == TrackKind::Video ? QStringLiteral("video") : QStringLiteral("audio");
     case ColorIndexRole: {
+        if (r.labelIndex >= 0) // 0.7: the track's own label colour wins over the default by position
+            return r.labelIndex;
         const auto& table = r.kind == TrackKind::Video ? kVideoTrackColors : kAudioTrackColors;
         return table[static_cast<std::size_t>(r.index) % table.size()];
     }
+    case LabelIndexRole:
+        return r.labelIndex;
     case EnabledRole:
         return r.enabled;
     case LockedRole:
@@ -137,6 +143,7 @@ TrackListModel::Row TrackListModel::makeRow(const Track& track, int index) {
     r.solo = track.solo;
     r.targeted = track.targeted;
     r.syncLocked = track.syncLocked;
+    r.labelIndex = track.colorIndex;
     return r;
 }
 
@@ -168,7 +175,7 @@ void TrackListModel::update(const Sequence* sequence) {
         const Row& a = m_data[i];
         const Row& b = next[i];
         const bool same = a.name == b.name && a.enabled == b.enabled && a.locked == b.locked && a.muted == b.muted
-            && a.solo == b.solo && a.targeted == b.targeted && a.syncLocked == b.syncLocked && a.index == b.index;
+            && a.solo == b.solo && a.targeted == b.targeted && a.syncLocked == b.syncLocked && a.labelIndex == b.labelIndex && a.index == b.index;
         m_data[i] = b;
         if (!same) {
             const QModelIndex idx = index(static_cast<int>(i));
@@ -706,6 +713,21 @@ int ProjectController::frameHeight() const {
     return seq ? seq->height : 0;
 }
 
+double ProjectController::framePixelAspect() const {
+    const SequencePtr seq = currentSequence();
+    return seq ? sequencePixelAspect(*seq) : 1.0;
+}
+
+QString ProjectController::sequenceVrProjection() const {
+    const SequencePtr seq = currentSequence();
+    return QString::fromLatin1(seq ? toString(seq->vr.projection) : toString(VrProjection::None));
+}
+
+QString ProjectController::sequenceVrStereo() const {
+    const SequencePtr seq = currentSequence();
+    return QString::fromLatin1(seq ? toString(seq->vr.stereo) : toString(StereoLayout::Mono));
+}
+
 QString ProjectController::durationText() const {
     const SequencePtr seq = currentSequence();
     return seq ? formatTimecode(seq->duration) : QString();
@@ -967,6 +989,11 @@ std::optional<Ticks> ProjectController::markOut() const {
     return seq ? seq->markOut : std::nullopt;
 }
 
+std::optional<TimeRange> ProjectController::workArea() const {
+    const SequencePtr seq = currentSequence();
+    return seq ? seq->workArea : std::nullopt;
+}
+
 QString ProjectController::markInText() const {
     const auto in = markIn();
     return in ? formatTimecode(*in) : QString();
@@ -1009,6 +1036,49 @@ void ProjectController::setRippleSequenceMarkers(bool on) {
     change.rippleMarkers = on;
     applyEdit(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Ripple Sequence Markers"),
               [&](const ProjectState& state) { return edit::setSequenceSettings(state, id, change); });
+}
+
+bool ProjectController::rippleTrackKeyframes() const {
+    const SequencePtr seq = currentSequence();
+    return seq ? seq->rippleTrackKeyframes : false;
+}
+
+void ProjectController::setRippleTrackKeyframes(bool on) {
+    const SequencePtr seq = currentSequence();
+    if (!seq || seq->rippleTrackKeyframes == on)
+        return; // no empty undo step
+    const SequenceId id = m_sequence;
+    edit::SequenceSettingsChange change;
+    change.rippleTrackKeyframes = on;
+    applyEdit(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Ripple Track Keyframes"),
+              [&](const ProjectState& state) { return edit::setSequenceSettings(state, id, change); });
+}
+
+void ProjectController::setWorkAreaEdgeAtPlayhead(bool in) {
+    const SequencePtr seq = currentSequence();
+    if (!seq)
+        return;
+    const Ticks at = m_playhead;
+    const Ticks end = std::max(seq->duration, seq->contentEnd());
+    const Ticks from = in ? at : (seq->workArea ? seq->workArea->start : Ticks{});
+    const Ticks to = in ? (seq->workArea ? seq->workArea->end() : end) : at;
+    if (to <= from || to > end) {
+        setError(in ? tr("The work area's In must come before its Out") : tr("The work area's Out must come after its In"));
+        return;
+    }
+    const SequenceId id = m_sequence;
+    applyEdit(in ? QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Set Work Area In")
+                 : QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Set Work Area Out"),
+              [&](const ProjectState& state) { return edit::setWorkArea(state, id, TimeRange::fromStartEnd(from, to)); });
+}
+
+void ProjectController::clearWorkArea() {
+    const SequencePtr seq = currentSequence();
+    if (!seq || !seq->workArea)
+        return; // no empty undo step
+    const SequenceId id = m_sequence;
+    applyEdit(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Clear Work Area"),
+              [&](const ProjectState& state) { return edit::setWorkArea(state, id, std::nullopt); });
 }
 
 void ProjectController::markInAtPlayhead() {
@@ -1089,6 +1159,8 @@ const QHash<QString, CommandAction>& commandActions() {
         {QStringLiteral("edit.redo"), [](ProjectController& c) { c.redo(); }},
         {QStringLiteral("edit.selectAll"), [](ProjectController& c) { c.selectAll(); }},
         {QStringLiteral("edit.deselectAll"), [](ProjectController& c) { c.clearSelection(); }},
+        {QStringLiteral("edit.selectDisabledClips"), [](ProjectController& c) { c.selectDisabledClips(); }}, // 0.7, card 122
+        {QStringLiteral("edit.selectLabelGroup"), [](ProjectController& c) { c.selectLabelGroup(); }},
         {QStringLiteral("file.newSequence"), [](ProjectController& c) { c.newSequence(); }},
         {QStringLiteral("transport.stepBackward"), [](ProjectController& c) { c.stepFrames(-1); }},
         {QStringLiteral("transport.stepForward"), [](ProjectController& c) { c.stepFrames(1); }},
@@ -1102,6 +1174,9 @@ const QHash<QString, CommandAction>& commandActions() {
         {QStringLiteral("transport.goToEnd"), [](ProjectController& c) { c.goToEnd(); }},
         {QStringLiteral("transport.goToSelectedClipStart"), [](ProjectController& c) { c.goToSelectedClipStart(); }},
         {QStringLiteral("transport.goToSelectedClipEnd"), [](ProjectController& c) { c.goToSelectedClipEnd(); }},
+        {QStringLiteral("timeline.setWorkAreaIn"), [](ProjectController& c) { c.setWorkAreaEdgeAtPlayhead(true); }}, // 0.7, card 046
+        {QStringLiteral("timeline.setWorkAreaOut"), [](ProjectController& c) { c.setWorkAreaEdgeAtPlayhead(false); }},
+        {QStringLiteral("timeline.clearWorkArea"), [](ProjectController& c) { c.clearWorkArea(); }}, // 0.7, card 024
         {QStringLiteral("marker.markIn"), [](ProjectController& c) { c.markInAtPlayhead(); }},
         {QStringLiteral("marker.markOut"), [](ProjectController& c) { c.markOutAtPlayhead(); }},
         {QStringLiteral("marker.markClip"), [](ProjectController& c) { c.markClipAtPlayhead(); }},
@@ -1128,6 +1203,11 @@ const QHash<QString, CommandAction>& commandActions() {
         {QStringLiteral("sequence.selectClipAtPlayhead"), [](ProjectController& c) { c.selectClipAtPlayhead(); }},
         {QStringLiteral("clip.link"), [](ProjectController& c) { c.toggleLinkSelection(); }},
         {QStringLiteral("clip.enable"), [](ProjectController& c) { c.toggleEnabledSelection(); }},
+        {QStringLiteral("clip.lock"), [](ProjectController& c) { c.toggleLockSelection(); }}, // 0.7 (card 064)
+        // 0.7 (card 124): track groups
+        {QStringLiteral("timeline.groupTargetedTracks"), [](ProjectController& c) { c.groupTargetedTracks(); }},
+        {QStringLiteral("timeline.collapseTrackGroups"), [](ProjectController& c) { c.setAllTrackGroupsCollapsed(true); }},
+        {QStringLiteral("timeline.expandTrackGroups"), [](ProjectController& c) { c.setAllTrackGroupsCollapsed(false); }},
         // 0.2 timeline parity (ProjectControllerTimeline.cpp)
         {QStringLiteral("clip.group"), [](ProjectController& c) { c.groupSelection(); }},
         {QStringLiteral("clip.ungroup"), [](ProjectController& c) { c.ungroupSelection(); }},
@@ -1174,6 +1254,13 @@ const QHash<QString, CommandAction>& commandActions() {
         {QStringLiteral("timeline.toggleAllAudioTargets"), [](ProjectController& c) { c.toggleTrackFlagAll(QStringLiteral("audio"), QStringLiteral("targeted")); }},
         {QStringLiteral("clip.moveIntoSync"), [](ProjectController& c) { c.moveIntoSync(); }},
         {QStringLiteral("clip.slipIntoSync"), [](ProjectController& c) { c.slipIntoSync(); }},
+        // 0.7 (A2, ProjectControllerTracks.cpp): the track switches on the keys, and a marker from In/Out. Main.qml runs
+        // these itself to toast why one cannot; from here (the palette) the reason is in lastError.
+        {QStringLiteral("timeline.toggleTrackOutput"), [](ProjectController& c) { c.toggleTrackSwitch(QStringLiteral("output")); }},
+        {QStringLiteral("timeline.toggleTrackMute"), [](ProjectController& c) { c.toggleTrackSwitch(QStringLiteral("mute")); }},
+        {QStringLiteral("timeline.toggleTrackSolo"), [](ProjectController& c) { c.toggleTrackSwitch(QStringLiteral("solo")); }},
+        {QStringLiteral("timeline.soloSelectedClipTrack"), [](ProjectController& c) { c.soloSelectedClipTracks(); }},
+        {QStringLiteral("marker.addFromInOut"), [](ProjectController& c) { c.addMarkerFromInOut(); }},
     };
     return kActions;
 }
@@ -1264,6 +1351,64 @@ void ProjectController::selectAll() {
     setSelection(std::move(all), m_primary);
 }
 
+bool ProjectController::selectDisabledClips() {
+    const SequencePtr seq = currentSequence();
+    if (!seq)
+        return false;
+    std::vector<ClipId> disabled = edit::disabledClips(*seq);
+    if (disabled.empty())
+        return false;
+    setGapSelection(std::nullopt);
+    const ClipId primary = disabled.front();
+    setSelection(std::move(disabled), primary);
+    return true;
+}
+
+bool ProjectController::selectLabelGroup() {
+    const SequencePtr seq = currentSequence();
+    if (!seq)
+        return false;
+    // The label colours of the selected clips (a selection of clips of several colours selects every one of them).
+    std::set<std::int32_t> labels;
+    for (const ClipId id : selectedClipIds()) {
+        if (const auto loc = seq->findClip(id))
+            labels.insert(loc->clip().colorIndex);
+    }
+    if (labels.empty())
+        return false;
+    std::vector<ClipId> group;
+    seq->forEachTrack([&](const Track& t) {
+        for (const Clip& c : t.clips) {
+            if (labels.contains(c.colorIndex))
+                group.push_back(c.id);
+        }
+    });
+    if (m_linkedSelection)
+        group = edit::withLinkedClips(*seq, group); // a partner of another colour comes along, as it does for a click
+    // The primary clip stays when it is still in; else the first of the group.
+    const bool keepPrimary = m_primary && std::ranges::find(group, m_primary) != group.end();
+    const ClipId primary = keepPrimary ? m_primary : group.front();
+    setGapSelection(std::nullopt);
+    setSelection(std::move(group), primary);
+    return true;
+}
+
+int ProjectController::selectionLabel() const {
+    const SequencePtr seq = currentSequence();
+    if (!seq)
+        return -1;
+    std::optional<std::int32_t> common;
+    for (const ClipId id : selectedClipIds()) {
+        const auto loc = seq->findClip(id);
+        if (!loc)
+            continue;
+        if (common && *common != loc->clip().colorIndex)
+            return -1;
+        common = loc->clip().colorIndex;
+    }
+    return common.value_or(-1);
+}
+
 void ProjectController::clearSelection() {
     setGapSelection(std::nullopt);
     setSelection({});
@@ -1276,6 +1421,23 @@ QString ProjectController::clipName(const QString& clipId) const {
         return {};
     const auto loc = seq->findClip(*id);
     return loc ? QString::fromStdString(loc->clip().name()) : QString();
+}
+
+QString ProjectController::clipNote(const QString& clipId) const {
+    const auto id = parseClipKey(clipId);
+    const SequencePtr seq = currentSequence();
+    if (!id || !seq)
+        return {};
+    const auto loc = seq->findClip(*id);
+    return loc ? QString::fromStdString(loc->clip().note()) : QString();
+}
+
+int ProjectController::clipNoteBytes(const QString& note) const {
+    return static_cast<int>(note.toUtf8().size());
+}
+
+int ProjectController::clipNoteLimit() const {
+    return static_cast<int>(kMaxClipNoteBytes);
 }
 
 std::optional<ClipId> ProjectController::propertyTarget(StreamKind kind) const {

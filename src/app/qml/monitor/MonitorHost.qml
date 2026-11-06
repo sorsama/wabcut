@@ -19,6 +19,10 @@ Item {
     ExportFrameDialog {
         id: exportFrame
     }
+    // 0.7 (card 110): Program Monitor > Video Output Settings...
+    VideoOutputDialog {
+        id: videoOutput
+    }
     Connections {
         target: Monitors
         function onDialogRequested(dialog, index) {
@@ -30,6 +34,8 @@ Item {
                 guideTemplates.openSave()
             else if (dialog === "manageGuides")
                 guideTemplates.openManage()
+            else if (dialog === "videoOutput")
+                videoOutput.open()
             else if (dialog === "exportFrame")
                 exportFrame.openFor(index === 1)
             else if (dialog === "exportFramesAtMarkers") // P1 (#23): index 1 = the highlight markers

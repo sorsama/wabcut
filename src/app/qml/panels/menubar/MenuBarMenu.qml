@@ -22,6 +22,22 @@ ContextMenu {
     /// P1 round (#5): its title shows a dot (Help: a newer Wabcut is out).
     property bool badge: false
 
+    /// The room between its title and the bottom of the window (AppMenuBar.open sets it; 0: no limit). A menu longer than
+    /// that is as tall as the room and scrolls, so it never reaches back over the bar (the pointer could not get to the
+    /// neighbouring title, and its own title would be covered).
+    property real roomBelow: 0
+    height: root.roomBelow > 0 ? Math.min(root.implicitHeight, root.roomBelow) : root.implicitHeight
+    // Qt's own menu list, scrolling when the menu is taller than the room it has.
+    contentItem: ListView {
+        implicitHeight: contentHeight
+        model: root.contentModel
+        interactive: contentHeight > height
+        clip: true
+        currentIndex: root.currentIndex
+        boundsBehavior: Flickable.StopAtBounds
+        T.ScrollIndicator.vertical: T.ScrollIndicator {}
+    }
+
     // A press on the menu's own title (its parent while it is open) leaves it to the title, which closes it; a press
     // anywhere else closes it.
     closePolicy: root.nested ? T.Popup.CloseOnEscape | T.Popup.CloseOnPressOutside

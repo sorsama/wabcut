@@ -33,8 +33,11 @@ Item {
         id: tabMenu
         objectName: "sequenceTabMenu"
         property string sequence: ""
+        /// 0.7 (card 010): the sequence's label colour, checked in the Label menu.
+        property int label: -1
         function openFor(sequenceId, target, point) {
             sequence = sequenceId
+            label = SequenceTabs.tabs.find(tab => tab.id === sequenceId)?.label ?? -1
             popup(target, point.x, point.y)
         }
         ContextMenu {
@@ -50,7 +53,12 @@ Item {
                     text: modelData
                     iconName: "square"
                     iconColor: Theme.clipColor(index)
-                    onTriggered: SequenceTabs.setLabel(tabMenu.sequence, index)
+                    checkable: true
+                    checked: index === tabMenu.label
+                    onTriggered: {
+                        checked = Qt.binding(() => index === tabMenu.label)
+                        SequenceTabs.setLabel(tabMenu.sequence, index)
+                    }
                 }
                 onObjectAdded: (index, object) => tabLabelMenu.insertItem(index, object as ContextMenuItem)
                 onObjectRemoved: (index, object) => tabLabelMenu.removeItem(object as ContextMenuItem)

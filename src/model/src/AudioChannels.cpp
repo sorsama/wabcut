@@ -13,6 +13,8 @@ std::string_view toString(ChannelFormat format) {
         return "stereo";
     case ChannelFormat::Surround51:
         return "5.1";
+    case ChannelFormat::Surround71:
+        return "7.1";
     case ChannelFormat::Adaptive:
         break;
     }
@@ -20,12 +22,36 @@ std::string_view toString(ChannelFormat format) {
 }
 
 std::optional<ChannelFormat> channelFormatFromString(std::string_view text) {
-    for (const ChannelFormat f : {ChannelFormat::Mono, ChannelFormat::Stereo, ChannelFormat::Surround51, ChannelFormat::Adaptive}) {
+    for (const ChannelFormat f : {ChannelFormat::Mono, ChannelFormat::Stereo, ChannelFormat::Surround51, ChannelFormat::Surround71,
+                                  ChannelFormat::Adaptive}) {
         if (text == toString(f)) {
             return f;
         }
     }
     return std::nullopt;
+}
+
+std::string masterChangeNote(ChannelFormat from, ChannelFormat to) {
+    if (from == to) {
+        return {};
+    }
+    if (from == ChannelFormat::Surround51 && to == ChannelFormat::Surround71) {
+        return "5.1 became 7.1: the surround channels play from the side pair (Ls, Rs); the rear pair (Lrs, Rrs) is silent";
+    }
+    if (from == ChannelFormat::Surround71 && to == ChannelFormat::Surround51) {
+        return "7.1 became 5.1: the rear pair is folded into the surrounds at -3 dB";
+    }
+    if (from == ChannelFormat::Surround71 && to == ChannelFormat::Stereo) {
+        return "7.1 became stereo: the downmix follows ITU-R BS.775 (the LFE is left out)";
+    }
+    if (from == ChannelFormat::Surround51 && to == ChannelFormat::Stereo) {
+        return "5.1 became stereo: the downmix follows ITU-R BS.775 (the LFE is left out)";
+    }
+    if (to == ChannelFormat::Surround71 && from == ChannelFormat::Stereo) {
+        return "stereo became 7.1: tracks keep their channels; stereo tracks play from the panner's puck, the rear pair is silent "
+               "until a track pans there";
+    }
+    return {};
 }
 
 AudioChannelMap AudioChannelMap::identity(int sourceChannels) {

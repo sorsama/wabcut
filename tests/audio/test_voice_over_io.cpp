@@ -315,3 +315,73 @@ TEST_CASE("A WAV being written is readable at every sync point (the recorder syn
     CHECK(recovered->frames == 48000);
     REQUIRE((*writer)->finish());
 }
+
+// Card 161: WavWriter::write() kept appending past what the 32-bit RIFF / data sizes can describe, so a take past 4 GiB
+// had a header that clamped (it played only the first 4 GiB) and recoverWav() / inspectWav() then refused the file.
+TEST_CASE("WavWriter never passes what a WAV header can describe: the frames that fit are written, the rest refused",
+          "[audio][voiceover][wav]") {
+    // The ceiling is 4 GiB less the header's own bytes, in whole frames, for every format.
+    for (const WavFormat format : {WavFormat{48000, 2, 32}, WavFormat{48000, 2, 24}, WavFormat{44100, 1, 16}, WavFormat{96000, 8, 24}}) {
+        const std::int64_t frameBytes = static_cast<std::int64_t>(format.channels) * (format.bitsPerSample / 8);
+        const std::int64_t max = WavWriter::maxFrames(format);
+        INFO(format.channels << " ch " << format.bitsPerSample << " bit");
+        CHECK(max * frameBytes <= 0xFFFFFFFFLL - 36);
+        CHECK((max + 1) * frameBytes > 0xFFFFFFFFLL - 36);
+    }
+    CHECK(WavWriter::maxFrames(WavFormat{48000, 2, 32}) == (0xFFFFFFFFLL - 36) / 8);
+
+    const auto dir = scratchDir("limit");
+    const auto file = dir / "full.wav";
+    std::vector<float> voice(300);
+    for (std::size_t i = 0; i < voice.size(); ++i) {
+        voice[i] = static_cast<float>(std::sin(static_cast<double>(i) * 0.05) * 0.5);
+    }
+    auto writer = WavWriter::create(file, WavFormat{48000, 1, 24}, 1000000);
+    REQUIRE(writer);
+    CHECK((*writer)->capacityFrames() == WavWriter::maxFrames(WavFormat{48000, 1, 24}));
+    (*writer)->limitFrames(INT64_MAX); // never above the format's ceiling
+    CHECK((*writer)->capacityFrames() == WavWriter::maxFrames(WavFormat{48000, 1, 24}));
+    (*writer)->limitFrames(250); // a cap that tests (and a recorder) can reach without 4 GiB of audio
+    CHECK((*writer)->capacityFrames() == 250);
+    CHECK_FALSE((*writer)->full());
+    REQUIRE((*writer)->write(std::span<const float>(voice).first(200)));
+    CHECK_FALSE((*writer)->full());
+
+    // 100 more asked, 50 fit: those are written and the call says the file is full.
+    const auto refused = (*writer)->write(std::span<const float>(voice).subspan(200));
+    REQUIRE_FALSE(refused);
+    CHECK(refused.error().code == ErrorCode::Unsupported);
+    CHECK((*writer)->full());
+    CHECK((*writer)->frames() == 250);
+    // The header describes exactly what is in the file, mid-take (not clamped, not stale).
+    const auto mid = bytesOf(file);
+    CHECK(mid.size() == 44 + 250 * 3);
+    CHECK(u32(mid, 40) == 250u * 3u);
+    CHECK(u32(mid, 4) == 36u + 250u * 3u);
+    // Nothing more is accepted, and nothing changes.
+    CHECK_FALSE((*writer)->write(std::span<const float>(voice).first(10)));
+    CHECK((*writer)->frames() == 250);
+    REQUIRE((*writer)->finish());
+    CHECK(std::filesystem::file_size(file) == 44 + 250 * 3);
+
+    // The file is a valid WAV of those frames, which Wabcut's own reader accepts as sound (nothing to repair).
+    const auto samples = samplesOf(file);
+    REQUIRE(samples.size() == 250);
+    for (std::size_t i = 0; i < samples.size(); i += 17) {
+        CHECK(std::fabs(samples[i] - voice[i]) <= 1.0 / 8388607.0);
+    }
+    const auto inspected = inspectWav(file);
+    REQUIRE(inspected);
+    CHECK_FALSE(inspected->needsRepair);
+    CHECK(inspected->frames == 250);
+
+    // A write that is full from the start (a zero cap) is refused, and the file stays a header only.
+    auto empty = WavWriter::create(dir / "none.wav", WavFormat{48000, 1, 16});
+    REQUIRE(empty);
+    (*empty)->limitFrames(0);
+    CHECK((*empty)->full());
+    CHECK_FALSE((*empty)->write(std::span<const float>(voice).first(10)));
+    CHECK((*empty)->frames() == 0);
+    REQUIRE((*empty)->finish());
+    CHECK(std::filesystem::file_size(dir / "none.wav") == 44);
+}

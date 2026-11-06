@@ -7,11 +7,14 @@
 
 #include "BridgeIds.h"
 #include "EffectControls.h"
+#include "ExportController.h"
+#include "KeymapDispatcher.h"
 #include "ProjectController.h"
 #include "StabilizerBridge.h"
 #include "SyntheticMotion.h"
 #include "TimelineFixture.h"
 
+#include <wabcut/export/ExportJob.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/MotionOps.h>
@@ -19,6 +22,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QImage>
 #include <QQuickItem>
 
 #include <cmath>
@@ -306,4 +310,276 @@ TEST_CASE("Motion UI: the Library's New Item submenu makes Bars and Tone and the
     const QStringList messages = takeMessages();
     INFO(join(messages));
     CHECK(messages.isEmpty());
+}
+
+// 0.7 (cards #128 and #107): Analyze All through the Stabilizer singleton - one job, one undo step, current effects skipped,
+// out-of-date ones redone - the header's "Out of date" state and Analyze All button, and the Export panel's data: a
+// stabilizer that is not analysed exports unstabilized, per exported range.
+TEST_CASE("Motion UI: Analyze All analyses every stabilizer in one undo step, and the export range counts the pending ones",
+          "[app][motion][stabilize][analyzeAll]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    shell.resize(kShotWidth, kShotHeight);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* stabilizer = shell.engine.singletonInstance<StabilizerBridge*>("Wabcut", "Stabilizer");
+    REQUIRE(controller);
+    REQUIRE(stabilizer);
+    Timeline tl("V1 |Aaaaaaaaaa..A40aaaaaaaaa|\nA1 |Aaaaaaaaaa..A40aaaaaaaaa|");
+    tl.linkMatching();
+    controller->resetProject(tl.state, tl.seq);
+    const ClipId first = clipAt(*controller->snapshot(), tl.seq, "V1@0");
+    const ClipId second = clipAt(*controller->snapshot(), tl.seq, "V1@12");
+    const SequenceId seq = tl.seq;
+    for (const ClipId clip : {first, second}) {
+        REQUIRE(controller->session()
+                    .apply("Apply Effect",
+                           [&](const ProjectState& s) {
+                               return edit::addEffect(s, seq, std::span(&clip, 1), std::string(kWarpStabilizerEffect));
+                           })
+                    .has_value());
+    }
+    controller->selectClipById(first, ProjectController::Replace);
+    controller->setPlayhead(Ticks{});
+    const auto effectOf = [&](ClipId clip) { return controller->currentSequence()->findClip(clip)->clip().effects().front().id; };
+    const QString sectionA = QStringLiteral("e%1").arg(effectOf(first).value);
+    const QString sectionB = QStringLiteral("e%1").arg(effectOf(second).value);
+
+    // Nothing analysed: two pending; the export would render both unstabilized, and says so (whole range).
+    QVariantMap overview = stabilizer->overview();
+    CHECK(overview.value(QStringLiteral("count")).toInt() == 2);
+    CHECK(overview.value(QStringLiteral("pending")).toInt() == 2);
+    CHECK(overview.value(QStringLiteral("notAnalyzed")).toInt() == 2);
+    QVariantMap needs = stabilizer->exportNeeds(QStringLiteral("whole"));
+    CHECK(needs.value(QStringLiteral("count")).toInt() == 2);
+    CHECK(needs.value(QStringLiteral("names")).toStringList().front().contains(QStringLiteral("Warp Stabilizer")));
+    CHECK(needs.value(QStringLiteral("names")).toStringList().front().startsWith(QStringLiteral("V1: A")));
+    // A range that holds only the second clip: one.
+    controller->setPlayhead(framesToTicks(12, kRate25));
+    controller->markInAtPlayhead();
+    controller->setPlayhead(framesToTicks(22, kRate25));
+    controller->markOutAtPlayhead();
+    controller->setPlayhead(Ticks{});
+    needs = stabilizer->exportNeeds(QStringLiteral("inOut"));
+    CHECK(needs.value(QStringLiteral("count")).toInt() == 1);
+    needs = stabilizer->exportNeeds(QStringLiteral("whole"));
+    CHECK(needs.value(QStringLiteral("count")).toInt() == 2);
+
+    // The header offers Analyze All (two stabilizers) with the number pending.
+    REQUIRE_FALSE(shell.grab().isNull());
+    EffectControlsModel& fx = *controller->effectControls();
+    QObject* list = shell.object("effectControlsList");
+    REQUIRE(list != nullptr);
+    REQUIRE(fx.rowOf(QStringLiteral("h:") + sectionA) >= 0);
+    REQUIRE(QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, fx.rowOf(QStringLiteral("h:") + sectionA)), Q_ARG(int, 0)));
+    spin(50);
+    QQuickItem* all = nullptr;
+    REQUIRE(waitFor([&] { return (all = visibleNamed(shell, "stabilizerAnalyzeAll")) != nullptr; }));
+    CHECK(all->property("text").toString() == QStringLiteral("Analyze All (2)"));
+    const auto shootPanel = [&](const char* name) {
+        QQuickItem* panel = shell.item("effectControls");
+        REQUIRE(panel != nullptr);
+        for (const bool dark : {true, false}) {
+            shell.setAppearance(dark, "ultraviolet");
+            REQUIRE(shell.settle(dark, shell.themeColor("accentFill"))); // the palette cross-fade has finished
+            const QImage image = shell.grab();
+            REQUIRE_FALSE(image.isNull());
+            const double dpr = image.devicePixelRatio();
+            const QRectF r = panel->mapRectToScene(QRectF(0, 0, panel->width(), panel->height()));
+            REQUIRE(image.copy(QRectF(r.x() * dpr, r.y() * dpr, r.width() * dpr, r.height() * dpr).toRect())
+                        .save(outputDir() + QStringLiteral("/stabilizer-%1-%2.png").arg(QLatin1String(name), dark ? QStringLiteral("dark") : QStringLiteral("light"))));
+        }
+        shell.setAppearance(true, "ultraviolet");
+    };
+    shootPanel("analyze-all-pending");
+
+    // One job: both analysed over their 10 frames each, one undo step, nothing left pending.
+    stabilizer->setTrackingServices(std::make_shared<ShakyPictures>());
+    stabilizer->setSynchronous(true);
+    const std::filesystem::path cache = std::filesystem::path(outputDir().toStdString()) / "stabilizer-all-cache";
+    std::error_code ec;
+    std::filesystem::remove_all(cache, ec);
+    stabilizer->setCacheRoot(cache);
+    const std::size_t before = controller->session().undoCount();
+    // Sequence > Analyze All Stabilizers (the keymap command the menu item and the palette run, routed by Main.qml).
+    auto* keys = shell.engine.singletonInstance<KeymapDispatcher*>("Wabcut", "KeymapDispatcher");
+    REQUIRE(keys != nullptr);
+    REQUIRE(keys->trigger(QStringLiteral("sequence.analyzeStabilizers")));
+    INFO(stabilizer->message().toStdString());
+    CHECK_FALSE(stabilizer->busy());
+    CHECK(stabilizer->message().startsWith(QStringLiteral("Analyzed 2 stabilizer")));
+    CHECK(controller->session().undoCount() == before + 1);
+    CHECK(controller->undoText() == QStringLiteral("Undo Analyze All Stabilizers"));
+    for (const QString& section : {sectionA, sectionB})
+        CHECK(stabilizer->effectInfo(section).value(QStringLiteral("status")).toString() == QStringLiteral("analyzed"));
+    CHECK(stabilizer->overview().value(QStringLiteral("pending")).toInt() == 0);
+    CHECK(stabilizer->exportNeeds(QStringLiteral("whole")).value(QStringLiteral("count")).toInt() == 0);
+    // Nothing to do now: false, with the reason.
+    CHECK_FALSE(stabilizer->analyzeAll(false));
+    CHECK(stabilizer->message() == QStringLiteral("Every stabilizer is already analyzed"));
+    CHECK(controller->session().undoCount() == before + 1);
+
+    // A setting changed afterwards: that one is out of date (the header says so), and Analyze All redoes only it.
+    REQUIRE(controller->session()
+                .apply("Smoothness",
+                       [&](const ProjectState& s) {
+                           edit::EffectChange change;
+                           change.params = {EffectParam{"smoothness", ParamValue(300.0)}};
+                           return edit::setEffect(s, seq, first, effectOf(first), change);
+                       })
+                .has_value());
+    CHECK(stabilizer->effectInfo(sectionA).value(QStringLiteral("outOfDate")).toBool());
+    CHECK_FALSE(stabilizer->effectInfo(sectionB).value(QStringLiteral("outOfDate")).toBool());
+    CHECK(stabilizer->overview().value(QStringLiteral("outOfDate")).toInt() == 1);
+    CHECK(stabilizer->exportNeeds(QStringLiteral("whole")).value(QStringLiteral("count")).toInt() == 1);
+    spin(50);
+    REQUIRE_FALSE(shell.grab().isNull());
+    QQuickItem* status = visibleNamed(shell, "stabilizerStatus");
+    REQUIRE(status != nullptr);
+    CHECK(status->property("text").toString() == QStringLiteral("Out of date"));
+    QQuickItem* allAgain = visibleNamed(shell, "stabilizerAnalyzeAll");
+    REQUIRE(allAgain != nullptr);
+    CHECK(allAgain->property("text").toString() == QStringLiteral("Analyze All (1)"));
+    shootPanel("analyze-all-out-of-date");
+    CHECK(stabilizer->analyzeAll(false));
+    CHECK(stabilizer->overview().value(QStringLiteral("pending")).toInt() == 0);
+    CHECK(controller->undoText() == QStringLiteral("Undo Analyze All Stabilizers"));
+    // Reanalyze All redoes every one.
+    CHECK(stabilizer->analyzeAll(true));
+    CHECK(stabilizer->message().startsWith(QStringLiteral("Analyzed 2 stabilizer"))); // the same keys again: no new undo step
+
+    // A project that changed while it ran is not overwritten.
+    struct Nudge final : masks::TrackingServices {
+        masks::TrackingServices* inner = nullptr;
+        std::function<void()> onFirst;
+        std::expected<masks::TrackingFrame, Error> frame(const ProjectState& state, MediaId media, int stream, Ticks time, int maxWidth) override {
+            return inner->frame(state, media, stream, time, maxWidth);
+        }
+        void progress(const masks::TrackProgress&) override {
+            if (onFirst) {
+                auto run = std::move(onFirst);
+                run();
+            }
+        }
+    };
+    auto nudge = std::make_shared<Nudge>();
+    ShakyPictures shaky;
+    nudge->inner = &shaky;
+    nudge->onFirst = [&] {
+        REQUIRE(controller->session()
+                    .apply("Opacity", [&](const ProjectState& s) { return edit::setParameter(s, seq, first, edit::ParamRef::of(ParamId::Opacity), ParamValue(0.5)); })
+                    .has_value());
+    };
+    stabilizer->setTrackingServices(nudge);
+    CHECK(stabilizer->analyzeAll(true));
+    CHECK(stabilizer->message().contains(QStringLiteral("changed")));
+    CHECK(controller->undoText() == QStringLiteral("Undo Opacity"));
+    stabilizer->setTrackingServices(std::make_shared<ShakyPictures>());
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+// 0.7 (card #107): the Export panel warns, before the export, about a stabilizer that is not analysed (it would export
+// unstabilized), for the range being exported, with "Analyze now" (the Analyze All job); the export stays allowed.
+TEST_CASE("Motion UI: the Export panel warns about stabilizers that are not analysed and Analyze now fixes it (card 107)",
+          "[app][motion][stabilize][qml][screenshots]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    shell.resize(kShotWidth, kShotHeight);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* stabilizer = shell.engine.singletonInstance<StabilizerBridge*>("Wabcut", "Stabilizer");
+    auto* exporter = shell.engine.singletonInstance<ExportController*>("Wabcut", "ExportController");
+    REQUIRE(controller);
+    REQUIRE(stabilizer);
+    REQUIRE(exporter);
+    exporter->setVideoSourceFactory(wabcut::exporter::syntheticVideoSourceFactory());
+    Timeline tl("V1 |Aaaaaaaaaa..A40aaaaaaaaa|\nA1 |Aaaaaaaaaa..A40aaaaaaaaa|");
+    tl.linkMatching();
+    controller->resetProject(tl.state, tl.seq);
+    const ClipId first = clipAt(*controller->snapshot(), tl.seq, "V1@0");
+    const ClipId second = clipAt(*controller->snapshot(), tl.seq, "V1@12");
+    const SequenceId seq = tl.seq;
+    for (const ClipId clip : {first, second}) {
+        REQUIRE(controller->session()
+                    .apply("Apply Effect",
+                           [&](const ProjectState& s) {
+                               return edit::addEffect(s, seq, std::span(&clip, 1), std::string(kWarpStabilizerEffect));
+                           })
+                    .has_value());
+    }
+    stabilizer->setTrackingServices(std::make_shared<ShakyPictures>());
+    stabilizer->setSynchronous(true);
+    const std::filesystem::path cache = std::filesystem::path(outputDir().toStdString()) / "stabilizer-export-cache";
+    std::error_code ec;
+    std::filesystem::remove_all(cache, ec);
+    stabilizer->setCacheRoot(cache);
+
+    shell.window->setProperty("workspace", 2); // the Export workspace
+    spin(200);
+    QQuickItem* content = shell.window->contentItem();
+    QQuickItem* panel = nullptr;
+    REQUIRE(waitFor([&] {
+        panel = findItem(content, [](QQuickItem* i) { return i->property("sessionPicks").isValid(); });
+        return panel != nullptr && panel->isVisible();
+    }));
+    const auto named = [&](const char* name) {
+        return findItem(content, [&](QQuickItem* i) { return i->objectName() == QLatin1String(name); });
+    };
+
+    // Two stabilizers that are not analysed: the warning names them, says what happens, and offers Analyze now.
+    QQuickItem* warning = named("exportStabilizerWarning");
+    QQuickItem* analyze = named("exportAnalyze");
+    REQUIRE(warning != nullptr);
+    REQUIRE(analyze != nullptr);
+    REQUIRE(waitFor([&] { return warning->isVisible(); }));
+    const QString text = warning->property("text").toString();
+    INFO(text.toStdString());
+    CHECK(text.startsWith(QStringLiteral("2 stabilizers are not analyzed, so they will export unstabilized: V1: A at 00:00:00:00 (Warp Stabilizer), V1: A at ")));
+    CHECK(analyze->property("text").toString() == QStringLiteral("Analyze now"));
+    {
+        const QImage shot = shell.grab();
+        REQUIRE_FALSE(shot.isNull());
+        const double dpr = shot.devicePixelRatio();
+        const QRectF r = warning->mapRectToScene(QRectF(0, 0, warning->width(), warning->height())).adjusted(-8, -8, 8, 8);
+        REQUIRE(shot.copy(QRectF(r.x() * dpr, r.y() * dpr, r.width() * dpr, r.height() * dpr).toRect())
+                    .save(outputDir() + QStringLiteral("/export-stabilizer-warning.png")));
+        shell.setAppearance(false, "ultraviolet");
+        REQUIRE(shell.settle(false, shell.themeColor("accentFill")));
+        const QImage light = shell.grab();
+        REQUIRE_FALSE(light.isNull());
+        REQUIRE(light.copy(QRectF(r.x() * dpr, r.y() * dpr, r.width() * dpr, r.height() * dpr).toRect())
+                    .save(outputDir() + QStringLiteral("/export-stabilizer-warning-light.png")));
+        shell.setAppearance(true, "ultraviolet");
+    }
+
+    // Only the second clip is exported (In to Out over it): one.
+    controller->setPlayhead(framesToTicks(12, kRate25));
+    controller->markInAtPlayhead();
+    controller->setPlayhead(framesToTicks(22, kRate25));
+    controller->markOutAtPlayhead();
+    CHECK(stabilizer->exportNeeds(QStringLiteral("inOut")).value(QStringLiteral("count")).toInt() == 1);
+    CHECK(stabilizer->exportNeeds(QStringLiteral("whole")).value(QStringLiteral("count")).toInt() == 2);
+
+    // Analyze now: one job, one undo step; the warning goes.
+    const std::size_t before = controller->session().undoCount();
+    REQUIRE(QMetaObject::invokeMethod(analyze, "clicked"));
+    CHECK(controller->session().undoCount() == before + 1);
+    CHECK(controller->undoText() == QStringLiteral("Undo Analyze All Stabilizers"));
+    REQUIRE(waitFor([&] { return !warning->isVisible(); }));
+    CHECK(stabilizer->exportNeeds(QStringLiteral("whole")).value(QStringLiteral("count")).toInt() == 0);
+    // Undo brings the warning back.
+    REQUIRE(controller->undo());
+    REQUIRE(waitFor([&] { return warning->isVisible(); }));
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    for (const QString& m : messages)
+        CHECK_FALSE(m.contains(QStringLiteral("ExportPanel"), Qt::CaseInsensitive));
 }

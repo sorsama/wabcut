@@ -1,6 +1,7 @@
 #include <wabcut/render/GraphicRaster.h>
 
 #include <wabcut/render/Mask.h>
+#include <wabcut/render/TextTypography.h>
 
 #include <QFont>
 #include <QFontDatabase>
@@ -79,6 +80,9 @@ struct TextRunSpec {
     TextCaps caps = TextCaps::Normal;
     bool fauxBold = false;
     bool fauxItalic = false;
+    // 0.7 (card #138)
+    bool optical = false;     // Optical kerning (TextTypography.h)
+    std::string features;     // OpenType features (parseFontFeatures)
 };
 
 struct TextSpec {
@@ -116,8 +120,10 @@ QFont fontOf(const TextRunSpec& run) {
     if (run.tracking != 0.0) {
         font.setLetterSpacing(QFont::AbsoluteSpacing, run.tracking / 1000.0 * run.size);
     }
-    // 0.6: kerning pairs and capitals.
-    font.setKerning(run.kerning);
+    // 0.6: kerning pairs and capitals. 0.7 (card #138): Optical kerning sets the font's pairs aside (the pairs are spaced by
+    // their shapes in layoutText), and the style's OpenType features go to the shaper.
+    font.setKerning(run.kerning && !run.optical);
+    applyFontFeatures(font, run.features);
     if (run.caps != TextCaps::Normal) {
         font.setCapitalization(run.caps == TextCaps::AllCaps ? QFont::AllUppercase : QFont::SmallCaps);
     }
@@ -173,7 +179,7 @@ TextBlock layoutText(const TextSpec& spec) {
         if (r.fauxItalic) {
             format.setProperty(kFauxItalicProperty, true);
         }
-        block.formats.append(QTextLayout::FormatRange{from, to - from, format});
+        appendTextRanges(block.formats, block.text, from, to, format, r.optical, r.tracking / 1000.0 * r.size);
     }
     if (maxSize <= 0.0) {
         maxSize = base.size;
@@ -233,7 +239,7 @@ TextSpec specOf(const DrawText& text) {
     for (const DrawTextRun& r : text.runs) {
         spec.runs.push_back(TextRunSpec{r.byteStart, r.text, r.fontFamily, r.fontStyle, r.fontWeight, r.fontSize, r.italic,
                                         r.underline, r.tracking, r.leading, r.baselineShift, r.fill, r.kerning, r.caps,
-                                        r.fauxBold, r.fauxItalic});
+                                        r.fauxBold, r.fauxItalic, r.opticalKerning && r.kerning, r.features});
     }
     spec.verticalAlign = text.verticalAlign;
     spec.align = text.path.empty() ? text.align : TextAlign::Left; // on a path: aligned along it (placeOnPath)
@@ -250,7 +256,8 @@ TextSpec specOf(const TextContent& text, const std::vector<std::string>& fonts) 
         const TextStyle& s = r.style;
         spec.runs.push_back(TextRunSpec{at, r.text, i < fonts.size() ? fonts[i] : s.fontFamily, s.fontStyle, s.fontWeight,
                                         s.fontSize, s.italic, s.underline, s.tracking, s.leading, s.baselineShift,
-                                        Rgba{1.0, 1.0, 1.0, 1.0}, s.kerning, s.caps, s.fauxBold, s.fauxItalic});
+                                        Rgba{1.0, 1.0, 1.0, 1.0}, s.kerning, s.caps, s.fauxBold, s.fauxItalic,
+                                        s.opticalKerning && s.kerning, s.features});
         at += r.text.size();
     }
     spec.align = text.align;
@@ -942,7 +949,9 @@ void drawItem(QImage& canvas, const DrawItem& item, const Fit& fit, const Graphi
     }
     QImage picture;
     if (item.kind == DrawKind::Image && images && item.image.media.isValid()) {
-        picture = images->picture(item.image.media);
+        // The box in device pixels: vector artwork is drawn again at this size (0.7, card #86).
+        const QRectF box = toItem.mapRect(QRectF(-item.image.width / 2.0, -item.image.height / 2.0, item.image.width, item.image.height));
+        picture = images->picture(item.image.media, box.size());
     }
     QRectF bounds = deviceBounds(item, text ? &*text : nullptr, toItem);
     double shadowSigma = 0.0;

@@ -262,3 +262,58 @@ TEST_CASE("Dub dialog: the estimate, the timing-fit report, a ducked Dialogue Du
     REQUIRE(controller->session().undo());
     CHECK(controller->snapshot()->findSequence(controller->currentSequenceId())->audioTracks.size() == 2);
 }
+
+TEST_CASE("Dub plans with the routed voice model of the user's own provider and its own voice ids, offline too", "[ai][ui][global][r07]") {
+    // QA-02: the estimate without a model uses Settings > AI > Features (speak), from the live registry (a custom
+    // provider here), takes the server's own voice names, and the dialog offers a voice-id field for it. QA-07: offline
+    // and under the no-cloud lock, a voice server on this computer still dubs; a cloud voice does not.
+    qputenv("WABCUT_AI_KEYSTORE", "memory");
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    INFO(join(shell.errors));
+    REQUIRE(shell.window != nullptr);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* dub = shell.engine.singletonInstance<DubBridge*>("Wabcut", "Dub");
+    auto* ai = shell.engine.singletonInstance<AiController*>("Wabcut", "AiController");
+    REQUIRE((controller && dub && ai));
+    loadInto(controller, studio("th", {CaptionCue{sec(0.5), sec(2.0), "สวัสดีครับ", {}}, CaptionCue{sec(3.0), sec(1.5), "ขอบคุณครับ", {}}}),
+             QStringLiteral("dub-routed-fixture.wabcut"));
+    const QVariantMap saved = ai->saveCustomProvider(QVariantMap{
+        {QStringLiteral("name"), QStringLiteral("Kokoro server")},
+        {QStringLiteral("baseUrl"), QStringLiteral("http://127.0.0.1:9/v1")},
+        {QStringLiteral("auth"), QStringLiteral("none")},
+        {QStringLiteral("models"), QVariantList{QVariantMap{{QStringLiteral("id"), QStringLiteral("kokoro-82m")}, {QStringLiteral("capability"), QStringLiteral("speak")}}}}});
+    REQUIRE(saved.value(QStringLiteral("ok")).toBool());
+    REQUIRE(ai->setDefaultModel(QStringLiteral("speak"), QStringLiteral("kokoro-82m")));
+    dub->setSynchronous(true);
+
+    const QVariantList voices = dub->voices(QStringLiteral("kokoro-82m"));
+    REQUIRE_FALSE(voices.isEmpty());
+    CHECK(voices.front().toMap().value(QStringLiteral("id")) == QStringLiteral("alloy"));
+    CHECK(dub->voiceIdHint(QStringLiteral("kokoro-82m")).contains(QStringLiteral("Kokoro server")));
+    CHECK_FALSE(dub->voiceIdHint(QStringLiteral("eleven_v3")).isEmpty());
+    CHECK(dub->voiceIdHint(QStringLiteral("gpt-4o-mini-tts")).isEmpty()); // OpenAI's own 13 voices only
+
+    const auto plan = [&](const QVariantMap& options) {
+        CHECK(dub->estimate(options).isEmpty());
+        REQUIRE(dub->waitForIdle(20'000));
+        return dub->plan();
+    };
+    const QVariantMap dubbed = plan(QVariantMap{{QStringLiteral("kind"), QStringLiteral("dub")}, {QStringLiteral("voice"), QStringLiteral("af_heart")}});
+    INFO(dub->message().toStdString());
+    CHECK(dubbed.value(QStringLiteral("model")) == QStringLiteral("kokoro-82m"));
+    CHECK(dubbed.value(QStringLiteral("voice")) == QStringLiteral("af_heart"));
+
+    ai->setOfflineMode(true);
+    ai->setProjectLock(true);
+    spin(50);
+    CHECK(dub->cloudAvailable());
+    CHECK(plan(QVariantMap{{QStringLiteral("kind"), QStringLiteral("dub")}}).value(QStringLiteral("model")) == QStringLiteral("kokoro-82m"));
+    REQUIRE(ai->setDefaultModel(QStringLiteral("speak"), QStringLiteral("eleven_v3")));
+    CHECK_FALSE(dub->cloudAvailable());
+    CHECK(plan(QVariantMap{{QStringLiteral("kind"), QStringLiteral("dub")}}).isEmpty()); // refused: a cloud voice
+    CHECK(dub->run(QVariantMap{{QStringLiteral("kind"), QStringLiteral("dub")}, {QStringLiteral("maxCost"), 1.0}}).contains(QStringLiteral("no-cloud")));
+    ai->setProjectLock(false);
+    ai->setOfflineMode(false);
+}

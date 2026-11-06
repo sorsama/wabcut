@@ -448,6 +448,13 @@ QtObject {
             manager.setTree(manager.insertSharing(manager.tree, timelineGroup.group, leaf, "right", 0.05))
             return id
         }
+        // 0.7 (card 104): the Loudness panel takes a slim column of the timeline's row, between the timeline and the
+        // Audio Meters (no timeline: along the bottom, like the other timeline panels).
+        const loudnessAnchor = key === "loudness" ? manager.groupOfPanel("timeline") : null
+        if (loudnessAnchor) {
+            manager.setTree(manager.insertSharing(manager.tree, loudnessAnchor.group, leaf, "right", 0.16))
+            return id
+        }
         const metersGroup = key === "timeline" ? manager.groupOfPanel("audioMeters") : null
         if (metersGroup && metersGroup.panels.length === 1) {
             manager.setTree(manager.insertSharing(manager.tree, metersGroup.group, leaf, "left", 0.95))

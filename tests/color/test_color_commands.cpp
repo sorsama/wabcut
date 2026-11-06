@@ -12,6 +12,8 @@
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/Nesting.h>
+#include <wabcut/model/ProjectIO.h>
+#include <wabcut/model/ProjectOps.h>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -21,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -814,4 +817,164 @@ TEST_CASE("color.management.set sets gamut compression the output colour space a
     c.h.session.undo();
     c.h.session.undo();
     CHECK(c.h.state()->colorManagement.isDefault());
+}
+
+// 0.7 (card #85): organise LUTs in folders.
+TEST_CASE("lut.importFolder lists every LUT of a folder under its folders in one undo step (card 85)", "[color][commands][lut]") {
+    namespace fs = std::filesystem;
+    ColorHarness c(R"(
+        V1 tgt |Aaaa|
+    )");
+    const fs::path root = fs::path(WABCUT_TEST_OUTPUT_DIR) / "color" / "folder-import" / "LUT Pack";
+    fs::remove_all(root.parent_path());
+    const std::string cube = "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+    const auto put = [&](const fs::path& relative, const std::string& text) {
+        const fs::path file = root / relative;
+        fs::create_directories(file.parent_path());
+        std::ofstream(file, std::ios::binary) << text;
+    };
+    put("Film Emulation/Kodak/2383.cube", cube);
+    put("Film Emulation/Kodak/Upper.CUBE", cube);
+    put("Film Emulation/Fuji/3510.cube", cube);
+    put("Looks/teal.cube", cube);
+    put("Looks/broken.cube", "this is not a cube file\n"); // listed in "skipped", not added
+    put("loose.cube", cube);
+    put("notes.txt", "not a LUT");
+    put(".hidden/skip.cube", cube);               // hidden folders are left out
+    const auto folderOf = [&](const std::string& file) {
+        for (const ProjectAsset& a : c.h.state()->assets) {
+            if (a.name == file) {
+                return a.folder;
+            }
+        }
+        return std::string("<none>");
+    };
+
+    const auto undos = c.h.session.undoCount();
+    const auto result = c.h.ok("lut.importFolder", Json{{"path", root.generic_string()}});
+    CHECK(result.data["imported"] == 5);
+    CHECK(result.data["existing"] == 0);
+    CHECK(result.data["skipped"].size() == 1);
+    CHECK(result.data["folder"] == "LUT Pack");
+    CHECK(result.data["assets"].size() == 5);
+    CHECK(c.h.state()->assets.size() == 5);
+    CHECK(c.h.session.undoCount() == undos + 1); // one undo step for the whole folder
+    CHECK(folderOf("2383.cube") == "LUT Pack/Film Emulation/Kodak");
+    CHECK(folderOf("Upper.CUBE") == "LUT Pack/Film Emulation/Kodak");
+    CHECK(folderOf("3510.cube") == "LUT Pack/Film Emulation/Fuji");
+    CHECK(folderOf("teal.cube") == "LUT Pack/Looks");
+    CHECK(folderOf("loose.cube") == "LUT Pack");
+    CHECK(folderOf("skip.cube") == "<none>");
+    CHECK(folderOf("broken.cube") == "<none>");
+    requireValid(*c.h.state());
+    // The list says where each one sits.
+    const auto list = c.h.ok("lut.list");
+    REQUIRE(list.data["assets"].size() == 5);
+    std::set<std::string> folders;
+    for (const auto& a : list.data["assets"]) {
+        folders.insert(a["folder"].get<std::string>());
+    }
+    CHECK(folders == std::set<std::string>{"LUT Pack", "LUT Pack/Film Emulation/Fuji", "LUT Pack/Film Emulation/Kodak", "LUT Pack/Looks"});
+
+    // Again: the LUTs are there already; no new undo step.
+    const auto again = c.h.ok("lut.importFolder", Json{{"path", root.generic_string()}});
+    CHECK(again.data["imported"] == 0);
+    CHECK(again.data["existing"] == 5);
+    CHECK(again.data["moved"] == 0);
+    CHECK(c.h.session.undoCount() == undos + 1);
+    CHECK(c.h.state()->assets.size() == 5);
+
+    // Another group name for the same folder moves them, without adding any; not recursive: only the top folder's own.
+    const auto moved = c.h.ok("lut.importFolder", Json{{"path", root.generic_string()}, {"group", "Grades/Imported"}, {"recursive", false}});
+    CHECK(moved.data["imported"] == 0);
+    CHECK(moved.data["existing"] == 1);
+    CHECK(moved.data["moved"] == 1);
+    CHECK(folderOf("loose.cube") == "Grades/Imported");
+    CHECK(folderOf("teal.cube") == "LUT Pack/Looks"); // untouched
+    CHECK(c.h.session.undoCount() == undos + 2);
+
+    // Undo: the move, then the whole import.
+    c.h.session.undo();
+    CHECK(folderOf("loose.cube") == "LUT Pack");
+    c.h.session.undo();
+    CHECK(c.h.state()->assets.empty());
+
+    // lut.import takes a folder too, and moves an LUT that is in the project already.
+    const fs::path one = root / "loose.cube";
+    const auto first = c.h.ok("lut.import", Json{{"path", one.generic_string()}, {"group", "Mine/Grades"}});
+    CHECK(folderOf("loose.cube") == "Mine/Grades");
+    const auto second = c.h.ok("lut.import", Json{{"path", one.generic_string()}, {"group", "Mine/Other"}});
+    CHECK(second.data["existing"] == true);
+    CHECK(second.data["asset"] == first.data["asset"]);
+    CHECK(folderOf("loose.cube") == "Mine/Other");
+    CHECK(c.h.state()->assets.size() == 1);
+
+    // Refusals: a folder that is not there, one without LUTs, one with only unusable files, names that cannot be groups.
+    CHECK(c.h.errorOf("lut.importFolder", Json{{"path", (root / "nowhere").generic_string()}}) == "NotFound");
+    put("Empty/readme.txt", "no LUTs here");
+    CHECK(c.h.errorOf("lut.importFolder", Json{{"path", (root / "Empty").generic_string()}}) == "EditRejected");
+    put("OnlyBroken/broken.cube", "not a cube\n");
+    CHECK(c.h.errorOf("lut.importFolder", Json{{"path", (root / "OnlyBroken").generic_string()}}) == "EditRejected");
+    for (const char* bad : {"/lead", "trail/", "a//b"}) {
+        INFO(bad);
+        CHECK(c.h.errorOf("lut.importFolder", Json{{"path", root.generic_string()}, {"group", bad}}) == "InvalidParams");
+        CHECK(c.h.errorOf("lut.import", Json{{"path", one.generic_string()}, {"group", bad}}) == "InvalidParams");
+    }
+    CHECK(c.h.state()->assets.size() == 1);
+}
+
+TEST_CASE("A LUT asset folder is saved only when set and loads back and a malformed one is refused (card 85)",
+          "[color][lut][io]") {
+    ProjectState state;
+    ProjectAsset plain;
+    plain.kind = std::string(kAssetKindLut);
+    plain.name = "Plain.cube";
+    plain.locator.path = "C:/luts/Plain.cube";
+    ProjectAsset grouped = plain;
+    grouped.name = "Grouped.cube";
+    grouped.locator.path = "C:/luts/Pack/Grouped.cube";
+    grouped.folder = "Pack/Film";
+    auto first = edit::addAsset(state, plain);
+    REQUIRE(first);
+    auto second = edit::addAsset(first->state, grouped);
+    REQUIRE(second);
+    state = second->state;
+    requireValid(state);
+
+    const auto text = io::toJson(state);
+    REQUIRE(text);
+    CHECK(text->find("\"folder\": \"Pack/Film\"") != std::string::npos);
+    CHECK(std::count(text->begin(), text->end(), '\n') > 0);
+    std::size_t folders = 0;
+    for (std::size_t at = text->find("\"folder\""); at != std::string::npos; at = text->find("\"folder\"", at + 1)) {
+        ++folders;
+    }
+    CHECK(folders == 1); // only the grouped one carries the key
+    const auto loaded = io::fromJson(*text);
+    REQUIRE(loaded);
+    CHECK(*loaded == state);
+    REQUIRE(loaded->assets.size() == 2);
+    CHECK(loaded->assets[0].folder.empty());
+    CHECK(loaded->assets[1].folder == "Pack/Film");
+
+    // The edit refuses what a group cannot be; moving an asset is one state change.
+    CHECK(edit::addAsset(state, [&] { auto bad = grouped; bad.folder = "a//b"; return bad; }()).error().code == wabcut::ErrorCode::InvalidArgument);
+    const auto moved = edit::setAssetFolder(state, second->id, "Other");
+    REQUIRE(moved);
+    CHECK(moved->findAsset(second->id)->folder == "Other");
+    CHECK(edit::setAssetFolder(state, second->id, "").has_value());
+    CHECK_FALSE(edit::setAssetFolder(state, second->id, "x/"));
+    CHECK_FALSE(edit::setAssetFolder(state, AssetId{999}, "x"));
+
+    // A project file with a malformed folder does not load as valid.
+    std::string tampered = *text;
+    tampered.replace(tampered.find("Pack/Film"), 9, "Pack//Fil");
+    const auto bad = io::fromJson(tampered);
+    if (bad) {
+        CHECK_FALSE(validate(*bad, Validation::Structure));
+    }
+    CHECK(assetFolderProblem("").has_value() == false);
+    CHECK(assetFolderProblem("Film Emulation/Kodak").has_value() == false);
+    CHECK(assetFolderProblem(std::string(kMaxAssetFolderLength + 1, 'x')).has_value());
+    CHECK(assetFolderProblem("tab\there").has_value());
 }

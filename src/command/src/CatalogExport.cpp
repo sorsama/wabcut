@@ -58,7 +58,7 @@ Json overridesSchema() {
         {}, {},
         "Settings on top of the preset (ExportController's keys, docs/export.md): container, videoCodec, encoder, quality, "
         "bitrateMbps, maxBitrateMbps, frameRate, width, height, scaleMode, range (whole | inOut | workArea | custom), "
-        "video, audio, audioCodec, audioChannels, sampleRate, audioBitrateKbps, dynamicRange, captions, pixelFormat, "
+        "video, audio, audioCodec, audioChannels, sampleRate, audioBitrateKbps, dynamicRange, dynamicMetadata (none | hdr10plus: HDR10+ on a PQ HEVC master), captions, pixelFormat, "
         "alpha (Include Alpha Channel), proresProfile, dnxhrProfile, exportAsSequence, subtitles, targetMB (a size "
         "limit in MB, 1-4000, for H.264, HEVC, AV1 or VP9: the whole file at most that size; 0 = off), and the objects "
         "effects, metadata and render (export.describe shows their fields).");
@@ -240,6 +240,28 @@ void registerExportCommands(CommandRegistry& registry) {
                 "name, description, builtIn, and the full settings.",
                 Capability::Read, schema::object({}), Json::object(), {},
                 [](ExecutionContext& c) { return readOutput(c, Json{{"presets", exportServices(c).presets()}}); }});
+
+    addBuiltin(registry,
+               {"export.check", 1, "Check Before Export",
+                "0.7, the pre-export check: one list of what is likely to go wrong when the sequence is exported with a "
+                "preset (and overrides), worked out without exporting - offline or missing media (a problem: the export "
+                "stops), gaps in the picture, flash frames, clips at another frame rate, stabilizers never analyzed, slow "
+                "effects, a size or shape that does not suit the sequence, captions the file will not show. Rows come "
+                "most serious first (problem, warning, note), then in timeline order: kind, severity, a plain message, "
+                "the fix the app offers (\"relink\", \"closeGap\", \"matchSequenceSize\", \"turnOnCaptions\" or \"none\"), "
+                "and where it is (\"at\" in ticks, \"timecode\", \"clip\", \"track\"). Loudness rows need a measurement of "
+                "the mix, which the app makes on request; this command does not render.",
+                Capability::Read,
+                withSequence({{"preset", presetParam},
+                              {"overrides", overridesSchema()},
+                              {"range", rangeParam},
+                              {"in", timeParam("Custom range start (with \"out\").")},
+                              {"out", timeParam("Custom range end.")}}),
+                Json{{"preset", "youtube-1080p"}}, {},
+                [](ExecutionContext& c) {
+                    ExportServices::Output o{c.string("preset", "match-source"), overridesOf(c), std::string()};
+                    return readOutput(c, take(exportServices(c).check(c.state(), c.sequenceId(), o)));
+                }});
 
     addBuiltin(registry,
                {"export.describe", 1, "Describe Export",

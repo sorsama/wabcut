@@ -83,7 +83,7 @@ enum class VoiceOverState : std::uint8_t {
     Preroll,   ///< playing before the punch-in
     Recording, ///< the input is being written
     Postroll,  ///< past the punch-out
-    Finished,  ///< the transport stopped after the post-roll; stop() collects the take
+    Finished,  ///< the transport stopped after the post-roll (or the take reached the WAV's 4 GiB); stop() collects the take
     Failed,    ///< the file could not be written (status().error says why)
 };
 std::string_view toString(VoiceOverState state);
@@ -106,6 +106,9 @@ struct VoiceOverResult {
     Ticks latencyCompensation{};       ///< the input latency plus the calibration it was placed by
     std::uint64_t droppedFrames = 0;   ///< captured audio lost (the writer fell behind; the take has a gap)
     bool punchedOut = false;           ///< the punch-out ended it (rather than stop())
+    /// The take reached the longest a WAV file can be (4 GiB, about 3 h of 32-bit float stereo at 48 kHz) and was ended
+    /// there: the file is complete and valid, what was said after it is not in it.
+    bool reachedLimit = false;
     std::string device;                ///< the input device's name
     std::optional<LoopbackResult> loopback; ///< a loopback pass's measurement
 };
@@ -115,6 +118,9 @@ public:
     struct Options {
         bool writerThread = true; ///< false: nothing is written until writeOnce() (deterministic tests)
         std::chrono::milliseconds writerInterval{5};
+        /// The most frames a take may hold; 0: what a WAV can (4 GiB). A pass that reaches it ends there (Finished,
+        /// VoiceOverResult::reachedLimit) with a valid file. Tests set a few seconds' worth.
+        std::int64_t maxTakeFrames = 0;
         /// "Now" for the transport position and the end of a pass (default: the steady clock). Tests that drive a
         /// Null engine on simulated time pass theirs.
         std::function<std::chrono::steady_clock::time_point()> clock;

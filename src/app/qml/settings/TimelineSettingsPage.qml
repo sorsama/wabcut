@@ -63,6 +63,47 @@ SettingsPage {
                 onToggled: Preferences.snapPlayhead = checked
             }
         }
+        // 0.7 (card 113): what a snapping drag, drop or scrub sticks to; Snap itself (S) stays the master switch.
+        Repeater {
+            model: [
+                { bit: 1, rowKey: "snapClipEdges", name: "ClipEdges", label: qsTr("Snap to clip edges"),
+                  description: qsTr("The start and end of every clip: cuts, transitions and gaps.") },
+                { bit: 2, rowKey: "snapToPlayhead", name: "Playhead", label: qsTr("Snap to the playhead"),
+                  description: qsTr("The playhead's position.") },
+                { bit: 4, rowKey: "snapToMarks", name: "Marks", label: qsTr("Snap to In and Out"),
+                  description: qsTr("The sequence's In and Out marks.") },
+                { bit: 8, rowKey: "snapToMarkers", name: "Markers", label: qsTr("Snap to markers"),
+                  description: qsTr("The start and end of sequence markers.") },
+                { bit: 16, rowKey: "snapToBeats", name: "Beats", label: qsTr("Snap to beats"),
+                  description: qsTr("The beats of the sequence's beat grid.") }
+            ]
+            delegate: SettingsRow {
+                id: snapRow
+                required property var modelData
+                rowKey: snapRow.modelData.rowKey
+                label: snapRow.modelData.label
+                description: snapRow.modelData.description
+                Toggle {
+                    objectName: "settingsSnapTarget" + snapRow.modelData.name
+                    tooltip: snapRow.modelData.label
+                    checked: (Preferences.snapTargetMask & snapRow.modelData.bit) !== 0
+                    onToggled: Preferences.snapTargetMask = checked ? (Preferences.snapTargetMask | snapRow.modelData.bit)
+                                                                    : (Preferences.snapTargetMask & ~snapRow.modelData.bit)
+                }
+            }
+        }
+        // 0.7 (card 182): Premiere 26.3's Timeline preference.
+        SettingsRow {
+            rowKey: "addTracks"
+            label: qsTr("Add tracks when editing clips in")
+            description: qsTr("On: an edit that needs a track the sequence lacks adds it (a recording's second audio stream, a paste that spans more tracks, an Overlay with no free track). Off: edits use the tracks there and say when nothing fits.")
+            Toggle {
+                objectName: "settingsAddTracks"
+                tooltip: qsTr("Add tracks when editing clips in")
+                checked: Preferences.addTracksOnEdit
+                onToggled: Preferences.addTracksOnEdit = checked
+            }
+        }
         SettingsRow {
             rowKey: "playbackScroll"
             label: qsTr("Playback auto-scroll")
@@ -243,6 +284,53 @@ SettingsPage {
                 tooltip: qsTr("Clip speed")
                 checked: Preferences.timelineShowClipSpeed
                 onToggled: Preferences.timelineShowClipSpeed = checked
+            }
+        }
+        // 0.7 (cards 126, 142): the clip's length, and a multi-track recording's track name, on the clip.
+        SettingsRow {
+            rowKey: "clipDuration"
+            label: qsTr("Clip duration")
+            description: qsTr("The length of each clip after its name, in the sequence's time format.")
+            Toggle {
+                objectName: "settingsClipDuration"
+                tooltip: qsTr("Clip duration")
+                checked: Preferences.timelineShowClipDuration
+                onToggled: Preferences.timelineShowClipDuration = checked
+            }
+        }
+        // 0.7 (card 180): the pacing heat strip.
+        SettingsRow {
+            rowKey: "pacingStrip"
+            label: qsTr("Pacing strip")
+            description: qsTr("A strip under the ruler that colours the stretches where a viewer may get bored: long shots, pictures that hardly move, silences and slow speech. It is measured on this computer; nothing is sent anywhere.")
+            Toggle {
+                objectName: "settingsPacingStrip"
+                tooltip: qsTr("Pacing strip")
+                checked: Preferences.timelineShowPacing
+                onToggled: Preferences.timelineShowPacing = checked
+            }
+        }
+        // 0.7 (card 125): a clip's note printed on the clip.
+        SettingsRow {
+            rowKey: "clipNotes"
+            label: qsTr("Clip notes")
+            description: qsTr("Print each clip's note on the clip. Write one with right click > Clip Note….")
+            Toggle {
+                objectName: "settingsClipNotes"
+                tooltip: qsTr("Clip notes")
+                checked: Preferences.timelineShowClipNotes
+                onToggled: Preferences.timelineShowClipNotes = checked
+            }
+        }
+        SettingsRow {
+            rowKey: "streamNames"
+            label: qsTr("Audio track names")
+            description: qsTr("The track name a multi-track recording carries (OBS, ShadowPlay, field recorders) after the audio clip's name.")
+            Toggle {
+                objectName: "settingsStreamNames"
+                tooltip: qsTr("Audio track names")
+                checked: Preferences.timelineShowStreamNames
+                onToggled: Preferences.timelineShowStreamNames = checked
             }
         }
         SettingsRow {

@@ -64,6 +64,8 @@ class SourceTranscriptBridge : public QObject {
     Q_PROPERTY(int stream READ stream WRITE setStream NOTIFY sourceChanged FINAL)
     Q_PROPERTY(int wordCount READ wordCount NOTIFY transcriptChanged FINAL)
     Q_PROPERTY(QString language READ language NOTIFY transcriptChanged FINAL)
+    /// The clip's transcript is in a right-to-left language (Hebrew, Arabic, ...): its words read from the right (card 073).
+    Q_PROPERTY(bool rtl READ rtl NOTIFY transcriptChanged FINAL)
     /// The word under the Source Monitor's position, or -1.
     Q_PROPERTY(int currentWord READ currentWord NOTIFY currentWordChanged FINAL)
     /// Bumped whenever the selection or the search marks change (bind word delegates to it).
@@ -102,6 +104,7 @@ public:
     void setStream(int stream);
     int wordCount() const { return static_cast<int>(m_words.size()); }
     QString language() const;
+    bool rtl() const;
     int currentWord() const { return m_currentWord; }
     int markRevision() const { return m_markRevision; }
     bool hasSelection() const { return m_range.has_value(); }
@@ -140,6 +143,12 @@ public:
     Q_INVOKABLE QString transcribe(bool allowOnce = false);
     /// What a cloud provider needs before it may send this clip's audio (AiController.consentPrompt), or {}.
     Q_INVOKABLE QVariantMap consentFor() const;
+    /// Card 080: transcribes the clip again, in the language chosen on the Transcript tab, and replaces its transcript
+    /// when the new one is done (it stays if the job is cancelled or fails). "" or why not.
+    Q_INVOKABLE QString redo(bool allowOnce = false);
+    /// Card 080: deletes the clip's transcript (every model and language of its stream; no other analysis and none of
+    /// the captions made from it). "" or why not.
+    Q_INVOKABLE QString deleteTranscript();
 
 signals:
     void sourceChanged();

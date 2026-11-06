@@ -2,8 +2,8 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 
-// Track header row (a ProjectController.tracks delegate): Premiere's two columns, then output/lock (video) or
-// mute/solo/record-arm/lock (audio) toggles. Each toggle is an undoable model edit (edit::setTrackState; record arm:
+// Track header row (a ProjectController.tracks delegate): Premiere's two columns, then output/solo/lock (video; 0.7: the
+// solo shows only the soloed video tracks) or mute/solo/record-arm/lock (audio) toggles. Each toggle is an undoable model edit (edit::setTrackState; record arm:
 // track.setRecordArm, A.8).
 //   * Source patching (left, M5h): the loaded source's track indicator (V1, A1, ...) patched to this track, filled
 //     when it takes part in Insert/Overwrite, an outline when switched off. Click an empty slot to patch the source
@@ -22,6 +22,11 @@ import QtQuick.Controls.Basic
 //   * 0.4: the toggles show their state as the mixers do: the speaker is crossed only while the track is muted
 //     ("Mute A1" / "Unmute A1"); mute amber, solo green, record arm red; objectNames trackOutput_/trackMute_/
 //     trackSolo_/trackLock_ + the short name.
+//   * 0.7 (card 077): a track's label colour (Label in the track menu, Premiere's 16 labels; none by default) is a bar down the
+//     header's left edge (trackLabelStripe_ + the short name) and a wash on the track's lane; the chip's description names it.
+//   * 0.7 (card 067): drag the name chip (or the header's free space) up or down to move the track in its stack: the Tracks
+//     panel draws a line on the header it takes the place of (trackMoveLine) and moves it on release, one undo step (the
+//     model's moveTrack); the header menu has Move Track Up / Down. A click on the chip still targets.
 //   * 0.6: Shift-click a toggle (output, mute, solo, sync lock, lock) or the target chip to set it on every track of the
 //     kind, one undo step (ProjectController.setTrackFlagAll); a Sync Lock toggle (trackSyncLock_) before Lock shows
 //     which tracks a ripple shifts; it is the first toggle to go when the header is narrow.
@@ -33,6 +38,8 @@ Item {
     required property string name
     required property string kind
     required property int colorIndex
+    /// 0.7: the track's own label colour (0..15; -1: none).
+    required property int labelIndex
     required property bool trackEnabled
     required property bool locked
     required property bool muted
@@ -41,7 +48,7 @@ Item {
     required property bool syncLocked
 
     readonly property bool audio: kind === "audio"
-    /// A.9: "mono" | "stereo" | "5.1" | "adaptive".
+    /// A.9: "mono" | "stereo" | "5.1" | "7.1" | "adaptive".
     readonly property string channelFormat: audio ? (AudioChannels.trackFormats[trackId] ?? "stereo") : ""
 
     /// The track's own name ("" while it has the default "Video n" / "Audio n"; re-read when the name changes).
@@ -54,10 +61,18 @@ Item {
 
     /// Add Tracks...: the Tracks panel opens its dialog for this track.
     signal addTracksRequested(string trackId)
+    /// 0.7 (card #139): Video Track Effects...: the timeline opens this track's effect stack (its key and short name).
+    signal trackEffectsRequested(string trackId, string name)
     /// Delete Track on a track with clips (`info`: ProjectController.trackInfo): the Tracks panel asks first.
     signal deleteRequested(var info)
     /// An edit from the menu was refused: the Tracks panel shows `text`.
     signal messageRequested(string text)
+    /// 0.7 (card 067): dragging the name chip up or down moves the track in its stack. `y` is the pointer in the header
+    /// column; the Tracks panel draws the drop line while it moves, and moves the track when it is let go.
+    signal reorderMoved(string trackId, real y)
+    signal reorderDropped(string trackId, real y)
+    /// The header is being dragged to a new place (it dims).
+    property bool reordering: false
 
     /// The track menu (created on first use), for both kinds; the audio channel formats at its end.
     function openMenu(target, point) {
@@ -111,6 +126,8 @@ Item {
         root.view.layoutRevision // re-read when rows change
         return root.view.trackHeightOf(root.trackId)
     }
+    opacity: root.reordering ? 0.55 : 1
+
 
     // Design language v3: the row is a pill on the raised surface, inset a little from the lane's height (like the
     // reference's track headers), so neighbouring rows read as separate pills. 0.6: square with Settings > Appearance >
@@ -122,6 +139,59 @@ Item {
         anchors.bottomMargin: anchors.topMargin
         radius: Theme.timelinePill(height)
         color: Theme.raised
+    }
+    // 0.7 (card 067): the pill's free space (under the controls: they take their own presses) drags the track like the name chip
+    // does. A plain item, not a pointer handler on the header: a handler there takes the press from the controls on it.
+    MouseArea {
+        id: pillDrag
+        objectName: "trackHeaderDrag_" + root.shortName
+        anchors.fill: plate
+        acceptedButtons: Qt.LeftButton
+        cursorShape: pillDrag.dragging ? Qt.ClosedHandCursor : Qt.ArrowCursor
+        property bool dragging: false
+        property real pressY: 0
+        readonly property real threshold: Theme.space(1.5) // a slide shorter than this is a click
+        function pointerY(mouse) {
+            return root.parent ? root.parent.mapFromItem(pillDrag, mouse.x, mouse.y).y : 0
+        }
+        onPressed: mouse => {
+            pillDrag.dragging = false
+            pillDrag.pressY = mouse.y
+        }
+        onPositionChanged: mouse => {
+            if (!pillDrag.dragging && Math.abs(mouse.y - pillDrag.pressY) >= pillDrag.threshold) {
+                pillDrag.dragging = true
+                root.reordering = true
+            }
+            if (pillDrag.dragging)
+                root.reorderMoved(root.trackId, pillDrag.pointerY(mouse))
+        }
+        onReleased: mouse => {
+            if (!pillDrag.dragging)
+                return
+            pillDrag.dragging = false
+            root.reordering = false
+            root.reorderDropped(root.trackId, pillDrag.pointerY(mouse))
+        }
+        onCanceled: {
+            pillDrag.dragging = false
+            root.reordering = false
+            root.reorderDropped(root.trackId, NaN) // not a place: the panel moves nothing
+        }
+    }
+    // 0.7 (card 077): the label colour, a bar down the left edge.
+    Rectangle {
+        objectName: "trackLabelStripe_" + root.shortName
+        visible: root.labelIndex >= 0
+        anchors.left: plate.left
+        anchors.leftMargin: Theme.hairline
+        anchors.top: plate.top
+        anchors.bottom: plate.bottom
+        anchors.topMargin: Theme.space(1.5)
+        anchors.bottomMargin: Theme.space(1.5)
+        width: Theme.space(0.75)
+        radius: width / 2
+        color: Theme.clipColor(root.labelIndex)
     }
     // Right-click on a header: the track menu. A double-click on its background (or the name) renames the track.
     TapHandler {
@@ -144,6 +214,7 @@ Item {
         sourceComponent: TrackHeaderMenu {
             onRenameRequested: root.startRename()
             onAddTracksRequested: root.addTracksRequested(root.trackId)
+            onTrackEffectsRequested: root.trackEffectsRequested(root.trackId, root.shortName)
             onDeleteRequested: info => root.deleteRequested(info)
             onFailed: message => root.messageRequested(message)
         }
@@ -244,7 +315,7 @@ Item {
                     const p = mapToItem(column, mouse.x, mouse.y)
                     for (let i = 0; i < column.children.length; ++i) {
                         const header = column.children[i]
-                        if (header.trackId !== undefined && header !== root && p.y >= header.y
+                        if (header.trackId !== undefined && header !== root && header.visible && p.y >= header.y
                                 && p.y < header.y + header.height) {
                             SourceMonitor.movePatch(patchSlot.patch.source, header.trackId)
                             break
@@ -301,7 +372,9 @@ Item {
         Accessible.role: Accessible.CheckBox
         Accessible.name: root.customName !== "" ? qsTr("Target %1 (%2)").arg(root.shortName).arg(root.customName)
                                                 : qsTr("Target %1").arg(root.shortName)
-        Accessible.description: qsTr("Menu key: the track menu; F2: rename")
+        Accessible.description: root.labelIndex >= 0
+                                ? qsTr("Label: %1. Menu key: the track menu; F2: rename; drag to move the track").arg(Library.labelNames[root.labelIndex])
+                                : qsTr("Menu key: the track menu; F2: rename; drag to move the track")
         Accessible.checked: root.targeted
         onClicked: {
             checked = Qt.binding(() => root.targeted)
@@ -352,6 +425,7 @@ Item {
                   + (root.targeted ? qsTr("%1 is targeted: Lift, Extract, paste, Up/Down and Match Frame use it").arg(root.shortName)
                                    : qsTr("Target %1 (Lift, Extract, paste, Up/Down and Match Frame)").arg(root.shortName))
                   + "\n" + qsTr("Shift-click: every %1 track").arg(root.audio ? qsTr("audio") : qsTr("video"))
+                  + "\n" + qsTr("Drag up or down to move the track")
         }
         FocusRing {
             anchors.fill: parent
@@ -362,6 +436,7 @@ Item {
             enabled: chip.enabled
             cursorShape: Qt.PointingHandCursor
         }
+
     }
     // The channel format of an audio track that is not stereo (Premiere's track type icon), a click opens the menu.
     Rectangle {
@@ -369,6 +444,7 @@ Item {
         objectName: "trackFormat_" + root.shortName
         readonly property string glyph: root.channelFormat === "mono" ? qsTr("1.0")
                                       : root.channelFormat === "5.1" ? qsTr("5.1")
+                                      : root.channelFormat === "7.1" ? qsTr("7.1")
                                       : root.channelFormat === "adaptive" ? qsTr("1:1") : ""
         anchors.left: chip.right
         anchors.leftMargin: -Theme.space(1.5)
@@ -387,7 +463,8 @@ Item {
         Accessible.role: Accessible.Button
         Accessible.name: qsTr("%1 is a %2 track: change its channel format")
                              .arg(root.shortName)
-                             .arg(root.channelFormat === "mono" ? qsTr("mono") : root.channelFormat === "5.1" ? qsTr("5.1") : qsTr("adaptive"))
+                             .arg(root.channelFormat === "mono" ? qsTr("mono") : root.channelFormat === "5.1" ? qsTr("5.1")
+                                  : root.channelFormat === "7.1" ? qsTr("7.1") : qsTr("adaptive"))
         Accessible.onPressAction: root.openFormatMenu(formatBadge, Qt.point(0, formatBadge.height))
 
         Text {
@@ -502,18 +579,21 @@ Item {
             tooltip: root.muted ? qsTr("Unmute %1").arg(root.shortName) : qsTr("Mute %1").arg(root.shortName)
             onToggled: root.setFlag("muted", checked)
         }
+        // 0.7 (card 106): a video track solos too (the crosshair): while any video track is soloed, only the soloed video
+        // tracks show in the Program Monitor and exports, as only soloed audio tracks are heard. Shift-click: every track.
         IconButton {
             objectName: "trackSolo_" + root.shortName
-            visible: root.audio
             compact: true
             implicitWidth: root.toggleWidth
             checkable: true
             checked: root.solo
-            iconName: "headphones"
+            iconName: root.audio ? "headphones" : "crosshair"
             iconSize: Theme.iconSm
             checkedColor: Theme.success
             checkedIconColor: Theme.clipInk
-            tooltip: qsTr("Solo %1").arg(root.shortName)
+            tooltip: root.audio ? qsTr("Solo %1").arg(root.shortName)
+                                : qsTr("Solo %1: show only the soloed video tracks").arg(root.shortName)
+            Accessible.name: qsTr("Solo %1").arg(root.shortName)
             onToggled: root.setFlag("solo", checked)
         }
         // Voice-over (A.8, M5m): the microphone arms the track; a pass records onto the first armed audio track.
@@ -599,18 +679,53 @@ Item {
         running: resizeHandle.pressed
         onTriggered: resizeHandle.apply()
     }
-    // 0.6: over the target chip and the toggles, record each left press's modifiers (Shift-clicks) and let the press
-    // through to them.
+    // 0.6: over the target chip, record each left press's modifiers (Shift-clicks). 0.7 (card 067): and tell a click from a
+    // drag: a slide past the platform's drag distance moves the track (the Tracks panel draws the drop line and moves it on
+    // release), a press and release in place is the chip's click as ever (it takes the keyboard focus like a click does).
     MouseArea {
+        id: chipPress
         objectName: "trackTargetPressWatch"
         anchors.fill: chip
         z: 10
         acceptedButtons: Qt.LeftButton
+        cursorShape: chipPress.dragging ? Qt.ClosedHandCursor : Qt.PointingHandCursor
+        property bool dragging: false
+        property real pressY: 0
+        readonly property real threshold: Theme.space(1.5)
+        function pointerY(mouse) {
+            return root.parent ? root.parent.mapFromItem(chipPress, mouse.x, mouse.y).y : 0
+        }
         onPressed: mouse => {
             root.pressModifiers = mouse.modifiers
-            mouse.accepted = false
+            chipPress.dragging = false
+            chipPress.pressY = mouse.y
+            chip.forceActiveFocus(Qt.MouseFocusReason)
         }
+        onPositionChanged: mouse => {
+            if (!chipPress.dragging && Math.abs(mouse.y - chipPress.pressY) >= chipPress.threshold) {
+                chipPress.dragging = true
+                root.reordering = true
+            }
+            if (chipPress.dragging)
+                root.reorderMoved(root.trackId, chipPress.pointerY(mouse))
+        }
+        onReleased: mouse => {
+            if (!chipPress.dragging)
+                return
+            chipPress.dragging = false
+            root.reordering = false
+            root.reorderDropped(root.trackId, chipPress.pointerY(mouse))
+        }
+        onCanceled: {
+            if (!chipPress.dragging)
+                return
+            chipPress.dragging = false
+            root.reordering = false
+            root.reorderDropped(root.trackId, NaN) // not a place: the panel moves nothing
+        }
+        onClicked: chip.clicked()
     }
+    // 0.6: over the toggles, record each left press's modifiers and let the press through to them.
     MouseArea {
         objectName: "trackTogglesPressWatch"
         anchors.fill: toggles

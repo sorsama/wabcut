@@ -100,10 +100,10 @@ void Reverb::process(float* io, int frames) noexcept {
     const double inject = 1.0 / std::sqrt(static_cast<double>(kLines));
     const auto silenceAfter = static_cast<std::int64_t>(m_lines.back().delay.buffer.size()) * 8 + m_predelayFrames + 64;
     // Review A5-P2-10: a 5.1 buffer (L R C LFE Ls Rs): the LFE neither feeds the tank nor gets a tail, the centre gets
-    // the tail's mid, the surrounds their side's.
+    // the tail's mid, the surrounds their side's. 0.7 (card 048): a 7.1 buffer (L R C LFE Lrs Rrs Ls Rs) the same.
     constexpr std::size_t kLfe = 3;
-    const bool surround = ch == 6;
-    const double inputs = surround ? 5.0 : static_cast<double>(ch);
+    const bool surround = ch == 6 || ch == 8;
+    const double inputs = surround ? static_cast<double>(ch - 1) : static_cast<double>(ch);
     std::array<double, kLines> out{};
     for (int i = 0; i < frames; ++i) {
         float* frame = io + static_cast<std::size_t>(i) * ch;
@@ -173,7 +173,7 @@ void Reverb::process(float* io, int frames) noexcept {
         if (ch == 1) {
             frame[0] = static_cast<float>(dry * frame[0] + mix * mid);
         } else if (surround) {
-            constexpr std::array<int, 6> kSide{-1, 1, 0, 2, -1, 1}; // -1 left, 1 right, 0 mid, 2 the LFE (dry)
+            constexpr std::array<int, 8> kSide{-1, 1, 0, 2, -1, 1, -1, 1}; // -1 left, 1 right, 0 mid, 2 the LFE (dry)
             for (std::size_t c = 0; c < ch; ++c) {
                 const int route = kSide[c];
                 if (route != 2) {

@@ -458,3 +458,159 @@ TEST_CASE("Free-form params of the wrong type are InvalidParams, not internal er
           "InvalidParams");
     CHECK(m.h.errorOf("track.transform", {{"clip", clip.value}, {"region", {{"mask", "one"}}}}) == "InvalidParams");
 }
+
+TEST_CASE("track.transform places a follower through the footage's display rotation and mirror (0.7)", "[masks][commands][tracking]") {
+    // The stored picture moves (+4.8, -1.8) source pixels per frame. A follower sees that motion as the footage is
+    // shown: turned by the stream's display rotation and flipped when the picture is mirrored (card 154), so after ten
+    // frames it has moved by the table's (dx, dy) canvas pixels.
+    struct Orientation {
+        int rotation;
+        bool mirrored;
+        double dx;
+        double dy;
+    };
+    const Json region{{"x", 0.35}, {"y", 0.3}, {"width", 0.3}, {"height", 0.4}};
+    for (const Orientation& o : {Orientation{0, false, 48.0, -18.0}, Orientation{90, false, 18.0, 48.0},
+                                 Orientation{180, false, -48.0, 18.0}, Orientation{270, false, -18.0, -48.0},
+                                 Orientation{0, true, -48.0, -18.0}, Orientation{90, true, -18.0, 48.0}}) {
+        INFO("rotation " << o.rotation << (o.mirrored ? " mirrored" : ""));
+        Timeline tl("V1 |Aaaaaaaaaaaaaaa|\n"
+                    "V2 |Bbbbbbbbbbbbbbb|");
+        for (MediaPtr& media : tl.state.media) {
+            auto copy = std::make_shared<MediaItem>(*media);
+            copy->info.video.front().rotationDegrees = o.rotation;
+            copy->info.video.front().mirrored = o.mirrored;
+            media = copy;
+        }
+        MaskHarness m(std::move(tl));
+        const ClipId a = m.h.clip("V1@0");
+        const ClipId b = m.h.clip("V2@0");
+        // Follow: the clip on V2 moves with the subject.
+        m.h.ok("track.transform", {{"clip", a.value}, {"region", region}, {"target", b.value}, {"frames", 10}, {"model", "translation"}});
+        const ClipProperties& follower = m.clip("V2@0").properties();
+        CHECK(follower.value(ParamId::PositionX, frame(10)) == Approx(o.dx).margin(1.0));
+        CHECK(follower.value(ParamId::PositionY, frame(10)) == Approx(o.dy).margin(1.0));
+        // Stabilize: the footage is moved the other way, so the displayed subject stays.
+        m.h.ok("track.transform", {{"clip", a.value}, {"region", region}, {"frames", 10}, {"model", "translation"}});
+        const ClipProperties& held = m.clip("V1@0").properties();
+        CHECK(held.value(ParamId::PositionX, frame(10)) == Approx(-o.dx).margin(1.0));
+        CHECK(held.value(ParamId::PositionY, frame(10)) == Approx(-o.dy).margin(1.0));
+    }
+}
+
+TEST_CASE("track.transform keeps a rotated clip rigid on a non-square sequence: the canvas ratio comes after the turn (0.7)",
+          "[masks][commands][tracking]") {
+    // The same motion of the stored picture as above, (+4.8, -1.8) source pixels per frame, on an HDV-style sequence whose
+    // pixels are 4:3. The picture is turned in the shape it is seen in, then measured in canvas pixels (x / 4/3): after
+    // ten frames the follower has moved by (dx, dy). With the ratio applied before the turn, as it was, a quarter turn
+    // gave (18, 36) instead of (13.5, 48).
+    struct Orientation {
+        int rotation;
+        double dx;
+        double dy;
+    };
+    const Json region{{"x", 0.35}, {"y", 0.3}, {"width", 0.3}, {"height", 0.4}};
+    for (const Orientation& o : {Orientation{0, 36.0, -18.0}, Orientation{90, 13.5, 48.0}, Orientation{180, -36.0, 18.0},
+                                 Orientation{270, -13.5, -48.0}}) {
+        INFO("rotation " << o.rotation);
+        Timeline tl("V1 |Aaaaaaaaaaaaaaa|\n"
+                    "V2 |Bbbbbbbbbbbbbbb|");
+        for (MediaPtr& media : tl.state.media) {
+            auto copy = std::make_shared<MediaItem>(*media);
+            copy->info.video.front().rotationDegrees = o.rotation;
+            media = copy;
+        }
+        for (SequencePtr& sequence : tl.state.sequences) {
+            auto copy = std::make_shared<Sequence>(*sequence);
+            copy->pixelAspect = Rate{4, 3};
+            sequence = copy;
+        }
+        MaskHarness m(std::move(tl));
+        const ClipId a = m.h.clip("V1@0");
+        const ClipId b = m.h.clip("V2@0");
+        m.h.ok("track.transform", {{"clip", a.value}, {"region", region}, {"target", b.value}, {"frames", 10}, {"model", "translation"}});
+        const ClipProperties& follower = m.clip("V2@0").properties();
+        CHECK(follower.value(ParamId::PositionX, frame(10)) == Approx(o.dx).margin(1.0));
+        CHECK(follower.value(ParamId::PositionY, frame(10)) == Approx(o.dy).margin(1.0));
+    }
+}
+
+TEST_CASE("track.transform: a mirrored picture turns the other way, so the follower's rotation is reversed (0.7)",
+          "[masks][commands][tracking]") {
+    // The fake picture's content turns by 0.5 degrees per frame about its centre in the stored frame (render() takes the
+    // output -> texture map, so it turns the other way round: counter-clockwise on screen, a negative rotation).
+    class Rotating final : public TrackingServices {
+    public:
+        std::expected<TrackingFrame, Error> frame(const ProjectState& state, MediaId media, int stream, Ticks time, int maxWidth) override {
+            const VideoStreamInfo& v = state.findMedia(media)->info.video.at(static_cast<std::size_t>(stream));
+            const std::int64_t k = ticksToFrames(time, v.frameRate);
+            const int w = std::min(maxWidth, 320);
+            const int h = w * v.height / v.width;
+            const double rad = 0.5 * static_cast<double>(k) * 3.14159265358979323846 / 180.0;
+            const double cx = (w - 1) / 2.0;
+            const double cy = (h - 1) / 2.0;
+            const double c = std::cos(rad);
+            const double s = std::sin(rad);
+            TrackingFrame f;
+            f.luma = masks::test::render(m_texture, w, h, Motion{c, -s, cx - (c * cx - s * cy), s, c, cy - (s * cx + c * cy)});
+            f.start = framesToTicks(k, v.frameRate);
+            f.duration = framesToTicks(1, v.frameRate);
+            return f;
+        }
+
+    private:
+        masks::test::Texture m_texture{17};
+    };
+    for (const bool mirrored : {false, true}) {
+        INFO((mirrored ? "mirrored" : "plain"));
+        Timeline tl("V1 |Aaaaaaaaaaaaaaa|\n"
+                    "V2 |Bbbbbbbbbbbbbbb|");
+        for (MediaPtr& media : tl.state.media) {
+            auto copy = std::make_shared<MediaItem>(*media);
+            copy->info.video.front().mirrored = mirrored;
+            media = copy;
+        }
+        CommandHarness h(std::move(tl), [] {
+                             command::EnginePolicy p;
+                             p.services = std::make_shared<Rotating>();
+                             return p;
+                         }(),
+                         ai::edit::editingCommands());
+        const ClipId a = h.clip("V1@0");
+        const ClipId b = h.clip("V2@0");
+        h.ok("track.transform", {{"clip", a.value}, {"region", {{"x", 0.3}, {"y", 0.3}, {"width", 0.4}, {"height", 0.4}}},
+                                  {"target", b.value}, {"frames", 10}, {"model", "similarity"}});
+        const Clip& follower = h.state()->findSequence(h.tl.seq)->findClip(b)->clip();
+        const double rotation = follower.properties().value(ParamId::Rotation, frame(10));
+        CHECK(std::abs(rotation) == Approx(5.0).margin(1.0));
+        CHECK((rotation > 0.0) == mirrored); // a mirrored picture turns the other way: the follower's rotation reverses
+    }
+}
+
+TEST_CASE("track.transform asks for Uniform Scale on the clip whose Scale it would rewrite, and says so (card 12)",
+          "[masks][commands][tracking]") {
+    MaskHarness m("V1 |Aaaaaaaaaaaaaaa|\n"
+                  "V2 |Bbbbbbbbbbbbbbb|");
+    const ClipId a = m.h.clip("V1@0");
+    const ClipId b = m.h.clip("V2@0");
+    const Json region{{"x", 0.35}, {"y", 0.3}, {"width", 0.3}, {"height", 0.4}};
+    m.h.ok("clip.setMotion", {{"clip", b.value}, {"scaleWidth", 2.0}}); // the follower is stretched (Uniform Scale off)
+
+    // A similarity track would write its Scale: refused, nothing changed; a translation track only moves it.
+    const auto before = m.h.state();
+    CHECK(m.h.errorOf("track.transform", {{"clip", a.value}, {"region", region}, {"target", b.value}, {"frames", 4}, {"model", "similarity"}}) ==
+          "EditRejected");
+    CHECK(m.h.state() == before);
+    m.h.ok("track.transform", {{"clip", a.value}, {"region", region}, {"target", b.value}, {"frames", 4}, {"model", "translation"}});
+    CHECK_FALSE(m.clip("V2@0").properties().uniformScale());              // still stretched
+    CHECK(m.clip("V2@0").properties()[ParamId::ScaleWidth] == ParamValue(2.0)); // its width untouched
+
+    // The tracked clip being stretched is fine for follow (its stretch is part of where it shows the feature).
+    m.h.ok("clip.setMotion", {{"clip", b.value}, {"uniformScale", true}});
+    m.h.ok("clip.setMotion", {{"clip", a.value}, {"scaleWidth", 1.5}});
+    m.h.ok("track.transform", {{"clip", a.value}, {"region", region}, {"target", b.value}, {"frames", 4}, {"model", "similarity"}});
+    // ... but stabilising it rewrites its own Scale: refused until Uniform Scale is on.
+    CHECK(m.h.errorOf("track.transform", {{"clip", a.value}, {"region", region}, {"frames", 4}, {"model", "similarity"}}) == "EditRejected");
+    m.h.ok("clip.setMotion", {{"clip", a.value}, {"uniformScale", true}});
+    m.h.ok("track.transform", {{"clip", a.value}, {"region", region}, {"frames", 4}, {"model", "similarity"}});
+}

@@ -1,7 +1,9 @@
+#include "DynamicHdrInternal.h"
 #include "FfmpegUtil.h"
 
 #include <wabcut/media/CameraLog.h>
 #include <wabcut/media/Probe.h>
+#include <wabcut/media/WavMetadata.h>
 #include <wabcut/model/ImageSequence.h>
 #include <wabcut/platform/FileTime.h>
 
@@ -85,6 +87,15 @@ std::expected<MediaInfo, Error> probe(const std::string& path) {
     if (info.video.empty() && info.audio.empty()) {
         return std::unexpected(Error{ErrorCode::Unsupported, "No audio or video streams in " + path});
     }
+    // 0.7 (card 062): the channel names a field recorder wrote into a WAV (iXML track list, Broadcast Wave description).
+    // A WAV holds one audio stream; a mono file's name also stands as the stream's title (it names the track on ingest).
+    if (info.container == "wav" && info.video.empty() && info.audio.size() == 1 && info.audio.front().channels > 0) {
+        AudioStreamInfo& stream = info.audio.front();
+        stream.channelNames = readWavChannelNames(fsPath, stream.channels);
+        if (stream.channels == 1 && stream.title.empty() && !stream.channelNames.empty()) {
+            stream.title = stream.channelNames.front();
+        }
+    }
     if (!info.video.empty() && !isImageDemuxer(info.container)) {
         // 0.2: the camera log the file's metadata (or Sony's sidecar) names: colour management reads such clips through
         // it when "Color Manage Auto Detected Log" is on (VideoStreamInfo::logColorSpace).
@@ -99,6 +110,18 @@ std::expected<MediaInfo, Error> probe(const std::string& path) {
         }
         for (VideoStreamInfo& v : info.video) {
             v.logColorSpace = log;
+        }
+    }
+    // 0.7: HDR10+ dynamic metadata is a T.35 SEI message in every HEVC access unit of a PQ stream: the first frames say whether
+    // the stream carries it (a few frames only; the Media Info's full check is scanDynamicHdr).
+    if (!isImageDemuxer(info.container)) {
+        for (VideoStreamInfo& v : info.video) {
+            if (v.codec == "hevc" && v.color.transfer == TransferFunction::PQ && v.index >= 0 &&
+                static_cast<unsigned>(v.index) < fmt->nb_streams) {
+                if (const auto scan = detail::scanDynamicHdrIn(fmt, fmt->streams[v.index], path, 3, {}); scan) {
+                    v.hdr10Plus = scan->hasHdr10Plus();
+                }
+            }
         }
     }
     // An image sequence plays one still per frame: a video, not a still.

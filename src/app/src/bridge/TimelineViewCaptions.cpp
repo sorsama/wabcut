@@ -369,7 +369,7 @@ void TimelineView::dragCaption(QPointF pos, Qt::KeyboardModifiers mods) {
         cueDrag.active = true;
         // Snap targets: clip edges, the playhead, marks, markers and beats, and the edges of the other cues; not where
         // the dragged edges start (a drag would stick to where it began).
-        std::vector<Ticks> targets = edit::snapTargets(*m_sequence, m_playhead);
+        std::vector<Ticks> targets = edit::snapTargets(*m_sequence, m_playhead, snapOptions()); // 0.7: Snap to choices
         for (const CaptionTrack& other : m_sequence->captionTracks) {
             for (std::size_t k = 0; k < other.cues.size(); ++k) {
                 if (other.id == cueDrag.track && k == index)

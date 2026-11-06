@@ -255,7 +255,7 @@ TEST_CASE("Lottie: precomps old keyframes and what Wabcut approximates or drops"
     CHECK(hasEntry(rep, D, G, "layer 'Again' contains itself"));
     CHECK(hasEntry(rep, D, G, "layer 'Camera' has a layer type"));
     CHECK(hasEntry(rep, D, G, "layer 'Late' is never visible"));
-    CHECK(hasEntry(rep, D, ReportCategory::Marker, "1 composition marker(s)"));
+    CHECK(hasEntry(rep, D, ReportCategory::Marker, "1 composition marker not imported"));
     CHECK(entry(rep, D, G, "a repeater").location.element == "/layers/2/shapes/0");
     CHECK(entry(rep, D, G, "contains itself").location.element == "/assets/2/layers/0/refId");
 }
@@ -332,4 +332,21 @@ TEST_CASE("Lottie: hostile and malformed files are refused or bounded", "[interc
     CHECK(hasEntry(r->report, D, G, "bad time stretch"));
     CHECK(hasEntry(r->report, D, G, "a text layer without text"));
     CHECK(hasEntry(r->report, D, G, "a layer that is not an object"));
+}
+
+TEST_CASE("Lottie: an unnamed Thai text layer gets a field label cut between characters, so the import stays valid", "[interchange][lottie]") {
+    // 20 Thai letters = 60 bytes: a cut at 40 bytes would fall inside the 14th letter.
+    std::string thai;
+    for (int i = 0; i < 20; ++i) {
+        thai += "\xE0\xB8\x81"; // U+0E01
+    }
+    const std::string layer = R"([{"ty": 5, "nm": "", "ind": 1, "ip": 0, "op": 60, "st": 0, "ks": {}, "t": {"d": {"k": [{"s": {"t": ")" +
+                              thai + R"(", "s": 60, "f": "Arial", "fc": [1, 0, 0], "j": 0}, "t": 0}]}, "a": [], "p": {}}}])";
+    const auto r = importLottie(animation(layer));
+    INFO((r ? std::string() : r.error().message));
+    REQUIRE(r);
+    CHECK_FALSE(graphicProblem(r->graphic));
+    REQUIRE_FALSE(r->fields.empty());
+    CHECK(r->fields.front().label.size() <= 40);
+    CHECK(r->fields.front().label.size() % 3 == 0); // whole letters
 }

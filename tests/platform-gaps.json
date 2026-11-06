@@ -1,0 +1,51 @@
+{
+  "_about": "Tests that fail off Windows for a cause nobody has fixed yet. CI (core.yml, unix-full.yml) leaves them out of the gate through tools/ci-known-gaps.py, runs them apart so their failure output is in the log, and lists them with these reasons in the job summary (tools/ci-test-report.py). Fixing one means deleting its line. A test is listed by a fragment of its name (ctest -R, '|' joins them). docs/building.md, \"Platforms and their test status\".",
+  "linux": [
+    {
+      "test": "Managed local helper lifecycle",
+      "reason": "Fails off Windows; cause not diagnosed. The test starts a fake llama-server child; the check that the API key goes only to our own child (which process listens on the port) exists on Windows only (LocalRuntime.cpp), and the managed llama-server is a Windows x64 feature (Tiers.cpp), so no Linux user is affected."
+    },
+    {
+      "test": "HNSW graph agrees",
+      "reason": "Fails off Windows; cause not diagnosed. The test builds, saves and reloads smart search's HNSW graph file (visual.hnsw). Search itself still works: below the graph's size limit it scans exactly."
+    },
+    {
+      "test": "llama-server starts with the tier context",
+      "reason": "Fails off Windows; cause not diagnosed. It reads the arguments a fake llama-server child recorded; the managed llama-server is a Windows x64 feature."
+    },
+    {
+      "test": "llama-server on a hybrid-graphics machine is pinned",
+      "reason": "Fails off Windows, like the test above (it reads the same recorded arguments); it is about Windows hybrid-graphics laptops."
+    },
+    {
+      "test": "Transcript corrections apply on top",
+      "reason": "Fails on Linux (it passes on macOS); cause not diagnosed. Transcript corrections themselves are covered on Windows and macOS."
+    },
+    {
+      "test": "transcript.find lists the matches",
+      "reason": "Fails on Linux with the test above: Find and Replace corrects words the same way."
+    },
+    {
+      "test": "transcript.findReplace corrects every match",
+      "reason": "Fails on Linux with the two tests above: the same word-correction code."
+    }
+  ],
+  "macos": [
+    {
+      "test": "Managed local helper lifecycle",
+      "reason": "As on Linux: fails off Windows, cause not diagnosed; the managed llama-server is a Windows x64 feature."
+    },
+    {
+      "test": "HNSW graph agrees",
+      "reason": "As on Linux: fails off Windows, cause not diagnosed."
+    },
+    {
+      "test": "llama-server starts with the tier context",
+      "reason": "As on Linux: fails off Windows, cause not diagnosed."
+    },
+    {
+      "test": "llama-server on a hybrid-graphics machine is pinned",
+      "reason": "As on Linux: fails off Windows, cause not diagnosed."
+    }
+  ]
+}

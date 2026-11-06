@@ -32,19 +32,25 @@ add_library(wabcut_audio STATIC
     src/dsp/Biquad.cpp
     src/dsp/Compressor.cpp
     src/dsp/Denoiser.cpp
+    src/dsp/DynamicsProcessing.cpp
     src/dsp/Equalizer.cpp
     src/dsp/Fft.cpp
     src/dsp/Limiter.cpp
     src/dsp/Loudness.cpp
+    src/dsp/Match.cpp
     src/dsp/Repair.cpp
     src/dsp/Space.cpp
+    src/dsp/SpectralRepair.cpp
+    src/dsp/Spectrogram.cpp
     src/dsp/SpeedRender.cpp
     src/dsp/TimeStretch.cpp
     src/effects/EffectChain.cpp
     # p02 audio: Premiere Pro's audio effects (src/effects/PremiereEffects.h).
     src/effects/PremiereEffects.h
     src/effects/AmplitudeEffects.cpp
+    src/effects/DynamicsProcessingEffect.cpp
     src/effects/FilterEffects.cpp
+    src/effects/SpectralRepairEffect.cpp
     src/effects/TimeEffects.cpp
 )
 target_include_directories(wabcut_audio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

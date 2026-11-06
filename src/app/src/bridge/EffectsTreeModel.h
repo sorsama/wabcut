@@ -170,6 +170,8 @@ private:
 
     std::vector<Node> buildTree() const;
     void addPlugins(std::vector<Node>& top) const;
+    /// 0.7: the OpenFX video plug-ins' folder (OfxUi).
+    void addOpenFx(std::vector<Node>& top) const;
     void flatten(const Node& node, int depth, const QString& parentKey, std::vector<QVariantMap>& rows) const;
     bool shownExpanded(const QString& key) const;
     bool keepItem(const QVariantMap& item) const;

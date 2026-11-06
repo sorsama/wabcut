@@ -67,6 +67,8 @@ enum class LibraryOp : std::uint16_t {
     BevelEdges = 55,
     DirectionalBlur = 56,
     CameraBlur = 57,
+    EyeContact = 58, ///< 0.7 (AI Eye Contact): the iris moved inside the eye's opening by the baked eye measurements (params 6.., model/EyeContact.h)
+    VrReorient = 59, ///< 0.7: turns the sphere of an equirectangular (360 / 180, mono or stereo) picture (model/Vr.h)
     // Stylize: neighbourhood operations; some take a blurred copy (Compositor) as their second input.
     UnsharpMask = 70,
     Emboss = 71,
@@ -104,6 +106,9 @@ enum class LibraryOp : std::uint16_t {
     Lightning = 118,    ///< strokes from render/reference/LibraryGeometry.h in a data texture (tex1)
     Scribble = 119,     ///< strokes inside or along the effect's masks (LibraryGeometry.h), its masks not mixed
     PaintBucket = 120,  ///< a flood fill in passes (run lengths, propagation), then the fill composited
+    DepthBlur = 121,    ///< 0.7 (AI Refocus): a lens blur by a depth map (tex1 alpha, 0 near .. 1 far), Vogel-disc gather
+    SkinSmoothing = 122, ///< 0.7 (Skin Smoothing): an edge-preserving smoothing limited to skin-toned pixels, one pass
+    FaceRetouch = 123,   ///< 0.7 (AI Face Retouch): smoothing, blemish removal, teeth and eyes by a face map (tex1 R skin, G mouth, B eyes)
 };
 
 constexpr FxFamily familyOf(LibraryOp op) {

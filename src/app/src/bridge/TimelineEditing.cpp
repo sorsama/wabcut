@@ -12,6 +12,7 @@
 #include <array>
 #include <cstdlib>
 #include <cstdint>
+#include <optional>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -196,6 +197,51 @@ edit::EditOutcome rateStretch(const ProjectState& state, SequenceId sequence, Cl
     return result;
 }
 
+/// Card 095 (GestureSpec::moveMarkers): the sequence markers that start at or after the earliest clip of the move (in the
+/// sequence as it was, linked partners included) shift by the delta the move applied, in the same edit, so one undo
+/// brings them back with the clips. Markers stay put when Ripple Sequence Markers is off, when nothing moved, or when
+/// there is no marker at or after the first moved clip. A marker is never moved before time 0.
+/// 0.7 (GestureSpec::markersBefore, the Track Select Backward tool): the mirror image - the markers that start at or
+/// before the end of the last clip of the move follow it, the ones after stay.
+edit::EditOutcome withMarkersFollowing(const ProjectState& state, SequenceId sequence, const GestureSpec& spec,
+                                       edit::EditOutcome moved) {
+    if (!moved || moved->appliedDelta == Ticks{0})
+        return moved;
+    const SequencePtr before = state.sequencePtr(sequence);
+    if (!before || !before->rippleMarkers || before->markers.empty())
+        return moved;
+    std::vector<ClipId> material = spec.clips;
+    if (spec.links == edit::LinkMode::FollowLinks)
+        material = edit::withLinkedClips(*before, material);
+    std::optional<Ticks> first; // forward: the earliest start; backward: the latest end
+    for (const ClipId id : material) {
+        const auto loc = before->findClip(id);
+        if (!loc)
+            continue;
+        if (spec.markersBefore ? (!first || loc->clip().end() > *first) : (!first || loc->clip().start() < *first))
+            first = spec.markersBefore ? loc->clip().end() : loc->clip().start();
+    }
+    if (!first)
+        return moved;
+    std::vector<Marker> markers = before->markers;
+    bool any = false;
+    for (Marker& m : markers) {
+        if (spec.markersBefore ? m.start <= *first : m.start >= *first) {
+            m.start = std::max(Ticks{0}, m.start + moved->appliedDelta);
+            any = true;
+        }
+    }
+    if (!any)
+        return moved;
+    std::stable_sort(markers.begin(), markers.end(), [](const Marker& a, const Marker& b) { return a.start < b.start; });
+    auto shifted = edit::setSequenceMarkers(moved->state, sequence, std::move(markers));
+    if (!shifted)
+        return moved; // the move stands; the markers stay where they were
+    moved->state = std::move(shifted->state);
+    moved->changes = wabcut::diff(state, moved->state); // the move and the markers
+    return moved;
+}
+
 /// 0.2: a group's outer edge (GestureSpec::groupTrim): the grabbed clip and the other members trimmed by one delta, the
 /// smallest any of them can take (each clamps to its neighbours and its media on its own), as one edit.
 edit::EditOutcome trimGroup(const ProjectState& state, SequenceId sequence, const GestureSpec& spec) {
@@ -258,8 +304,15 @@ edit::EditOutcome applyGesture(const ProjectState& state, SequenceId sequence, c
             return spec.copy ? edit::duplicateClips(s, sequence, clips, spec.delta, moved.tracks, spec.moveMode, links)
                              : edit::moveClips(s, sequence, clips, spec.delta, moved.tracks, spec.moveMode, links);
         };
+        // Card 095: the Track Select Forward tool takes the markers after the grabbed material along.
+        const bool markersFollow = spec.moveMarkers && !spec.copy && spec.moveMode == edit::MoveMode::Overwrite;
+        const auto finish = [&](edit::EditOutcome out) {
+            if (markersFollow)
+                return withMarkersFollowing(state, sequence, spec, std::move(out));
+            return out;
+        };
         if (spec.newAudioTracks <= 0)
-            return run(state);
+            return finish(run(state));
         // Dropping below the last track: add the tracks, then move onto them (one edit, one undo step).
         ProjectState next = state;
         for (int i = 0; i < spec.newAudioTracks; ++i) {
@@ -268,7 +321,7 @@ edit::EditOutcome applyGesture(const ProjectState& state, SequenceId sequence, c
                 return std::unexpected(added.error());
             next = std::move(added->state);
         }
-        return run(next);
+        return finish(run(next));
     }
     case GestureKind::Trim:
         if (!spec.groupTrim.empty())
@@ -299,8 +352,10 @@ edit::EditOutcome applyGesture(const ProjectState& state, SequenceId sequence, c
 const char* gestureLabel(const GestureSpec& spec) {
     switch (spec.kind) {
     case GestureKind::Move:
-        if (spec.copy)
-            return QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Duplicate");
+        if (spec.copy) // 0.7 (card 040): Alt-drag, then Ctrl before the drop, inserts the copy
+            return spec.moveMode == edit::MoveMode::Insert
+                       ? QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Insert Duplicate")
+                       : QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Duplicate");
         if (spec.moveMode == edit::MoveMode::Rearrange)
             return QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Rearrange");
         return spec.moveMode == edit::MoveMode::Insert

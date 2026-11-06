@@ -23,10 +23,11 @@ struct Name {
     std::string_view label;
 };
 
-constexpr std::array<Name, 3> kNames{{
+constexpr std::array<Name, 4> kNames{{
     {TimeInterpolation::FrameSampling, "frameSampling", "Frame Sampling"},
     {TimeInterpolation::FrameBlending, "frameBlending", "Frame Blending"},
     {TimeInterpolation::OpticalFlow, "opticalFlow", "Optical Flow"},
+    {TimeInterpolation::AiInterpolation, "aiInterpolation", "AI Frame Interpolation"},
 }};
 
 } // namespace

@@ -8,6 +8,10 @@
 // that came back (the MP3's frames counted: GenerationStatus::usage), fetch() writes them. The spend ledger is then
 // settled at that length, never more than the approved estimate. Never retried: a network ambiguity must not bill a
 // sound twice.
+// r07 (QA-01), sound-generation: the same request for OpenAI-compatible servers that serve sound effects (LocalAI's
+// ElevenLabs-compatible POST /v1/sound-generation; a custom provider's "sound" path, default "/sound-generation" after
+// its base URL): {"model_id", "text", "duration_seconds", "prompt_influence"} -> the audio file (WAV, MP3, FLAC, OGG or
+// M4A, checked by its signature). No output_format query.
 
 #include "AdapterUtil.h"
 
@@ -75,10 +79,38 @@ std::int64_t mp3Milliseconds(std::string_view b) {
     return std::llround(seconds * 1000.0);
 }
 
+/// The length of a PCM WAV file in milliseconds (the "data" chunk over the "fmt " chunk's byte rate); 0 when unknown.
+std::int64_t wavMilliseconds(std::string_view b) {
+    if (b.size() < 12 || b.substr(0, 4) != "RIFF" || b.substr(8, 4) != "WAVE") {
+        return 0;
+    }
+    const auto at32 = [&](std::size_t i) {
+        return static_cast<std::uint32_t>(static_cast<unsigned char>(b[i])) |
+               static_cast<std::uint32_t>(static_cast<unsigned char>(b[i + 1])) << 8 |
+               static_cast<std::uint32_t>(static_cast<unsigned char>(b[i + 2])) << 16 |
+               static_cast<std::uint32_t>(static_cast<unsigned char>(b[i + 3])) << 24;
+    };
+    std::uint32_t byteRate = 0;
+    for (std::size_t at = 12; at + 8 <= b.size();) {
+        const std::string_view id = b.substr(at, 4);
+        const std::uint32_t size = at32(at + 4);
+        if (id == "fmt " && size >= 16 && at + 8 + 12 <= b.size()) {
+            byteRate = at32(at + 8 + 8);
+        } else if (id == "data") {
+            const std::uint64_t bytes = std::min<std::uint64_t>(size, b.size() - (at + 8)); // a streamed size may be wrong
+            return byteRate > 0 ? static_cast<std::int64_t>(bytes * 1000 / byteRate) : 0;
+        }
+        at += 8 + static_cast<std::size_t>(size) + (size & 1U);
+    }
+    return 0;
+}
+
 class ElevenLabsSoundEffects final : public IMediaGenerator {
 public:
-    explicit ElevenLabsSoundEffects(ProviderContext c)
-        : m_provider(c.provider), m_model(c.model), m_base(std::move(c.baseUrl)), m_key(std::move(c.key)), m_http(c.transport) {}
+    /// `compatible`: an OpenAI-compatible server's sound-generation path (r07) instead of ElevenLabs' own API.
+    ElevenLabsSoundEffects(ProviderContext c, bool compatible)
+        : m_provider(c.provider), m_model(c.model), m_base(std::move(c.baseUrl)), m_key(std::move(c.key)), m_http(c.transport),
+          m_compatible(compatible) {}
 
     const ModelSpec& spec() const override { return m_model; }
 
@@ -100,7 +132,9 @@ public:
             body["loop"] = true;
         }
         const ProviderContext c{m_provider, m_model, m_base, m_key.clone(), m_http};
-        HttpRequest http = jsonRequest(c, joinUrl(m_base, "/v1/sound-generation") + "?output_format=mp3_44100_128", body, BodyMode::Buffered);
+        const std::string url = m_compatible ? joinUrl(m_base, m_model.endpoint.empty() ? std::string_view("/sound-generation") : std::string_view(m_model.endpoint))
+                                             : joinUrl(m_base, "/v1/sound-generation") + "?output_format=mp3_44100_128";
+        HttpRequest http = jsonRequest(c, url, body, BodyMode::Buffered);
         http.retrySafe = false;
         http.timeout = std::chrono::seconds(180);
         http.idleTimeout = std::chrono::seconds(90);
@@ -112,14 +146,21 @@ public:
             return std::unexpected(httpError(*response));
         }
         if (response->body.size() > 64u * 1024 * 1024) {
-            return std::unexpected(AiError(AiErrorCode::ProviderError, "ElevenLabs sent more than a sound effect can be"));
+            return std::unexpected(AiError(AiErrorCode::ProviderError, m_provider.name + " sent more than a sound effect can be"));
         }
-        if (!looksLikeMp3(response->body)) {
+        std::string type = "audio/mpeg";
+        if (m_compatible) { // any audio file the signature check accepts
+            const auto header = findHeader(response->headers, "content-type");
+            type = header ? std::string(*header) : std::string();
+            if (!generatedFileExtension(type, std::string_view(response->body).substr(0, 16), GeneratedMediaKind::SoundEffect)) {
+                return std::unexpected(invalid(m_provider.name + " returned something that is not an audio file"));
+            }
+        } else if (!looksLikeMp3(response->body)) {
             return std::unexpected(invalid("ElevenLabs returned something that is not an MP3 file"));
         }
         GenerationTicket ticket{m_provider.id, m_model.id, "sfx-" + std::to_string(++m_serial), {}, {}, {}};
         std::lock_guard lock(m_mutex);
-        m_done[ticket.id] = std::move(response->body);
+        m_done[ticket.id] = Answer{std::move(response->body), std::move(type)};
         return ticket;
     }
 
@@ -132,9 +173,11 @@ public:
         }
         status.state = GenerationState::Succeeded;
         status.progress = 1.0f;
-        status.inlineOutputs.push_back(std::vector<std::uint8_t>(it->second.begin(), it->second.end()));
-        status.inlineTypes.push_back("audio/mpeg");
-        status.usage.audioMilliseconds = mp3Milliseconds(it->second); // what came back: the spend ledger is settled at it
+        const std::string& bytes = it->second.bytes;
+        status.inlineOutputs.push_back(std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
+        status.inlineTypes.push_back(it->second.type);
+        // What came back: the spend ledger is settled at it.
+        status.usage.audioMilliseconds = bytes.starts_with("RIFF") ? wavMilliseconds(bytes) : mp3Milliseconds(bytes);
         return status;
     }
 
@@ -142,6 +185,15 @@ public:
                                                                     std::stop_token) override {
         if (status.state != GenerationState::Succeeded || status.inlineOutputs.size() != 1) {
             return std::unexpected(malformedEvent("generation has no completed output"));
+        }
+        if (m_compatible) { // named after its signature (.wav, .mp3, ...)
+            auto file = writeGenerated(status.inlineOutputs.front(),
+                                       status.inlineTypes.empty() ? std::string_view() : std::string_view(status.inlineTypes.front()), directory,
+                                       GeneratedMediaKind::SoundEffect);
+            if (!file) {
+                return std::unexpected(file.error());
+            }
+            return std::vector<std::filesystem::path>{*file};
         }
         std::error_code ec;
         std::filesystem::create_directories(directory, ec);
@@ -167,15 +219,24 @@ private:
     std::string m_base;
     Secret m_key;
     IHttpTransport& m_http;
+    bool m_compatible = false;
+    struct Answer {
+        std::string bytes;
+        std::string type;
+    };
     std::mutex m_mutex;
-    std::map<std::string, std::string> m_done;
+    std::map<std::string, Answer> m_done;
     std::atomic<int> m_serial{0};
 };
 
 } // namespace
 
 std::unique_ptr<IMediaGenerator> makeElevenLabsSoundEffects(ProviderContext context) {
-    return std::make_unique<ElevenLabsSoundEffects>(std::move(context));
+    return std::make_unique<ElevenLabsSoundEffects>(std::move(context), false);
+}
+
+std::unique_ptr<IMediaGenerator> makeCompatibleSoundEffects(ProviderContext context) {
+    return std::make_unique<ElevenLabsSoundEffects>(std::move(context), true);
 }
 
 } // namespace wabcut::ai::net

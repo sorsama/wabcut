@@ -289,6 +289,14 @@ QString EffectPresetsBridge::libraryError() const { return fromUtf8(m_library->e
 
 int EffectPresetsBridge::userPresetCount() const { return static_cast<int>(m_library->library().presets.size()); }
 
+QStringList EffectPresetsBridge::presetNames() const {
+    QStringList names;
+    const EffectsLibrary all = m_library->library();
+    for (const EffectPreset& p : all.presets)
+        names << QString::fromStdString(p.name);
+    return names;
+}
+
 QUrl EffectPresetsBridge::presetsFolder() const {
     QString folder = m_persistent ? QSettings().value(QLatin1String(kPresetsFolderKey)).toString() : m_folder;
     if (folder.isEmpty() || !QFileInfo(folder).isDir())
@@ -631,6 +639,43 @@ QString EffectPresetsBridge::saveEffectOfClip(const QString& clip, const QString
                                           {"type", type.isEmpty() ? std::string("scale") : type.toStdString()},
                                           {"description", description.toStdString()},
                                           {"bin", bin.toStdString()}});
+}
+
+namespace {
+
+/// A mixer strip's target ("t12", "master") as the effects.*TrackPreset commands name it.
+Json chainTarget(const QString& strip) {
+    if (strip == QLatin1String("master"))
+        return "master";
+    return static_cast<std::uint64_t>(strip.mid(1).toULongLong());
+}
+
+} // namespace
+
+QString EffectPresetsBridge::saveTrackEffects(const QString& target, const QString& name, const QString& type,
+                                              const QString& description, const QString& bin) {
+    return run("effects.saveTrackPreset", Json{{"target", chainTarget(target)},
+                                               {"name", name.trimmed().toStdString()},
+                                               {"type", type.isEmpty() ? std::string("anchorToInPoint") : type.toStdString()},
+                                               {"description", description.toStdString()},
+                                               {"bin", bin.toStdString()}});
+}
+
+QString EffectPresetsBridge::applyToTrack(const QString& name, const QString& target) {
+    return run("effects.applyTrackPreset", Json{{"preset", name.toStdString()}, {"targets", Json::array({chainTarget(target)})}});
+}
+
+QVariantList EffectPresetsBridge::audioPresets() const {
+    QVariantList out;
+    for (const EffectPreset& p : m_library->library().presets) {
+        if (p.kind() != EffectKind::Audio)
+            continue;
+        out.append(QVariantMap{{QStringLiteral("name"), fromUtf8(p.name)},
+                               {QStringLiteral("description"), fromUtf8(p.description)},
+                               {QStringLiteral("bin"), fromUtf8(p.bin)},
+                               {QStringLiteral("effects"), static_cast<int>(p.effects.size())}});
+    }
+    return out;
 }
 
 QString EffectPresetsBridge::suggestName(const QString& base) const {

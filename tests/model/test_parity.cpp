@@ -19,10 +19,12 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <span>
 #include <vector>
 
 using namespace wabcut;
@@ -468,6 +470,47 @@ TEST_CASE("Preview files stay valid through edits outside them and go with edits
     CHECK(nested.invalidate(deep.state, deep.changes).size() == 1);
 }
 
+TEST_CASE("Colour management is part of a preview's content hash and an edit of it drops the previews (0.7)",
+          "[model][parity][render]") {
+    Timeline tl(R"(
+        V1 |AaaaBbbb|
+        A1 |AaaaBbbb|
+    )");
+    const TimeRange first{Ticks{}, f(4)};
+    const std::string plain = renderContentHash(tl.state, tl.seq, first);
+
+    // The compositor draws with the project's colour management, so a preview made under another setup shows other pixels.
+    ProjectState hdr = tl.state;
+    hdr.colorManagement.mode = ColorManagementMode::HdrPq;
+    const std::string pq = renderContentHash(hdr, tl.seq, first);
+    CHECK(pq != plain);
+    ProjectState brighter = hdr;
+    brighter.colorManagement.peakNits = 4000.0;
+    CHECK(renderContentHash(brighter, tl.seq, first) != pq);
+    ProjectState compressed = tl.state;
+    compressed.colorManagement.gamutCompression = true;
+    CHECK(renderContentHash(compressed, tl.seq, first) != plain);
+    // Back to the default setup: the old files are valid again, and a default project's key is what it always was.
+    ProjectState back = hdr;
+    back.colorManagement = ColorManagement{};
+    CHECK(renderContentHash(back, tl.seq, first) == plain);
+
+    // The cache shows a file made under the default setup as rendered only under that setup ...
+    PreviewCache cache(freshFolder("color_management"));
+    recordFake(cache, tl.state, tl.seq, first);
+    CHECK(cache.renderBar(tl.state, tl.seq, TimeRange{Ticks{}, f(4)})[0].status == RenderStatus::Rendered);
+    CHECK(cache.renderBar(hdr, tl.seq, TimeRange{Ticks{}, f(4)})[0].status != RenderStatus::Rendered);
+    CHECK_FALSE(cache.validAt(hdr, tl.seq, f(1)).has_value());
+    CHECK(cache.validAt(tl.state, tl.seq, f(1)).has_value());
+    // ... and an invalidate after the setup was edited drops (and deletes) it, without an edit in the timeline.
+    const ChangeSet changes = diff(tl.state, hdr);
+    REQUIRE(changes.colorManagementChanged);
+    const std::string file = cache.entries()[0].file;
+    REQUIRE(std::filesystem::exists(cache.folder() / file));
+    CHECK(cache.invalidate(hdr, changes).size() == 1);
+    CHECK_FALSE(std::filesystem::exists(cache.folder() / file));
+}
+
 TEST_CASE("The preview index is bounded and keeps a size budget (C.15)", "[model][parity][render]") {
     Timeline tl("    V1 |AaaaBbbbCccc|\n");
     const std::filesystem::path folder = freshFolder("index");
@@ -543,4 +586,68 @@ TEST_CASE("Marker highlights are bounded - saved only when set - and read back (
     CHECK_FALSE(io::fromJson(hostile).has_value());
     CHECK(highlightConfidenceFromString("high") == HighlightConfidence::High);
     CHECK_FALSE(highlightConfidenceFromString("certain").has_value());
+}
+
+TEST_CASE("A LUT replaced on disk makes the rendered previews that used it stale (review-1 m3)", "[model][parity][render][lut]") {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::path(WABCUT_TEST_OUTPUT_DIR) / "parity" / "lut-key";
+    fs::create_directories(dir);
+    const fs::path file = dir / "look.cube";
+    const auto write = [&](const std::string& text, int seconds) {
+        {
+            std::ofstream out(file, std::ios::binary | std::ios::trunc);
+            out << text;
+        }
+        fs::last_write_time(file, fs::file_time_type::clock::now() + std::chrono::seconds(seconds));
+    };
+    write("LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n", 0);
+
+    Timeline tl(R"(
+        V1 |AaaaBbbb|
+    )");
+    const TimeRange all{Ticks{}, f(8)};
+    const std::string withoutLut = renderContentHash(tl.state, tl.seq, all);
+
+    // A grade with a creative LUT from a project file.
+    ProjectState s = tl.state;
+    ProjectAsset lut{{}, std::string(kAssetKindLut), "look.cube", {}};
+    lut.locator.path = file.generic_string();
+    auto added = edit::addAsset(s, std::move(lut));
+    REQUIRE(added);
+    s = added->state;
+    const ClipId clip = tl.clip("V1@0");
+    auto graded = edit::addEffect(s, tl.seq, std::span(&clip, 1), "wabcut.color.grade");
+    REQUIRE(graded);
+    edit::EffectChange look;
+    look.data = {EffectData{"creative.look", assetReference(added->id)}};
+    s = ok(edit::setEffect(graded->state, tl.seq, clip, graded->createdEffects.at(0), look)).state;
+
+    const std::string first = renderContentHash(s, tl.seq, all);
+    CHECK(first != withoutLut);
+    CHECK(renderContentHash(s, tl.seq, all) == first); // the same file: the same key
+
+    // The segment that does not show the graded clip is not affected by the file.
+    const TimeRange later{f(4), f(4)};
+    const std::string laterBefore = renderContentHash(s, tl.seq, later);
+    write("LUT_3D_SIZE 2\n1 1 1\n0 1 1\n1 0 1\n0 0 1\n1 1 0\n0 1 0\n1 0 0\n0 0 0\n# inverted\n", 10);
+    CHECK(renderContentHash(s, tl.seq, later) == laterBefore);
+
+    // The grader writes another version over the same path: previews made with the old grade are stale.
+    CHECK(renderContentHash(s, tl.seq, all) != first);
+    // A version of another size with the same modification time is stale too.
+    const std::string inverted = renderContentHash(s, tl.seq, all);
+    write("LUT_3D_SIZE 2\n1 1 1\n0 1 1\n1 0 1\n0 0 1\n1 1 0\n0 1 0\n1 0 0\n0 0 0\n# inverted and longer\n", 10);
+    CHECK(renderContentHash(s, tl.seq, all) != inverted);
+
+    // The file is gone (offline): a different key again, not the last good one.
+    fs::remove(file);
+    const std::string gone = renderContentHash(s, tl.seq, all);
+    CHECK(gone != inverted);
+    CHECK(gone != withoutLut);
+    // And back: a key that matches the file again.
+    write("LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n", 20);
+    CHECK(renderContentHash(s, tl.seq, all) != gone);
+
+    // A project without LUT references keeps its key (older previews stay valid).
+    CHECK(renderContentHash(tl.state, tl.seq, all) == withoutLut);
 }

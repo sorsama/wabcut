@@ -297,7 +297,7 @@ std::shared_ptr<command::CommandServices> appGamingServices(const std::filesyste
 }
 
 std::shared_ptr<command::CommandServices> aiEditingServices(TranscriptBridge* transcripts, const std::filesystem::path& projectFile,
-                                                            std::shared_ptr<ai::IChatModel> chat) {
+                                                            std::shared_ptr<ai::IChatModel> chat, bool chatLocal) {
     std::vector<std::shared_ptr<command::CommandServices>> parts;
     std::shared_ptr<ai::edit::TranscriptServices> transcriptServices = transcripts ? transcripts->services() : nullptr;
     if (transcriptServices) {
@@ -326,7 +326,7 @@ std::shared_ptr<command::CommandServices> aiEditingServices(TranscriptBridge* tr
                 return std::unexpected(ai::AiError(ai::AiErrorCode::ModelMissing, "no cloud chat model"));
             }
             return std::make_unique<Borrowed>(*handOver);
-        }));
+        }, chatLocal)); // QA-07: a model on this computer may re-rank in a no-cloud project
     }
     return std::make_shared<command::ServiceBundle>(std::move(parts));
 }
@@ -476,11 +476,17 @@ void ShortsBridge::setAi(::AiController* ai) {
 }
 
 bool ShortsBridge::cloudAvailable() const {
-    if (!m_ai || m_ai->offlineMode() || (m_controller && m_controller->snapshot()->aiNoCloud)) {
+    if (!m_ai) {
         return false;
     }
+    // QA-07: offline mode and the no-cloud lock stop cloud models only (resolve() leaves them out); the local assistant,
+    // Ollama or a custom provider on localhost keeps working.
     auto resolved = m_ai->platform().resolve(ai::Capability::Chat);
-    return resolved && !resolved->empty();
+    if (!resolved || resolved->empty()) {
+        return false;
+    }
+    const bool blocked = m_ai->offlineMode() || m_ai->projectLock() || (m_controller && m_controller->snapshot()->aiNoCloud);
+    return !blocked || m_ai->runsLocally(resolved->front().model->id);
 }
 
 std::shared_ptr<command::CommandServices> ShortsBridge::services() {
@@ -520,15 +526,17 @@ QString ShortsBridge::find(int count, const QString& query, bool rerank) {
         services = m_services;
     } else {
         std::shared_ptr<ai::IChatModel> chat;
+        bool chatLocal = false;
         if (rerank && cloudAvailable()) {
             auto resolved = m_ai->platform().resolve(ai::Capability::Chat);
             if (resolved && !resolved->empty()) {
+                chatLocal = m_ai->runsLocally(resolved->front().model->id); // QA-07
                 if (auto model = m_ai->platform().chat(resolved->front().model->id)) {
                     chat = std::shared_ptr<ai::IChatModel>(std::move(*model));
                 }
             }
         }
-        services = aiEditingServices(m_transcripts, projectPath(m_projectFile), std::move(chat));
+        services = aiEditingServices(m_transcripts, projectPath(m_projectFile), std::move(chat), chatLocal);
     }
     setFrameContext(base, projectPath(m_projectFile));
     Json params{{"sequence", sequence.value}, {"count", std::clamp(count, 1, 20)}, {"rerank", rerank}};

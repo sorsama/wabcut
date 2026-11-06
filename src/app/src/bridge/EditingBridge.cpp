@@ -122,7 +122,16 @@ Json jsonOf(const QVariantMap& map) {
 
 } // namespace
 
-EditingBridge::EditingBridge(QObject* parent) : QObject(parent) {}
+EditingBridge::EditingBridge(QObject* parent) : QObject(parent), m_reloadJob(std::make_unique<CommandJob>()) {}
+
+EditingBridge::~EditingBridge() {
+    if (m_reloadJob)
+        m_reloadJob->stop(); // the worker reads files and must not outlive the bridge
+}
+
+void EditingBridge::setSynchronous(bool synchronous) {
+    m_reloadJob->setSynchronous(synchronous);
+}
 
 EditingBridge* EditingBridge::create(QQmlEngine* qmlEngine, QJSEngine*) {
     auto* bridge = new EditingBridge;
@@ -156,6 +165,7 @@ bool EditingBridge::handlesCommand(const QString& id) {
     static const QSet<QString> kCommands{
         // Clip > Video Options
         QStringLiteral("clip.scaleToFrameSize"),
+        QStringLiteral("clip.nearestNeighborScaling"),
         QStringLiteral("clip.setToFrameSize"),
         QStringLiteral("clip.setToFillFrame"),
         QStringLiteral("clip.frameHoldOptions"),
@@ -170,6 +180,8 @@ bool EditingBridge::handlesCommand(const QString& id) {
         // File > New > Sequence From Clip; Sequence > Sequence Settings, Replace With Clip, Make Subsequence, Join
         // Through Edits, Go to Gap, Close Gap
         QStringLiteral("file.newSequenceFromClip"),
+        QStringLiteral("file.newSequencesFromClips"),
+        QStringLiteral("file.newSequenceFromClipsTogether"),
         QStringLiteral("sequence.settings"),
         QStringLiteral("sequence.replaceFromSourceMonitor"),
         QStringLiteral("sequence.replaceFromSourceMonitorMatchFrame"),
@@ -182,6 +194,10 @@ bool EditingBridge::handlesCommand(const QString& id) {
         QStringLiteral("sequence.nextInTrack"),
         QStringLiteral("sequence.previousInTrack"),
         QStringLiteral("sequence.closeGap"),
+        // 0.7 (cards 123, 122): Sequence > Remove Transitions (the selection's), Remove All Transitions, Remove Disabled Clips
+        QStringLiteral("sequence.removeTransitions"),
+        QStringLiteral("sequence.removeAllTransitions"),
+        QStringLiteral("sequence.removeDisabledClips"),
         // Clip > Merge Clips, Modify, Replace Footage, Make Offline
         QStringLiteral("clip.mergeClips"),
         QStringLiteral("clip.interpretFootage"),
@@ -189,6 +205,7 @@ bool EditingBridge::handlesCommand(const QString& id) {
         QStringLiteral("clip.modifyTimecode"),
         QStringLiteral("clip.replaceFootage"),
         QStringLiteral("clip.makeOffline"),
+        QStringLiteral("clip.reloadFootage"),
         // 0.2 UX (stream T): Reveal in Project (no default key)
         QStringLiteral("clip.revealInProject"),
         // Window > History, and the History panel's Step Backward / Step Forward (Left / Right in its scope)
@@ -370,6 +387,10 @@ bool EditingBridge::runCommand(const QString& id) {
         const std::vector<ClipId> clips = targetClips({});
         const QVariantMap info = clips.empty() ? QVariantMap{} : clipVideoInfo(clipKey(clips.front()));
         scaleToFrameSize({}, !info.value(QStringLiteral("scaleToFrame")).toBool());
+    } else if (id == QLatin1String("clip.nearestNeighborScaling")) {
+        const std::vector<ClipId> clips = targetClips({});
+        const QVariantMap info = clips.empty() ? QVariantMap{} : clipVideoInfo(clipKey(clips.front()));
+        nearestNeighborScaling({}, !info.value(QStringLiteral("nearestNeighbor")).toBool());
     } else if (id == QLatin1String("clip.setToFrameSize")) {
         setToFrameSize({});
     } else if (id == QLatin1String("clip.setToFillFrame")) {
@@ -401,6 +422,10 @@ bool EditingBridge::runCommand(const QString& id) {
             setMessage(tr("Select a clip of a media file"));
     } else if (id == QLatin1String("file.newSequenceFromClip")) {
         newSequenceFromClip(librarySelection.isEmpty() ? QString() : librarySelection.front());
+    } else if (id == QLatin1String("file.newSequencesFromClips") || id == QLatin1String("file.newSequenceFromClipsTogether")) {
+        newSequencesFromClips(librarySelection, id == QLatin1String("file.newSequenceFromClipsTogether"));
+    } else if (id == QLatin1String("clip.reloadFootage")) {
+        reloadFootage(librarySelection);
     } else if (id == QLatin1String("sequence.settings")) {
         openSequenceSettings(currentSequenceKey());
     } else if (id == QLatin1String("sequence.replaceFromSourceMonitor")) {
@@ -425,6 +450,12 @@ bool EditingBridge::runCommand(const QString& id) {
         goToGap(false, false);
     } else if (id == QLatin1String("sequence.closeGap")) {
         closeGap();
+    } else if (id == QLatin1String("sequence.removeTransitions")) {
+        removeTransitions(false);
+    } else if (id == QLatin1String("sequence.removeAllTransitions")) {
+        removeTransitions(true);
+    } else if (id == QLatin1String("sequence.removeDisabledClips")) {
+        removeDisabledClips();
     } else if (id == QLatin1String("clip.mergeClips")) {
         openMergeClips(librarySelection);
     } else if (id == QLatin1String("clip.interpretFootage")) {
@@ -481,7 +512,7 @@ QVariantMap EditingBridge::commandAvailability(const QString& id) const {
         });
     };
     if (id == QLatin1String("clip.scaleToFrameSize") || id == QLatin1String("clip.setToFrameSize") ||
-        id == QLatin1String("clip.setToFillFrame"))
+        id == QLatin1String("clip.setToFillFrame") || id == QLatin1String("clip.nearestNeighborScaling"))
         return state(!clips.empty(), tr("Select a clip first"));
     if (id == QLatin1String("clip.frameHoldOptions") || id == QLatin1String("clip.fieldOptions") ||
         id == QLatin1String("clip.addFrameHold") || id == QLatin1String("clip.insertFrameHoldSegment"))
@@ -492,6 +523,10 @@ QVariantMap EditingBridge::commandAvailability(const QString& id) const {
     if (id == QLatin1String("file.newSequenceFromClip") || id == QLatin1String("clip.replaceFootage"))
         return state(!librarySelection.isEmpty() && parseMediaKey(librarySelection.front()).has_value(),
                      tr("Select a clip in the Library"));
+    if (id == QLatin1String("file.newSequencesFromClips") || id == QLatin1String("file.newSequenceFromClipsTogether"))
+        return state(mediaOf({}).size() >= 2, tr("Select two or more clips in the Library"));
+    if (id == QLatin1String("clip.reloadFootage"))
+        return state(!mediaOf({}).empty(), tr("Select clips in the Library to reload"));
     if (id == QLatin1String("clip.mergeClips"))
         return state(mediaOf({}).size() >= 2, tr("Select a video clip and the audio clips to merge with it"));
     if (id == QLatin1String("clip.interpretFootage"))
@@ -548,6 +583,21 @@ QVariantMap EditingBridge::commandAvailability(const QString& id) const {
         // Between the selected clips, else every gap of the sequence (the command's own rule, run on a copy).
         const ProjectSnapshot snap = m_controller->snapshot();
         return state(snap && edit::closeGaps(*snap, seq->id, clips).has_value(), tr("There is no gap to close"));
+    }
+    // 0.7 (cards 123, 122): enabled when the command would do something (its own rules, run on a copy).
+    if (id == QLatin1String("sequence.removeTransitions")) {
+        if (clips.empty())
+            return state(false, tr("Select clips first"));
+        const ProjectSnapshot snap = m_controller->snapshot();
+        return state(snap && edit::removeTransitions(*snap, seq->id, clips).has_value(), tr("The selected clips have no transitions"));
+    }
+    if (id == QLatin1String("sequence.removeAllTransitions")) {
+        const ProjectSnapshot snap = m_controller->snapshot();
+        return state(snap && edit::removeTransitions(*snap, seq->id, {}).has_value(), tr("The sequence has no transitions to remove"));
+    }
+    if (id == QLatin1String("sequence.removeDisabledClips")) {
+        const ProjectSnapshot snap = m_controller->snapshot();
+        return state(snap && edit::removeDisabledClips(*snap, seq->id).has_value(), tr("There are no disabled clips to remove"));
     }
     return state(true); // Sequence Settings, Join Through Edits, Go to Gap: the open sequence is enough
 }
@@ -627,12 +677,17 @@ QVariantMap EditingBridge::clipVideoInfo(const QString& key) const {
                          (i + 1 < track.clips.size() && edit::isThroughEdit(track.clips[i], track.clips[i + 1]));
     return {{QStringLiteral("video"), video != nullptr},
             {QStringLiteral("scaleToFrame"), video && video->content().scaleToFrame},
+            {QStringLiteral("nearestNeighbor"), video && video->content().nearestNeighbor},
             {QStringLiteral("frozen"), video && video->isFreeze()},
             {QStringLiteral("throughEdit"), through}};
 }
 
 QString EditingBridge::scaleToFrameSize(const QString& key, bool enabled) {
     return runOnClips("clip.scaleToFrameSize", targetClips(key), Json{{"enabled", enabled}});
+}
+
+QString EditingBridge::nearestNeighborScaling(const QString& key, bool enabled) {
+    return runOnClips("clip.nearestNeighborScaling", targetClips(key), Json{{"enabled", enabled}});
 }
 
 QString EditingBridge::setToFrameSize(const QString& key) { return runOnClips("clip.setToFrameSize", targetClips(key)); }
@@ -771,6 +826,19 @@ QString EditingBridge::newSequenceFromClip(const QString& key) {
     return result(r);
 }
 
+QString EditingBridge::newSequencesFromClips(const QStringList& keys, bool together) {
+    const std::vector<MediaId> media = mediaOf(keys);
+    if (media.empty()) {
+        setMessage(tr("Select clips in the Library"));
+        return m_message;
+    }
+    Json params{{"media", mediaArray(media)}, {"mode", together ? "together" : "each"}};
+    const command::CommandResult r = run("sequence.newFromClips", std::move(params));
+    if (r.ok() && !r.createdIds.empty() && m_tabs)
+        m_tabs->open(sequenceKey(SequenceId{r.createdIds.front()}));
+    return result(r);
+}
+
 QString EditingBridge::currentSequenceKey() const {
     return m_controller ? sequenceKey(m_controller->currentSequenceId()) : QString();
 }
@@ -793,10 +861,18 @@ QVariantMap EditingBridge::sequenceSettings(const QString& key) const {
             {QStringLiteral("dropFrame"), seq->dropFrame},
             {QStringLiteral("dropFrameAvailable"), supportsDropFrame(seq->frameRate)},
             {QStringLiteral("previewFormat"), QString::fromStdString(seq->previewFormat)},
+            // 0.7 (VR / 360 video)
+            {QStringLiteral("vrProjection"), text(toString(seq->vr.projection))},
+            {QStringLiteral("vrStereo"), text(toString(seq->vr.stereo))},
             {QStringLiteral("videoDisplay"), text(toString(seq->videoDisplay))},
             {QStringLiteral("audioDisplay"), text(toString(seq->audioDisplay))},
             {QStringLiteral("startTimecode"),
-             QString::fromStdString(ticksToTimecode(seq->startTimecode, seq->frameRate, seq->dropFrame))}};
+             QString::fromStdString(ticksToTimecode(seq->startTimecode, seq->frameRate, seq->dropFrame))},
+            // 0.7 (card 046): the work area as timecodes ("" when there is none)
+            {QStringLiteral("workAreaIn"),
+             seq->workArea ? QString::fromStdString(ticksToTimecode(seq->workArea->start, seq->frameRate, seq->dropFrame)) : QString()},
+            {QStringLiteral("workAreaOut"),
+             seq->workArea ? QString::fromStdString(ticksToTimecode(seq->workArea->end(), seq->frameRate, seq->dropFrame)) : QString()}};
 }
 
 QString EditingBridge::applySequenceSettings(const QString& key, const QVariantMap& settings) {
@@ -899,6 +975,82 @@ QString EditingBridge::makeOffline(const QStringList& keys) {
     return result(run("media.makeOffline", Json{{"media", mediaArray(media)}}));
 }
 
+QString EditingBridge::reloadFootage(const QStringList& keys) {
+    const std::vector<MediaId> media = mediaOf(keys);
+    if (media.empty()) {
+        setMessage(tr("Select clips in the Library to reload"));
+        return m_message;
+    }
+    if (!m_controller) {
+        setMessage(tr("There is no project"));
+        return m_message;
+    }
+    if (m_reloading) {
+        setMessage(tr("Reload Footage is already running"));
+        return m_message;
+    }
+    // The files are read on a worker thread (a probe opens each file: a network drive can take seconds) with progress
+    // and Cancel; the reloaded project is committed on the GUI thread as one undo step (CommandJob).
+    const std::filesystem::path projectFile = m_controller->projectFile();
+    auto services = std::make_shared<command::MediaProbeServices>(
+        [projectFile](const std::filesystem::path& file) { return editor::describeMediaFile(file, projectFile); });
+    setMessage({});
+    m_reloadFailure.clear();
+    setReload(true, tr("Reading the files"), -1);
+    QPointer<EditingBridge> self(this);
+    const bool started = m_reloadJob->start(
+        this, m_controller, std::move(services),
+        {"media.reload", Json{{"media", mediaArray(media)}}, QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Reload Footage")},
+        [self](const QString& text, double fraction) {
+            if (self)
+                self->setReload(true, text.isEmpty() ? self->m_reloadPhase : text, fraction);
+        },
+        [self](const command::CommandResult& r) {
+            if (!self)
+                return;
+            self->setReload(false, {}, -1);
+            self->finishReload(r);
+        });
+    if (!started) {
+        setReload(false, {}, -1);
+        setMessage(tr("Reload Footage is already running"));
+        return m_message;
+    }
+    return m_reloadFailure; // only a job that already ended (tests run it on this thread) can have failed by now
+}
+
+void EditingBridge::cancelReload() {
+    if (m_reloadJob)
+        m_reloadJob->cancel();
+}
+
+void EditingBridge::setReload(bool running, const QString& phase, double progress) {
+    if (m_reloading == running && m_reloadPhase == phase && qFuzzyCompare(m_reloadProgress + 1.0, progress + 1.0))
+        return;
+    m_reloading = running;
+    m_reloadPhase = phase;
+    m_reloadProgress = progress;
+    emit reloadChanged();
+}
+
+void EditingBridge::finishReload(const command::CommandResult& r) {
+    if (!r.ok()) {
+        m_reloadFailure = result(r);
+        return;
+    }
+    // What happened, in words: changed files, files that read the same, what could not be read, clips cut short.
+    const auto count = [&](const char* key) { return r.data.contains(key) ? r.data[key].get<int>() : 0; };
+    const int reloaded = count("reloaded");
+    const int failed = r.data.contains("failed") ? static_cast<int>(r.data["failed"].size()) : 0;
+    const int warned = r.data.contains("warnings") ? static_cast<int>(r.data["warnings"].size()) : 0;
+    QString said = reloaded > 0 ? tr("Reloaded %n clip(s) from disk.", "", reloaded) : tr("The files read the same as before: nothing to reload.");
+    if (failed > 0)
+        said += QLatin1Char(' ') + tr("%n file(s) could not be read.", "", failed);
+    if (warned > 0)
+        said += QLatin1Char(' ') + tr("%n clip(s) now run past the end of a shorter file.", "", warned);
+    setMessage(said);
+}
+
 bool EditingBridge::editOriginal(const QString& key) {
     const auto media = parseMediaKey(key);
     const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
@@ -944,17 +1096,47 @@ QString EditingBridge::joinThroughEdits(const QString& key) {
 }
 
 bool EditingBridge::goToGap(bool next, bool inSequence) {
-    if (!m_controller || !m_controller->currentSequence())
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!seq)
         return false;
-    const command::CommandResult r =
-        run("sequence.goToGap", Json{{"time", m_controller->playhead().value},
-                                     {"direction", next ? "next" : "previous"},
-                                     {"scope", inSequence ? "sequence" : "track"}});
+    Json params{{"time", m_controller->playhead().value},
+                {"direction", next ? "next" : "previous"},
+                {"scope", inSequence ? "sequence" : "track"}};
+    // Next / Previous in Track look at the targeted tracks; with none targeted every track counts (the key still works).
+    const std::vector<TrackId> targeted = edit::targetedTracks(*seq);
+    if (!inSequence && targeted.empty()) {
+        Json all = Json::array();
+        seq->forEachTrack([&](const Track& t) { all.push_back(t.id.value); });
+        params["tracks"] = std::move(all);
+    }
+    const command::CommandResult r = run("sequence.goToGap", std::move(params));
     result(r);
     if (!r.ok() || !r.data.contains("time") || r.data["time"].is_null())
         return false;
-    m_controller->setPlayhead(Ticks{r.data["time"].value("ticks", std::int64_t{0})});
+    const Ticks at{r.data["time"].value("ticks", std::int64_t{0})};
+    m_controller->setPlayhead(at);
+    if (!inSequence)
+        selectGapAtPlayhead(at, targeted);
     return true;
+}
+
+// 0.7 (card 007): the in-Track jumps also select the gap they land on, so Delete / Backspace / Shift+Delete take it out
+// as they do a clicked gap. The gap that starts at `at` on the first of the targeted tracks (every track when none is
+// targeted) wins; failing that, a gap on any of them that covers `at`.
+void EditingBridge::selectGapAtPlayhead(Ticks at, const std::vector<TrackId>& targeted) {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!seq)
+        return;
+    std::vector<TrackId> tracks = targeted;
+    if (tracks.empty())
+        seq->forEachTrack([&](const Track& t) { tracks.push_back(t.id); });
+    for (const bool exactStart : {true, false}) {
+        for (const TrackId track : tracks) {
+            const auto gap = m_controller->gapAt(track, at);
+            if (gap && (!exactStart || gap->range.start == at) && m_controller->selectGapAt(track, at))
+                return;
+        }
+    }
 }
 
 QString EditingBridge::closeGap() {
@@ -962,6 +1144,44 @@ QString EditingBridge::closeGap() {
     Json params = Json::object();
     if (!clips.empty())
         params["clips"] = idArray(clips);
+    return result(run("sequence.closeGap", std::move(params)));
+}
+
+QString EditingBridge::removeTransitions(bool wholeSequence) {
+    const std::vector<ClipId> clips = wholeSequence ? std::vector<ClipId>{} : targetClips({});
+    if (!wholeSequence && clips.empty()) {
+        setMessage(tr("Select clips first"));
+        return m_message;
+    }
+    Json params = Json::object();
+    if (!clips.empty())
+        params["clips"] = idArray(clips);
+    return result(run("sequence.removeTransitions", std::move(params)));
+}
+
+QString EditingBridge::removeDisabledClips() {
+    return result(run("sequence.removeDisabledClips", Json::object()));
+}
+
+QString EditingBridge::closeGapsOnTrack(const QString& trackKey) {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    const auto id = parseTrackKey(trackKey);
+    const Track* track = id && seq ? seq->findTrack(*id) : nullptr;
+    if (!track) {
+        setMessage(tr("There is no such track"));
+        return m_message;
+    }
+    if (track->clips.empty()) {
+        // closeGap with no clips means every gap of the sequence: never what "on this track" asks for.
+        setMessage(tr("There is no gap to close on this track"));
+        return m_message;
+    }
+    std::vector<ClipId> clips;
+    clips.reserve(track->clips.size());
+    for (const Clip& c : track->clips)
+        clips.push_back(c.id);
+    Json params = Json::object();
+    params["clips"] = idArray(clips);
     return result(run("sequence.closeGap", std::move(params)));
 }
 
@@ -1029,6 +1249,11 @@ QVariantMap EditingBridge::interpretation(const QStringList& keys) const {
             {QStringLiteral("invertAlpha"), in.invertAlpha},
             {QStringLiteral("premultiplication"), name(in.premultiplication)},
             {QStringLiteral("hasAlpha"), v && v->alpha != AlphaMode::None},
+            // 0.7 (VR / 360 video): the interpretation's projection and eye layout ("" = the file's) and what the file says.
+            {QStringLiteral("vrProjection"), in.vr ? text(toString(in.vr->projection)) : QString()},
+            {QStringLiteral("vrStereo"), in.vr ? text(toString(in.vr->stereo)) : QStringLiteral("mono")},
+            {QStringLiteral("fileVrProjection"), v ? text(toString(v->vr.projection)) : QStringLiteral("none")},
+            {QStringLiteral("fileVrStereo"), v ? text(toString(v->vr.stereo)) : QStringLiteral("mono")},
             {QStringLiteral("hasVideo"), v != nullptr}};
 }
 
@@ -1050,6 +1275,15 @@ QString EditingBridge::applyInterpretation(const QStringList& keys, const QVaria
     params["invertAlpha"] = settings.value(QStringLiteral("invertAlpha")).toBool();
     const QString premult = settings.value(QStringLiteral("premultiplication")).toString();
     params["premultiplication"] = premult.isEmpty() ? Json(nullptr) : Json(premult.toStdString());
+    // 0.7: "" = what the file's spherical metadata says; "none" says the footage is flat.
+    const QString projection = settings.value(QStringLiteral("vrProjection")).toString();
+    if (projection.isEmpty()) {
+        params["vr"] = Json(nullptr);
+    } else {
+        const QString stereo = settings.value(QStringLiteral("vrStereo")).toString();
+        params["vr"] = Json{{"projection", projection.toStdString()},
+                            {"stereo", projection == QLatin1String("none") || stereo.isEmpty() ? "mono" : stereo.toStdString()}};
+    }
     return result(run("media.interpretFootage", std::move(params)));
 }
 
@@ -1111,12 +1345,17 @@ QVariantMap EditingBridge::rawSourceSettings(const QStringList& keys) const {
         return {};
     const RawSourceSettings s = rawSourceSettingsOf(item->locator.path);
     const RawWhiteBalance white = s.white.value_or(RawWhiteBalance{});
+    const RawIso iso = s.iso.value_or(RawIso{});
     return {{QStringLiteral("name"), QString::fromStdString(item->name)},
             {QStringLiteral("count"), static_cast<int>(media.size())},
             {QStringLiteral("exposure"), s.exposure},
             {QStringLiteral("whiteBalance"), s.white ? QStringLiteral("custom") : QStringLiteral("asShot")},
             {QStringLiteral("temperature"), white.temperature},
-            {QStringLiteral("tint"), white.tint}};
+            {QStringLiteral("tint"), white.tint},
+            // 0.7 (card #108): "asShot" (the camera's ISO) or "custom": shot at isoShot, developed for isoDevelop.
+            {QStringLiteral("iso"), s.iso ? QStringLiteral("custom") : QStringLiteral("asShot")},
+            {QStringLiteral("isoShot"), iso.shot},
+            {QStringLiteral("isoDevelop"), iso.develop}};
 }
 
 QString EditingBridge::applyRawSourceSettings(const QStringList& keys, const QVariantMap& settings) {
@@ -1132,6 +1371,11 @@ QString EditingBridge::applyRawSourceSettings(const QStringList& keys, const QVa
         params["temperature"] = settings.value(QStringLiteral("temperature"), 5600).toInt();
         params["tint"] = settings.value(QStringLiteral("tint")).toInt();
     }
+    // 0.7 (card #108): ISO. "asShot" puts the camera's back (equal ISOs); "custom" is shot at / developed for.
+    const bool isoCustom = settings.value(QStringLiteral("iso")).toString() == QLatin1String("custom");
+    const int shot = settings.value(QStringLiteral("isoShot"), 800).toInt();
+    params["isoShot"] = shot;
+    params["isoDevelop"] = isoCustom ? settings.value(QStringLiteral("isoDevelop"), shot).toInt() : shot;
     return result(run("media.setRawSourceSettings", std::move(params)));
 }
 

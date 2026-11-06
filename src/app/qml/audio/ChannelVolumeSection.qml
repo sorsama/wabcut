@@ -60,6 +60,7 @@ Rectangle {
                     id: formatText
                     anchors.centerIn: parent
                     text: root.volume.format === "5.1" ? qsTr("5.1")
+                        : root.volume.format === "7.1" ? qsTr("7.1")
                         : root.volume.format === "mono" ? qsTr("Mono")
                         : root.volume.format === "adaptive" ? qsTr("Adaptive") : qsTr("Stereo")
                     color: Theme.textSecondary

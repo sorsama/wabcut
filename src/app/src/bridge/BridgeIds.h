@@ -40,6 +40,7 @@ inline QString transitionKey(TransitionId id) { return detail::formatId(QLatin1C
 inline QString effectKey(EffectInstanceId id) { return detail::formatId(QLatin1Char('e'), id); }
 inline QString captionTrackKey(CaptionTrackId id) { return detail::formatId(QLatin1Char('k'), id); }
 inline QString speakerKey(SpeakerId id) { return detail::formatId(QLatin1Char('v'), id); }
+inline QString trackGroupKey(TrackGroupId id) { return detail::formatId(QLatin1Char('g'), id); } // 0.7 (card 124)
 
 inline std::optional<ClipId> parseClipKey(const QString& text) { return detail::parseId<ClipId>(QLatin1Char('c'), text); }
 inline std::optional<TrackId> parseTrackKey(const QString& text) {
@@ -59,6 +60,9 @@ inline std::optional<CaptionTrackId> parseCaptionTrackKey(const QString& text) {
 }
 inline std::optional<SpeakerId> parseSpeakerKey(const QString& text) {
     return detail::parseId<SpeakerId>(QLatin1Char('v'), text);
+}
+inline std::optional<TrackGroupId> parseTrackGroupKey(const QString& text) {
+    return detail::parseId<TrackGroupId>(QLatin1Char('g'), text);
 }
 
 } // namespace wabcut::app

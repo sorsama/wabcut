@@ -6,6 +6,7 @@
 #include "ShellFixture.h"
 
 #include "bridge/AiController.h"
+#include "bridge/AppSettingsBridge.h"
 #include "bridge/ThemeFiles.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -19,6 +20,8 @@
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QUrl>
+
+#include <functional>
 
 using namespace wabcut::app;
 using namespace wabcut::test;
@@ -251,6 +254,27 @@ TEST_CASE("Settings Appearance: custom colours and themes reach Theme and are ke
         REQUIRE(waitFor([&] { return sameColor(shell.themeColor("panel"), builtInPanel, 0); }));
         CHECK(shell.theme->property("customColors").toMap().isEmpty());
 
+        // Card 033: the page names the theme as its card does ("Echo" is stored as Ultraviolet), not by its stored name.
+        CHECK(page->property("matchingTheme").toString() == QStringLiteral("Ultraviolet"));
+        QString label;
+        REQUIRE(QMetaObject::invokeMethod(page, "labelOf", Q_RETURN_ARG(QString, label), Q_ARG(QString, QStringLiteral("Ultraviolet"))));
+        CHECK(label == QStringLiteral("Echo"));
+        REQUIRE(QMetaObject::invokeMethod(page, "labelOf", Q_RETURN_ARG(QString, label), Q_ARG(QString, QStringLiteral("Night shift"))));
+        CHECK(label == QStringLiteral("Night shift")); // a saved theme has no separate label
+        REQUIRE(QMetaObject::invokeMethod(page, "labelOf", Q_RETURN_ARG(QString, label), Q_ARG(QString, QStringLiteral("Nobody"))));
+        CHECK(label == QStringLiteral("Nobody"));
+        const std::function<bool(QQuickItem*, const QString&)> hasDescription = [&](QQuickItem* item, const QString& text) {
+            if (item->property("description").toString() == text)
+                return true;
+            for (QQuickItem* child : item->childItems()) {
+                if (hasDescription(child, text))
+                    return true;
+            }
+            return false;
+        };
+        CHECK(hasDescription(page, QStringLiteral("Using Echo.")));
+        CHECK_FALSE(hasDescription(page, QStringLiteral("Using Ultraviolet.")));
+
         // Export and import go through ThemeFiles.
         QTemporaryDir dir;
         REQUIRE(dir.isValid());
@@ -318,6 +342,35 @@ TEST_CASE("Settings Interface: the title bar status pills come back on request",
     CHECK(messages.isEmpty());
 }
 
+// 0.7 (card 066): the workspace tabs switch.
+TEST_CASE("Settings Interface: the workspace tabs switch hides the tabs and is remembered", "[app][settings][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    QQuickItem* tabs = shell.item("workspaceTabs");
+    REQUIRE(tabs != nullptr);
+    CHECK(tabs->isVisible());
+    QObject* window = openSettings(shell, QStringLiteral("interface"));
+    QQuickItem* page = nullptr;
+    REQUIRE(waitFor([&] { return (page = settingsPage(window, QStringLiteral("interface"))) != nullptr; }));
+    QQuickItem* toggle = findNamed(page, QStringLiteral("showWorkspaceTabsToggle"));
+    REQUIRE(toggle != nullptr);
+    CHECK(toggle->property("checked").toBool());
+    REQUIRE(QMetaObject::invokeMethod(toggle, "toggle"));
+    REQUIRE(QMetaObject::invokeMethod(toggle, "toggled"));
+    CHECK_FALSE(tabs->isVisible());
+    CHECK(waitFor([] { return stored("interface", "showWorkspaceTabs").isValid() && !stored("interface", "showWorkspaceTabs").toBool(); }));
+    REQUIRE(QMetaObject::invokeMethod(toggle, "toggle"));
+    REQUIRE(QMetaObject::invokeMethod(toggle, "toggled"));
+    CHECK(tabs->isVisible());
+    resetSettings();
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
 TEST_CASE("Settings AI: one switch turns the AI features off and on again", "[app][settings][ai][qml]") {
     qputenv("WABCUT_AI_KEYSTORE", "memory");
     resetSettings();
@@ -354,6 +407,23 @@ TEST_CASE("Settings AI: one switch turns the AI features off and on again", "[ap
     CHECK(used);
     CHECK(ai->chatModel() == QStringLiteral("my-custom-model-1"));
     CHECK(ai->removeModel(QStringLiteral("my-custom-model-1")));
+
+    // r07: the Settings search finds the Features tab and the custom provider dialog, and the page reveals them.
+    AppSettingsBridge index;
+    const auto first = [&](const char* query) {
+        const QVariantList hits = index.search(QString::fromLatin1(query));
+        return hits.isEmpty() ? QString() : hits.front().toMap().value(QStringLiteral("id")).toString();
+    };
+    CHECK(first("custom provider") == QStringLiteral("aiCustomProvider"));
+    CHECK(first("litellm") == QStringLiteral("aiCustomProvider"));
+    CHECK(first("what each ai feature uses") == QStringLiteral("aiDefaults"));
+    for (const char* row : {"aiCustomProvider", "aiDefaults", "localAssistant"}) {
+        INFO(row);
+        bool revealed = false;
+        REQUIRE(QMetaObject::invokeMethod(page, "reveal", Q_RETURN_ARG(bool, revealed), Q_ARG(QVariant, QString::fromLatin1(row))));
+        CHECK(revealed);
+    }
+    CHECK(page->property("currentTab").toInt() == 2); // Local models
 
     resetSettings();
     const QStringList messages = takeMessages();

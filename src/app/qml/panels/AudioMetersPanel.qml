@@ -21,7 +21,9 @@ Panel {
     /// The meter polls while this panel can be seen.
     readonly property bool metering: root.visible && root.enabled
     readonly property bool clipped: meter.clipped
-    readonly property var channelNames: meter.channels > 2 ? [qsTr("L"), qsTr("R"), qsTr("C"), qsTr("LFE"), qsTr("Ls"), qsTr("Rs")]
+    // 5.1: L R C LFE Ls Rs; 7.1 (0.7): L R C LFE then the rear pair Lrs Rrs and the side pair Ls Rs, a 7.1 file's order.
+    readonly property var channelNames: meter.channels > 6 ? [qsTr("L"), qsTr("R"), qsTr("C"), qsTr("LFE"), qsTr("Lrs"), qsTr("Rrs"), qsTr("Ls"), qsTr("Rs")]
+                                      : meter.channels > 2 ? [qsTr("L"), qsTr("R"), qsTr("C"), qsTr("LFE"), qsTr("Ls"), qsTr("Rs")]
                                                            : [qsTr("L"), qsTr("R")]
 
     /// Where `db` sits on a meter `height` tall, from its top (0 dBFS) to its bottom (the floor).

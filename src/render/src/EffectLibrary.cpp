@@ -99,6 +99,8 @@ constexpr std::array kLibrary{
                        keys({"thickness", "lightAngle", "lightColor.r", "lightColor.g", "lightColor.b", "intensity"})},
     EffectLibraryEntry{"wabcut.blur.directional", O::DirectionalBlur, keys({"direction", "length"})},
     EffectLibraryEntry{"wabcut.blur.camera", O::CameraBlur, keys({"percent"})},
+    // 0.7 (VR / 360 video): projection 0 = 360, 1 = 180; stereo 0 = mono, 1 = top-bottom, 2 = side-by-side.
+    EffectLibraryEntry{"wabcut.vr.reorient", O::VrReorient, keys({"yaw", "pitch", "roll", "projection", "stereo"})},
     // Stylize family (fx_stylize.frag).
     EffectLibraryEntry{"wabcut.blur.unsharpMask", O::UnsharpMask, keys({"amount", "radius", "threshold"})},
     EffectLibraryEntry{"wabcut.stylize.emboss", O::Emboss, keys({"direction", "relief", "contrast", "blend"})},
@@ -198,6 +200,14 @@ constexpr std::array kLibrary{
     EffectLibraryEntry{"wabcut.generate.paintBucket", O::PaintBucket,
                        keys({"point.x", "point.y", "selector", "tolerance", "viewThreshold", "stroke", "strokeWidth",
                              "softness", "color.r", "color.g", "color.b", "invert", "opacity", "blendingMode"})},
+    // 0.7: AI Refocus (a depth map as the second picture, made by the AI runner; fx_generate.frag, LibraryGenerate.cpp).
+    EffectLibraryEntry{"wabcut.ai.refocus", O::DepthBlur, keys({"focus", "range", "amount", "foreground", "background", "view"})},
+    // 0.7: Skin Smoothing (skin-tone mask, one pass) and AI Face Retouch (the face map is the second picture).
+    EffectLibraryEntry{"wabcut.retouch.skinSmoothing", O::SkinSmoothing, keys({"amount", "detail", "size", "tone", "range", "softness", "view"})},
+    EffectLibraryEntry{"wabcut.ai.faceRetouch", O::FaceRetouch,
+                       keys({"smoothing", "detail", "size", "blemish", "blemishSize", "teeth", "eyes", "view"})},
+    // 0.7: AI Eye Contact (Distort family): the settings come first; the evaluator bakes the frame's eye measurements into params 6..29.
+    EffectLibraryEntry{"wabcut.ai.eyeContact", O::EyeContact, keys({"amount", "downFrom", "downTo", "sideLimit", "faces", "view"})},
 };
 
 } // namespace

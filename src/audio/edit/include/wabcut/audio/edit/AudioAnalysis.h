@@ -5,6 +5,7 @@
 // audio energy) are in MediaAnalysis.h (full builds), and tests use fakes.
 
 #include <wabcut/audio/edit/AudioSync.h>
+#include <wabcut/audio/edit/MatchCurve.h>
 #include <wabcut/audio/edit/Remix.h>
 #include <wabcut/audio/edit/SoundClassifier.h>
 #include <wabcut/command/ExecutionContext.h>
@@ -53,8 +54,22 @@ struct LoudnessStats {
     std::optional<Ticks> truePeakAt;
     std::vector<PeakBlock> peakBlocks;
     double peakFloorDbtp = -6.0;
+    /// 0.7 (Loudness Radar): the short-term loudness once a second from `start` (LUFS, -infinity where unknown); empty for
+    /// a cache entry from before 0.7.
+    std::vector<float> shortTerm;
 
     bool hasIntegrated() const noexcept { return integratedLufs > -1e300; }
+};
+
+/// 0.7 (EQ Match, Level Match): what is read of one signal rendered once: the loudness (integrated, range, true peak), the
+/// sample peak, the RMS level and the crest factor, and the average spectrum.
+struct MatchStats {
+    LoudnessStats loudness;
+    SpectrumProfile spectrum;
+    double rmsDbfs = -std::numeric_limits<double>::infinity();
+    double crestDb = 0.0;
+    int channels = 0;      ///< the layout that was measured (2, or 6 for a 5.1 master)
+    int sampleRate = 0;
 };
 
 /// 0.6 (#54): neighbouring 100 ms blocks above a true-peak ceiling (gaps of a block or less bridged): a range on the
@@ -91,6 +106,18 @@ public:
     virtual std::expected<LoudnessStats, Error> measure(const ProjectState& state, SequenceId sequence,
                                                         const LoudnessTarget& target, std::optional<TimeRange> range,
                                                         command::ExecutionControl* control) = 0;
+    /// 0.7 (EQ Match, Level Match): the same render, read for the match as well: MatchStats. A host without it refuses
+    /// (the match commands then say so).
+    virtual std::expected<MatchStats, Error> measureMatch(const ProjectState& state, SequenceId sequence,
+                                                          const LoudnessTarget& target, std::optional<TimeRange> range,
+                                                          command::ExecutionControl* control) {
+        (void)state;
+        (void)sequence;
+        (void)target;
+        (void)range;
+        (void)control;
+        return std::unexpected(Error{wabcut::ErrorCode::Unsupported, "this host cannot measure spectra"});
+    }
 };
 
 /// How speech is found on dialogue tracks.

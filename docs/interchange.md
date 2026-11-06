@@ -70,6 +70,8 @@ file ──ImportRouter::detect──► parser (FCP7 / FCPXML / OTIO / EDL / pr
 * **Text encoding.** Imported text is always UTF-8 (C.10).
   * EDLs carry no encoding, and Avid and older tools write Windows-1252. An EDL that is not valid UTF-8 is read as
     Windows-1252: valid UTF-8 sequences stay, the other bytes are converted.
+  * 0.7: a UTF-8 byte order mark (EF BB BF) in front of an `.otio` or `.edl`, as older Notepad and Python's `utf-8-sig`
+    write it, is dropped once before the file is sniffed and parsed, so such a file is read like the same text without it.
   * In XML, pugixml honours a BOM or a Latin-1 declaration. Text and attribute values that are still not UTF-8 after
     parsing are converted the same way. This covers undeclared Windows-1252 and numeric references to lone surrogates.
   * Before C.10, such bytes went into names unchanged, and the imported project could not be saved. As a last guard,
@@ -93,6 +95,7 @@ C = carried exactly, A = approximated (reported), D = dropped (reported), — = 
 | Sequences: name, frame rate, NTSC/drop-frame, frame size, audio rate | C | C | rate C, size A (1920×1080) | rate A (option), size A | C |
 | Start timecode (sequence starts at 01:00:00:00) | C (X.1: `Sequence::startTimecode`; times count from it) | C (`tcStart`) | C (`global_start_time`) | C (the record hour) | C (`MZ.ZeroPoint`) |
 | Sequence In/Out marks | C (snapped to frames) | — | — | — | C (sub-frame marks A, snapped) |
+| Sequence work area (0.7) | C (Premiere's `MZ.WorkInPoint` / `MZ.WorkOutPoint` attributes on `<sequence>`, in ticks; the whole sequence, which Premiere writes by default, is no work area) | A (`<metadata><md key="com.wabcut.workArea" value="in:out">`: Wabcut metadata, Final Cut ignores it) | A (`metadata.wabcut.sequence.workIn` / `workOut`: Wabcut reads it, other tools ignore it) | D (reported) | C (`MZ.WorkInPoint` / `MZ.WorkOutPoint`, import only) |
 | Video / audio tracks, order | C | lanes → tracks C; overlapping lane clips A (extra tracks) | C | V1, A1..An C | C |
 | Track enable / lock / target | C | — | enable C | — | lock C, video output C, target C |
 | Clips: position, length, source In, name | C (exact `pproTicksIn` when present) | C (`start` − asset `start`) | C (`source_range` − `available_range` start) | C, but source In is absolute timecode: A | C |
@@ -109,6 +112,7 @@ C = carried exactly, A = approximated (reported), D = dropped (reported), — = 
 | Variable speed (time remapping) | C (Time Remap `graphdict`: a time remap with the graph's keys); smooth keys A (X.1: Bezier keys whose speed ramps through them, with monotone tangents through the neighbouring keys: FCP7 keeps no handles); a variable speed without a graph A (100%) | C (a multi-point `timeMap`: a time remap, exact rational keys); `smooth`/`smooth2` points A (X.1: Bezier keys, tangents as for FCP7) | A (no OTIO schema describes a non-linear warp: a `TimeEffect` plays at 100%) | — | A (`TimeRemapping`) |
 | Opacity, scale, rotation, volume, pan (static) | C (Opacity, Basic Motion, Audio Levels/Pan) | C (`adjust-blend`, `adjust-transform`, `adjust-volume`; each clip of a picture-and-sound element takes its own) | — | — | D |
 | Keyframed parameters (X.1) | C (curves in the clip's media frames; curved keys A: ease in and out) | C for scale, rotation, opacity, volume (`keyframeAnimation`) | — | — | D |
+| Non-uniform scale (0.7) | C (Wabcut writes a `scalewidth` and `uniformscale` parameter beside the Basic Motion `scale`, which is the height; Premiere's and Final Cut Pro 7's files have one scale and stay uniform) | C (`scale="x y"`, keys as `x y` pairs; a negative scale, a flip, has no counterpart: uniform, approximated) | — | — | D |
 | Position and anchor (X.1) | C (Basic Motion `center` / `centerOffset`, fractions of the frame) | C (`position` / `anchor`, percent of the frame height, y up) | — | — | D |
 | Effects (X.1) | Gaussian Blur, Crop, Drop Shadow C (into the clip's effect stack); Wabcut's own (`effectid` `wabcut.*`) C; 0.6: Lumetri Color (Premiere's ids and values), colour correctors, RGB Curves, EQ and dynamics filters C / A (Premiere writes no audio filters into FCP7 XML; see "Colour grades and audio filters in FCP7 XML"); others D (named, with their parameter count) | 0.6: Wabcut's own (`com.wabcut.effect`) C; Gaussian Blur, Sharpen, Levels, Proc Amp, Brightness & Contrast, Color Balance (Color Wheels / Board), Vignette, Flipped, Channel EQ, Compressor, Limiter A (mapped by name; shared settings by name, the rest kept for export); others A (a disabled placeholder written back on export) | 0.6: `Effect` objects on clips and tracks: Wabcut's own (`metadata.wabcut.effect`) C; well-known names A (Wabcut's defaults); others A (placeholder, written back) | — | D |
 | Sequence markers (name, comment, duration, colour) | C | — | C (stack markers) | C (`* LOC:`) | C |
@@ -119,7 +123,7 @@ C = carried exactly, A = approximated (reported), D = dropped (reported), — = 
 | Titles | C (Text and Outline Text generators: text, font, size, style, alignment, colour, outline width/colour); other parameters A (listed) | C (X.1: `title` with its `text-style`: text, font, face, size, colour, alignment); other attributes A (listed) | — | — | D |
 | Other generators (slug, black video, colour mattes, bars and tone, counting leader) | 0.6: Color, Slug / Black Video, Bars and Tone (HD or SD), Universal Counting Leader, Adjustment Layer C (synthetic items); Wabcut's own (`wabcut:` parameters) C; others D | 0.6: Wabcut's own (`com.wabcut.generator`) C; Final Cut's solids (Custom) A (a colour matte); a "Bars" generator A; others D | 0.6: Wabcut's own (`metadata.wabcut.generator`) C; `SolidColor` A (colour matte, or transparent video when alpha is 0), `SMPTEBars` A; others D | `BL` → gap | D |
 | Auditions / sync clips | — | Auditions C (0.6: `<audition>` becomes an audition, its picks the takes, the first one active; a pick without the active pick's picture and sound D, a pick's connected clips D); sync clips A (separate clips) | C (0.6: an audition written by Wabcut, from its metadata) | — | — |
-| Split edits (J/L cuts) | C (separate clips) | A (audio trimmed to the video edit) | C | C | C |
+| Split edits (J/L cuts) | C (separate clips, each with its own `start` / `end` / `in` / `out`, linked) | C (0.7: one `asset-clip` with `audioStart` / `audioDuration`, the sound's own extent in the clip's time, for a picture and sound of one link group over one file, in step and not retimed; a retimed or out-of-step pair stays two clips, reported; a sound that would start before the media or the sequence is cut there, reported) | C (two clips with their own ranges and a link group) | C | C |
 | Keys | — | — | — | D (`K`/`KO` foreground; background kept) | — |
 | Stereo/multichannel audio mapping | Premiere exploded tracks C (one track); FCP7 stereo pairs A (one clip); single channel of a stream C (a mono channel map, A.9) | C (asset streams); `audio-channel-source` C (the clip's channel map: `srcCh` / `outCh` L, R, C, 5.1 names, `active="0"` mutes), several components A (one mono channel of their sources) | A (stream 1; OTIO has no channel field) | `AA`/`A`+`A2` A (one clip), streams A | stream 1 |
 | Media references | C (`pathurl`, Windows `C%3a`, UNC, macOS, UTF-8) | C (`media-rep`, 1.8 `src`, relative URLs) | C (`ExternalReference`; `MissingReference` offline, found by name) | name only (`FROM CLIP NAME`), Avid `FROM CLIP:` path | C (`ActualMediaFilePath`) |
@@ -197,6 +201,10 @@ ProjectState ──describeForExport──► IR (src/Ir.h) ──writer (FCP7 /
 * **Media** are written as absolute file URLs (`file://localhost/C%3a/...` for FCP7 XML as Premiere writes it,
   `file:///C:/...` for FCPXML and OTIO); media with only a project-relative path are resolved against
   `ExportOptions::projectFile`.
+* **Pixel aspect ratio (FCP7 XML).** The sequence's ratio is written as `<pixelaspectratio>` from Apple's list - 4:3
+  pixels at 1440 wide `HD-(1440x1080)`, at 960 wide `HD-(960x720)`, 3:2 at 1280 wide `HD-(1280x1080)`, D1 / DV
+  `NTSC-601` and `PAL-601` (with `<anamorphic>` for the widescreen ratios) - and `square` for any ratio the list has no
+  name for. FCPXML, OTIO and EDL carry no pixel aspect ratio, and no importer reads it.
 
 ### Colour grades and audio filters in FCP7 XML (0.6)
 
@@ -284,7 +292,7 @@ every caption track with cues next to the timeline file as `<timeline name> - <t
 (`Film - English.en.srt`, `Film - Thai.th.srt`; characters file systems refuse become `_`, a second track of the same
 name gets ` (2)`; an existing file is replaced, as the timeline file is). Words the soundtrack bleeps are replaced as in
 `captions.export`. Each written track's report entry becomes Carried and names its file; the summary ends with
-"· 2 caption file(s) next to it". With several sequences each timeline gets its own caption files. In commands:
+"· 2 caption files next to it". With several sequences each timeline gets its own caption files. In commands:
 `interchange.export` `"captionSidecars": "srt"` (any caption format name); the result lists the files in
 `"captionFiles"`; a dry run lists them and writes nothing.
 
@@ -363,10 +371,19 @@ export module), an AAF links the original media instead and says so; an OMF is r
   reference lists for object references, the label at the end), big-endian ('MM'): HEAD (object 1) with Mobs,
   PrimaryMobs, MediaData, DefinitionObjects and IdentificationList; a CMOB; per file an MMOB and an SMOB with a WAVD /
   AIFD; WAVE / AIFC media data when encapsulated, NETL + DOSL locators when separate. A file is limited to 2 GB
-  (OMF readers' limit; Bento offsets are 32-bit): larger encapsulated exports are refused (use Separate Audio).
+  (OMF readers' limit; Bento offsets are 32-bit): larger encapsulated exports are refused (use Separate Audio). 0.7: the
+  size is estimated from the plan before anything is rendered (the sum of the files' samples plus a generous allowance for
+  the structure), so the refusal comes at once, also from the dry run behind the export dialog's preview, not after the
+  whole render and copy; `Bento::Builder::emit` still checks the real size as a backstop.
 * **Deterministic**: a fixed timestamp gives the same bytes (golden files `tests/interchange/fixtures/export/audiopost.aaf`
   and `.omf`, `WABCUT_UPDATE_GOLDEN=1`). The tests read the files back with the module's own readers (`AafReader.h`,
   `bento::read`), check every clip, handle, gain, fade and marker, and the samples in the audio files.
+* **Dynamics Processing and 7.1 (0.7):** Dynamics Processing (`wabcut.audio.dynamicsProcessing`) has no equivalent in FCP7 XML,
+  FCPXML or OTIO: the file carries it (its parameters as "wabcut:" parameters, a Final Cut effect or an OTIO Effect named
+  "Dynamics Processing", with the exact instance in the metadata), other editors skip it, and the export report names it. A 7.1 track
+  is written to AAF and OMF as eight mono tracks named for their channels (L R C LFE Lrs Rrs Ls Rs) and read back as a 7.1 layout with a 7.1 master; the 7.1 master itself is not written (the report says so). Eight
+  mono files or tracks from other editors are routed to the 7.1 channels by the speaker in their names, else in a 7.1 file's order.
+
 * **Checked with other readers** during development (not test dependencies): pyaaf2 1.7.1 opens and walks every object
   of the AAF golden (811 objects), and LibAAF's `aaftool` (`--aaf-clips --aaf-essences --show-automation`) lists the
   same tracks, clips, gain automation, crossfade (power curve), fade-in, marker and embedded / separate essence. It also
@@ -480,7 +497,7 @@ yourself with `WABCUT_AAF_CORPUS=<folder> wabcut_interchange_tests "[.corpus]"`.
   any of the formats above, next to the output, timecode-based ones from the sequence's start timecode at the export's
   first frame. Words the soundtrack bleeps are replaced as in burned-in captions.
 * **Every track at once (0.6)**: the Captions page's **All tracks…** (pick a format, then a folder) writes each caption
-  track with cues as `<sequence> - <track name>[.<language>].<ext>` and says "Saved 3 caption file(s)"; Export Timeline's
+  track with cues as `<sequence> - <track name>[.<language>].<ext>` and says "Saved 3 caption files"; Export Timeline's
   Captions row and `interchange.export "captionSidecars"` do the same next to a timeline file. The Captions page's SRT /
   VTT buttons go through `captions.export` too (0.6), so bleeped words stay replaced there as well.
 * **CEA-608 details** (`Cea608.h`): byte pairs with odd parity; control codes sent twice; preamble address codes for
@@ -665,8 +682,13 @@ plays its active take, so every format gets at least that take, exactly. What ha
     key-list values), EQ and dynamics filters of other tools are carried or approximated (Premiere itself writes no
     audio filters into FCP7 XML) (see "Colour grades and audio filters in FCP7 XML"); still dropped: other
     editors' filters Wabcut has no effect for (named in the report). 0.6: FCPXML filters and OTIO effects are read and written (card #67).
-* Premiere's work area and split-edit audio extents need model support before they can be carried (X.1 added the
-  sequence start timecode, and clip markers are carried as markers of the source). (Per-channel audio routing has it since A.9: FCP7 and FCPXML channel
+* 0.7 (card 046): Premiere's work area (`Sequence::workArea`, set by Alt+[ / Alt+], shown in Sequence Settings) travels in
+  FCP7 XML (Premiere's own attributes), FCPXML and OTIO (Wabcut metadata, other editors ignore it, reported as approximated)
+  and is read from `.prproj`; split-edit audio extents are two linked clips in the model (each with its own start, length and
+  source In) and FCPXML now carries them with `audioStart` / `audioDuration` (the attribute meaning follows Apple's DTD:
+  "define J/L cuts (i.e., split edits) on composite A/V clips", times in the clip's own time like `start`; not verified
+  against Final Cut Pro itself). X.1 added the sequence start timecode, and clip markers are carried as markers of the
+  source. (Per-channel audio routing has it since A.9: FCP7 and FCPXML channel
   selections import as clip channel maps.)
 * Media probing during import: the CLI passes no `mediaInspector` yet, so EDL source timecodes stay absolute
   and same-name candidates are not compared by duration. Wire `media::probe` (and start timecode) in the app.

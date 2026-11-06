@@ -73,6 +73,10 @@ std::expected<ProjectState, Error> projectForMedia(const std::filesystem::path& 
         const bool sideways = v.rotationDegrees == 90 || v.rotationDegrees == 270;
         seq.width = std::max(16, (sideways ? v.height : v.width) & ~1);
         seq.height = std::max(16, (sideways ? v.width : v.height) & ~1);
+        // 145: the source's pixel aspect ratio (an HDV or DV widescreen file converts as the 16:9 it plays as).
+        if (!sideways && v.sampleAspect.isValid() && v.sampleAspect.toDouble() >= 0.1 && v.sampleAspect.toDouble() <= 10.0) {
+            seq.pixelAspect = v.sampleAspect.normalized();
+        }
         if (v.frameRate.isValid() && v.frameRate.toDouble() <= 240.0) {
             seq.frameRate = v.frameRate;
         }

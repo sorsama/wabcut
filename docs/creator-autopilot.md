@@ -62,7 +62,9 @@ three tabs: B-roll, Publishing kit, Pacing. Hidden while AI is turned off in Set
   1280 x 720 (cropped to fill) as JPEG under 2 MB, YouTube's thumbnail rules.
 - You can edit the title, description and tags in the preview. **Write files** puts them in
   `<folder>/<sequence> - publishing kit/`: `title.txt`, `description.txt`, `chapters.txt`, `tags.txt`,
-  `thumbnail-1.jpg`..., `publishing-kit.md` (everything on one page) and `publishing-kit.json`.
+  `thumbnail-1.jpg`..., `publishing-kit.md` (everything on one page) and `publishing-kit.json`. A thumbnail that
+  cannot be written (disk full, a file another program holds) is reported in the notes and left out; the others keep
+  their numbers and `publishing-kit.md` and `.json` both list each file with the time and reasons of its own candidate.
 - **Write with my AI** (optional): your chat model rewrites the title ideas, description and tags from the transcript
   text and the chapter titles; the estimate is shown first. If its answer cannot be read, the offline kit stays.
 

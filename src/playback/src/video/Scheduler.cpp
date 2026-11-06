@@ -2,6 +2,7 @@
 #include "PoolFrameSource.h"
 
 #include <wabcut/model/ChangeSet.h>
+#include <wabcut/model/FrameScaling.h>
 #include <wabcut/model/Nesting.h>
 #include <wabcut/playback/video/CompositePool.h>
 #include <wabcut/playback/video/Evaluate.h>
@@ -28,6 +29,17 @@ constexpr std::int64_t kMaxLeadSteps = 64;
 constexpr std::uint64_t kPreviewDecodeKey = std::uint64_t{1} << 62;
 
 bool isPreviewLayer(const LayerSpec& layer) { return !layer.clip.isValid() && (layer.decodeKey & kPreviewDecodeKey) != 0 && layer.item; }
+
+/// 0.7: layers of `layer` (and of the composites nested in it) that show an unprocessed picture of their AI effects.
+int countAiUnprocessed(const render::CompositeLayer& layer) {
+    int n = layer.aiUnprocessed ? 1 : 0;
+    if (layer.nested) {
+        for (const render::CompositeLayer& inner : layer.nested->layers) {
+            n += countAiUnprocessed(inner);
+        }
+    }
+    return n;
+}
 
 /// Steps a decoding target may fall behind before it is abandoned (about half a second at 60 Hz).
 constexpr std::int64_t kMaxWaitSteps = 30;
@@ -162,6 +174,8 @@ struct Scheduler::Impl {
     /// epoch).
     bool invalidate(const ProjectState& before, const ProjectState& after, SequenceId sequenceId, Ticks frame,
                     Ticks span);
+    /// Closes every decoder of `item`'s file (and of its proxy): the scheduler's own sessions and the pool's.
+    void closeFileOf(const MediaItem& item);
     void reapSessions(std::int64_t now);
     void refreshStats(std::int64_t now);
     /// Counts `late` missed targets against the media the scheduler waited for, else every decoded layer of the
@@ -217,6 +231,7 @@ struct Scheduler::Impl {
     std::atomic<std::uint64_t> passes{0}, published{0}, skippedLate{0}, decodeRequests{0}, poolExhausted{0},
         invalidations{0};
     std::atomic<int> bypassedEffects{0};
+    std::atomic<int> aiUnprocessedLayers{0};
     std::atomic<int> proxyLayers{0}, originalLayers{0}, offlineProxyLayers{0}, decodedDivisor{1};
     std::atomic<std::uint64_t> deviceChanges{0}, staleDeviceFrames{0};
     mutable std::mutex statsMutex;
@@ -424,14 +439,18 @@ void Scheduler::Impl::evaluate(const ProjectState& snapshot, const Sequence& seq
     file.decodeKey = item->id.value;
     // Only the burned-in caption of this sequence stays on top (evaluateVideoLayers appends it last: no clip, top level).
     // The preview file has no captions (rendered without them), so nothing is drawn twice.
-    std::optional<LayerSpec> caption;
-    if (captions && !layers.empty() && layers.back().caption && !layers.back().clip.isValid() && !layers.back().nestPath) {
-        caption = std::move(layers.back());
+    // Card 116: several caption tracks can be on screen together: every caption layer at the end stays.
+    std::vector<LayerSpec> captionLayers;
+    if (captions) {
+        while (!layers.empty() && layers.back().caption && !layers.back().clip.isValid() && !layers.back().nestPath) {
+            captionLayers.insert(captionLayers.begin(), std::move(layers.back()));
+            layers.pop_back();
+        }
     }
     layers.clear();
     layers.push_back(std::move(file));
-    if (caption) {
-        layers.push_back(std::move(*caption));
+    for (LayerSpec& caption : captionLayers) {
+        layers.push_back(std::move(caption));
     }
 }
 
@@ -549,7 +568,7 @@ Scheduler::Impl::Publish Scheduler::Impl::publishIfReady(Ticks target, const std
     }
     // P.2: a flow mix (Optical Flow, Morph Cut) waits for its motion like a frame still decoding; an analysis that
     // failed (a picture that does not decode) mixes as a dissolve instead.
-    const render::CanvasSize canvas{seq.width, seq.height};
+    const render::CanvasSize canvas{seq.width, seq.height, sequencePixelAspect(seq)};
     if (needsMotion(layers)) {
         int waits = 0;
         MotionAnalyzer& analyzer = MotionAnalyzer::shared();
@@ -579,7 +598,7 @@ Scheduler::Impl::Publish Scheduler::Impl::publishIfReady(Ticks target, const std
     composite->seekEpoch = epoch;
     composite->targetTime = target;
     composite->frameDuration = frame;
-    composite->canvas = {seq.width, seq.height};
+    composite->canvas = canvas; // with the sequence's pixel aspect ratio: the monitor shows it widened (156)
     composite->color = options.color;
     if (lastSnapshot) {
         composite->color.management = lastSnapshot->colorManagement; // the project's colour management (I.9)
@@ -615,15 +634,40 @@ Scheduler::Impl::Publish Scheduler::Impl::publishIfReady(Ticks target, const std
         placeSideBySide(composite->layers, composite->canvas, colorPreview.reference);
     }
     int bypassed = 0;
+    int aiMissing = 0;
     for (const render::CompositeLayer& layer : composite->layers) {
         bypassed += layer.bypassedEffects;
+        aiMissing += countAiUnprocessed(layer);
     }
     bypassedEffects.store(bypassed, std::memory_order_relaxed);
+    aiUnprocessedLayers.store(aiMissing, std::memory_order_relaxed);
     composite->publishedNs = steadyNowNs();
     if (mailbox->publish(std::move(composite))) {
         published.fetch_add(1, std::memory_order_relaxed);
     }
     return Publish::Done;
+}
+
+void Scheduler::Impl::closeFileOf(const MediaItem& item) {
+    std::vector<const std::string*> paths;
+    if (!item.locator.path.empty()) {
+        paths.push_back(&item.locator.path);
+    }
+    if (item.locator.proxy && !item.locator.proxy->path.empty()) {
+        paths.push_back(&item.locator.proxy->path);
+    }
+    for (const std::string* path : paths) {
+        for (auto it = sessions.begin(); it != sessions.end();) {
+            if (it->second->path() == *path) {
+                it = sessions.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (decoderPool) {
+            decoderPool->closePath(*path);
+        }
+    }
 }
 
 bool Scheduler::Impl::invalidate(const ProjectState& before, const ProjectState& after, SequenceId sequenceId,
@@ -682,6 +726,16 @@ bool Scheduler::Impl::invalidate(const ProjectState& before, const ProjectState&
         // (sessionFor).
         const ChangeSet media = diff(before, after);
         all = all || !media.modifiedMedia.empty() || !media.removedMedia.empty();
+        // 143: a file that changed on disk under the same path (Reload Footage) is no new path: the open decoders, here and
+        // in the pool, and the frames they hold still belong to the old bytes, so they go.
+        for (const MediaId id : media.modifiedMedia) {
+            const MediaItem* was = before.findMedia(id);
+            const MediaItem* now = after.findMedia(id);
+            if (was && now && was->locator.fingerprint != now->locator.fingerprint) {
+                closeFileOf(*was);
+                closeFileOf(*now);
+            }
+        }
     }
     if (!all && dirty.empty()) {
         return false;
@@ -1019,7 +1073,7 @@ void Scheduler::Impl::prefetchMotion(const std::vector<LayerSpec>& layers, const
         found.push_back(std::move(f));
     }
     MotionAnalyzer& analyzer = MotionAnalyzer::shared();
-    for (const MotionRequest& request : motionRequestsOf(layers, found, {seq.width, seq.height})) {
+    for (const MotionRequest& request : motionRequestsOf(layers, found, render::CanvasSize{seq.width, seq.height, sequencePixelAspect(seq)})) {
         if (!analyzer.find(request) && !analyzer.failed(request)) {
             analyzer.request(request, false, [wakeUp = motionWake] { (*wakeUp)(); });
         }
@@ -1201,6 +1255,7 @@ SchedulerStats Scheduler::stats() const {
     s.poolExhausted = m_impl->poolExhausted.load(std::memory_order_relaxed);
     s.invalidations = m_impl->invalidations.load(std::memory_order_relaxed);
     s.bypassedEffects = m_impl->bypassedEffects.load(std::memory_order_relaxed);
+    s.aiUnprocessedLayers = m_impl->aiUnprocessedLayers.load(std::memory_order_relaxed);
     s.proxyLayers = m_impl->proxyLayers.load(std::memory_order_relaxed);
     s.originalLayers = m_impl->originalLayers.load(std::memory_order_relaxed);
     s.offlineProxyLayers = m_impl->offlineProxyLayers.load(std::memory_order_relaxed);

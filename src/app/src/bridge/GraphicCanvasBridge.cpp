@@ -7,6 +7,7 @@
 #include "ProjectController.h"
 
 #include <wabcut/model/EditOps.h>
+#include <wabcut/model/FrameScaling.h>
 #include <wabcut/model/GraphicOps.h>
 #include <wabcut/model/TitleOps.h>
 #include <wabcut/playback/video/Evaluate.h>
@@ -219,7 +220,7 @@ std::shared_ptr<const GraphicCanvasBridge::Resolved> computeResolved(const Proje
     const Ticks ct = clip.curveTimeAt(t);
     render::LayerTransform motion;
     motion.position = {p.value(ParamId::PositionX, ct), p.value(ParamId::PositionY, ct)};
-    motion.scale = p.value(ParamId::Scale, ct);
+    motion.setScaleXY(p.scaleAt(ct));
     motion.rotationDegrees = p.value(ParamId::Rotation, ct);
     motion.anchor = {p.value(ParamId::AnchorX, ct), p.value(ParamId::AnchorY, ct)};
     const render::Affine2D frame = render::layerToCanvas(motion, fw, fh, 1.0, {seq->width, seq->height});
@@ -331,7 +332,7 @@ std::shared_ptr<const GraphicCanvasBridge::PickStack> computePickStack(const Pro
         return out;
     const double w = seq->width;
     const double h = seq->height;
-    const render::CanvasSize canvas{seq->width, seq->height};
+    const render::CanvasSize canvas{seq->width, seq->height, sequencePixelAspect(*seq)};
     playback::PreviewSettings preview;
     preview.useProxies = true; // what the monitor can show: an offline original's proxy too
     std::vector<playback::LayerSpec> specs;
@@ -344,6 +345,17 @@ std::shared_ptr<const GraphicCanvasBridge::PickStack> computePickStack(const Pro
         return located ? QString::fromStdString(located->clip().name()) : QString();
     };
     std::vector<Bridge::PickObject> bottomUp;
+    // Card 116: several caption tracks can be on screen together: the k-th caption layer is the k-th of them with a cue now.
+    std::vector<const CaptionTrack*> captionOwners;
+    std::size_t captionLayer = 0;
+    if (captions) {
+        for (const CaptionTrack* t : playback::captionTracksFor(*seq, *captions)) {
+            if (std::any_of(t->cues.begin(), t->cues.end(), [&](const CaptionCue& c) {
+                    return !c.text.empty() && playhead >= c.start && playhead < c.end();
+                }))
+                captionOwners.push_back(t);
+        }
+    }
     const auto addFrame = [&](const playback::LayerSpec& s, double fw, double fh, double pixelAspect) {
         const auto crop = croppedFrame(s.effects, fw, fh);
         if (crop[2] <= crop[0] || crop[3] <= crop[1])
@@ -363,7 +375,7 @@ std::shared_ptr<const GraphicCanvasBridge::PickStack> computePickStack(const Pro
                 if (!s.matte && !s.clip.isValid())
                     collect(j + 1, next); // a track's or the sequence's effects: a group over clips in place
                 else if (!s.matte) // a nested or multicam clip: its canvas, placed with its Motion
-                    addFrame(s, std::max(1, s.nestedCanvas.width), std::max(1, s.nestedCanvas.height), 1.0);
+                    addFrame(s, std::max(1, s.nestedCanvas.width), std::max(1, s.nestedCanvas.height), s.nestedCanvas.pixelAspect);
                 j = next;
                 continue;
             }
@@ -371,7 +383,8 @@ std::shared_ptr<const GraphicCanvasBridge::PickStack> computePickStack(const Pro
             if (s.caption && captions) {
                 // P1 (#18): the caption's text block (the renderer's bounds), and the cue under the playhead on the
                 // track it draws (the first one, as Captions.activeCue counts).
-                const CaptionTrack* track = playback::captionTrackFor(*seq, *captions);
+                const CaptionTrack* track = captionLayer < captionOwners.size() ? captionOwners[captionLayer] : nullptr;
+                ++captionLayer;
                 const std::shared_ptr<const render::TitleRaster> raster = render::CaptionRenderer::shared().render(*s.caption);
                 if (!track || !raster)
                     continue;
@@ -393,7 +406,7 @@ std::shared_ptr<const GraphicCanvasBridge::PickStack> computePickStack(const Pro
                 o.text = true;
                 o.captionTrack = captionTrackKey(track->id);
                 o.cue = cue;
-                o.quad = quadThrough(render::layerToCanvas(s.transform, fw, fh, 1.0, canvas), b[0], b[1], b[0] + b[2],
+                o.quad = quadThrough(render::layerToCanvas(s.transform, fw, fh, canvas.pixelAspect, canvas), b[0], b[1], b[0] + b[2],
                                      b[1] + b[3], w, h);
                 bottomUp.push_back(std::move(o));
                 continue;
@@ -436,13 +449,13 @@ std::shared_ptr<const GraphicCanvasBridge::PickStack> computePickStack(const Pro
                 o.kind = QStringLiteral("title");
                 o.name = clipName(s.clip);
                 o.text = true;
-                o.quad = quadThrough(render::layerToCanvas(s.transform, fw, fh, 1.0, canvas), x0, y0, x1, y1, w, h);
+                o.quad = quadThrough(render::layerToCanvas(s.transform, fw, fh, canvas.pixelAspect, canvas), x0, y0, x1, y1, w, h);
                 o.editor = titleEditor(*s.title, s.transform, o.quad, h);
                 bottomUp.push_back(std::move(o));
                 continue;
             }
             if (s.fill) {
-                addFrame(s, s.fillSize.width, s.fillSize.height, 1.0);
+                addFrame(s, s.fillSize.width, s.fillSize.height, canvas.pixelAspect);
                 continue;
             }
             const auto stream = static_cast<std::size_t>(s.streamIndex);
@@ -1245,12 +1258,9 @@ QString GraphicCanvasBridge::setLayerText(int layerId, const QString& text) {
             GraphicLayer changed = *current;
             // One run in the style of the first (as a template's text field does); 0.6: with Source Text keys, the text
             // shown at the playhead (a key there).
+            // 0.7 (card #81): the runs keep their styles where the text did not change (a word styled by a text style stays so).
             edit::editSourceRunsAt(changed.text, r->graphicTime, [&](std::vector<TextRun>& runs) {
-                TextRun run;
-                if (!runs.empty())
-                    run.style = runs.front().style;
-                run.text = value;
-                runs = {std::move(run)};
+                runs = edit::retextRuns(runs, value);
                 return true;
             });
             return edit::updateGraphicLayer(state, r->sequence, r->clip, id, std::move(changed));

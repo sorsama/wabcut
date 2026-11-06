@@ -106,6 +106,39 @@ TEST_CASE("clip.setMotion refuses audio clips locked tracks and empty requests",
     }
 }
 
+TEST_CASE("clip.setMotion stretches one axis: scaleWidth and uniformScale, one undo step (card 12)", "[command][monitor][scalewidth]") {
+    CommandHarness h(kPicture);
+    const ClipId clip = h.clip("V1@0");
+    h.ok("clip.setMotion", Json{{"clip", clip.value}, {"scale", 0.5}});
+    const auto undoBefore = h.session.undoCount();
+
+    // A width turns Uniform Scale off first; the report says what the picture is now.
+    const auto r = h.ok("clip.setMotion", Json{{"clip", clip.value}, {"scaleWidth", 2.0}});
+    CHECK(h.session.undoCount() == undoBefore + 1);
+    CHECK(r.data.at("scale") == 0.5);
+    CHECK(r.data.at("scaleWidth") == 2.0);
+    CHECK(r.data.at("uniformScale") == false);
+    const Clip& c = clipIn(h.state(), h.tl.seq, clip);
+    CHECK_FALSE(c.properties().uniformScale());
+    CHECK(c.properties().scaleAt() == std::pair<double, double>{2.0, 0.5});
+
+    // The switch back on: the width follows the Scale again; one step, undone as one.
+    const auto on = h.ok("clip.setMotion", Json{{"clip", clip.value}, {"uniformScale", true}});
+    CHECK(h.session.undoCount() == undoBefore + 2);
+    CHECK(on.data.at("uniformScale") == true);
+    CHECK(on.data.at("scaleWidth") == 0.5);
+    REQUIRE(h.session.undo());
+    CHECK(clipIn(h.state(), h.tl.seq, clip).properties().scaleAt() == std::pair<double, double>{2.0, 0.5});
+
+    // The generic parameter commands carry the width along too, and refuse keys on the switch.
+    h.ok("clip.setMotion", Json{{"clip", clip.value}, {"uniformScale", true}});
+    h.ok("clip.setParam", Json{{"clips", Json::array({clip.value})}, {"param", "motion.uniformScale"}, {"value", 0.0}});
+    CHECK(clipIn(h.state(), h.tl.seq, clip).properties()[ParamId::ScaleWidth] == ParamValue(0.5));
+    CHECK(h.errorOf("clip.setAnimated", Json{{"clip", clip.value}, {"param", "motion.uniformScale"}, {"animated", true}}) != "");
+    CHECK(h.errorOf("clip.setMotion", Json{{"clip", clip.value}, {"scaleWidth", 2.0}, {"uniformScale", true}}) == "InvalidParams");
+    CHECK(h.errorOf("clip.setMotion", Json{{"clip", clip.value}, {"scaleWidth", 101.0}}) == "InvalidParams");
+}
+
 namespace {
 
 /// Export Frame services that record what they were asked and write a small file instead of rendering.

@@ -30,6 +30,11 @@ existing file is replaced only with `"overwrite": true`, and a dry run writes no
 
 ## Import captions
 
+(Timed Text files - TTML, DFXP, SMPTE-TT - read `hh:mm:ss:ff` times by their time base: on the default `media` base they are
+real hours, minutes and seconds plus `ff` frames of the file's effective frame rate (`ttp:frameRate` x
+`ttp:frameRateMultiplier`, so at 29.97 fps one hour is exactly one hour); only `ttp:timeBase="smpte"` counts them as
+timecode, with drop-frame when `ttp:dropMode` asks for it.)
+
 `captions.import` adds a caption track from a **SubRip (.srt)**, **WebVTT (.vtt)** or **timed text (.txt)** file - the
 .txt layout above, so an exported transcript (Premiere's or Wabcut's) comes back as captions, one cue a paragraph, - or
 the same layout in a **Word document (.docx)**: every paragraph and line break of `word/document.xml` is a line, tracked
@@ -200,7 +205,7 @@ A multi-language delivery no longer means one save per language:
   then a folder, and writes every caption track of the sequence that has captions as
   `<sequence> - <track name>[.<language>].<ext>` (`Episode 3 - English.en.srt`, `Episode 3 - Thai.th.srt`; characters a
   file name cannot hold become `_`, a second track of the same name gets ` (2)`). The page says "Saved 3 caption
-  file(s)". Empty tracks are skipped.
+  files". Empty tracks are skipped.
 - **File > Export Timeline… > Captions > Sidecar files** writes the same files next to the FCP7 XML, FCPXML, OTIO, EDL,
   AAF or OMF file (named after it), and the export report lists each track as carried with its file. Without it the
   report lists each caption track as dropped ("caption track 'English' (en, 214 cues) is not carried by timeline
@@ -211,6 +216,122 @@ A multi-language delivery no longer means one save per language:
 
 Commands: `interchange.export` `"captionSidecars": "<format>"` (result `"captionFiles"`), `captions.export` per track;
 the bridge call is `Captions.exportAllTracks(folder, format)`. See [interchange.md](interchange.md).
+
+## Animated caption styles (0.7)
+
+The **Caption Style** panel's gallery has the looks of CapCut, Descript and Opus beside the five that always were there:
+**Word Pop** (each word pops in as it is said, key words in yellow), **Highlighter** (a bar slides to the word being said),
+**Bounce** (the said word hops), **Typewriter** (letters appear one by one), **Zoom** (the said word grows) and **Hype**
+(big capitals without punctuation, the said word green, key words yellow). Hover or focus a tile and it plays its look;
+resting, and with reduced motion, the tiles are still. A click applies the preset as one undo step, like any preset.
+
+The per-word looks are styles in their own right (**Animation**): Pop and Fade (the whole caption), Word by word, Word
+pop, Bounce, Highlight bar, Typewriter and Zoom. They follow the transcript's word times (a caption made without a
+transcript shares the cue's time among its words by length), so they play in the program monitor, in burned-in exports
+and in the ones the Export panel renders. Under **Animation**: **Speed** (how long one word's motion takes, 0.05 to 0.6 s;
+Fade takes a third longer) and **Curve** (Smooth, Overshoot - a little past, then settling, which makes the bounce dip
+under the line - or Linear). The word being said takes the style's highlight colour in Word pop, Bounce and Zoom; in
+Highlight bar the highlight colour is the bar, and the word on it turns dark or white, whichever reads.
+
+**Emphasis** colours key words and draws them a little larger (**Emphasis colour**, **Emphasis size** 100 to 150 %):
+**My key words** takes the words you list (case does not matter; commas, semicolons or line breaks separate them), **Auto**
+adds numbers, words in capitals (two letters or more) and words followed by "!". Words, colours and the looks are
+in `captions.setStyle` (`animation`, `animationSpeed`, `animationEase`, `emphasis`, `emphasisWords`, `emphasisColor`,
+`emphasisScale`) and in the saved project; projects made before have none of them and look as before. A project that
+already had a preset called like one of the new gallery looks keeps it (it shows instead of the built-in one).
+Not in this version: emoji inserted at key words (the caption renderer draws outlines, which have no colour emoji).
+
+## Looks for every project (0.7)
+
+A caption preset belongs to the project it was saved in. **My looks** are presets kept for you, outside any project, so a
+look made once is in every project:
+
+- **Save preset** on the **Caption Style** panel has **Also keep it in My looks** (on): the look goes into your library
+  as well as the project. The bookmark on a tile of the gallery adds a project look to My looks or takes it out again.
+- A look of My looks that the project does not have yet shows in its gallery all the same; applying it copies it into the
+  project (so the project opens anywhere) and applies it, as one undo step. The tile's x on such a look removes it from
+  My looks.
+- **Export looks…** writes My looks and this project's looks to a `.wabcut-caption-presets.json` file; **Import looks…**
+  adds the looks of such a file to My looks (a look with the name of one you have replaces it; the built-in names are
+  left out).
+- The library is a file in the app's data folder (`caption-presets.json`); a file that cannot be read is left alone and
+  reads as empty. For scripts: `captions.exportPresets` and `captions.importPresets` move the **project's** presets
+  to and from a file (`merge` adds to the file, `replace` replaces same-named presets in the project); they are file
+  commands.
+
+## Captions without punctuation and capital letters (0.7)
+
+**Caption Style > Text rules** sets the case of the captions (as written, lowercase or UPPERCASE), leaves out punctuation
+and accents. Punctuation: commas, full stops, question and exclamation marks, quotes, brackets, ellipses and dashes
+between words go, in every script (Chinese, Japanese and Arabic marks too); a mark between two words that had no space
+leaves one; an apostrophe or hyphen inside a word (don't, well-known), the separators in a number (3.5, 1,000) and
+symbols such as % and & stay. Accents: marks on Latin, Greek and Cyrillic letters, Hebrew points and Arabic vowel marks
+go, and a few letters fold to plain ones (Polish l-stroke, o-slash, Icelandic eth and thorn, ae and oe); Thai vowel and tone
+marks and Japanese voiced marks stay. Case follows the language of the caption track (a Turkish track lowercases I to
+dotless i). The cues keep their words as written: the rules apply when a caption is drawn (the program monitor, burned-in
+exports) and when it is exported (SRT and VTT sidecars, the other caption files, soft subtitle tracks), so a file shows what
+the picture shows. Style fields `textCase`, `stripPunctuation`, `stripAccents`; Hype uses all of them.
+
+## Convert captions to graphics (0.7)
+
+**Captions tab > the track menu > Convert to graphics** (`captions.toGraphics`; Premiere's Upgrade Caption to Graphic) turns the
+cues of the shown caption track into graphic clips, one per cue at the cue's time, so the text can be restyled and animated
+like a title: Essential Graphics (layers, fonts, strokes, shadows), the animation presets (`graphic.applyPreset`: fade, slide,
+typewriter...), Effect Controls' Text section and the Program Monitor's handles. Each graphic is a text layer in the track's
+caption style - font, weight and size (a fraction of the frame height), fill, outline (a stroke), shadow, background box
+(colour, opacity, padding, corner radius), alignment, line spacing, lower and upper case and the Bottom, Top or Custom
+placement - on a canvas the size of the sequence's frame.
+
+The text box **grows with its text**. The text is paragraph text in a box as wide as the caption block (the style's width)
+and as tall as its lines (the box height is automatic), so editing a caption to a longer text makes the box taller and the
+background box behind it follows. A caption at the bottom (top) is pinned to the frame's edge at the safe margin
+(Responsive Design - Position, "pin to the video frame"), so a longer text grows upwards (downwards) instead of running off
+the picture; a custom position keeps the text's top where it was.
+
+The graphics go on a new video track on top (more than one when the track's cues overlap), or on the video track named by
+`track` when it is free under every cue (otherwise the command refuses and nothing changes). `captions` says what happens to
+the caption track: `hide` (the default) switches it off so the text is not drawn twice, `keep` leaves it showing, `remove`
+deletes it. `from` and `to` convert only the cues that start in that range. The whole conversion is one undo step, "Convert
+Captions to Graphics".
+
+The graphics carry the text as written plus the track's case rule (lowercase is applied; uppercase is the layer's All Caps).
+The kinetic animation looks (word pop, bounce, highlight bar...), speaker names and the punctuation and accent rules belong to
+caption rendering and are not part of a graphic: animate the graphic with Essential Graphics' presets instead. Tests:
+`tests/command/test_caption_commands.cpp` ("captions.toGraphics ..."), `tests/app/test_d5_audio_ui.cpp`.
+
+## Two caption tracks on screen: bilingual subtitles (0.7)
+
+Burn in a second language under (or over) the first, in the Program Monitor and in exports. Make the second track (Translate
+Captions makes one, or import an .srt), open the **track menu** of the Captions tab with that track shown and tick
+**Show with the main track**. The main track is the one chosen for the monitor or the export, else the first shown one;
+every other track that is shown and ticked is drawn with it. Each track keeps its own style, so the translation can be
+smaller or another colour than the original.
+
+- **Where the tracks go.** Tracks stack in the order of the track list, the first one topmost. Tracks placed at the bottom
+  (the default look) stack upwards from the title-safe line, the last track at the line and the others above it; tracks
+  placed at the top stack downwards from the top, the first at the edge. A track with a **Custom** position stays exactly
+  where its style puts it. A gap of a quarter of the text size separates the blocks, and a stack too tall for the picture is
+  kept inside the frame.
+- **Only what is said now.** A track with no caption at that moment adds nothing: no space is left for it, so a one-language
+  stretch looks like it did before.
+- **Shown means shown everywhere.** The mark is part of the project, so the same tracks are burned in by **Export** (Captions
+  > Burn in), drawn on the monitor, picked in the Graphics canvas and listed by the Frame Inspector ("English + Spanish").
+  The soft subtitle tracks and sidecar files are written per track as before (nothing to stack). To burn in one language
+  only, untick the other track (or switch it off with its eye).
+- **Karaoke** follows the words of the main track from the transcript; the other tracks estimate their word times from the cue.
+- **Command:** `captions.setTrack` with `"showTogether": true` (one undo step); the project key `showTogether` is written only
+  when set, so an older build opens the project and draws one track.
+
+Tests: `tests/playback/video/test_caption_tracks.cpp`, `tests/render/test_caption_stack.cpp`,
+`tests/command/test_caption_commands.cpp` ("captions.setTrack showTogether ...").
+
+## Right-to-left languages (0.7)
+
+Hebrew and Arabic captions are laid out by the bidirectional rules: the paragraph runs right to left when its first
+strong letter does, so the full stop is on the left of a Hebrew sentence and words read in order; the words of a Hebrew or
+Arabic transcript read from the right in the Transcript tab; "left" and "right" alignment of a caption block mean the
+frame's left and right. Right-to-left transcripts are
+produced by choosing the language on the Transcript tab (see "Language spoken" in [ai.md](ai.md)).
 
 ## Not yet
 

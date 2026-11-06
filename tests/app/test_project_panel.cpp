@@ -384,6 +384,213 @@ TEST_CASE("Productions: open projects next to each other, import in one undo ste
     CHECK_FALSE(lifecycle.readOnly());
 }
 
+TEST_CASE("Productions: search finds footage and sequences in every project; a result is browsed or imported (094)",
+          "[app][production][search]") {
+    resetSettings();
+    const fs::path dir = scratch("production-search");
+    const fs::path river = dir / "Footage" / "river.mov";
+    const fs::path bridge = dir / "Footage" / "bridge.mov";
+    fs::create_directories(river.parent_path());
+    std::ofstream(river, std::ios::binary) << std::string(512, 'r');
+    std::ofstream(bridge, std::ios::binary) << std::string(512, 'b');
+    // projectPlaying's media is called "A": give it a name and a comment worth searching for.
+    const auto described = [](ProjectState s, const std::string& name, const std::string& comment) {
+        for (MediaPtr& m : s.media) {
+            if (m->locator.path.find("Footage") == std::string::npos)
+                continue; // the fixture's other items stay as they are
+            MediaItem item = *m;
+            item.name = name;
+            item.comment = comment;
+            m = std::make_shared<const MediaItem>(std::move(item));
+        }
+        return s;
+    };
+
+    ProjectController controller;
+    ProjectLifecycle lifecycle(&controller);
+    ProductionBridge production(&lifecycle);
+    production.setSynchronous(true);
+    // No production yet: said, not run.
+    CHECK_FALSE(production.search(QStringLiteral("river")));
+    CHECK(production.message().contains(QStringLiteral("production")));
+    REQUIRE(production.makeProduction(url(dir / "Doc"), QStringLiteral("Doc")));
+    const QUrl assembly = production.newProject({}, QStringLiteral("Assembly"));
+    REQUIRE_FALSE(assembly.isEmpty());
+    const fs::path interviews = dir / "Doc" / "Interviews.wabcut";
+    const fs::path broll = dir / "Doc" / "Broll.wabcut";
+    REQUIRE(io::saveProject(described(projectPlaying(river, "Interview cut"), "River interview", "Anna on the weir"), interviews,
+                            io::SaveOptions{0}));
+    REQUIRE(io::saveProject(described(projectPlaying(bridge, "Bridge b-roll"), "Bridge pan", "over the river at dusk"), broll,
+                            io::SaveOptions{0}));
+    production.refresh();
+    REQUIRE(lifecycle.open(assembly));
+
+    // Nothing to look for: nothing runs, nothing is shown.
+    CHECK(production.search({}));
+    CHECK_FALSE(production.searched());
+    CHECK(production.searchResults().isEmpty());
+    CHECK_FALSE(production.search(QStringLiteral("x"), QStringLiteral("nonsense"))); // an unknown field is said
+    CHECK(production.message().contains(QStringLiteral("nonsense")));
+
+    // "river": the name of Anna's clip first (a name beats a comment), then the clip whose comment says it.
+    REQUIRE(production.search(QStringLiteral("river")));
+    CHECK_FALSE(production.searching()); // synchronous here
+    CHECK(production.searched());
+    QVariantList results = production.searchResults();
+    REQUIRE(results.size() == 2);
+    const QVariantMap first = results[0].toMap();
+    CHECK(first.value(QStringLiteral("name")).toString() == QStringLiteral("River interview"));
+    CHECK(first.value(QStringLiteral("projectName")).toString() == QStringLiteral("Interviews"));
+    CHECK(first.value(QStringLiteral("kind")).toString() == QStringLiteral("video"));
+    CHECK(first.value(QStringLiteral("key")).toString().startsWith(QLatin1Char('m')));
+    CHECK_FALSE(first.value(QStringLiteral("current")).toBool());
+    CHECK(first.value(QStringLiteral("matched")).toStringList() == QStringList{QStringLiteral("name")});
+    CHECK(results[1].toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Bridge pan"));
+    CHECK(results[1].toMap().value(QStringLiteral("matched")).toStringList() == QStringList{QStringLiteral("comment")});
+    CHECK(production.searchSummary().startsWith(QStringLiteral("2 result")));
+    CHECK(production.searchSummary().contains(QStringLiteral("3 project")));
+    CHECK(production.resultProject(0) == url(interviews));
+    CHECK(production.resultProject(99).isEmpty());
+
+    // The type: every sequence of the production, with the project each is in; the one being edited is marked.
+    REQUIRE(production.search({}, {}, QStringLiteral("sequence")));
+    results = production.searchResults();
+    REQUIRE(results.size() == 3);
+    int current = 0;
+    QStringList sequenceProjects;
+    for (const QVariant& v : results) {
+        const QVariantMap row = v.toMap();
+        CHECK(row.value(QStringLiteral("kind")).toString() == QStringLiteral("sequence"));
+        CHECK(row.value(QStringLiteral("key")).toString().startsWith(QLatin1Char('s')));
+        sequenceProjects << row.value(QStringLiteral("projectName")).toString();
+        current += row.value(QStringLiteral("current")).toBool() ? 1 : 0;
+    }
+    sequenceProjects.sort();
+    CHECK(sequenceProjects == QStringList{QStringLiteral("Assembly"), QStringLiteral("Broll"), QStringLiteral("Interviews")});
+    CHECK(current == 1);
+    // A sequence of the project being edited cannot be imported into itself.
+    int ownIndex = -1;
+    for (int i = 0; i < results.size(); ++i) {
+        if (results[i].toMap().value(QStringLiteral("current")).toBool())
+            ownIndex = i;
+    }
+    REQUIRE(ownIndex >= 0);
+    const auto undoBefore = controller.session().undoCount();
+    CHECK_FALSE(production.importResult(ownIndex).value(QStringLiteral("ok")).toBool());
+    CHECK(controller.session().undoCount() == undoBefore);
+    CHECK(production.browseResult(ownIndex)); // shown in its own Library (no Library wired here: nothing to show, no error)
+
+    // Import the first "river" result: a copy of the clip comes into this project in one undo step, still playing the file.
+    REQUIRE(production.search(QStringLiteral("river")));
+    const std::size_t media = controller.snapshot()->media.size();
+    const auto undo = controller.session().undoCount();
+    const QVariantMap imported = production.importResult(0);
+    CHECK(imported.value(QStringLiteral("ok")).toBool());
+    CHECK(imported.value(QStringLiteral("media")).toInt() == 1);
+    CHECK(controller.session().undoCount() == undo + 1);
+    CHECK(controller.snapshot()->media.size() == media + 1);
+    bool found = false;
+    for (const MediaPtr& m : controller.snapshot()->media)
+        found = found || (m->name == "River interview" && fs::path(pathFromUtf8(m->locator.path)) == river);
+    CHECK(found);
+    CHECK(production.importResult(0).value(QStringLiteral("reusedMedia")).toInt() == 1); // the same file is reused
+    CHECK_FALSE(production.importResult(42).value(QStringLiteral("ok")).toBool());
+
+    // Browse the second result: its project opens read-only next to this one, the item pointed at.
+    CHECK(production.browseResult(1));
+    CHECK(production.browsing() == url(broll));
+    const QString pointedAt = production.searchResults()[1].toMap().value(QStringLiteral("key")).toString();
+    CHECK(production.revealedKey() == pointedAt);
+    CHECK_FALSE(production.browseResult(-1));
+
+    // Changing a project on disk is seen by the next search; a project that is not a project is reported, the rest searched.
+    REQUIRE(io::saveProject(described(projectPlaying(river, "Interview cut"), "River interview", "now a weir at dawn"), interviews,
+                            io::SaveOptions{0}));
+    REQUIRE(production.search(QStringLiteral("dawn")));
+    REQUIRE(production.searchResults().size() == 1);
+    CHECK(production.searchResults()[0].toMap().value(QStringLiteral("matched")).toStringList() ==
+          QStringList{QStringLiteral("comment")});
+    {
+        std::ofstream bad(dir / "Doc" / "Damaged.wabcut", std::ios::binary);
+        bad << "not a project";
+    }
+    // The copy imported above lives in the project being edited, unsaved: the search reads it from memory.
+    REQUIRE(production.search(QStringLiteral("river")));
+    CHECK(production.searchResults().size() == 3);
+    int inMemory = 0;
+    for (const QVariant& v : production.searchResults()) {
+        const QVariantMap row = v.toMap();
+        if (row.value(QStringLiteral("current")).toBool()) {
+            ++inMemory;
+            CHECK(row.value(QStringLiteral("projectName")).toString() == QStringLiteral("Assembly"));
+            CHECK(row.value(QStringLiteral("projectOpen")).toBool());
+        }
+    }
+    CHECK(inMemory == 1);
+    CHECK(production.searchSummary().contains(QStringLiteral("could not be read")));
+
+    // Closing the production forgets the results.
+    production.closeProduction();
+    CHECK(production.searchResults().isEmpty());
+    CHECK_FALSE(production.searched());
+}
+
+TEST_CASE("Productions: a search reads the projects on a worker, can be stopped and the newest one wins (094)",
+          "[app][production][search]") {
+    resetSettings();
+    const fs::path dir = scratch("production-search-async");
+    ProjectController controller;
+    ProjectLifecycle lifecycle(&controller);
+    ProductionBridge production(&lifecycle);
+    REQUIRE(production.makeProduction(url(dir / "Doc"), QStringLiteral("Doc")));
+    for (int i = 0; i < 6; ++i) {
+        ProjectState s = projectPlaying(dir / "Footage" / ("clip" + std::to_string(i) + ".mov"), "Cut " + std::to_string(i));
+        for (MediaPtr& m : s.media) {
+            if (m->locator.path.find("Footage") == std::string::npos)
+                continue;
+            MediaItem item = *m;
+            item.name = "Take " + std::to_string(i);
+            m = std::make_shared<const MediaItem>(std::move(item));
+        }
+        REQUIRE(io::saveProject(s, dir / "Doc" / ("Episode " + std::to_string(i) + ".wabcut"), io::SaveOptions{0}));
+    }
+    production.refresh();
+    int changes = 0;
+    QObject::connect(&production, &ProductionBridge::searchChanged, [&] { ++changes; });
+
+    // Returns at once with the work running; the results arrive on the GUI thread.
+    REQUIRE(production.search(QStringLiteral("take")));
+    CHECK(production.searching());
+    CHECK_FALSE(production.searched());
+    REQUIRE(waitFor([&] { return !production.searching(); }, 20'000));
+    CHECK(production.searched());
+    CHECK(production.searchResults().size() == 6);
+    CHECK(changes >= 2);
+
+    // A newer search replaces one that is still running: the answer is the newest query's.
+    REQUIRE(production.search(QStringLiteral("take")));
+    REQUIRE(production.search(QStringLiteral("take 3")));
+    REQUIRE(production.search(QStringLiteral("take 4")));
+    REQUIRE(waitFor([&] { return !production.searching(); }, 20'000));
+    spin(50);
+    REQUIRE(production.searchResults().size() == 1);
+    CHECK(production.searchResults()[0].toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Take 4"));
+
+    // Stop: the search ends, the earlier results stay.
+    REQUIRE(production.search(QStringLiteral("take")));
+    production.cancelSearch();
+    REQUIRE(waitFor([&] { return !production.searching(); }, 20'000));
+    spin(50);
+    CHECK((production.searchResults().size() == 1 || production.searchResults().size() == 6)); // stopped, or it had finished
+    // Clearing while it runs drops its answer.
+    REQUIRE(production.search(QStringLiteral("take")));
+    production.clearSearch();
+    REQUIRE(waitFor([&] { return !production.searching(); }, 20'000));
+    spin(50);
+    CHECK(production.searchResults().isEmpty());
+    CHECK_FALSE(production.searched());
+}
+
 TEST_CASE("Library: the File section edits XMP in the sidecar, or in an MP4 itself when chosen", "[app][library][xmp]") {
     const fs::path dir = scratch("xmp-edit");
     Rig r;
@@ -600,8 +807,9 @@ TEST_CASE("Productions: shared scratch disks and copies that know their source p
     const QUrl assembly = production.newProject({}, QStringLiteral("Assembly"));
     REQUIRE(lifecycle.open(assembly));
     CHECK(fs::path(controller.mediaCacheDirectory().toStdU16String()).lexically_normal() == cache.lexically_normal());
-    CHECK(editor::previewFolderFor(fs::path(assembly.toLocalFile().toStdU16String())) ==
-          (dir / "Doc" / "Previews" / "Assembly Preview Files").lexically_normal());
+    const fs::path assemblyPreviews = editor::previewFolderFor(fs::path(assembly.toLocalFile().toStdU16String()));
+    CHECK(assemblyPreviews.parent_path() == (dir / "Doc" / "Previews").lexically_normal());
+    CHECK(assemblyPreviews.filename().string().starts_with("Assembly Preview Files ")); // + the project's hash (card #159)
     REQUIRE(production.setSettings({{QStringLiteral("mediaCache"), QString()}}));
     CHECK(controller.mediaCacheDirectory() == appCache);
     CHECK(production.settings().value(QStringLiteral("previews")).toString() == QStringLiteral("Previews")); // kept

@@ -75,8 +75,8 @@ void tallyMotion(const ProjectState& state, Rate rate, const CompositeStep& s, T
     if (!item || !retimesFrames(*s.clip, *item, rate)) {
         return;
     }
-    if (s.clip->timeInterpolation() == TimeInterpolation::OpticalFlow) {
-        t.opticalFlow = true;
+    if (s.clip->timeInterpolation() == TimeInterpolation::OpticalFlow || s.clip->timeInterpolation() == TimeInterpolation::AiInterpolation) {
+        t.opticalFlow = true; // 0.7: AI Frame Interpolation plays pictures made ahead (or Optical Flow): needs rendering too
     } else {
         t.frameBlending = true;
         t.cost += 0.5;
@@ -559,8 +559,8 @@ std::vector<PreviewEntry> PreviewCache::invalidate(const ProjectState& after, co
     retryDeletesLocked();
     std::vector<PreviewEntry> dropped;
     std::vector<PreviewEntry> kept;
-    const bool mediaChanged =
-        !changes.modifiedMedia.empty() || !changes.removedMedia.empty() || changes.redactionsChanged;
+    const bool mediaChanged = !changes.modifiedMedia.empty() || !changes.removedMedia.empty() ||
+                              changes.redactionsChanged || changes.colorManagementChanged; // 0.7: the key holds it
     std::map<std::tuple<std::uint64_t, std::int64_t, std::int64_t>, std::string> hashes;
     for (PreviewEntry& e : m_entries) {
         if (!after.findSequence(e.sequence)) {

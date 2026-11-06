@@ -36,6 +36,11 @@ void ProviderRegistry::registerMediaGenerator(std::string api, AdapterFactory<IM
     m_generators.insert_or_assign(std::move(api), std::move(factory));
 }
 
+void ProviderRegistry::registerTranslator(std::string api, AdapterFactory<ITranslator> factory) {
+    std::lock_guard lock(m_mutex);
+    m_translators.insert_or_assign(std::move(api), std::move(factory));
+}
+
 bool ProviderRegistry::hasAdapter(std::string_view api, Capability capability) const {
     std::lock_guard lock(m_mutex);
     switch (capability) {
@@ -50,7 +55,8 @@ bool ProviderRegistry::hasAdapter(std::string_view api, Capability capability) c
     case Capability::GenerateMedia:
         return m_generators.contains(api);
     case Capability::Translate:
-        return m_chat.contains(api); // translation runs on a chat model (LlmTranslator)
+        // A chat model translates through LlmTranslator; DeepL / Google Cloud Translation have their own (r07).
+        return m_chat.contains(api) || m_translators.contains(api);
     case Capability::CloneVoice:
         return m_speech.contains(api); // cloning is part of the speech adapter
     }
@@ -159,7 +165,13 @@ ProviderRegistry::create(const std::map<std::string, AdapterFactory<Interface>, 
         }
         factory = it->second;
     }
-    auto adapter = factory(ProviderContext{*candidate.provider, *candidate.model, candidate.baseUrl, std::move(key), transport});
+    // r07 (A1): the adapter sees the model under the name its API expects (ModelSpec::apiId); adapters copy the spec,
+    // so this local copy only has to outlive the factory call.
+    ModelSpec wire = *candidate.model;
+    if (!wire.apiId.empty()) {
+        wire.id = wire.apiId;
+    }
+    auto adapter = factory(ProviderContext{*candidate.provider, wire, candidate.baseUrl, std::move(key), transport});
     if (!adapter) {
         return std::unexpected(AiError(AiErrorCode::Unsupported, "the adapter refused '" + candidate.model->id + "'"));
     }
@@ -189,6 +201,11 @@ ProviderRegistry::createSpeechSynth(const Candidate& candidate, Secret key, IHtt
 std::expected<std::unique_ptr<IMediaGenerator>, AiError>
 ProviderRegistry::createMediaGenerator(const Candidate& candidate, Secret key, IHttpTransport& transport) const {
     return create(m_generators, candidate, std::move(key), transport);
+}
+
+std::expected<std::unique_ptr<ITranslator>, AiError>
+ProviderRegistry::createTranslator(const Candidate& candidate, Secret key, IHttpTransport& transport) const {
+    return create(m_translators, candidate, std::move(key), transport);
 }
 
 // --- Guarded capability objects ---------------------------------------------------------------------------------
@@ -621,6 +638,54 @@ private:
     CallOptions m_options;
 };
 
+// r07: a dedicated translation API (DeepL, Google Cloud Translation), billed per character sent.
+class GuardedTranslator final : public ITranslator {
+public:
+    GuardedTranslator(std::unique_ptr<DispatchState> dispatch, std::unique_ptr<TrackingTransport> transport,
+                      std::unique_ptr<ITranslator> inner, ProviderSpec provider, ModelSpec model, std::string baseUrl,
+                      AiPlatform& platform, CallOptions options)
+        : m_dispatch(std::move(dispatch)), m_transport(std::move(transport)), m_inner(std::move(inner)),
+          m_provider(std::move(provider)), m_model(std::move(model)), m_baseUrl(std::move(baseUrl)), m_platform(platform),
+          m_options(options) {}
+
+    std::expected<TranslationResult, AiError> translate(const TranslationRequest& request, std::stop_token stop) override {
+        std::int64_t characters = 0;
+        for (const TranslationSegment& segment : request.segments) {
+            characters += std::count_if(segment.text.begin(), segment.text.end(),
+                                        [](char c) { return (static_cast<unsigned char>(c) & 0xC0) != 0x80; });
+        }
+        Usage usage;
+        usage.characters = characters;
+        const MicroUsd cost = costOf(m_model, usage, m_platform.today());
+        if (m_model.prices.empty() && m_platform.spend().monthlyCap(m_provider.id)) {
+            return std::unexpected(AiError(AiErrorCode::InvalidRequest, "the translation model has no price, so the spend cap cannot be kept"));
+        }
+        if (m_options.maxCost && cost > *m_options.maxCost) {
+            return std::unexpected(AiError(AiErrorCode::SpendCapExceeded, "this translation could cost more than the cap of the run"));
+        }
+        // The text is billed once the provider has it: a failure after that settles the estimate.
+        FailureCost failure;
+        failure.reported = [] { return std::optional<MicroUsd>(); };
+        failure.answered = [cost] { return cost; };
+        failure.unanswered = [cost] { return cost; };
+        return guardedCall<TranslationResult>(m_platform, m_provider, m_baseUrl, m_model, Capability::Translate, m_options, cost,
+                                              *m_dispatch, failure, [&] { return m_inner->translate(request, stop); },
+                                              &translationUsage);
+    }
+
+private:
+    static Usage translationUsage(const TranslationResult& r) { return r.usage; }
+
+    std::unique_ptr<DispatchState> m_dispatch;
+    std::unique_ptr<TrackingTransport> m_transport;
+    std::unique_ptr<ITranslator> m_inner;
+    ProviderSpec m_provider;
+    ModelSpec m_model;
+    std::string m_baseUrl;
+    AiPlatform& m_platform;
+    CallOptions m_options;
+};
+
 } // namespace
 
 // --- AiPlatform -------------------------------------------------------------------------------------------------
@@ -890,6 +955,28 @@ std::expected<std::unique_ptr<ISpeechSynth>, AiError> AiPlatform::speech(std::st
     }
     return std::make_unique<GuardedSpeech>(std::move(dispatch), std::move(transport), std::move(*inner), *candidate->provider,
                                            candidate->baseUrl, *this, options);
+}
+
+std::expected<std::unique_ptr<ITranslator>, AiError> AiPlatform::translator(std::string_view modelId, CallOptions options) {
+    auto candidate = m_providers.candidate(modelId, Capability::Translate, today());
+    if (!candidate) {
+        return std::unexpected(candidate.error());
+    }
+    auto key = keyFor(*candidate->provider);
+    if (!key) {
+        return std::unexpected(key.error());
+    }
+    auto dispatch = std::make_unique<DispatchState>();
+    auto transport = std::make_unique<TrackingTransport>(m_transport, *dispatch);
+    auto inner = m_providers.createTranslator(*candidate, std::move(*key), *transport);
+    if (!inner) {
+        return std::unexpected(inner.error().code == AiErrorCode::Unsupported
+                                   ? AiError(AiErrorCode::Unsupported, "'" + candidate->model->id +
+                                                                           "' translates through the chat model, not a translation API")
+                                   : inner.error());
+    }
+    return std::make_unique<GuardedTranslator>(std::move(dispatch), std::move(transport), std::move(*inner), *candidate->provider,
+                                               *candidate->model, candidate->baseUrl, *this, options);
 }
 
 std::expected<std::vector<ProviderRegistry::Candidate>, AiError> AiPlatform::resolve(Capability capability) {

@@ -16,8 +16,13 @@
 namespace wabcut::audio::dsp {
 
 /// 0.6 (#54): blocks at or above this true peak are kept (LoudnessResult::peakBlocks), at most kMaxPeakBlocks of them.
+/// 0.7 (card 166): when more than that are hot (a 3 h programme that peaks above -6 dBTP in most blocks), the quietest
+/// ones are dropped and the floor rises (LoudnessResult::peakFloorDbtp) - never the newest, so the list stays complete
+/// above the floor and the programme's last hours are not lost.
 inline constexpr double kPeakBlockFloorDbtp = -6.0;
 inline constexpr std::size_t kMaxPeakBlocks = 100000;
+/// 0.7: seconds of short-term loudness kept (a day and three hours of programme).
+inline constexpr std::size_t kMaxSeriesPoints = 100000;
 
 /// 0.6 (#54): the true peak of one 100 ms block of the programme.
 struct PeakBlock {
@@ -41,9 +46,18 @@ struct LoudnessResult {
     std::int64_t maxMomentaryFrame = -1;
     std::int64_t maxShortTermFrame = -1;
     std::int64_t truePeakFrame = -1;
-    /// The 100 ms blocks whose true peak reached kPeakBlockFloorDbtp, in order (the first kMaxPeakBlocks).
+    /// The 100 ms blocks whose true peak reached peakFloorDbtp, in order (at most kMaxPeakBlocks of them, but all of
+    /// those above the floor, whenever in the programme they are).
     std::vector<PeakBlock> peakBlocks;
+    /// The floor peakBlocks is complete above: kPeakBlockFloorDbtp, or higher when more than kMaxPeakBlocks blocks
+    /// reached it and the quietest were dropped. Overs above a ceiling at or over it are exactly counted.
+    double peakFloorDbtp = kPeakBlockFloorDbtp;
+    /// 0.7 (Loudness Radar): the short-term (3 s) loudness read once a second, LUFS: entry k is the window ending at
+    /// second k + 1, -infinity where it is not known (the first 2 s, silence). At most kMaxSeriesPoints entries.
+    std::vector<float> shortTermSeries;
 
+    /// More blocks were hot than the list holds: peakFloorDbtp rose above kPeakBlockFloorDbtp.
+    bool peakBlocksTruncated() const noexcept { return peakFloorDbtp > kPeakBlockFloorDbtp; }
     /// Integrated loudness measured (not silence or too short).
     bool hasIntegrated() const noexcept { return integratedLufs > -1e300; }
 };
@@ -51,7 +65,8 @@ struct LoudnessResult {
 class LoudnessMeter {
 public:
     /// Channels map as L, R, C, LFE (not weighted), Ls, Rs; a single channel counts as dual mono (EBU R128 s1).
-    LoudnessMeter(int channels, int sampleRate);
+    /// `maxPeakBlocks`: how many hot blocks are kept before the floor rises (tests lower it).
+    LoudnessMeter(int channels, int sampleRate, std::size_t maxPeakBlocks = kMaxPeakBlocks);
     ~LoudnessMeter();
     LoudnessMeter(LoudnessMeter&&) noexcept;
     LoudnessMeter& operator=(LoudnessMeter&&) noexcept;
@@ -79,6 +94,12 @@ public:
     double maxMomentaryLufs() const;
     double maxShortTermLufs() const;
     std::int64_t frames() const;
+    /// 0.7: the loudness range (LU, EBU Tech 3342) so far; 0 before there is enough audio. Costs a pass over the gating
+    /// blocks: read it about once a second, not per block.
+    double rangeLu() const;
+    /// 0.7: the short-term loudness once a second since the last reset (LoudnessResult::shortTermSeries). Valid until
+    /// the next add() or reset().
+    const std::vector<float>& shortTermSeries() const noexcept;
 
 private:
     struct Impl;
