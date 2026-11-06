@@ -276,7 +276,7 @@ TEST_CASE("Transition library: GPU cost of a transition at 1080p (0.2)", "[rende
         for (int i = 0; i < kFrames; ++i) {
             REQUIRE(renderer->render(composite));
         }
-        const double ms = timer.nsecsElapsed() / 1e6 / kFrames;
+        const double ms = static_cast<double>(timer.nsecsElapsed()) / 1e6 / kFrames;
         WARN("transition kind " << static_cast<int>(kind) << ": " << ms << " ms per 1080p frame (render + readback)");
         CHECK(ms < 200.0);
     }

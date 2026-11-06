@@ -87,7 +87,7 @@ bool isRed(const QImage& image, int x, int y) {
 }
 
 /// A minimal one-page PDF whose page is 200 x 100 pt with a red 100 x 50 rectangle in the middle, with a correct xref.
-std::string redRectanglePdf() {
+[[maybe_unused]] std::string redRectanglePdf() { // its test is Windows only
     std::string pdf = "%PDF-1.4\n";
     std::vector<std::size_t> offsets;
     const auto object = [&](const std::string& body) {

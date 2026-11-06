@@ -10,6 +10,7 @@
 #include <latch>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace wabcut;

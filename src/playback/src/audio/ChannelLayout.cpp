@@ -185,6 +185,7 @@ ChannelMatrix formatMatrix(ChannelFormat from, int fromChannels, ChannelFormat t
         }
         break;
     case ChannelFormat::Adaptive:
+    case ChannelFormat::Surround71: // both answered above
         break;
     }
     return out;

@@ -405,7 +405,7 @@ TEST_CASE("HDR scopes read PQ code values (the nits scale) and the HLG signal (t
         CHECK(data.scale == (hlg ? 2 : 1));
         // The level holding most of the luma histogram.
         const auto& h = data.histogram[3];
-        return static_cast<double>(std::max_element(h.begin(), h.end()) - h.begin()) / h.size();
+        return static_cast<double>(std::max_element(h.begin(), h.end()) - h.begin()) / static_cast<double>(h.size());
     };
     const ColorPipeline pq = managed(ColorManagementMode::HdrPq);
     // A PQ clip at 1000 nits reads 0.752 on the nits scale; one at 203 nits (the reference white) 0.581.

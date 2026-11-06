@@ -560,7 +560,7 @@ std::optional<Json> Runtime::request(const std::string& method, Json params) {
     if (it == m_replies.end()) {
         return std::nullopt;
     }
-    Json reply = std::move(it->second);
+    std::optional<Json> reply(std::in_place, std::move(it->second)); // not Json's own conversion to optional
     m_replies.erase(it);
     return reply;
 }
