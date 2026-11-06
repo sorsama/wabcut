@@ -325,6 +325,16 @@ if(TARGET wabcut)
         install(CODE "set(ENV{WindowsSdkDir} \"${wabcut_sdk_native}\")")
     endif()
     install(SCRIPT ${wabcut_deploy_script})
+    # ARM64: windeployqt looks for d3dcompiler_47.dll in the SDK's Redist\D3D\arm (32-bit ARM, gone from current SDKs)
+    # and skips it, while dxcompiler.dll and dxil.dll come from Redist\D3D\arm64; install the arm64 one ourselves.
+    if(WIN32 AND (CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$" OR CMAKE_CXX_COMPILER_ARCHITECTURE_ID MATCHES "ARM64"))
+        if(EXISTS "${WABCUT_WINDOWS_SDK_DIR}/Redist/D3D/arm64/d3dcompiler_47.dll")
+            install(FILES "${WABCUT_WINDOWS_SDK_DIR}/Redist/D3D/arm64/d3dcompiler_47.dll" DESTINATION ${CMAKE_INSTALL_BINDIR})
+        else()
+            message(WARNING "No ${WABCUT_WINDOWS_SDK_DIR}/Redist/D3D/arm64/d3dcompiler_47.dll: the ARM64 install tree will "
+                            "lack it")
+        endif()
+    endif()
     if(UNIX AND NOT APPLE)
         # What Qt's deployment leaves out: the Qt libraries of the QML plugins and the xcb helpers of the xcb platform
         # plugin, from the Qt kit, vcpkg or this machine (cmake/packaging/linux/BundleLibraries.cmake).

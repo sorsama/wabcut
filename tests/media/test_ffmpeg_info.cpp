@@ -13,8 +13,14 @@ TEST_CASE("Platform hardware decode backends are compiled in", "[media][toolchai
     const auto has = [&](const char* t) { return std::find(types.begin(), types.end(), t) != types.end(); };
 #if defined(_WIN32)
     CHECK(has("d3d11va"));
+#if defined(_M_ARM64) || defined(_M_ARM64EC)
+    // Windows on ARM64: no NVIDIA (CUDA) or Intel Quick Sync builds of FFmpeg's hardware layers (vcpkg.json, x64 only).
+    CHECK_FALSE(has("cuda"));
+    CHECK_FALSE(has("qsv"));
+#else
     CHECK(has("cuda"));
     CHECK(has("qsv"));
+#endif
 #elif defined(__APPLE__)
     CHECK(has("videotoolbox"));
 #else

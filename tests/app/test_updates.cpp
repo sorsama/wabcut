@@ -269,6 +269,7 @@ struct Rig {
         c.downloadFolder = folder.filePath(QStringLiteral("updates"));
         c.allowLoopbackHttp = true;
         c.installedByMsi = true;
+        c.nativeArm64 = false; // the x64 install flow, on an ARM64 test run too (an ARM64 build's own case has its test)
         c.installRoot = QStringLiteral("C:\\Users\\Test User\\AppData\\Local\\Programs\\Wabcut\\");
         bridge.setConfig(c);
         UpdateBridge::setLauncher([this](const QString& program, const QStringList& arguments) {
@@ -840,6 +841,7 @@ TEST_CASE("Updates: Help > Check for Updates and the dialog in the window", "[ap
     c.downloadFolder = folder.filePath(QStringLiteral("updates"));
     c.allowLoopbackHttp = true;
     c.installedByMsi = true;
+    c.nativeArm64 = false; // the x64 install flow, on an ARM64 test run too
     updates->setConfig(c);
 
     // Help > Check for Updates… opens the dialog and checks at once.
@@ -1309,6 +1311,7 @@ TEST_CASE("Updates: Quit and Install, then staying open at Save changes, calls t
     c.downloadFolder = folder.filePath(QStringLiteral("updates"));
     c.allowLoopbackHttp = true;
     c.installedByMsi = true;
+    c.nativeArm64 = false; // the x64 install flow, on an ARM64 test run too
     updates->setConfig(c);
     int closes = 0;
     QObject::connect(shell.window.get(), &QQuickWindow::closing, shell.window.get(), [&](QQuickCloseEvent*) { ++closes; });

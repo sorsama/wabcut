@@ -567,10 +567,11 @@ TEST_CASE("Productions: a search reads the projects on a worker, can be stopped 
     CHECK(production.searchResults().size() == 6);
     CHECK(changes >= 2);
 
-    // A newer search replaces one that is still running: the answer is the newest query's.
+    // A newer search replaces one that is still running: the answer is the newest query's. Phrases: file paths are
+    // searched too, and a bare "4" is found in a build folder such as build\win-msvc-arm64.
     REQUIRE(production.search(QStringLiteral("take")));
-    REQUIRE(production.search(QStringLiteral("take 3")));
-    REQUIRE(production.search(QStringLiteral("take 4")));
+    REQUIRE(production.search(QStringLiteral("\"take 3\"")));
+    REQUIRE(production.search(QStringLiteral("\"take 4\"")));
     REQUIRE(waitFor([&] { return !production.searching(); }, 20'000));
     spin(50);
     REQUIRE(production.searchResults().size() == 1);
