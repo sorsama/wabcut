@@ -978,8 +978,6 @@ ChartMeasurement measureChart(const ColorImage& image, const ChartCorners& corne
 
 namespace {
 
-constexpr std::array<const char*, 3> kChannel{"red", "green", "blue"};
-
 /// Evaluates the picture's patches through a grade.
 class Patches {
 public:

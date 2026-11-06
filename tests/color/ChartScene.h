@@ -87,7 +87,8 @@ inline ColorImage renderScene(const Scene& scene) {
     for (int y = 0; y < scene.height; ++y) {
         for (int x = 0; x < scene.width; ++x) {
             float* p = image.rgba.data() + (static_cast<std::size_t>(y) * scene.width + x) * 4;
-            const float wall = 0.30f + 0.12f * static_cast<float>(x) / scene.width + 0.05f * static_cast<float>(y) / scene.height;
+            const float wall = 0.30f + 0.12f * static_cast<float>(x) / static_cast<float>(scene.width) +
+                               0.05f * static_cast<float>(y) / static_cast<float>(scene.height);
             p[0] = wall;
             p[1] = wall * 0.97f;
             p[2] = wall * 0.92f;

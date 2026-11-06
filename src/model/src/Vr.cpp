@@ -165,7 +165,7 @@ std::array<double, 4> eyeRect(StereoLayout layout, int eye) {
 }
 
 Vec3 viewDirection(const Mat3& viewRotation, double nx, double ny) {
-    return normalized(apply(viewRotation, Vec3{nx, ny, 1.0}));
+    return normalized(vr::apply(viewRotation, Vec3{nx, ny, 1.0})); // qualified: std::apply is found by ADL on std::array
 }
 
 namespace {
@@ -203,7 +203,7 @@ EquirectUv reorientUv(const VrFormat& format, const Mat3& content, double u, dou
     const double lu = (u - rect[0]) / (rect[2] - rect[0]);
     const double lv = (v - rect[1]) / (rect[3] - rect[1]);
     const Vec3 out = directionAt(projection, lu, lv);
-    return inEyeRect(uvOf(projection, apply(transpose(content), out)), rect);
+    return inEyeRect(uvOf(projection, vr::apply(transpose(content), out)), rect);
 }
 
 } // namespace vr

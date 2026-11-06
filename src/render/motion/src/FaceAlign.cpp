@@ -159,7 +159,7 @@ Rect windowOf(const FaceFeatures& f, const FaceAlignOptions& o, int width, int h
 float windowWeight(const FaceFeatures& f, const FaceAlignOptions& o, int x, int y) {
     const double rx = std::max(1.0, 0.5 * f.w * o.windowScale);
     const double ry = std::max(1.0, 0.5 * f.h * o.windowScale);
-    const double rho = std::hypot((x - f.centreX()) / rx, (y - f.centreY()) / ry);
+    const double rho = std::hypot((static_cast<double>(x) - f.centreX()) / rx, (static_cast<double>(y) - f.centreY()) / ry);
     return 1.0f - smooth(1.0f, 1.0f + static_cast<float>(o.feather), static_cast<float>(rho));
 }
 
