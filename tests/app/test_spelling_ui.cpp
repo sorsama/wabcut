@@ -28,18 +28,6 @@ using namespace wabcut::test;
 
 namespace {
 
-QQuickItem* findNamed(QQuickItem* root, const QString& name) {
-    if (!root)
-        return nullptr;
-    if (root->objectName() == name)
-        return root;
-    for (QQuickItem* child : root->childItems()) {
-        if (QQuickItem* found = findNamed(child, name))
-            return found;
-    }
-    return nullptr;
-}
-
 /// The app's spelling over a word list (restored to the system checker when it goes).
 struct WordListSpelling {
     WordListSpelling() {

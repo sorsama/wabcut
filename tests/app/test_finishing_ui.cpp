@@ -310,7 +310,8 @@ TEST_CASE("Keyframe lane: drag moves the selected keys in one undo step, Alt dup
     const double tolerance = 0.01;
     const auto times = [&] {
         std::vector<Ticks> out;
-        for (const Keyframe& k : paramOf(controller, city, ParamId::Opacity).curve()->keys)
+        const ParamValue opacity = paramOf(controller, city, ParamId::Opacity); // the loop reads into it
+        for (const Keyframe& k : opacity.curve()->keys)
             out.push_back(k.time);
         return out;
     };
@@ -363,7 +364,8 @@ TEST_CASE("Keyframe lane: drag moves the selected keys in one undo step, Alt dup
 
     // Interpolation menu: every selected key, one undo step; the lane shape follows.
     fx.setKeyInterpolation(QStringLiteral("hold"));
-    for (const Keyframe& k : paramOf(controller, city, ParamId::Opacity).curve()->keys)
+    const ParamValue held = paramOf(controller, city, ParamId::Opacity); // the loop reads into it
+    for (const Keyframe& k : held.curve()->keys)
         CHECK(k.interpolation == Interpolation::Hold);
     CHECK(fx.selectedKeyInterpolation() == QStringLiteral("hold"));
     CHECK(keysOf(fx, opacity).value(0).toMap().value(QStringLiteral("shape")).toString() == QStringLiteral("hold"));
