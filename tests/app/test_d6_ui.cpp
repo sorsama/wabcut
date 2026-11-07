@@ -42,14 +42,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-QVariant evaluate(const Shell& shell, const QString& code) {
-    QQmlExpression expression(qmlContext(shell.window.get()), shell.window.get(), code);
-    const QVariant result = expression.evaluate();
-    INFO(code.toStdString() << ": " << expression.error().toString().toStdString());
-    REQUIRE_FALSE(expression.hasError());
-    return result;
-}
-
 void runCommand(const Shell& shell, const char* id) {
     REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "runCommand", Q_ARG(QVariant, QString::fromLatin1(id))));
 }

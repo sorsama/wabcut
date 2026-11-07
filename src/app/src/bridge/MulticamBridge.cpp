@@ -370,7 +370,7 @@ QString AutoSwitchBridge::preview(const QString& clipText, const QVariantMap& op
             QVariantMap result = variantOf(run.data).toMap();
             const Sequence* src = base->findSequence(c.sequence);
             // The angles with a face thumbnail of what each camera sees.
-            QVariantList angles;
+            QVariantList angleList;
             QStringList names;
             if (src && src->multicam) {
                 for (const MulticamAngle& a : src->multicam->angles) {
@@ -387,9 +387,9 @@ QString AutoSwitchBridge::preview(const QString& clipText, const QVariantMap& op
                         a.insert(QStringLiteral("frame"), frameUrl(pic->first, pic->second));
                     }
                 }
-                angles.append(a);
+                angleList.append(a);
             }
-            result.insert(QStringLiteral("angles"), angles);
+            result.insert(QStringLiteral("angles"), angleList);
             QVariantList cuts;
             for (const QVariant& v : result.value(QStringLiteral("cuts")).toList()) {
                 QVariantMap cut = v.toMap();

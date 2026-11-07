@@ -222,7 +222,7 @@ TEST_CASE("Recovery: every version is listed with its summary; a version opens a
     CHECK(versions[0].summary.duration > Ticks::fromSeconds(10));
     CHECK(versions[0].summary.loadable);
     for (std::size_t i = 2; i < versions.size(); ++i) {
-        CHECK(versions[i - 1].summary.modified >= versions[i].summary.modified); // newest first after Current
+        CHECK((versions[i - 1].summary.modified >= versions[i].summary.modified)); // newest first after Current (a bool: libc++'s file times do not print)
     }
 
     // Open the oldest backup as a copy: untitled, with unsaved changes; the project file is untouched.

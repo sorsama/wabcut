@@ -2124,7 +2124,8 @@ std::vector<Ticks> wordStarts(const CaptionTrack& track, const CaptionCue& cue,
         std::int64_t before = 0;
         for (const auto& [b, e] : spans) {
             starts.push_back(cue.start + Ticks{static_cast<std::int64_t>(static_cast<long double>(cue.duration.value) *
-                                                                         before / std::max<std::int64_t>(1, letters))});
+                                                                         static_cast<long double>(before) /
+                                                                         static_cast<long double>(std::max<std::int64_t>(1, letters)))});
             before += e - b;
         }
     }

@@ -1330,7 +1330,7 @@ TimelineView::RulerStep TimelineView::rulerStep() const {
         for (const auto& [seconds, subdivisions] : kRulerIntervals) {
             step.frames = std::int64_t{seconds} * perSecond;
             step.subdivisions = subdivisions;
-            step.px = std::int64_t{seconds} * m_pps;
+            step.px = static_cast<double>(seconds) * m_pps;
             if (step.px >= m_style.rulerLabelSpacing)
                 break;
         }
@@ -2768,7 +2768,7 @@ std::pair<int, int> buildTrack(BuildContext& ctx, TrackBucket& b, const Timeline
 
                     b.responsiveBands.emplace_back(it->id.value, QPair<qreal, qreal>(introW, outroW));
                     // The tags sit at the bottom of the bands (the clip's label is at the top).
-                    const auto tag = [&](std::uint64_t key, const QString& text, qreal x0, qreal width) {
+                    const auto tag = [&](std::uint64_t key, const QString& text, qreal tagX, qreal width) {
                         QFont font = st.labelFont;
                         font.setPixelSize(static_cast<int>(st.microSize));
                         font.setLetterSpacing(QFont::AbsoluteSpacing, st.microTracking);
@@ -2796,7 +2796,7 @@ std::pair<int, int> buildTrack(BuildContext& ctx, TrackBucket& b, const Timeline
                             t.text = text;
                         }
                         QMatrix4x4 m;
-                        m.translate(static_cast<float>(x0), static_cast<float>(body.bottom() - tagHeight - 1));
+                        m.translate(static_cast<float>(tagX), static_cast<float>(body.bottom() - tagHeight - 1));
                         t.node->setMatrix(m);
                         usedTags.push_back(key);
                     };

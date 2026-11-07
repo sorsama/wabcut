@@ -403,12 +403,12 @@ TEST_CASE("Prompts; notifications and palette commands go through the editor", "
     REQUIRE(pumpUntil(*rig.host, rig.delegate, [&] { return !rig.delegate.prompts.empty(); }));
     const PromptRequest p = rig.delegate.prompts.back();
     CHECK(p.form["title"] == "How many?");
-    CHECK_FALSE(rig.host->answerPrompt(p.prompt, Json{{"n", 42}})); // outside the field's bounds: not sent
+    CHECK_FALSE(rig.host->answerPrompt(p.prompt, std::optional<Json>(std::in_place, Json{{"n", 42}}))); // outside the field's bounds: not sent
     std::this_thread::sleep_for(std::chrono::milliseconds(2500)); // the user takes a while: no time limit meanwhile
-    CHECK(rig.host->answerPrompt(p.prompt, Json{{"n", 3}}));
+    CHECK(rig.host->answerPrompt(p.prompt, std::optional<Json>(std::in_place, Json{{"n", 3}})));
     REQUIRE(pumpUntil(*rig.host, rig.delegate, [&] { return asked.has_value(); }));
     CHECK(asked->result == Json{{"answer", {{"n", 3}}}});
-    CHECK_FALSE(rig.host->answerPrompt(p.prompt, Json{{"n", 3}})); // answered already
+    CHECK_FALSE(rig.host->answerPrompt(p.prompt, std::optional<Json>(std::in_place, Json{{"n", 3}}))); // answered already
 
     // Cancelled.
     asked.reset();

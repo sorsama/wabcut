@@ -28,18 +28,6 @@ using namespace wabcut::test;
 
 namespace {
 
-QQuickItem* findNamed(QQuickItem* root, const QString& name) {
-    if (!root)
-        return nullptr;
-    if (root->objectName() == name)
-        return root;
-    for (QQuickItem* child : root->childItems()) {
-        if (QQuickItem* found = findNamed(child, name))
-            return found;
-    }
-    return nullptr;
-}
-
 /// The app's spelling over a word list (restored to the system checker when it goes).
 struct WordListSpelling {
     WordListSpelling() {
@@ -109,9 +97,9 @@ TEST_CASE("Spelling: misspelled words, suggestions and the user's dictionary", "
     CHECK(quik.value(QStringLiteral("word")).toString() == QStringLiteral("quik"));
     CHECK(quik.value(QStringLiteral("start")).toInt() == text.indexOf(QStringLiteral("quik")));
     CHECK(quik.value(QStringLiteral("end")).toInt() == text.indexOf(QStringLiteral("quik")) + 4);
-    const QVariantMap at = spelling.issueAt(text, text.indexOf(QStringLiteral("quik")) + 2);
+    const QVariantMap at = spelling.issueAt(text, static_cast<int>(text.indexOf(QStringLiteral("quik"))) + 2);
     CHECK(at.value(QStringLiteral("suggestions")).toStringList().value(0) == QStringLiteral("quick"));
-    CHECK(spelling.issueAt(text, text.indexOf(QStringLiteral("fox"))).isEmpty());
+    CHECK(spelling.issueAt(text, static_cast<int>(text.indexOf(QStringLiteral("fox")))).isEmpty());
     CHECK(spelling.corrected(QStringLiteral("a quik b"), 2, 6, QStringLiteral("quick")) == QStringLiteral("a quick b"));
     CHECK(spelling.corrected(QStringLiteral("the the end"), 4, 7, QString()) == QStringLiteral("the end"));
     // Add to Dictionary and Ignore All.

@@ -97,7 +97,7 @@ std::shared_ptr<playback::TransportClock> makeTimelineAudioTransport(playback::T
 }
 
 PlaybackSession::PlaybackSession(const EditSession& session, PlaybackSessionOptions options)
-    : m_session(session), m_options(std::move(options)) {
+    : m_options(std::move(options)) {
     m_engine = std::make_unique<audio::AudioEngine>();
     m_feed = std::make_shared<playback::MediaAudioFeed>(session, m_options.maxAudioDecoders);
     playback::TimelineAudioOptions audioOptions = m_options.timelineAudio;

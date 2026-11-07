@@ -418,7 +418,7 @@ TEST_CASE("Morph Cut freezes each side at the transition's end it touches", "[pl
         CHECK(layers[1].sourceTime == framesToTicks(303, kRate60));
         REQUIRE(layers[0].transition);
         CHECK(layers[0].transition->kind == render::TransitionKind::FlowMorph);
-        CHECK(layers[0].transition->progress == Approx((frame - 57) / 6.0));
+        CHECK(layers[0].transition->progress == Approx(static_cast<double>(frame - 57) / 6.0));
     }
     // The motion it needs: the frozen pictures placed on the canvas; the background analysis asks for the same.
     evaluateVideoLayers(s, *seq, framesToTicks(59, kRate60), layers);

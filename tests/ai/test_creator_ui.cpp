@@ -342,11 +342,11 @@ TEST_CASE("Preview frames show the media's redactions", "[ai][ui][creator][secur
     auto* provider = dynamic_cast<QQuickImageProvider*>(shell.engine.imageProvider(QStringLiteral("wabcut-frames")));
     REQUIRE(provider != nullptr);
     QSize size;
-    const auto at = [&](double seconds) {
+    const auto at = [&](std::int64_t seconds) {
         return provider->requestImage(mediaKey(tl.media('A')) + QStringLiteral("/") + QString::number(Ticks::fromSeconds(seconds).value),
                                       &size, QSize());
     };
-    const QImage inside = at(1.0);
+    const QImage inside = at(1);
     REQUIRE_FALSE(inside.isNull());
     const QColor centre = inside.pixelColor(160, 90);
     INFO(centre.name().toStdString());
@@ -354,6 +354,6 @@ TEST_CASE("Preview frames show the media's redactions", "[ai][ui][creator][secur
     CHECK(centre.green() < 60);
     CHECK(centre.blue() > 200);
     CHECK(inside.pixelColor(8, 8) == QColor(Qt::white));
-    CHECK(at(6.0).pixelColor(160, 90) == QColor(Qt::white)); // after the redacted range
+    CHECK(at(6).pixelColor(160, 90) == QColor(Qt::white)); // after the redacted range
     setPreviewFramesForTests({});
 }

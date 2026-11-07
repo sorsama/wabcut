@@ -119,7 +119,7 @@ struct LogoProject {
     ProjectState current;
     std::vector<playback::LayerSpec> layers() const {
         std::vector<playback::LayerSpec> specs;
-        playback::evaluateVideoLayers(current, *current.findSequence(sequence), Ticks::fromSeconds(0.5), specs, false);
+        playback::evaluateVideoLayers(current, *current.findSequence(sequence), Ticks{kTicksPerSecond / 2}, specs, false);
         return specs;
     }
 };
@@ -147,6 +147,8 @@ TEST_CASE("An SVG imports as a still of its nominal size, in one Import step (ca
     CHECK(item->info.video.front().width == 32);
     CHECK(item->info.video.front().height == 16);
     CHECK(item->info.video.front().codec == "svg");
+    CHECK(item->info.video.front().duration == framesToTicks(1, Rate{25, 1})); // one frame, as a PNG (was 0)
+    CHECK(item->info.duration == item->info.video.front().duration);
     CHECK(item->info.audio.empty());
     CHECK(item->locator.path == pathToUtf8(fs::absolute(file).lexically_normal()));
     CHECK(item->locator.fingerprint.isKnown());

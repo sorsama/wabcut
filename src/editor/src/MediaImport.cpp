@@ -340,7 +340,7 @@ std::expected<MediaInfo, Error> probeVectorFile(const std::filesystem::path& abs
     video.pixelFormat = "rgba";
     video.bitDepth = 8;
     video.alpha = AlphaMode::Straight;
-    video.duration = Ticks::fromSeconds(1.0 / 25.0);
+    video.duration = framesToTicks(1, video.frameRate); // one frame (fromSeconds takes whole seconds: 1.0 / 25.0 gave 0)
     video.frameCount = 1;
     info.video.push_back(std::move(video));
     info.duration = info.video.front().duration;
@@ -436,9 +436,9 @@ MediaImportResult importMediaFiles(EditSession& session, std::span<const std::fi
     std::vector<std::size_t> chapterCounts(files.size(), 0); // P0 round: markers made from each file's chapters
     const int threads = std::clamp(options.threads > 0 ? options.threads : 4, 1,
                                    std::max(1, static_cast<int>(files.size())));
-    std::atomic<std::size_t> next{0};
+    std::atomic<std::size_t> nextFile{0};
     auto work = [&] {
-        for (std::size_t i = next.fetch_add(1); i < files.size(); i = next.fetch_add(1)) {
+        for (std::size_t i = nextFile.fetch_add(1); i < files.size(); i = nextFile.fetch_add(1)) {
             probed[i] = describeMediaFile(files[i], options.projectFile);
             if (*probed[i] && i < options.rights.size() && options.rights[i]) {
                 (*probed[i])->rights = *options.rights[i]; // 0.7: stock media records its licence and credit

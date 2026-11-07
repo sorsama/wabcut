@@ -88,8 +88,35 @@ endfunction()
 # C4702 ("unreachable code") is emitted by the MSVC optimizer for Qt headers inlined into qmlcachegen output and
 # other Qt-generated sources. It ignores /external:W0, so it cannot be scoped to third-party headers; instead
 # only the targets that compile such code switch it off. The pure-C++ core keeps the full /W4 /WX.
+# GCC / clang: qmlcachegen's C++ (the .rcc/qmlcache/*.cpp sources of a QML module) converts between qsizetype, int and
+# double as the QML it compiles does, which -Wconversion turns into errors. Only those generated sources lose the
+# conversion warnings; the target's own code keeps them. Deferred to the end of the directory that called
+# wabcut_allow_qt_generated_code(), after Qt has added every generated source to the target.
+function(_wabcut_relax_qmlcache_sources target)
+    get_target_property(sources ${target} SOURCES)
+    set(generated "")
+    foreach(source IN LISTS sources)
+        if(source MATCHES "[/\\\\]\\.rcc[/\\\\]qmlcache[/\\\\]")
+            list(APPEND generated "${source}")
+        endif()
+    endforeach()
+    if(generated)
+        set(relaxed -Wno-conversion -Wno-float-conversion)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            list(APPEND relaxed -Wno-shorten-64-to-32 -Wno-implicit-int-float-conversion -Wno-implicit-float-conversion
+                                -Wno-implicit-int-conversion)
+        endif()
+        set_source_files_properties(${generated} TARGET_DIRECTORY ${target} PROPERTIES COMPILE_OPTIONS "${relaxed}")
+    endif()
+endfunction()
+
 function(wabcut_allow_qt_generated_code)
     if(NOT MSVC)
+        foreach(target IN LISTS ARGN)
+            if(TARGET ${target})
+                cmake_language(EVAL CODE "cmake_language(DEFER CALL _wabcut_relax_qmlcache_sources [[${target}]])")
+            endif()
+        endforeach()
         return()
     endif()
     foreach(target IN LISTS ARGN)

@@ -82,7 +82,7 @@ void quantize(const QImage& rgba, AVFrame* frame) {
             for (int k = 0; k < 3; ++k) {
                 c[static_cast<std::size_t>(k)] = std::clamp(line[x * 4 + k] + current[static_cast<std::size_t>(x) + 1][static_cast<std::size_t>(k)], 0.0f, 255.0f);
                 const int n = levels[static_cast<std::size_t>(k)];
-                q[static_cast<std::size_t>(k)] = static_cast<int>(std::lround(c[static_cast<std::size_t>(k)] * (n - 1) / 255.0f));
+                q[static_cast<std::size_t>(k)] = static_cast<int>(std::lround(c[static_cast<std::size_t>(k)] * static_cast<float>(n - 1) / 255.0f));
             }
             frame->data[0][static_cast<std::ptrdiff_t>(y) * frame->linesize[0] + x] =
                 static_cast<std::uint8_t>((q[0] * kGifGreens + q[1]) * kGifBlues + q[2]);

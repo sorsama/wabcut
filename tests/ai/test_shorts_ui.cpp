@@ -296,7 +296,7 @@ TEST_CASE("The Reframe dialog previews the frame path and creates the 9:16 seque
     CHECK(preview.value(QStringLiteral("width")).toInt() == 1080);
     const QVariantMap clip = preview.value(QStringLiteral("clips")).toList().front().toMap();
     CHECK(clip.value(QStringLiteral("guide")).toString() == QStringLiteral("faces"));
-    const int samples = clip.value(QStringLiteral("path")).toList().size();
+    const int samples = static_cast<int>(clip.value(QStringLiteral("path")).toList().size());
     REQUIRE(samples >= 10);
     dialog->setProperty("sample", samples / 5);
     spin(1500); // frames decode asynchronously; the dialog's popup transition

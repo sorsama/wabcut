@@ -559,7 +559,7 @@ TEST_CASE("Dynamics Processing renders alike in preview and export on a clip, a 
                     ++shown;
                 }
             }
-            where += "; first differing frame " + std::to_string(bad / 2) + " (" + std::to_string((bad / 2) / 48.0) + " ms) channel " +
+            where += "; first differing frame " + std::to_string(bad / 2) + " (" + std::to_string(static_cast<double>(bad / 2) / 48.0) + " ms) channel " +
                     std::to_string(bad % 2) + ": preview " + std::to_string(rig.stream[static_cast<std::size_t>(bad)]) + " export " +
                     std::to_string(offline[static_cast<std::size_t>(bad)]) + "; " + std::to_string(count) +
                     " samples differ, the worst by " + std::to_string(worst) + "; stream " + std::to_string(rig.stream.size() / 2) +

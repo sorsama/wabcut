@@ -436,9 +436,9 @@ QVariantList AudioMixerBridge::automationModes() const {
 
 std::optional<Json> AudioMixerBridge::targetParam(const QString& key) const {
     if (key == QLatin1String("master"))
-        return Json("master");
+        return std::optional<Json>(std::in_place, "master");
     if (const auto id = parseTrackKey(key))
-        return Json(id->value);
+        return std::optional<Json>(std::in_place, id->value);
     return std::nullopt;
 }
 
@@ -674,7 +674,7 @@ void AudioMixerBridge::onPlayingChanged(bool playing) {
             for (const auto& [target, mode] : m_modes) {
                 if (mode != AutomationMode::Write)
                     continue;
-                for (const QString param : {QStringLiteral("volume"), QStringLiteral("pan")}) {
+                for (const QString& param : {QStringLiteral("volume"), QStringLiteral("pan")}) {
                     if (const auto v = modelValue(target, param))
                         m_live[{target, param}] = *v;
                 }
@@ -699,7 +699,7 @@ void AudioMixerBridge::pollAutomation() {
     for (const auto& [target, mode] : m_modes) {
         if (mode == AutomationMode::Read)
             continue;
-        for (const QString param : {QStringLiteral("volume"), QStringLiteral("pan")}) {
+        for (const QString& param : {QStringLiteral("volume"), QStringLiteral("pan")}) {
             if (!modelParam(target, param))
                 continue;
             Pass::Lane& lane = m_pass->lanes[{target, param}];

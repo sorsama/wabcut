@@ -41,7 +41,8 @@ TEST_CASE("clip.setMotion sets Position Scale Rotation and Anchor Point as one u
                                                {"anchorY", -5.0}});
     CHECK(h.session.undoCount() == undoBefore + 1);
     CHECK(h.session.undoLabel() == "Motion");
-    const Clip& c = clipIn(h.state(), h.tl.seq, clip);
+    const ProjectSnapshot state = h.state(); // kept: the clip reference points into it
+    const Clip& c = clipIn(state, h.tl.seq, clip);
     CHECK(c.properties()[ParamId::PositionX] == ParamValue(320.0));
     CHECK(c.properties()[ParamId::PositionY] == ParamValue(-180.0));
     CHECK(c.properties()[ParamId::Scale] == ParamValue(0.5));
@@ -52,7 +53,8 @@ TEST_CASE("clip.setMotion sets Position Scale Rotation and Anchor Point as one u
     CHECK(r.data.at("clip") == clip.value);
     // Undo restores all six at once.
     REQUIRE(h.session.undo());
-    const Clip& u = clipIn(h.state(), h.tl.seq, clip);
+    const ProjectSnapshot undone = h.state();
+    const Clip& u = clipIn(undone, h.tl.seq, clip);
     CHECK(u.properties().isDefault(ParamId::PositionX));
     CHECK(u.properties().isDefault(ParamId::Scale));
     CHECK(u.properties().isDefault(ParamId::AnchorY));
@@ -67,7 +69,8 @@ TEST_CASE("clip.setMotion keys an animated parameter at the time and needs the t
     // Outside the clip.
     CHECK(h.errorOf("clip.setMotion", Json{{"clip", clip.value}, {"scale", 2.0}, {"time", tc(10)}}) == "InvalidParams");
     h.ok("clip.setMotion", Json{{"clip", clip.value}, {"scale", 2.0}, {"positionX", 50.0}, {"time", tc(5)}});
-    const Clip& c = clipIn(h.state(), h.tl.seq, clip);
+    const ProjectSnapshot state = h.state();
+    const Clip& c = clipIn(state, h.tl.seq, clip);
     const Curve* scale = c.properties()[ParamId::Scale].curve();
     REQUIRE(scale);
     REQUIRE(scale->keys.size() == 2);
@@ -118,7 +121,8 @@ TEST_CASE("clip.setMotion stretches one axis: scaleWidth and uniformScale, one u
     CHECK(r.data.at("scale") == 0.5);
     CHECK(r.data.at("scaleWidth") == 2.0);
     CHECK(r.data.at("uniformScale") == false);
-    const Clip& c = clipIn(h.state(), h.tl.seq, clip);
+    const ProjectSnapshot state = h.state();
+    const Clip& c = clipIn(state, h.tl.seq, clip);
     CHECK_FALSE(c.properties().uniformScale());
     CHECK(c.properties().scaleAt() == std::pair<double, double>{2.0, 0.5});
 

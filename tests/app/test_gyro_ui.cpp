@@ -110,7 +110,7 @@ struct Fixture {
         REQUIRE(controller.session().apply("Set Effect", [&](const ProjectState& s) { return edit::setEffect(s, seq, target, effect, change); }).has_value());
     }
     QVariantMap row(const char* key) { return fx().row(section + QLatin1Char(':') + QLatin1String(key)); }
-    int optionCount() { return row("method").value("options").toList().size(); }
+    int optionCount() { return static_cast<int>(row("method").value("options").toList().size()); }
     QString note() { return fx().row(section + QStringLiteral(":gyroNote")).value("text").toString(); }
 };
 

@@ -649,7 +649,7 @@ TEST_CASE("Effect library: 1080p cost of a few heavy effects (0.2)", "[render][g
             REQUIRE(renderer->render(compositeOf({1920, 1080}, {layer})));
             best = std::min(best, timer.nsecsElapsed());
         }
-        WARN(name << " at 1080p: " << best / 1.0e6 << " ms per frame incl. readback");
+        WARN(name << " at 1080p: " << static_cast<double>(best) / 1.0e6 << " ms per frame incl. readback");
         CHECK(best < 1'000'000'000); // a second would be a hang, not a cost
     }
 }
@@ -676,14 +676,14 @@ TEST_CASE("Effect library: Skin Smoothing at 1080p stays real time (0.7)", "[ren
         REQUIRE(renderer->render(compositeOf({1920, 1080}, {plain})));
         base = std::min(base, timer.nsecsElapsed());
     }
-    WARN("Skin Smoothing at 1080p (size 8): " << best / 1.0e6 << " ms per frame incl. readback; the same frame without the effect "
-                                               << base / 1.0e6 << " ms");
+    WARN("Skin Smoothing at 1080p (size 8): " << static_cast<double>(best) / 1.0e6 << " ms per frame incl. readback; the same frame without the effect "
+                                               << static_cast<double>(base) / 1.0e6 << " ms");
     {   // The figures also go to a file (a passing test prints no warnings): test-output/render/library/perf_skin_smoothing.txt.
         QDir().mkpath(outputDir() + QStringLiteral("/library"));
         QFile out(outputDir() + QStringLiteral("/library/perf_skin_smoothing.txt"));
         if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            out.write(QByteArray("Skin Smoothing at 1080p (amount 100, size 8, a third of the frame is skin): ") + QByteArray::number(best / 1.0e6, 'f', 2) +
-                      " ms per frame including readback; the same frame without the effect " + QByteArray::number(base / 1.0e6, 'f', 2) + " ms\n");
+            out.write(QByteArray("Skin Smoothing at 1080p (amount 100, size 8, a third of the frame is skin): ") + QByteArray::number(static_cast<double>(best) / 1.0e6, 'f', 2) +
+                      " ms per frame including readback; the same frame without the effect " + QByteArray::number(static_cast<double>(base) / 1.0e6, 'f', 2) + " ms\n");
         }
     }
     CHECK(best < 1'000'000'000);           // a second would be a hang, not a cost
@@ -831,12 +831,12 @@ TEST_CASE("Effect library: AI Face Retouch on a real photo with the real face ma
         REQUIRE(renderer->render(compositeOf({w, h}, {layer})));
         best = std::min(best, timer.nsecsElapsed());
     }
-    WARN("AI Face Retouch at " << w << " x " << h << ": " << best / 1.0e6 << " ms per frame incl. readback");
+    WARN("AI Face Retouch at " << w << " x " << h << ": " << static_cast<double>(best) / 1.0e6 << " ms per frame incl. readback");
     {
         QFile out(dir + QStringLiteral("/perf_face_retouch.txt"));
         if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             out.write(QByteArray("AI Face Retouch at ") + QByteArray::number(w) + " x " + QByteArray::number(h) + " (everything at 100, the real face map): " +
-                      QByteArray::number(best / 1.0e6, 'f', 2) + " ms per frame including readback\n");
+                      QByteArray::number(static_cast<double>(best) / 1.0e6, 'f', 2) + " ms per frame including readback\n");
         }
     }
     CHECK(best < 1'000'000'000);
@@ -1005,7 +1005,7 @@ TEST_CASE("Effect library: AI Eye Contact on a real photo with the real landmark
         REQUIRE_FALSE(renderOf(rgba, {lower, fix}).rgba.empty());
         best = std::min(best, timer.nsecsElapsed());
     }
-    WARN("AI Eye Contact (two effects of two eyes each) at " << w << " x " << h << ": " << best / 1.0e6 << " ms per frame incl. the upload and readback");
+    WARN("AI Eye Contact (two effects of two eyes each) at " << w << " x " << h << ": " << static_cast<double>(best) / 1.0e6 << " ms per frame incl. the upload and readback");
     CHECK(best < 1'000'000'000);
 }
 
@@ -1291,7 +1291,7 @@ TEST_CASE("Effect library: the 0.6 effects read 8-bit and 10-bit sources alike",
                 squared += d * d;
                 ++count;
             }
-            const double mse = squared / std::max<std::size_t>(count, 1);
+            const double mse = squared / static_cast<double>(std::max<std::size_t>(count, 1));
             const double psnr = mse <= 0.0 ? 99.0 : 10.0 * std::log10(255.0 * 255.0 / mse);
             WARN(name << ": 8-bit against 10-bit source PSNR " << psnr << " dB");
             CHECK(psnr >= 35.0);
@@ -1324,8 +1324,8 @@ TEST_CASE("Effect library: 1080p frame time of Fractal Noise Cell Pattern Glow a
             REQUIRE(renderer->render(compositeOf({1920, 1080}, {layer})));
             best = std::min(best, timer.nsecsElapsed());
         }
-        WARN(name << " at 1080p: " << best / 1.0e6 << " ms per frame incl. readback");
-        report += QStringLiteral("%1: %2 ms\n").arg(QString::fromStdString(name)).arg(best / 1.0e6, 0, 'f', 1);
+        WARN(name << " at 1080p: " << static_cast<double>(best) / 1.0e6 << " ms per frame incl. readback");
+        report += QStringLiteral("%1: %2 ms\n").arg(QString::fromStdString(name)).arg(static_cast<double>(best) / 1.0e6, 0, 'f', 1);
         CHECK(best < 250'000'000);
     }
     QFile file(outputDir() + QStringLiteral("/library/perf-06.txt"));

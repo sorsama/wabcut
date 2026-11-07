@@ -12,12 +12,6 @@ namespace {
 
 Json at(const char* track, int frame) { return Json{{"track", track}, {"time", tc(frame)}}; }
 
-const Clip& clipOf(const CommandHarness& h, std::string_view ref) {
-    static ProjectSnapshot keep;
-    keep = h.state();
-    return h.sequence(keep).findClip(clipAt(*keep, h.tl.seq, ref))->clip();
-}
-
 } // namespace
 
 TEST_CASE("sequence.setBeatGrid: a tempo, tapped beats, or clear", "[command][rhythm]") {

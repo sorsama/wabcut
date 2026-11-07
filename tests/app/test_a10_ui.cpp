@@ -520,7 +520,7 @@ TEST_CASE("Graph Editor in the shell: the panel shows the curves; pointer gestur
     }
     controller->setPlayhead(c.start() + frame * 120);
     for (int i : {1, 2})
-        fx.pressKey(scale, fx.row(scale).value("keys").toList()[i].toMap().value("x").toDouble(), 0.005, i == 1 ? 0 : Qt::ShiftModifier);
+        fx.pressKey(scale, fx.row(scale).value("keys").toList()[i].toMap().value("x").toDouble(), 0.005, i == 1 ? 0 : static_cast<int>(Qt::ShiftModifier));
     fx.setKeyInterpolation(QStringLiteral("bezier"));
 
     // Window > Graph Editor opens it as a tab of a group.

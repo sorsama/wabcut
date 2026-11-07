@@ -320,7 +320,7 @@ void ScopeView::paint(QPainter* p) {
         for (const double nits : {0.0, 1.0, 10.0, 100.0, 203.0, 400.0, 1000.0, 4000.0, 10000.0}) {
             const double y = r.bottom() - (r.height() - 1) * color::nitsToPq(nits);
             QColor line = m_grid;
-            line.setAlphaF(line.alphaF() * (nits == 100.0 || nits == 1000.0 || nits == 203.0 ? 1.0 : 0.45));
+            line.setAlphaF(static_cast<float>(line.alphaF() * (nits == 100.0 || nits == 1000.0 || nits == 203.0 ? 1.0 : 0.45)));
             p->setPen(line);
             p->drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
             p->setPen(m_label);
@@ -334,7 +334,7 @@ void ScopeView::paint(QPainter* p) {
         for (int pct = 0; pct <= 100; pct += 10) {
             const double y = r.bottom() - (r.height() - 1) * pct / 100.0;
             QColor line = m_grid;
-            line.setAlphaF(line.alphaF() * (pct % 50 == 0 ? 1.0 : 0.45));
+            line.setAlphaF(static_cast<float>(line.alphaF() * (pct % 50 == 0 ? 1.0 : 0.45)));
             p->setPen(line);
             p->drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
             if (pct % 20 == 0 || pct == 100) {
@@ -355,7 +355,7 @@ void ScopeView::paint(QPainter* p) {
         }
         const double y = r.bottom() - (r.height() - 1) * ire / 100.0;
         QColor line = m_grid;
-        line.setAlphaF(line.alphaF() * (ire % 50 == 0 ? 1.0 : 0.45));
+        line.setAlphaF(static_cast<float>(line.alphaF() * (ire % 50 == 0 ? 1.0 : 0.45)));
         p->setPen(line);
         p->drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
         if (ire % 20 == 0 || ire == 100) {

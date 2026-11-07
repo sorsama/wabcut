@@ -67,7 +67,7 @@ struct ExportProgress {
     std::string audioEncoder;
     /// 0.7: the first pass of an HDR10+ export is running (the frames are measured at half size before they are encoded).
     bool analyzing = false;
-    double fraction() const { return framesTotal > 0 ? static_cast<double>(framesDone) / framesTotal : 0.0; }
+    double fraction() const { return framesTotal > 0 ? static_cast<double>(framesDone) / static_cast<double>(framesTotal) : 0.0; }
 };
 
 struct ExportRequest {

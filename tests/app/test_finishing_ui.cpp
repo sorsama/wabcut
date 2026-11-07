@@ -156,7 +156,7 @@ TEST_CASE("Effect Controls: pinned sections, then the effect stack; add, reorder
     CHECK(stackOf(controller, city)[0].effect == "wabcut.color.basic");
     keys = rowKeys(fx);
     CHECK(keys.indexOf(QStringLiteral("h:") + basic) < keys.indexOf(QStringLiteral("h:") + blur));
-    CHECK(fx.stackIndexForRow(keys.indexOf(blur + QStringLiteral(":radius")), QStringLiteral("video")) == 1);
+    CHECK(fx.stackIndexForRow(static_cast<int>(keys.indexOf(blur + QStringLiteral(":radius"))), QStringLiteral("video")) == 1);
     CHECK(fx.stackIndexForRow(0, QStringLiteral("video")) == 0);
     CHECK(controller.undoText() == QStringLiteral("Undo Move Effect"));
 
@@ -310,7 +310,8 @@ TEST_CASE("Keyframe lane: drag moves the selected keys in one undo step, Alt dup
     const double tolerance = 0.01;
     const auto times = [&] {
         std::vector<Ticks> out;
-        for (const Keyframe& k : paramOf(controller, city, ParamId::Opacity).curve()->keys)
+        const ParamValue opacityValue = paramOf(controller, city, ParamId::Opacity); // the loop reads into it
+        for (const Keyframe& k : opacityValue.curve()->keys)
             out.push_back(k.time);
         return out;
     };
@@ -363,7 +364,8 @@ TEST_CASE("Keyframe lane: drag moves the selected keys in one undo step, Alt dup
 
     // Interpolation menu: every selected key, one undo step; the lane shape follows.
     fx.setKeyInterpolation(QStringLiteral("hold"));
-    for (const Keyframe& k : paramOf(controller, city, ParamId::Opacity).curve()->keys)
+    const ParamValue held = paramOf(controller, city, ParamId::Opacity); // the loop reads into it
+    for (const Keyframe& k : held.curve()->keys)
         CHECK(k.interpolation == Interpolation::Hold);
     CHECK(fx.selectedKeyInterpolation() == QStringLiteral("hold"));
     CHECK(keysOf(fx, opacity).value(0).toMap().value(QStringLiteral("shape")).toString() == QStringLiteral("hold"));
@@ -532,7 +534,7 @@ TEST_CASE("Effect Controls in the shell: stopwatch click, lane drag with the mou
     opacityRow = rowItem(shell, QStringLiteral("p:opacity"));
     const double rowY = opacityRow->mapToItem(lane, QPointF(0, opacityRow->height() / 2)).y();
     const QPointF from = lane->mapToScene(QPointF(keyX(fx, QStringLiteral("p:opacity"), 0) * lane->width(), rowY));
-    const QPointF to = from + QPointF(lane->width() * 24.0 / (static_cast<double>(clip.duration().value) / frame.value), 0);
+    const QPointF to = from + QPointF(lane->width() * 24.0 / (static_cast<double>(clip.duration().value) / static_cast<double>(frame.value)), 0);
     const Ticks before = paramOf(*controller, city, ParamId::Opacity).curve()->keys[0].time;
     sendMouse(shell, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
     CHECK(lane->property("pressed").toBool());
@@ -776,8 +778,8 @@ TEST_CASE("Effect Controls in the shell: Ctrl+wheel zooms the keyframe lane at t
     // real mouse press starts afresh).
     QPointingDevice mouse(QStringLiteral("test mouse"), 0x7e57, QInputDevice::DeviceType::Mouse, QPointingDevice::PointerType::Generic,
                           QInputDevice::Capability::Position, 1, 3);
-    const auto sendOn = [&](QEvent::Type type, QPointF at, Qt::MouseButton button, Qt::MouseButtons buttons) {
-        QMouseEvent event(type, at, at, at, button, buttons, Qt::NoModifier, &mouse);
+    const auto sendOn = [&](QEvent::Type type, QPointF pos, Qt::MouseButton button, Qt::MouseButtons buttons) {
+        QMouseEvent event(type, pos, pos, pos, button, buttons, Qt::NoModifier, &mouse);
         QCoreApplication::sendEvent(shell.window.get(), &event);
     };
     sendOn(QEvent::MouseButtonPress, onThumb, Qt::LeftButton, Qt::LeftButton);

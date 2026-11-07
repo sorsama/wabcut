@@ -193,7 +193,7 @@ TEST_CASE("Library: column layouts are saved, applied and deleted by name (144)"
     CHECK(r.library.deleteColumnPreset(QStringLiteral("delivery")));
     CHECK_FALSE(r.library.deleteColumnPreset(QStringLiteral("delivery")));
     CHECK(r.library.columnPresets() == QStringList{QStringLiteral("Logging")});
-    for (int i = r.library.columnPresets().size(); i < LibraryBridge::kMaxColumnPresets; ++i)
+    for (int i = static_cast<int>(r.library.columnPresets().size()); i < LibraryBridge::kMaxColumnPresets; ++i)
         REQUIRE(r.library.saveColumnPreset(QStringLiteral("Layout %1").arg(i)));
     CHECK_FALSE(r.library.saveColumnPreset(QStringLiteral("One too many")));
     CHECK(r.library.columnPresets().size() == LibraryBridge::kMaxColumnPresets);

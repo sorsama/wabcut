@@ -19,6 +19,8 @@
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include <csignal>
 #endif
 
 using namespace wabcut;

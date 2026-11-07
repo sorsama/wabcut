@@ -970,7 +970,7 @@ TEST_CASE("Effect Controls value graph in the shell: Bezier handles; screenshot"
     const QVariantList keys = fx.row(scale).value("keys").toList();
     REQUIRE(keys.size() == 4);
     for (int i : {1, 2})
-        fx.pressKey(scale, keys[i].toMap().value("x").toDouble(), 0.005, i == 1 ? 0 : Qt::ShiftModifier);
+        fx.pressKey(scale, keys[i].toMap().value("x").toDouble(), 0.005, i == 1 ? 0 : static_cast<int>(Qt::ShiftModifier));
     fx.setKeyInterpolation(QStringLiteral("bezier"));
     fx.setGraphOpen(scale, true);
     spin(300);

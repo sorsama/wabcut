@@ -901,7 +901,7 @@ TEST_CASE("Document: autosave rotates recovery copies, recovery reopens them", "
     }
     CHECK(autosaves == 3);
     for (std::size_t i = 1; i < recovery.size(); ++i) {
-        CHECK(recovery[i - 1].modified >= recovery[i].modified);
+        CHECK((recovery[i - 1].modified >= recovery[i].modified)); // a bool: libc++'s file times (__int128) do not print
     }
 
     // The newest autosave holds four drops; the second newest three.

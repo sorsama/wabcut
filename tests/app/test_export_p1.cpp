@@ -47,6 +47,7 @@
 #include <QTemporaryDir>
 #include <QUrl>
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -83,6 +84,8 @@ bool samePath(const QString& a, const QString& b) {
                                QDir::cleanPath(QDir::fromNativeSeparators(b)), Qt::CaseInsensitive) == 0;
 }
 
+Ticks secondsToTicks(double s) { return Ticks{static_cast<std::int64_t>(std::llround(s * static_cast<double>(kTicksPerSecond)))}; }
+
 /// A project of one empty `width` x `height` sequence of `seconds` at 30 fps (exports render silence and the synthetic
 /// picture), with In/Out marks when given.
 ProjectState emptyProject(double seconds, int width = 640, int height = 360,
@@ -94,10 +97,10 @@ ProjectState emptyProject(double seconds, int width = 640, int height = 360,
     seq.width = width;
     seq.height = height;
     seq.frameRate = kRate30;
-    seq.duration = Ticks::fromSeconds(seconds);
+    seq.duration = secondsToTicks(seconds);
     if (marks) {
-        seq.markIn = Ticks::fromSeconds(marks->first);
-        seq.markOut = Ticks::fromSeconds(marks->second);
+        seq.markIn = secondsToTicks(marks->first);
+        seq.markOut = secondsToTicks(marks->second);
     }
     state.sequences.push_back(std::make_shared<const Sequence>(std::move(seq)));
     return state;
@@ -116,10 +119,10 @@ struct Rig {
         s.frameRate = rate;
         s.width = width;
         s.height = height;
-        s.duration = Ticks::fromSeconds(seconds);
+        s.duration = secondsToTicks(seconds);
         if (marks) {
-            s.markIn = Ticks::fromSeconds(marks->first);
-            s.markOut = Ticks::fromSeconds(marks->second);
+            s.markIn = secondsToTicks(marks->first);
+            s.markOut = secondsToTicks(marks->second);
         }
         controller.resetProject(tl.state.withSequence(std::make_shared<const Sequence>(std::move(s))), tl.seq);
         gaming.setController(&controller);

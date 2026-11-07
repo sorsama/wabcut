@@ -333,7 +333,7 @@ TEST_CASE("Single instance: hand-overs within the batch window are one list with
     running.setBatchWindow(700);
     QList<QList<QUrl>> received;
     QObject::connect(&running, &SingleInstance::filesRequested, [&](const QList<QUrl>& files) { received.append(files); });
-    const auto fileUrl = [](const char* name) { return QUrl::fromLocalFile(QDir::temp().filePath(QString::fromLatin1(name))); };
+    const auto fileUrl = [](const char* file) { return QUrl::fromLocalFile(QDir::temp().filePath(QString::fromLatin1(file))); };
     const auto handOverOnThread = [&](const QList<QUrl>& files) {
         std::atomic<int> handed{-1};
         std::unique_ptr<QThread> launch(QThread::create([&] {

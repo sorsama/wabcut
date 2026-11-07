@@ -34,7 +34,10 @@ int channel(double v) { return std::clamp(static_cast<int>(std::lround(v * 255.0
 QString fromStd(const std::string& s) { return QString::fromStdString(s); }
 
 /// For QML: a colour value (QML reads an 8-digit hex string as #AARRGGBB, the kit's hex is #RRGGBBAA).
-QColor qcolor(const std::array<double, 4>& rgba) { return QColor::fromRgbF(rgba[0], rgba[1], rgba[2], rgba[3]); }
+QColor qcolor(const std::array<double, 4>& rgba) {
+    return QColor::fromRgbF(static_cast<float>(rgba[0]), static_cast<float>(rgba[1]), static_cast<float>(rgba[2]),
+                            static_cast<float>(rgba[3]));
+}
 
 /// Whether the media item can be a logo: it has a picture (a still or a video) and is a file, not a generator.
 bool pictureMedia(const MediaItem& item) { return !item.isGenerator() && !item.info.video.empty(); }

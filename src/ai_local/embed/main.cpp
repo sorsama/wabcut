@@ -102,7 +102,8 @@ public:
     std::vector<std::string> providers() const { return Ort::GetAvailableProviders(); }
 
     /// Loads `file` on the GPU provider when `device` allows and it works, else on the CPU.
-    Model load(const std::filesystem::path& file, const std::string& device, int threads, const char* preferredOutput) {
+    Model load(const std::filesystem::path& file, [[maybe_unused]] const std::string& device, int threads,
+               const char* preferredOutput) { // device: DirectML, Windows only
         if (!std::filesystem::is_regular_file(file)) {
             throw std::invalid_argument("model file missing: " + pathText(file));
         }
@@ -123,7 +124,7 @@ public:
     }
 
     /// Loads a detector like load().
-    Net loadNet(const std::filesystem::path& file, const std::string& device, int threads) {
+    Net loadNet(const std::filesystem::path& file, [[maybe_unused]] const std::string& device, int threads) {
         if (!std::filesystem::is_regular_file(file)) {
             throw std::invalid_argument("model file missing: " + pathText(file));
         }

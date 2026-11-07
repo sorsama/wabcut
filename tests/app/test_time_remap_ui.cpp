@@ -149,7 +149,7 @@ TEST_CASE("Time remap: presets and source and speed graph screenshots", "[app][r
         REQUIRE(controller);
         REQUIRE(bridge->available());
         const auto before = controller->session().undoCount();
-        for (const QString preset : {QStringLiteral("in"), QStringLiteral("out"), QStringLiteral("inOut")}) {
+        for (const QString& preset : {QStringLiteral("in"), QStringLiteral("out"), QStringLiteral("inOut")}) {
             REQUIRE(bridge->preset(preset));
             CHECK(controller->session().undoCount() == before + 1);
             controller->session().undo();
