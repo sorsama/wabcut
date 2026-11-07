@@ -776,10 +776,10 @@ TEST_CASE("A Library drop edits in the item's marked In to Out and the card show
         const bool dropped = lifecycle.dropMedia(subKey, QStringLiteral("00:00:00:05"), p.track("V2"), true);
         INFO("lastError " << lifecycle.lastError().toStdString());
         REQUIRE(dropped);
-        const Track& v2 = *p.sequence().findTrack(p.tl.track("V2"));
-        REQUIRE(v2.clips.size() == 1);
-        CHECK(v2.clips[0].sourceIn == in);
-        CHECK(v2.clips[0].duration() == length);
+        const Track& dropTrack = *p.sequence().findTrack(p.tl.track("V2"));
+        REQUIRE(dropTrack.clips.size() == 1);
+        CHECK(dropTrack.clips[0].sourceIn == in);
+        CHECK(dropTrack.clips[0].duration() == length);
         REQUIRE(p.controller.undo());
     };
     dropSubclip(f(20), f(10));

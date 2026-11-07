@@ -119,10 +119,10 @@ TEST_CASE("Stems: the roles a sequence writes their names settings and soloed pr
     CHECK(p.seq().audioEffects.size() == 1); // the project itself is untouched
 
     // Tracks the master does not play stay out: with a soloed Music track, only Music is written.
-    p.editSequence([](Sequence& s) {
-        auto music = std::make_shared<Track>(*s.audioTracks[1]);
+    p.editSequence([](Sequence& seq) {
+        auto music = std::make_shared<Track>(*seq.audioTracks[1]);
         music->solo = true;
-        s.audioTracks[1] = std::move(music);
+        seq.audioTracks[1] = std::move(music);
     });
     roles = stemRoles(p.seq());
     REQUIRE(roles.size() == 1);

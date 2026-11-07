@@ -35,6 +35,7 @@
 #include <QQuickItem>
 #include <QQuickWindow>
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -67,6 +68,8 @@ bool sameFile(const QString& a, const QString& b) {
                                QDir::cleanPath(QDir::fromNativeSeparators(b)), Qt::CaseInsensitive) == 0;
 }
 
+Ticks secondsToTicks(double s) { return Ticks{static_cast<std::int64_t>(std::llround(s * static_cast<double>(kTicksPerSecond)))}; }
+
 /// A sequence of `seconds` of nothing (exports render silence and the synthetic picture).
 SequencePtr emptySequence(ProjectState& state, const char* name, double seconds, int width = 640, int height = 360) {
     Sequence seq;
@@ -75,7 +78,7 @@ SequencePtr emptySequence(ProjectState& state, const char* name, double seconds,
     seq.width = width;
     seq.height = height;
     seq.frameRate = kRate30;
-    seq.duration = Ticks::fromSeconds(seconds);
+    seq.duration = secondsToTicks(seconds);
     return std::make_shared<const Sequence>(std::move(seq));
 }
 

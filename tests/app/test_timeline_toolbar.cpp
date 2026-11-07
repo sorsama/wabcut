@@ -417,7 +417,7 @@ TEST_CASE("Edit cursors are Boxicons glyphs with a white outline at the screen's
     const QStringList keys = editcursors::keys();
     REQUIRE(keys.size() == 27); // 0.4: "rearrange" (Ctrl+Alt-drag); 0.7: "insertCopy" (Alt-drag, then Ctrl)
     // A contact sheet for review: every cursor on a dark and a light background, at 1x and 2x.
-    QImage sheet(keys.size() * 72, 4 * 72, QImage::Format_ARGB32_Premultiplied);
+    QImage sheet(static_cast<int>(keys.size()) * 72, 4 * 72, QImage::Format_ARGB32_Premultiplied);
     sheet.fill(QColor(0x18, 0x16, 0x20));
     QPainter painter(&sheet);
     painter.fillRect(QRect(0, 2 * 72, sheet.width(), 2 * 72), QColor(0xF2, 0xF0, 0xF6));

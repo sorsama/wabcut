@@ -460,7 +460,7 @@ TEST_CASE("Export history keeps finished exports and Export Again repeats them (
     CHECK(c.jobs()->activeCount() == 0);
 
     // Removing one entry and clearing the list.
-    const int before = c.history().size();
+    const int before = static_cast<int>(c.history().size());
     c.removeHistory(0);
     CHECK(c.history().size() == before - 1);
     c.clearHistory();

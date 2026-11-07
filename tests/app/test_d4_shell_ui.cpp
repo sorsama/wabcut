@@ -362,7 +362,7 @@ TEST_CASE("File menu: Save Version and Version History need a saved project; Sav
 
             // Save Version…: a name is needed; Enter keeps the project as a named version (never an undo step).
             const auto undoSteps = s.controller->session().undoCount();
-            const int before = history->versions().size();
+            const int before = static_cast<int>(history->versions().size());
             evaluate(s.shell, QStringLiteral("runCommand(\"file.saveVersion\")"));
             QObject* dialog = s.shell.object("saveVersionDialog");
             REQUIRE(dialog != nullptr);

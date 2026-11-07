@@ -713,7 +713,7 @@ TEST_CASE("Convert to graphics from the Captions panel: graphic clips, the track
     REQUIRE(CommandJob::runNow(&controller, nullptr, "captions.addTrack", Json{{"name", "English"}, {"language", "en"}}).ok());
     for (const auto& [from, to, text] : {std::tuple{0, 50, "First line"}, std::tuple{60, 110, "Second\nline"}}) {
         REQUIRE(CommandJob::runNow(&controller, nullptr, "captions.addCue",
-                                   Json{{"start", Ticks::fromSeconds(from / 25.0).value}, {"end", Ticks::fromSeconds(to / 25.0).value}, {"text", text}})
+                                   Json{{"start", framesToTicks(from, kRate25).value}, {"end", framesToTicks(to, kRate25).value}, {"text", text}})
                     .ok());
     }
     CaptionsBridge captions;

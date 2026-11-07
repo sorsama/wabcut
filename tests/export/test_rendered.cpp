@@ -1028,16 +1028,6 @@ std::vector<Clip> multicamCuts(ProjectState& state, SequenceId source, Ticks sta
     return out;
 }
 
-ClipId firstVideoClip(const ProjectState& state, SequenceId seq) {
-    for (const TrackPtr& t : state.findSequence(seq)->videoTracks) {
-        if (!t->clips.empty()) {
-            return t->clips.front().id;
-        }
-    }
-    FAIL("no video clip");
-    return {};
-}
-
 } // namespace
 
 TEST_CASE("Export: an offline file in a multicam angle never cut to does not stop it; in an angle used it does (review "

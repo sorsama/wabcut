@@ -424,7 +424,7 @@ TEST_CASE("Editing workspace: Source and Program monitors side by side; narrow w
     REQUIRE(sourcePanel != nullptr);
     REQUIRE(programPanel != nullptr);
 
-    for (const auto [w, h] : {std::pair{1920, 1080}, std::pair{kShotWidth, kShotHeight}}) {
+    for (const auto& [w, h] : {std::pair{1920, 1080}, std::pair{kShotWidth, kShotHeight}}) {
         INFO(w << "x" << h);
         shell.resize(w, h);
         spin(50);

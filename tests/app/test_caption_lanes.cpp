@@ -297,8 +297,8 @@ TEST_CASE("Caption lanes select a cue on click and seek to it and never select o
     CHECK(v->captionAt(rig.x(52), cy).isEmpty());
     // Hovering a cue's edge shows the trim cursor (and lights the edge), its body the arrow; the razor its own.
     const auto hover = [&](double frame) {
-        const QPointF at(rig.x(frame), cy);
-        QHoverEvent move(QEvent::HoverMove, at, at, at);
+        const QPointF where(rig.x(frame), cy);
+        QHoverEvent move(QEvent::HoverMove, where, where, where);
         QCoreApplication::sendEvent(v, &move);
     };
     hover(44.9);

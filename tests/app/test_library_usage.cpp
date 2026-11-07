@@ -297,8 +297,8 @@ TEST_CASE("Library delete: media in use asks first then goes with its clips in o
     CHECK_FALSE(r.library.message().isEmpty());
     std::vector<DeleteAsk> asked;
     QObject::connect(&r.library, &LibraryBridge::deleteConfirmRequested, &r.library,
-                     [&asked](const QStringList& keys, const QVariantMap& impact, bool withOptions) {
-                         asked.push_back({keys, impact, withOptions});
+                     [&asked](const QStringList& keys, const QVariantMap& askedImpact, bool withOptions) {
+                         asked.push_back({keys, askedImpact, withOptions});
                      });
     CHECK(r.library.requestDelete({r.key('A')}));
     REQUIRE(asked.size() == 1);

@@ -36,7 +36,7 @@ Ticks ms(std::int64_t v) { return Ticks{v * (kTicksPerSecond / 1000)}; }
 /// 45 s of 16 kHz PCM with tone bursts at [1, 3), [5, 6.5) and [40, 42) s.
 std::vector<float> syntheticSpeech() {
     std::vector<float> pcm(static_cast<std::size_t>(45 * kS), 0.0f);
-    for (const auto [a, b] : {std::pair{1.0, 3.0}, {5.0, 6.5}, {40.0, 42.0}}) {
+    for (const auto& [a, b] : {std::pair{1.0, 3.0}, {5.0, 6.5}, {40.0, 42.0}}) {
         for (auto i = static_cast<std::size_t>(a * kS); i < static_cast<std::size_t>(b * kS); ++i) {
             pcm[i] = 0.5f * static_cast<float>(std::sin(2.0 * 3.14159265358979 * 300.0 * static_cast<double>(i) / kS));
         }
@@ -388,7 +388,7 @@ namespace {
 /// mixed-languages chunks begin 0.25 s before each burst, so the three stretches are English, Thai, English.
 std::vector<float> threeStretches() {
     std::vector<float> pcm(static_cast<std::size_t>(30 * kS), 0.0f);
-    for (const auto [a, b] : {std::pair{1.0, 5.0}, {12.0, 16.0}, {22.0, 26.0}}) {
+    for (const auto& [a, b] : {std::pair{1.0, 5.0}, {12.0, 16.0}, {22.0, 26.0}}) {
         for (auto i = static_cast<std::size_t>(a * kS); i < static_cast<std::size_t>(b * kS); ++i) {
             pcm[i] = 0.5f * static_cast<float>(std::sin(2.0 * 3.14159265358979 * 300.0 * static_cast<double>(i) / kS));
         }

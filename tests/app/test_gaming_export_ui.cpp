@@ -25,6 +25,7 @@
 #include <QQuickWindow>
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -35,6 +36,8 @@ using namespace wabcut::test;
 namespace ex = wabcut::exporter;
 
 namespace {
+
+Ticks secondsToTicks(double s) { return Ticks{static_cast<std::int64_t>(std::llround(s * static_cast<double>(kTicksPerSecond)))}; }
 
 /// A project whose one sequence is `width` x `height` at `rate`, `seconds` long, with In / Out when given.
 struct Rig {
@@ -47,10 +50,10 @@ struct Rig {
         s.frameRate = rate;
         s.width = width;
         s.height = height;
-        s.duration = Ticks::fromSeconds(seconds);
+        s.duration = secondsToTicks(seconds);
         if (marks) {
-            s.markIn = Ticks::fromSeconds(marks->first);
-            s.markOut = Ticks::fromSeconds(marks->second);
+            s.markIn = secondsToTicks(marks->first);
+            s.markOut = secondsToTicks(marks->second);
         }
         const ProjectState state = tl.state.withSequence(std::make_shared<const Sequence>(std::move(s)));
         controller.resetProject(state, tl.seq);

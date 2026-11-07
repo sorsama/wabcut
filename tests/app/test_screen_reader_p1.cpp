@@ -31,18 +31,6 @@ const char* const kSettingsPages[] = {"general", "appearance", "interface", "tim
                                       "audio",   "ai",         "keyboard",  "extensions"};
 const char* const kWorkspaces[] = {"Edit", "Audio", "Export", "Color", "Captions"};
 
-QQuickItem* findNamed(QQuickItem* root, const QString& name) {
-    if (!root)
-        return nullptr;
-    if (root->objectName() == name)
-        return root;
-    for (QQuickItem* child : root->childItems()) {
-        if (QQuickItem* found = findNamed(child, name))
-            return found;
-    }
-    return nullptr;
-}
-
 QVariant evaluate(const Shell& shell, const QString& code) {
     QQmlExpression expression(qmlContext(shell.window.get()), shell.window.get(), code);
     const QVariant result = expression.evaluate();
