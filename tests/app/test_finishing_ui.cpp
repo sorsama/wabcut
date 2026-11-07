@@ -310,8 +310,8 @@ TEST_CASE("Keyframe lane: drag moves the selected keys in one undo step, Alt dup
     const double tolerance = 0.01;
     const auto times = [&] {
         std::vector<Ticks> out;
-        const ParamValue opacity = paramOf(controller, city, ParamId::Opacity); // the loop reads into it
-        for (const Keyframe& k : opacity.curve()->keys)
+        const ParamValue opacityValue = paramOf(controller, city, ParamId::Opacity); // the loop reads into it
+        for (const Keyframe& k : opacityValue.curve()->keys)
             out.push_back(k.time);
         return out;
     };
